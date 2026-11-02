@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, useCallback, useSyncExternalStore, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore, useMemo } from "react";
 import { Save, Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw, Ticket, Clock, ShieldCheck, Eye, EyeOff, SlidersHorizontal, Compass, Percent, Shield, ArrowRight, Check, X, Layers, Cpu, CreditCard as CardIcon } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type PriceListItem, type ShopLocation } from "@/lib/store";
 import { 
@@ -23,6 +23,8 @@ import { Badge } from "@/components/ui/badge";
 import { LocationInput } from "@/components/location-input";
 import { getWiseLiveBalancesAction, getWiseRecentTransactionsAction, testWiseApiConnectionAction, saveWiseApiCredentialsAction } from "@/actions/wise";
 import type { WiseBalanceItem, WiseActivityItem } from "@/lib/wise";
+import { testLineOaConnectionAction, saveLineOaSettingsAction, getLineOaContactsAction } from "@/actions/line";
+import type { LineContactRecord } from "@/lib/line";
 
 export function AdminSettings() {
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
@@ -95,6 +97,19 @@ export function AdminSettings() {
   const [isLoadingWiseApi, setIsLoadingWiseApi] = useState(false);
   const [showWiseToken, setShowWiseToken] = useState(false);
   const wiseQrInputRef = useRef<HTMLInputElement>(null);
+
+  // LINE Official Account (LINE OA) Integration State
+  const [enableLineOa, setEnableLineOa] = useState(true);
+  const [lineChannelAccessToken, setLineChannelAccessToken] = useState(
+    "m37vbSx77LMvPDo1W96a25iygwrnEqsBdtzOeXM5qQoYBugNMtab0l1Xhvv7BinKNuTSFGz0dlPTZM7dWZxiYxhxASsfd0pmGvCHp0GAjTn0867M7DMdZWnM1ry+K//X7dbvrR2jEG3ec4MG4UCMAwdB04t89/1O/w1cDnyilFU="
+  );
+  const [lineChannelSecret, setLineChannelSecret] = useState("b6eb43581993184cac88721953b211dd");
+  const [lineBasicId, setLineBasicId] = useState("@050ehvzb");
+  const [lineBotName, setLineBotName] = useState("NoName Laundry");
+  const [lineAutoSendDeliveryPhoto, setLineAutoSendDeliveryPhoto] = useState(true);
+  const [showLineToken, setShowLineToken] = useState(false);
+  const [isLoadingLineApi, setIsLoadingLineApi] = useState(false);
+  const [lineContacts, setLineContacts] = useState<LineContactRecord[]>([]);
 
   const handleToggleCustomerPortal = async (nextVal: boolean) => {
     setEnableCustomerPortal(nextVal);
@@ -269,6 +284,17 @@ export function AdminSettings() {
       setWiseQrUrl(systemSettings.wiseQrUrl || "");
       setWiseBankDetails(systemSettings.wiseBankDetails || "");
       setWiseInstructions(systemSettings.wiseInstructions || "");
+
+      // LINE OA settings
+      setEnableLineOa(systemSettings.enableLineOa !== "false");
+      setLineChannelAccessToken(
+        systemSettings.lineChannelAccessToken ||
+          "m37vbSx77LMvPDo1W96a25iygwrnEqsBdtzOeXM5qQoYBugNMtab0l1Xhvv7BinKNuTSFGz0dlPTZM7dWZxiYxhxASsfd0pmGvCHp0GAjTn0867M7DMdZWnM1ry+K//X7dbvrR2jEG3ec4MG4UCMAwdB04t89/1O/w1cDnyilFU="
+      );
+      setLineChannelSecret(systemSettings.lineChannelSecret || "b6eb43581993184cac88721953b211dd");
+      setLineBasicId(systemSettings.lineBasicId || "@050ehvzb");
+      setLineBotName(systemSettings.lineBotName || "NoName Laundry");
+      setLineAutoSendDeliveryPhoto(systemSettings.lineAutoSendDeliveryPhoto !== "false");
 
       // Cash drawer settings
       setCashDrawerAutoOpenOnPay(systemSettings.cashDrawerAutoOpenOnPay !== "false");
@@ -476,6 +502,78 @@ export function AdminSettings() {
       toast.error("Connection error: " + (err instanceof Error ? err.message : "Failed"));
     } finally {
       setIsLoadingWiseApi(false);
+    }
+  };
+
+  const loadLineContacts = useCallback(async () => {
+    try {
+      const res = await getLineOaContactsAction();
+      if (res.success) {
+        setLineContacts(res.contacts || []);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeSettingsTab === "all" || activeSettingsTab === "payments" || activeSettingsTab === "system") {
+      loadLineContacts();
+    }
+  }, [activeSettingsTab, loadLineContacts]);
+
+  const handleTestLineConnection = async () => {
+    setIsLoadingLineApi(true);
+    try {
+      const res = await testLineOaConnectionAction(lineChannelAccessToken);
+      if (res.success && res.botInfo) {
+        setLineBotName(res.botInfo.displayName);
+        if (res.botInfo.basicId || res.botInfo.premiumId) {
+          setLineBasicId(res.botInfo.premiumId || res.botInfo.basicId || lineBasicId);
+        }
+        toast.success(`Connected to LINE OA: ${res.botInfo.displayName} (${res.botInfo.basicId || "Verified"})`);
+      } else {
+        toast.error("LINE OA Connection failed: " + (res.error || "Invalid Channel Access Token"));
+      }
+    } catch (err: any) {
+      toast.error("LINE OA error: " + (err instanceof Error ? err.message : "Failed"));
+    } finally {
+      setIsLoadingLineApi(false);
+    }
+  };
+
+  const handleSaveLineSettings = async () => {
+    setIsLoadingLineApi(true);
+    try {
+      const res = await saveLineOaSettingsAction({
+        enableLineOa,
+        channelAccessToken: lineChannelAccessToken,
+        channelSecret: lineChannelSecret,
+        lineBasicId,
+        autoSendDeliveryPhoto: lineAutoSendDeliveryPhoto,
+      });
+      if (res.success) {
+        if (res.botInfo) {
+          setLineBotName(res.botInfo.displayName);
+          if (res.botInfo.basicId || res.botInfo.premiumId) {
+            setLineBasicId(res.botInfo.premiumId || res.botInfo.basicId || lineBasicId);
+          }
+        }
+        const { refreshDb } = await import("@/lib/api");
+        await refreshDb();
+        await loadLineContacts();
+        toast.success(
+          res.botInfo
+            ? `LINE OA connected & saved (${res.botInfo.displayName})!`
+            : "LINE OA settings saved!"
+        );
+      } else {
+        toast.error(res.error || "Failed to save LINE OA settings");
+      }
+    } catch (err: any) {
+      toast.error("Failed to save LINE OA settings: " + (err instanceof Error ? err.message : "Unknown error"));
+    } finally {
+      setIsLoadingLineApi(false);
     }
   };
 
@@ -1242,7 +1340,7 @@ export function AdminSettings() {
       {/* SECTION 3: PAYMENTS & VAT                                                 */}
       {/* ========================================================================= */}
       {(activeSettingsTab === "all" || activeSettingsTab === "payments") && (
-        (!settingsSearch || "payment channel vat tax transfer cash card promptpay wise".includes(settingsSearch.toLowerCase())) && (
+        (!settingsSearch || "payment channel vat tax transfer cash card promptpay wise line oa official account delivery proof".includes(settingsSearch.toLowerCase())) && (
           <div className="space-y-6 animate-in fade-in duration-300">
             {/* Payment Channels Table */}
             <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
@@ -1722,6 +1820,248 @@ export function AdminSettings() {
                 </div>
               </div>
             </div>
+
+            {/* LINE Official Account (LINE OA) Integration Card */}
+            <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-[#06C755] text-white flex items-center justify-center shadow-md shadow-[#06C755]/25 font-black text-xs tracking-tighter">
+                    LINE
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">
+                        LINE Official Account (LINE OA) — Auto Delivery Proof
+                      </h3>
+                      <Badge
+                        className={
+                          lineChannelAccessToken
+                            ? "bg-emerald-100 text-emerald-800 border-emerald-300 font-bold text-[10px]"
+                            : "bg-amber-100 text-amber-800 border-amber-300 font-bold text-[10px]"
+                        }
+                      >
+                        {lineChannelAccessToken
+                          ? `Connected${lineBotName ? `: ${lineBotName}` : " ✓"}`
+                          : "Awaiting Channel Access Token"}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Automatically send rider delivery proof photos &amp; completion notifications directly to customers on LINE.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 self-start sm:self-auto">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={isLoadingLineApi}
+                    onClick={handleTestLineConnection}
+                    className="h-9 px-3.5 text-xs font-bold rounded-xl border-slate-200 cursor-pointer"
+                  >
+                    <RefreshCw size={13} className={`mr-1.5 ${isLoadingLineApi ? "animate-spin" : ""}`} />
+                    <span>Test Connection</span>
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={isLoadingLineApi}
+                    onClick={handleSaveLineSettings}
+                    className="h-9 px-4 text-xs font-bold bg-[#06C755] hover:bg-[#05b34c] text-white rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Save size={14} />
+                    <span>Save LINE OA</span>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Quick Setup Guide Banner */}
+              <div className="p-4 rounded-2xl bg-emerald-50/70 border border-emerald-200/80 space-y-2 text-xs text-emerald-950">
+                <div className="font-black flex items-center gap-1.5 text-emerald-900">
+                  <Sparkles size={14} className="text-[#06C755]" />
+                  <span>How to Connect Your LINE Official Account (2 Minutes):</span>
+                </div>
+                <ol className="list-decimal list-inside space-y-1 text-[11px] text-emerald-900/90 leading-relaxed">
+                  <li>
+                    Open{" "}
+                    <a
+                      href="https://manager.line.biz/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-bold underline text-emerald-700 hover:text-emerald-900"
+                    >
+                      LINE Official Account Manager (manager.line.biz)
+                    </a>{" "}
+                    → <strong>Settings (⚙️)</strong> → <strong>Messaging API</strong> → Click <strong>Enable Messaging API</strong>.
+                  </li>
+                  <li>
+                    Open{" "}
+                    <a
+                      href="https://developers.line.biz/console/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-bold underline text-emerald-700 hover:text-emerald-900"
+                    >
+                      LINE Developers Console (developers.line.biz)
+                    </a>{" "}
+                    → Select your channel → Go to the <strong>Messaging API</strong> tab.
+                  </li>
+                  <li>
+                    Scroll to the bottom under <strong>Channel access token (long-lived)</strong> → Click <strong>Issue</strong> → Copy &amp; paste it below.
+                  </li>
+                  <li>
+                    In the same tab, set <strong>Webhook URL</strong> to{" "}
+                    <code className="px-1.5 py-0.5 rounded bg-white border border-emerald-200 font-mono text-[10px] font-bold">
+                      https://www.thatlaundryshop.com/api/webhooks/line
+                    </code>{" "}
+                    and turn ON <strong>Use webhook</strong>.
+                  </li>
+                </ol>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="md:col-span-2 space-y-2">
+                  <Label className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                    <Key size={13} className="text-[#06C755]" />
+                    <span>Channel Access Token (Long-Lived)</span>
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      type={showLineToken ? "text" : "password"}
+                      value={lineChannelAccessToken}
+                      onChange={(e) => setLineChannelAccessToken(e.target.value)}
+                      placeholder="Paste your long-lived LINE Channel Access Token here..."
+                      className="font-mono text-xs h-11 pr-10 rounded-xl border-slate-200"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowLineToken(!showLineToken)}
+                      className="absolute right-3 top-3 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      {showLineToken ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="font-bold text-xs uppercase tracking-wider text-slate-700">
+                    LINE Official ID (@handle)
+                  </Label>
+                  <Input
+                    value={lineBasicId}
+                    onChange={(e) => setLineBasicId(e.target.value)}
+                    placeholder="@thatlaundryshop"
+                    className="font-bold text-sm h-11 rounded-xl border-slate-200"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="font-bold text-xs uppercase tracking-wider text-slate-700">
+                    Webhook URL (Paste in LINE Developers Console)
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      readOnly
+                      value="https://www.thatlaundryshop.com/api/webhooks/line"
+                      className="font-mono text-xs h-10 bg-slate-50 rounded-xl border-slate-200"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        navigator.clipboard.writeText("https://www.thatlaundryshop.com/api/webhooks/line");
+                        toast.success("Copied LINE Webhook URL!");
+                      }}
+                      className="h-10 px-3 rounded-xl shrink-0 cursor-pointer"
+                    >
+                      <Copy size={14} className="mr-1" />
+                      <span className="text-xs font-bold">Copy</span>
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="font-bold text-xs uppercase tracking-wider text-slate-700">
+                    Channel Secret <span className="text-slate-400 font-normal">(Optional — From Basic Settings tab)</span>
+                  </Label>
+                  <Input
+                    type={showLineToken ? "text" : "password"}
+                    value={lineChannelSecret}
+                    onChange={(e) => setLineChannelSecret(e.target.value)}
+                    placeholder="Optional Channel Secret for signature verification"
+                    className="font-mono text-xs h-10 rounded-xl border-slate-200"
+                  />
+                </div>
+              </div>
+
+              {/* Auto-Send Toggle */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl bg-slate-50 border border-slate-200/80">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={lineAutoSendDeliveryPhoto}
+                    onChange={(e) => setLineAutoSendDeliveryPhoto(e.target.checked)}
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-[#06C755] focus:ring-[#06C755] cursor-pointer"
+                  />
+                  <div>
+                    <span className="text-xs font-extrabold text-slate-900 block">
+                      Automatically Send Delivery Proof Photo When Rider Uploads Photo
+                    </span>
+                    <span className="text-[11px] text-slate-500 block leading-relaxed">
+                      As soon as a rider uploads a delivery photo, the system automatically pushes the photo + delivery notification to the customer&apos;s LINE and marks the order as &ldquo;Photo Sent ✓&rdquo;.
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {/* Recent LINE Followers / Contacts */}
+              {lineContacts.length > 0 && (
+                <div className="space-y-2 pt-2 border-t border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                      Recent LINE OA Contacts ({lineContacts.length})
+                    </Label>
+                    <button
+                      type="button"
+                      onClick={loadLineContacts}
+                      className="text-[11px] font-bold text-[#06C755] hover:underline cursor-pointer"
+                    >
+                      Refresh List
+                    </button>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-2xl bg-white">
+                    {lineContacts.slice(0, 15).map((contact) => (
+                      <div key={contact.userId} className="p-2.5 px-3.5 flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-7 h-7 rounded-full bg-[#06C755]/15 text-[#06C755] font-black flex items-center justify-center shrink-0 text-[11px]">
+                            {contact.displayName.slice(0, 2).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 truncate">{contact.displayName}</p>
+                            <p className="text-[10px] text-slate-400 font-mono truncate">{contact.userId}</p>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          {contact.linkedCustomerName ? (
+                            <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200 text-[10px]">
+                              Linked: {contact.linkedCustomerName}
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[10px] text-slate-500">
+                              Unlinked
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
               <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
                 <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-rose-500 to-pink-600 text-white flex items-center justify-center shadow-md shadow-rose-500/20">

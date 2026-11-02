@@ -3574,6 +3574,21 @@ async function updateJobActionInternal(id: string, updates: any) {
     followUpWarnings.push("realtimePublish");
   }
 
+  // Auto-send Delivery Proof Photo via LINE OA when a rider uploads a new delivery proof photo
+  if (
+    effectiveChanges.deliveryProofImageUrl &&
+    updatedJob.deliveryProofImageUrl &&
+    updatedJob.deliveryProofImageUrl !== existingJob?.deliveryProofImageUrl
+  ) {
+    import("@/actions/line")
+      .then(({ tryAutoSendLineDeliveryProofOnUpload }) =>
+        tryAutoSendLineDeliveryProofOnUpload(updatedJob.id)
+      )
+      .catch((err) => {
+        console.warn("[updateJobAction] LINE auto-send trigger error:", err);
+      });
+  }
+
   return { ...updatedJob, issuedCoupons, followUpWarnings };
 }
 

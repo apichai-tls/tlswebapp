@@ -6,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet, RotateCcw, CreditCard, Send, AlertCircle, ArrowRight, FileCheck2, FileWarning, Maximize2, Minimize2, Monitor, SlidersHorizontal, ZoomIn, ZoomOut, Columns, Split, Camera, ExternalLink } from "lucide-react";
+import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet, RotateCcw, CreditCard, Send, AlertCircle, ArrowRight, FileCheck2, FileWarning, Maximize2, Minimize2, Monitor, SlidersHorizontal, ZoomIn, ZoomOut, Columns, Split, Camera, ExternalLink, Copy, MessageCircle } from "lucide-react";
 import Papa from "papaparse";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,6 +25,8 @@ import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { DailySaleDialog } from "@/components/daily-sale-dialog";
+import { sendDeliveryProofViaLineAction, getLineOaContactsAction, linkLineUserToCustomerAction } from "@/actions/line";
+import type { LineContactRecord } from "@/lib/line";
 
 export type KanbanColumnId = "tba" | "pending" | "pickup" | "billing" | "process" | "delivery" | "completed" | "cancel" | "return" | "topup";
 
@@ -377,6 +379,22 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     () => (deliveryPhotoPreviewJobId ? jobs.find((j) => j.id === deliveryPhotoPreviewJobId) || null : null),
     [deliveryPhotoPreviewJobId, jobs]
   );
+  const [isSendingLineProof, setIsSendingLineProof] = useState(false);
+  const [isCopyingPhoto, setIsCopyingPhoto] = useState(false);
+  const [lineOaContacts, setLineOaContacts] = useState<LineContactRecord[]>([]);
+  const [selectedLineUserId, setSelectedLineUserId] = useState<string>("");
+
+  useEffect(() => {
+    if (deliveryPhotoPreviewJobId) {
+      getLineOaContactsAction()
+        .then((res) => {
+          if (res.success) setLineOaContacts(res.contacts || []);
+        })
+        .catch(() => {});
+    } else {
+      setSelectedLineUserId("");
+    }
+  }, [deliveryPhotoPreviewJobId]);
   
   const [reopenDialog, setReopenDialog] = useState<{
     isOpen: boolean;
@@ -3783,6 +3801,93 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
             const photos = bMeta.deliveryPhotoUrls;
             const riderObj = riders.find(r => r.id === (deliveryPhotoPreviewJob.deliveryRiderId || deliveryPhotoPreviewJob.riderId));
             const riderName = riderObj?.nickname || riderObj?.name || deliveryPhotoPreviewJob.deliveryRiderId || deliveryPhotoPreviewJob.riderId || "Rider";
+            const matchedCustomer = findMatchingCustomer(
+              customers,
+              deliveryPhotoPreviewJob.customerId,
+              deliveryPhotoPreviewJob.customerPhone,
+              deliveryPhotoPreviewJob.customerName
+            );
+            const customerLineId = matchedCustomer?.lineId || "";
+            const isLinkedLineUserId = /^U[0-9a-f]{32}$/i.test(customerLineId.trim());
+
+            const handleCopyPhotoToClipboard = async (photoUrl: string) => {
+              setIsCopyingPhoto(true);
+              try {
+                const img = new Image();
+                img.crossOrigin = "anonymous";
+                await new Promise<void>((resolve, reject) => {
+                  img.onload = () => resolve();
+                  img.onerror = () => reject(new Error("Failed to load image"));
+                  img.src = photoUrl;
+                });
+                const canvas = document.createElement("canvas");
+                canvas.width = img.naturalWidth || img.width;
+                canvas.height = img.naturalHeight || img.height;
+                const ctx = canvas.getContext("2d");
+                if (!ctx) throw new Error("Canvas unavailable");
+                ctx.drawImage(img, 0, 0);
+                const blob = await new Promise<Blob | null>((resolve) =>
+                  canvas.toBlob((b) => resolve(b), "image/png")
+                );
+                if (!blob) throw new Error("Failed to convert image");
+                await navigator.clipboard.write([
+                  new ClipboardItem({ "image/png": blob }),
+                ]);
+                toast.success("Copied delivery photo to clipboard! Press Ctrl+V in LINE or WhatsApp chat.");
+              } catch {
+                const fullUrl = photoUrl.startsWith("http")
+                  ? photoUrl
+                  : `${window.location.origin}${photoUrl}`;
+                await navigator.clipboard.writeText(fullUrl);
+                toast.success("Copied delivery photo link to clipboard!");
+              } finally {
+                setIsCopyingPhoto(false);
+              }
+            };
+
+            const handleSendViaWhatsApp = (photoUrl?: string) => {
+              const rawPhone = (deliveryPhotoPreviewJob.customerPhone || matchedCustomer?.phone || "").replace(/\D/g, "");
+              const formattedPhone = rawPhone.startsWith("0")
+                ? "66" + rawPhone.slice(1)
+                : rawPhone;
+              const firstPhoto = photoUrl || photos[0] || "";
+              const fullPhotoUrl = firstPhoto
+                ? firstPhoto.startsWith("http")
+                  ? firstPhoto
+                  : `${window.location.origin}${firstPhoto}`
+                : "";
+              const msg = `✨ Hello ${deliveryPhotoPreviewJob.customerName || "Valued Customer"},\nYour laundry order #${formatJobDisplayId(deliveryPhotoPreviewJob.id)} has been delivered! 🧺🚚${
+                deliveryPhotoPreviewJob.dropoffLocation ? `\n📍 Location: ${deliveryPhotoPreviewJob.dropoffLocation}` : ""
+              }${fullPhotoUrl ? `\n\n📸 Delivery Proof Photo:\n${fullPhotoUrl}` : ""}\n\nThank you for choosing That Laundry Shop! 💚`;
+              const waUrl = formattedPhone
+                ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}`
+                : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+              window.open(waUrl, "_blank", "noopener,noreferrer");
+            };
+
+            const handleSendViaLineOa = async () => {
+              setIsSendingLineProof(true);
+              try {
+                const res = await sendDeliveryProofViaLineAction({
+                  jobId: deliveryPhotoPreviewJob.id,
+                  overrideLineUserId: selectedLineUserId || undefined,
+                  actorName: (user as any)?.name || user?.email || "Staff",
+                });
+                if (res.success) {
+                  const { refreshDb } = await import("@/lib/api");
+                  await refreshDb();
+                  toast.success(
+                    `Sent delivery proof photo(s) to customer via LINE OA! ✓`
+                  );
+                } else {
+                  toast.error(res.error || "Failed to send via LINE OA");
+                }
+              } catch (err: any) {
+                toast.error(err?.message || "Error sending via LINE OA");
+              } finally {
+                setIsSendingLineProof(false);
+              }
+            };
 
             return (
               <>
@@ -3837,18 +3942,110 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           </a>
                           <div className="flex items-center justify-between px-3 py-2 bg-white border-t border-slate-100 text-xs">
                             <span className="font-bold text-slate-600">Photo #{idx + 1}</span>
-                            <a
-                              href={url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 font-bold text-indigo-600 hover:text-indigo-700"
-                            >
-                              <span>Open Full Image</span>
-                              <ExternalLink size={12} />
-                            </a>
+                            <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => handleCopyPhotoToClipboard(url)}
+                                disabled={isCopyingPhoto}
+                                className="inline-flex items-center gap-1 font-bold text-emerald-700 hover:text-emerald-800 cursor-pointer"
+                              >
+                                <Copy size={12} />
+                                <span>Copy Image</span>
+                              </button>
+                              <a
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 font-bold text-indigo-600 hover:text-indigo-700"
+                              >
+                                <span>Open Full Image</span>
+                                <ExternalLink size={12} />
+                              </a>
+                            </div>
                           </div>
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {/* LINE OA & WhatsApp Quick Send Bar */}
+                  {photos.length > 0 && (
+                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="px-2 py-0.5 rounded bg-[#06C755] text-white font-black text-[10px]">
+                            LINE OA
+                          </span>
+                          <span className="font-bold text-slate-800">
+                            Send Delivery Proof to Customer
+                          </span>
+                          {isLinkedLineUserId ? (
+                            <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 text-[10px]">
+                              LINE Linked ✓
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300 bg-amber-50">
+                              {customerLineId ? `Handle: ${customerLineId}` : "Not Linked Yet"}
+                            </Badge>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={isCopyingPhoto}
+                            onClick={() => handleCopyPhotoToClipboard(photos[0])}
+                            className="h-8 text-xs font-bold border-slate-300 bg-white hover:bg-slate-100 cursor-pointer"
+                          >
+                            <Copy size={13} className="mr-1.5 text-slate-600" />
+                            <span>Copy Photo</span>
+                          </Button>
+
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleSendViaWhatsApp(photos[0])}
+                            className="h-8 text-xs font-bold border-emerald-300 bg-emerald-50/60 text-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                          >
+                            <MessageCircle size={13} className="mr-1.5 text-emerald-600" />
+                            <span>WhatsApp</span>
+                          </Button>
+
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={isSendingLineProof}
+                            onClick={handleSendViaLineOa}
+                            className="h-8 text-xs font-bold bg-[#06C755] hover:bg-[#05b34c] text-white shadow-2xs cursor-pointer"
+                          >
+                            <Send size={13} className="mr-1.5" />
+                            <span>{isSendingLineProof ? "Sending..." : "Send via LINE OA"}</span>
+                          </Button>
+                        </div>
+                      </div>
+
+                      {!isLinkedLineUserId && lineOaContacts.length > 0 && (
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-2 border-t border-slate-200/80 text-xs">
+                          <span className="text-slate-500 font-medium shrink-0">
+                            Link to recent LINE follower:
+                          </span>
+                          <select
+                            value={selectedLineUserId}
+                            onChange={(e) => setSelectedLineUserId(e.target.value)}
+                            className="flex-1 h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-bold text-slate-800"
+                          >
+                            <option value="">-- Select customer from recent LINE OA chats --</option>
+                            {lineOaContacts.map((c) => (
+                              <option key={c.userId} value={c.userId}>
+                                {c.displayName} {c.linkedCustomerName ? `(Linked: ${c.linkedCustomerName})` : ""} — {c.userId.slice(0, 10)}...
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
                     </div>
                   )}
 
