@@ -191,6 +191,9 @@ export async function recordWiseJobPaymentAction(params: {
       if (!job) {
         throw new Error(`Job ${jobId} not found`);
       }
+      if (job.status === 'cancel') {
+        throw new Error('งานที่อยู่ในสถานะ Cancel ไม่สามารถบันทึกการชำระเงินได้');
+      }
 
       let adminNotesObj: any = {};
       let existingPayments: any[] = [];
@@ -226,7 +229,7 @@ export async function recordWiseJobPaymentAction(params: {
               method: 'transfer',
               channel: 'Wise',
               senderName,
-              reference: reference || job.billNo || job.id,
+              reference: reference || job.id || job.billNo,
               ...(sourceCurrency ? { sourceCurrency, sourceValue } : {}),
               timestamp: now.toISOString(),
             },
@@ -259,7 +262,7 @@ export async function recordWiseJobPaymentAction(params: {
             }
           : {};
 
-      const wiseTagNote = `Paid via Wise: ${senderName} (฿${paidAmount.toFixed(2)}) Ref: ${reference || job.billNo || job.id}`;
+      const wiseTagNote = `Paid via Wise: ${senderName} (฿${paidAmount.toFixed(2)}) Ref: ${reference || job.id || job.billNo}`;
       const existingRemark = (job.remark || '').trim();
       const updatedRemark = existingRemark.includes('Paid via Wise')
         ? existingRemark
@@ -283,6 +286,32 @@ export async function recordWiseJobPaymentAction(params: {
           ...autoProformaFields,
         },
       });
+
+      if (!alreadyRecorded || didTransition) {
+        try {
+          await tx.activityLog.create({
+            data: {
+              entityId: job.id,
+              entityType: 'job',
+              action: 'update',
+              details: JSON.stringify({
+                isPaid: savedJob.isPaid,
+                isShopPaid: savedJob.isShopPaid,
+                paymentMethod: savedJob.paymentMethod,
+                paymentChannel: savedJob.paymentChannel,
+                totalAmount: savedJob.totalAmount,
+                remark: savedJob.remark,
+                ...(savedJob.subStatus !== job.subStatus ? { subStatus: savedJob.subStatus } : {}),
+              }),
+              userId: 'system',
+              userName: 'Wise Online Payment',
+              createdAt: savedJob.updatedAt,
+            },
+          });
+        } catch (logErr: any) {
+          console.warn('[recordWiseJobPaymentAction] Failed to write ActivityLog:', logErr?.message || logErr);
+        }
+      }
 
       return { updated: savedJob, transitionedToShopPaid: didTransition };
     });
@@ -407,6 +436,7 @@ export async function checkWiseJobPaymentStatusAction(params: {
     const jobIdClean = jobId.trim().toUpperCase();
     const jobIdShort = jobIdClean.slice(0, 8);
     const billNoClean = (job?.billNo || '').trim().toUpperCase();
+    const billNoHyphen = billNoClean.replace(/\//g, '-');
     const thirtyMinsAgoMs = Date.now() - 30 * 60 * 1000;
 
     // Look for an unclaimed COMPLETED incoming transfer
@@ -424,7 +454,8 @@ export async function checkWiseJobPaymentStatusAction(params: {
         refUpper &&
         (refUpper.includes(jobIdClean) ||
           refUpper.includes(jobIdShort) ||
-          (billNoClean && refUpper.includes(billNoClean)))
+          (billNoClean && refUpper.includes(billNoClean)) ||
+          (billNoHyphen && refUpper.includes(billNoHyphen)))
       ) {
         return true;
       }

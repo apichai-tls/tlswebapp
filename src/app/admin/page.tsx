@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { format } from "date-fns";
@@ -1175,6 +1175,10 @@ function AdminPageContent() {
     if (isRewashJob || isRewashOrNoChargeJob(j)) return false;
     return isJobFullyPaid(j);
   })() : false;
+  const isCancelledJob = Boolean(editingJobId && (() => {
+    const j = jobs.find(job => job.id === editingJobId) || jobStore.getSnapshot().find(job => job.id === editingJobId);
+    return j?.status === "cancel" || (j?.status as string) === "cancelled";
+  })());
   const isPricingLocked = isPaidJob;
   const isCartLocked = isPaidJob;
   const isLogisticsLocked = isPaidJob;
@@ -3258,6 +3262,12 @@ function AdminPageContent() {
 
     const existingJob = editingJobId ? (jobs.find(j => String(j.id) === String(editingJobId)) || originalJobRef.current) : null;
     const isAlreadyCompleted = existingJob?.status === "completed";
+    const isExistingCancelled = existingJob?.status === "cancel" || (existingJob?.status as string) === "cancelled";
+
+    if (isPayment && isExistingCancelled) {
+      abortSubmit(currentLanguage === "en" ? "Cannot process payment for a cancelled order." : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
+      return;
+    }
     
     const shop = shopLocations[selectedStoreIndex] || shopLocations[0];
     const targetShift = (isWalkIn && activeShift && activeShift.branchId === shop.id) ? activeShift : null;
@@ -3428,7 +3438,7 @@ function AdminPageContent() {
     const hasCartItemsForPayment = Boolean(dialogCart && dialogCart.length > 0 && calculatedTotal > 0 && remainingToPay > 0);
     // Guarantee: If staff selected Status: Paid + Deduct Member on an unpaid order with items and clicked "Save Changes",
     // promote isPayment = true so the wallet deduction and payment entry are ALWAYS executed atomically!
-    if (!isPayment && !isAlreadyPaidJob && paymentMethod === "paid" && isMemberChannelSelected && hasCartItemsForPayment) {
+    if (!isPayment && !isAlreadyPaidJob && !isExistingCancelled && paymentMethod === "paid" && isMemberChannelSelected && hasCartItemsForPayment) {
       isPayment = true;
     }
     const isNewDeduction = isMemberChannelSelected && isPayment && !isAlreadyPaidJob;
@@ -3672,8 +3682,8 @@ function AdminPageContent() {
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
-      isPaid: isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || ((isWalkIn || isMemberChannelSelected) ? false : paymentMethod === 'paid'))),
-      isShopPaid: isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (editingJobId ? Boolean(existingJob?.isShopPaid) : false))),
+      isPaid: isExistingCancelled ? Boolean(existingJob?.isPaid) : (isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || ((isWalkIn || isMemberChannelSelected) ? false : paymentMethod === 'paid')))),
+      isShopPaid: isExistingCancelled ? Boolean(existingJob?.isShopPaid) : (isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (editingJobId ? Boolean(existingJob?.isShopPaid) : false)))),
 
       fee: isNoChargePrepaidJob ? 0 : ((isAlreadyPaidJob && existingJob && !isCartChangedFromLastProforma && !isPayment) ? (existingJob.fee ?? 0) : fee),
       totalAmount: isNoChargePrepaidJob ? 0 : ((isAlreadyPaidJob && existingJob && !isCartChangedFromLastProforma && !isPayment) ? (Number(existingJob.totalAmount) || 0) : calculatedTotal),
@@ -5110,6 +5120,10 @@ function AdminPageContent() {
     try {
       const current = jobs.find((j) => j.id === editingJobId) || activeJob;
       if (!current) return;
+      if (current.status === "cancel" || (current.status as string) === "cancelled") {
+        toast.error(currentLanguage === "en" ? "Cannot process payment for a cancelled order." : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
+        return;
+      }
 
       const itemsPayload = dialogCart.map((item) => ({
         name: item.name,
@@ -5169,6 +5183,10 @@ function AdminPageContent() {
     try {
       const current = jobs.find((j) => j.id === editingJobId) || activeJob;
       if (!current) return;
+      if (current.status === "cancel" || (current.status as string) === "cancelled") {
+        toast.error(currentLanguage === "en" ? "Cannot process payment for a cancelled order." : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
+        return;
+      }
 
       const itemsPayload = dialogCart.map((item) => ({
         name: item.name,
@@ -9419,7 +9437,7 @@ function AdminPageContent() {
                                     <CreditCard size={11} className="text-slate-400" />
                                     Channel
                                   </Label>
-                                  {!isPaidJob && (
+                                  {!isPaidJob && !isCancelledJob && (
                                     <button
                                       type="button"
                                       onClick={() => setShowSplitPaymentDialog(true)}
@@ -9433,7 +9451,7 @@ function AdminPageContent() {
                                 </div>
                                 <select
                                   id="payment-channel"
-                                  disabled={forceMemberPaymentDialog || isPaidJob || isRewashJob}
+                                  disabled={forceMemberPaymentDialog || isPaidJob || isCancelledJob || isRewashJob}
                                   className="flex h-8 w-full rounded-xl border border-slate-700 bg-slate-800/90 text-white px-2.5 py-0 text-xs font-medium focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
                                   value={isRewashJob ? "Rewash / No Charge" : (forceMemberPaymentDialog ? "Deduct Member" : paymentChannel)}
                                   onChange={(e) => {
@@ -9488,7 +9506,7 @@ function AdminPageContent() {
                                     </div>
                                   </div>
                                 )}
-                                {editingJobId && !isPaidJob && dialogTotal > 0 && (paymentChannel?.toLowerCase().includes("gateway") || paymentChannel?.toLowerCase().includes("beam")) && (
+                                {editingJobId && !isPaidJob && !isCancelledJob && dialogTotal > 0 && (paymentChannel?.toLowerCase().includes("gateway") || paymentChannel?.toLowerCase().includes("beam")) && (
                                   <button
                                     type="button"
                                     disabled={isStartingBeamPayment}
@@ -9500,7 +9518,7 @@ function AdminPageContent() {
                                     <span>Beam Payment (฿{dialogTotal.toLocaleString()})</span>
                                   </button>
                                 )}
-                                {editingJobId && !isPaidJob && dialogTotal > 0 && paymentChannel?.toLowerCase().includes("wise") && (
+                                {editingJobId && !isPaidJob && !isCancelledJob && dialogTotal > 0 && paymentChannel?.toLowerCase().includes("wise") && (
                                   <button
                                     type="button"
                                     onClick={handleOpenWisePaymentFromDialog}
@@ -9650,15 +9668,15 @@ function AdminPageContent() {
                                     <Label className={`flex items-center gap-1 text-[10px] ${
                                       isPaidJob 
                                         ? (paymentMethod === 'paid' ? 'text-emerald-400 font-black' : 'text-slate-500 opacity-40') 
-                                        : (isCsoOrAdmin && !isWalletBlocked ? 'cursor-pointer text-emerald-400 font-medium' : 'cursor-not-allowed opacity-50')
+                                        : (isCsoOrAdmin && !isWalletBlocked && !isCancelledJob ? 'cursor-pointer text-emerald-400 font-medium' : 'cursor-not-allowed opacity-50')
                                     }`}>
                                       <input
                                         type="radio"
                                         name="payment-status"
-                                        disabled={isPaidJob || isWalletBlocked}
+                                        disabled={isPaidJob || isCancelledJob || isWalletBlocked}
                                         checked={paymentMethod === 'paid'}
-                                        onChange={() => { if (isCsoOrAdmin && !isWalletBlocked) setPaymentMethod('paid'); }}
-                                        onClick={(e) => { if (!isCsoOrAdmin || isWalletBlocked) e.preventDefault(); }}
+                                        onChange={() => { if (isCsoOrAdmin && !isWalletBlocked && !isCancelledJob) setPaymentMethod('paid'); }}
+                                        onClick={(e) => { if (!isCsoOrAdmin || isWalletBlocked || isCancelledJob) e.preventDefault(); }}
                                         className="w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:cursor-not-allowed cursor-pointer"
                                       />
                                       <span className={paymentMethod === 'paid' ? 'font-black text-emerald-400' : 'font-medium text-slate-400'}>
@@ -9697,7 +9715,9 @@ function AdminPageContent() {
                                       ? (currentLanguage === "en" ? "✓ No Charge (Ready to Close)" : "✓ เคลมฟรี ฿0 (ปิดงานได้ทันที)")
                                       : isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
                                         ? '✓ Paid via POS' 
-                                        : (currentLanguage === "en" ? "Press [Pay] to complete" : "กด [Pay] เพื่อรับเงิน")}
+                                        : isCancelledJob
+                                          ? (currentLanguage === "en" ? "Cancelled Order" : "งานถูกยกเลิก (Cancel)")
+                                          : (currentLanguage === "en" ? "Press [Pay] to complete" : "กด [Pay] เพื่อรับเงิน")}
                                   </span>
                                 </div>
                               </div>
@@ -9870,6 +9890,7 @@ function AdminPageContent() {
                                 (dialogCart.length === 0 && (dialogTotal || 0) <= 0) || 
                                 isCartLocked || 
                                 isPaidJob || 
+                                isCancelledJob ||
                                 (!isWalkIn && paymentMethod !== 'paid') || 
                                 (!paymentChannel || !paymentChannel.trim()) || 
                                 isWalletInsufficient || 
@@ -9880,7 +9901,7 @@ function AdminPageContent() {
                               }
                               onClick={() => handleCreate(true)}
                               className={`flex-[1.4] h-9 rounded-xl text-xs font-extrabold transition-all shadow-md border-none text-white flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-                                isPaidJob
+                                isPaidJob || isCancelledJob
                                   ? 'bg-slate-700 text-slate-300'
                                   : isWalletInsufficient || (paymentChannel === "Deduct Member" && isCustomerWalletExpired) || isSplitAmountInvalid
                                     ? 'bg-rose-600/80 hover:bg-rose-600'
@@ -9889,36 +9910,40 @@ function AdminPageContent() {
                                       : 'bg-emerald-600 hover:bg-emerald-500'
                               }`}
                               title={
-                                isPaidJob
-                                  ? (currentLanguage === "en" ? "Payment Completed" : "บิลนี้ชำระเงินเรียบร้อยแล้ว")
-                                  : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
-                                    ? "Wallet หมดอายุแล้ว"
-                                    : isWalletInsufficient
-                                      ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ${formatBaht(selectedProfileCustomer?.creditBalance || 0)}, ต้องการ ${formatBaht(dialogTotal)})`
-                                      : isSplitAmountInvalid
-                                        ? "ยอดแบ่งชำระไม่ตรงกับยอดรวม"
-                                        : (paymentChannel === "Split Payment" && splitPayments.length < 2)
-                                          ? "กรุณาระบุช่องทางการแบ่งชำระให้ครบ"
-                                          : (!isWalkIn && paymentMethod !== 'paid')
-                                            ? (currentLanguage === "en" ? "Waiting for CSO verification (CSO Paid)" : "รอ CSO ยืนยันสถานะชำระเงิน (CSO Paid)")
-                                            : (!paymentChannel || !paymentChannel.trim())
-                                              ? (currentLanguage === "en" ? "Please select payment channel" : "กรุณาเลือกช่องทางการชำระเงิน")
-                                              : undefined
+                                isCancelledJob
+                                  ? (currentLanguage === "en" ? "Cancelled orders cannot be paid" : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้")
+                                  : isPaidJob
+                                    ? (currentLanguage === "en" ? "Payment Completed" : "บิลนี้ชำระเงินเรียบร้อยแล้ว")
+                                    : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
+                                      ? "Wallet หมดอายุแล้ว"
+                                      : isWalletInsufficient
+                                        ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ${formatBaht(selectedProfileCustomer?.creditBalance || 0)}, ต้องการ ${formatBaht(dialogTotal)})`
+                                        : isSplitAmountInvalid
+                                          ? "ยอดแบ่งชำระไม่ตรงกับยอดรวม"
+                                          : (paymentChannel === "Split Payment" && splitPayments.length < 2)
+                                            ? "กรุณาระบุช่องทางการแบ่งชำระให้ครบ"
+                                            : (!isWalkIn && paymentMethod !== 'paid')
+                                              ? (currentLanguage === "en" ? "Waiting for CSO verification (CSO Paid)" : "รอ CSO ยืนยันสถานะชำระเงิน (CSO Paid)")
+                                              : (!paymentChannel || !paymentChannel.trim())
+                                                ? (currentLanguage === "en" ? "Please select payment channel" : "กรุณาเลือกช่องทางการชำระเงิน")
+                                                : undefined
                               }
                             >
                               <Banknote size={13} />
                               <span>
-                                {isPaidJob
-                                  ? (currentLanguage === "en" ? "Paid" : "ชำระเงินแล้ว")
-                                  : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
-                                    ? "Wallet หมดอายุ"
-                                    : isWalletInsufficient
-                                      ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
-                                      : isSplitAmountInvalid
-                                        ? "ยอดแบ่งจ่ายไม่ครบ"
-                                        : paymentChannel === "Split Payment" && splitPayments.length >= 2
-                                          ? `Pay ฿${dialogTotal.toFixed(2)} (${splitPayments.length} ช่องทาง)`
-                                          : `Pay ฿${dialogTotal.toFixed(2)}`}
+                                {isCancelledJob
+                                  ? (currentLanguage === "en" ? "Cancelled" : "งานถูกยกเลิก (Cancel)")
+                                  : isPaidJob
+                                    ? (currentLanguage === "en" ? "Paid" : "ชำระเงินแล้ว")
+                                    : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
+                                      ? "Wallet หมดอายุ"
+                                      : isWalletInsufficient
+                                        ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
+                                        : isSplitAmountInvalid
+                                          ? "ยอดแบ่งจ่ายไม่ครบ"
+                                          : paymentChannel === "Split Payment" && splitPayments.length >= 2
+                                            ? `Pay ฿${dialogTotal.toFixed(2)} (${splitPayments.length} ช่องทาง)`
+                                            : `Pay ฿${dialogTotal.toFixed(2)}`}
                               </span>
                             </Button>
                           </div>
@@ -10279,7 +10304,7 @@ function AdminPageContent() {
                                     </option>
                                   ))}
                                 </select>
-                                {editingJobId && !isPaidJob && dialogTotal > 0 && (paymentChannel?.toLowerCase().includes("gateway") || paymentChannel?.toLowerCase().includes("beam")) && (
+                                {editingJobId && !isPaidJob && !isCancelledJob && dialogTotal > 0 && (paymentChannel?.toLowerCase().includes("gateway") || paymentChannel?.toLowerCase().includes("beam")) && (
                                   <button
                                     type="button"
                                     disabled={isStartingBeamPayment}
@@ -10291,7 +10316,7 @@ function AdminPageContent() {
                                     <span>Beam Payment (฿{dialogTotal.toLocaleString()})</span>
                                   </button>
                                 )}
-                                {editingJobId && !isPaidJob && dialogTotal > 0 && paymentChannel?.toLowerCase().includes("wise") && (
+                                {editingJobId && !isPaidJob && !isCancelledJob && dialogTotal > 0 && paymentChannel?.toLowerCase().includes("wise") && (
                                   <button
                                     type="button"
                                     onClick={handleOpenWisePaymentFromDialog}
@@ -10337,13 +10362,14 @@ function AdminPageContent() {
                                   />
                                   <span className="font-medium text-slate-200">Unpaid</span>
                                 </Label>
-                                <Label className="flex items-center gap-1 cursor-pointer text-[11px]">
+                                <Label className={`flex items-center gap-1 text-[11px] ${isCancelledJob ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}>
                                   <input 
                                     type="radio" 
                                     name="payment-status"
+                                    disabled={isCancelledJob}
                                     checked={paymentMethod === 'paid'} 
-                                    onChange={() => setPaymentMethod('paid')} 
-                                    className="w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600" 
+                                    onChange={() => { if (!isCancelledJob) setPaymentMethod('paid'); }} 
+                                    className="w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:cursor-not-allowed" 
                                   />
                                   <span className="font-medium text-emerald-400">Paid</span>
                                 </Label>

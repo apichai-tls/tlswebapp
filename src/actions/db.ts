@@ -1,4 +1,4 @@
-﻿'use server';
+'use server';
 
 import { prisma } from '@/lib/prisma';
 import { listFilesForJob } from '@/lib/gcs';
@@ -2246,24 +2246,92 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
     if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
       whereClause.branchId = authUser.branchId;
     }
-    const jobsRaw = await prisma.job.findMany({
-      where: whereClause,
-      orderBy: { createdAt: 'desc' },
-      take: 40,
-    });
+    const [jobsRaw, adjustLogs] = await Promise.all([
+      prisma.job.findMany({
+        where: whereClause,
+        orderBy: { createdAt: 'desc' },
+        take: 40,
+      }),
+      customerId
+        ? prisma.activityLog.findMany({
+            where: {
+              entityId: customerId,
+              action: 'ADJUST',
+            },
+            orderBy: { createdAt: 'asc' },
+          })
+        : Promise.resolve([]),
+    ]);
 
-    return jobsRaw.map(j => ({
-      ...j,
-      laundryTypes: j.laundryTypes ? j.laundryTypes.split(',') : [],
-      items: j.itemsJson ? (() => { try { return JSON.parse(j.itemsJson!); } catch { return []; } })() : [],
-      legs: j.legsJson ? (() => { try { return JSON.parse(j.legsJson!); } catch { return undefined; } })() : undefined,
-      pickupCoords: { lat: j.pickupLat, lng: j.pickupLng },
-      dropoffCoords: { lat: j.dropoffLat, lng: j.dropoffLng },
-      createdAt: j.createdAt.toISOString(),
-      updatedAt: j.updatedAt.toISOString(),
-      scheduledAt: j.scheduledAt ? j.scheduledAt.toISOString() : undefined,
-      completedAt: j.completedAt ? j.completedAt.toISOString() : undefined,
-    }));
+    const parsedAdjustDeductions = adjustLogs
+      .map(al => {
+        try {
+          const d = JSON.parse(al.details || '{}');
+          const adjAmount = Number(d.adjustAmount || d.amount || 0);
+          const isAdd = (d.adjustMode || '').toLowerCase() === 'add' || (!d.adjustMode && Number(d.balanceAfter) >= Number(d.balanceBefore));
+          return {
+            id: al.id,
+            createdAt: al.createdAt,
+            amount: adjAmount,
+            isAdd,
+            balanceBefore: d.balanceBefore != null ? Number(d.balanceBefore) : null,
+            balanceAfter: d.balanceAfter != null ? Number(d.balanceAfter) : null,
+            used: false,
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((x): x is NonNullable<typeof x> => Boolean(x && !x.isAdd && x.amount > 0));
+
+    return jobsRaw.map(j => {
+      let walletBalanceAfter = j.walletBalanceAfter;
+      let walletBalanceBefore: number | null = null;
+      let walletDeductedAt: string | undefined = undefined;
+
+      const ch = (j.paymentChannel || '').toLowerCase();
+      const jobTotal = Number(j.totalAmount) || 0;
+      if (jobTotal > 0 && (ch.includes('deduct') || ch.includes('member') || ch.includes('credit') || ch.includes('wallet'))) {
+        const matchedLog = parsedAdjustDeductions.find(
+          l =>
+            !l.used &&
+            Math.abs(l.amount - jobTotal) < 0.01 &&
+            Math.abs(l.createdAt.getTime() - j.createdAt.getTime()) < 48 * 3600 * 1000
+        );
+        if (matchedLog) {
+          matchedLog.used = true;
+          walletDeductedAt = matchedLog.createdAt.toISOString();
+          if (matchedLog.balanceBefore != null) {
+            walletBalanceBefore = matchedLog.balanceBefore;
+          }
+          if (matchedLog.balanceAfter != null) {
+            // Reconcile historical double-deducted job.walletBalanceAfter (where job saved balanceAfter - jobTotal)
+            if (
+              walletBalanceAfter == null ||
+              Math.abs(Number(walletBalanceAfter) - (matchedLog.balanceAfter - jobTotal)) < 1
+            ) {
+              walletBalanceAfter = matchedLog.balanceAfter;
+            }
+          }
+        }
+      }
+
+      return {
+        ...j,
+        walletBalanceAfter,
+        walletBalanceBefore,
+        walletDeductedAt,
+        laundryTypes: j.laundryTypes ? j.laundryTypes.split(',') : [],
+        items: j.itemsJson ? (() => { try { return JSON.parse(j.itemsJson!); } catch { return []; } })() : [],
+        legs: j.legsJson ? (() => { try { return JSON.parse(j.legsJson!); } catch { return undefined; } })() : undefined,
+        pickupCoords: { lat: j.pickupLat, lng: j.pickupLng },
+        dropoffCoords: { lat: j.dropoffLat, lng: j.dropoffLng },
+        createdAt: j.createdAt.toISOString(),
+        updatedAt: j.updatedAt.toISOString(),
+        scheduledAt: j.scheduledAt ? j.scheduledAt.toISOString() : undefined,
+        completedAt: j.completedAt ? j.completedAt.toISOString() : undefined,
+      };
+    });
   } catch (error: any) {
     console.error("[getCustomerJobsAction] Error:", error);
     return [];
@@ -2292,7 +2360,7 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
       prisma.activityLog.findMany({
         where: {
           entityId: customerId,
-          action: 'ADJUST'
+          action: { in: ['ADJUST', 'update'] }
         },
         orderBy: { createdAt: 'desc' }
       }),
@@ -2328,6 +2396,8 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
         direction: wt.direction || (isCredit ? 'CREDIT' : 'DEBIT'),
         walletBalanceBefore: wt.balanceBefore != null ? Number(wt.balanceBefore) : null,
         walletBalanceAfter: wt.balanceAfter != null ? Number(wt.balanceAfter) : null,
+        balanceBefore: wt.balanceBefore != null ? Number(wt.balanceBefore) : null,
+        balanceAfter: wt.balanceAfter != null ? Number(wt.balanceAfter) : null,
         paymentChannel: wt.paymentChannel || `Adjust (${wt.createdByName || 'Manual'})`,
         reason: wt.reason || 'Manual Adjustment',
         actorName: wt.createdByName || 'Admin',
@@ -2344,10 +2414,63 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
     for (const al of actLogs) {
       try {
         const d = JSON.parse(al.details || '{}');
+        const alTime = al.createdAt.getTime();
+
+        // Handle initial creditBalance setup recorded via action === 'update' (e.g. { creditBalance: { from: 0, to: 2446 } })
+        if (al.action === 'update') {
+          if (d.creditBalance && typeof d.creditBalance === 'object' && 'to' in d.creditBalance) {
+            const fromVal = Number(d.creditBalance.from ?? 0);
+            const toVal = Number(d.creditBalance.to ?? 0);
+            if (fromVal === 0 && toVal > 0) {
+              // Skip if this update coincides with a Top-up transaction (within 60s)
+              if (customerTopups.some(t => Math.abs(t.createdAt.getTime() - alTime) < 60000)) {
+                continue;
+              }
+              // Skip if already captured by a WalletTransaction or ADJUST ActivityLog near this timestamp
+              const isDupUpdate =
+                wtList.some(wt => Math.abs(wt.createdAt.getTime() - alTime) < 60000 && Math.abs(Number(wt.amount || wt.balanceAfter || 0) - toVal) < 0.01) ||
+                actLogs.some(other => other.id !== al.id && other.action === 'ADJUST' && Math.abs(other.createdAt.getTime() - alTime) < 60000) ||
+                results.some(r => Math.abs(new Date(r.createdAt).getTime() - alTime) < 60000 && Math.abs(r.totalAmount - toVal) < 0.01);
+
+              if (!isDupUpdate) {
+                const actorLabel = al.userName || 'System';
+                const initReason = 'Initial Balance / ยอดยกมาจากระบบเดิม';
+                results.push({
+                  id: `ADJ-${al.id.slice(0, 8).toUpperCase()}`,
+                  createdAt: al.createdAt.toISOString(),
+                  status: 'adjust',
+                  isPaid: true,
+                  isTopup: false,
+                  isAdjust: true,
+                  adjustMode: 'add',
+                  type: 'ADJUST_ADD',
+                  totalAmount: toVal,
+                  amount: toVal,
+                  paidAmount: toVal,
+                  direction: 'CREDIT',
+                  walletBalanceBefore: 0,
+                  walletBalanceAfter: toVal,
+                  balanceBefore: 0,
+                  balanceAfter: toVal,
+                  paymentChannel: `Adjust (${actorLabel})`,
+                  reason: initReason,
+                  actorName: actorLabel,
+                  branchId: null,
+                  referenceId: null,
+                  approvalStatus: 'APPROVED',
+                  items: [{ name: `ADJUST: ${initReason}`, quantity: 1 }],
+                  rawLog: al,
+                  source: 'activity_log_initial'
+                });
+              }
+            }
+          }
+          continue;
+        }
+
         const reason = (d.reason || '').trim();
         const adjAmount = Number(d.adjustAmount || d.amount || 0);
         const isAdd = (d.adjustMode || '').toLowerCase() === 'add' || (!d.adjustMode && Number(d.balanceAfter) >= Number(d.balanceBefore));
-        const alTime = al.createdAt.getTime();
 
         // 1. Skip if reason explicitly indicates an order payment
         if (/^Order Payment/i.test(reason) || /^DEDUCT PACKAGE/i.test(reason) || /#PK\d+/i.test(reason) || /#RE\d+/i.test(reason)) {
@@ -2399,6 +2522,8 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
             direction: isAdd ? 'CREDIT' : 'DEBIT',
             walletBalanceBefore: d.balanceBefore != null ? Number(d.balanceBefore) : null,
             walletBalanceAfter: d.balanceAfter != null ? Number(d.balanceAfter) : null,
+            balanceBefore: d.balanceBefore != null ? Number(d.balanceBefore) : null,
+            balanceAfter: d.balanceAfter != null ? Number(d.balanceAfter) : null,
             paymentChannel: `Adjust (${al.userName || 'Manual'})`,
             reason: d.reason || (isAdd ? 'เพิ่มยอดเงิน Wallet' : 'หักยอดเงิน Wallet'),
             actorName: al.userName || 'Admin',
@@ -2510,6 +2635,56 @@ function areJobFieldValuesEqual(field: string, oldVal: any, newVal: any): boolea
   return String(oldVal) === String(newVal);
 }
 
+const autoReceiptGenerationLocks = new Map<string, number>();
+
+export async function claimAutoReceiptGenerationAction(
+  jobId: string,
+  filename: string
+): Promise<{ claimed: boolean }> {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  if (!jobId || !filename) return { claimed: false };
+
+  const lockKey = `${jobId}:${filename}`;
+  const now = Date.now();
+  for (const [k, ts] of autoReceiptGenerationLocks.entries()) {
+    if (now - ts > 45000) {
+      autoReceiptGenerationLocks.delete(k);
+    }
+  }
+
+  const existingLockTs = autoReceiptGenerationLocks.get(lockKey);
+  if (existingLockTs && now - existingLockTs < 30000) {
+    return { claimed: false };
+  }
+
+  // Reserve lock immediately in memory before DB check
+  autoReceiptGenerationLocks.set(lockKey, now);
+
+  try {
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      select: { billImageUrl: true },
+    });
+    if (!job) {
+      autoReceiptGenerationLocks.delete(lockKey);
+      return { claimed: false };
+    }
+    if (job.billImageUrl) {
+      const isReceipt = filename.startsWith('receipt-');
+      if (isReceipt && (job.billImageUrl.includes(`receipt-${jobId}`) || job.billImageUrl.includes('/receipt-'))) {
+        return { claimed: false };
+      }
+      if (!isReceipt && job.billImageUrl.includes(filename)) {
+        return { claimed: false };
+      }
+    }
+    return { claimed: true };
+  } catch {
+    autoReceiptGenerationLocks.delete(lockKey);
+    return { claimed: false };
+  }
+}
+
 export async function updateJobAction(id: string, updates: any) {
   const returnErrorObject = Boolean(updates && updates.__returnErrorObject);
   if (updates && '__returnErrorObject' in updates) {
@@ -2536,6 +2711,14 @@ export async function updateJobAction(id: string, updates: any) {
 async function updateJobActionInternal(id: string, updates: any) {
   console.log(`[updateJobAction] id: ${id}`, updates);
 
+  const isAutoReceiptWorker = Boolean(updates?.isAutoReceiptWorker);
+  const requestedSystemActorName =
+    typeof updates?.systemActorName === 'string' && updates.systemActorName.trim()
+      ? updates.systemActorName.trim()
+      : null;
+  if (updates && 'isAutoReceiptWorker' in updates) delete updates.isAutoReceiptWorker;
+  if (updates && 'systemActorName' in updates) delete updates.systemActorName;
+
   const authUser = await assertServerActionAuthorized({
     requireWrite: true,
     targetBranchId: updates?.branchId || null,
@@ -2561,6 +2744,52 @@ async function updateJobActionInternal(id: string, updates: any) {
       throw new Error(`404 Not Found: Job ${id} does not exist`);
     }
     const existingJob = freshJob;
+
+    // When triggered by AutoReceiptWorker (background receipt/proforma generation):
+    // 1. Override actorName to the online payment channel ('Beam Online Payment', 'Wise Online Payment', or 'System (Auto-Receipt)')
+    //    so idle staff browsers never pollute ActivityLog with staff names.
+    // 2. If another client already attached the receipt/proforma while this one was rendering, skip silently as a no-op!
+    if (isAutoReceiptWorker && isMediaOrProformaOnlyUpdate) {
+      const chLower = String(freshJob.paymentChannel || '').toLowerCase();
+      if (chLower.includes('beam') || chLower.includes('gateway')) {
+        updates.actorId = 'system';
+        updates.actorName = 'Beam Online Payment';
+      } else if (chLower.includes('wise')) {
+        updates.actorId = 'system';
+        updates.actorName = 'Wise Online Payment';
+      } else {
+        updates.actorId = 'system';
+        updates.actorName = requestedSystemActorName || 'System (Auto-Receipt)';
+      }
+
+      if (updates.billImageUrl && freshJob.billImageUrl) {
+        try {
+          const incomingUrls: string[] = JSON.parse(updates.billImageUrl);
+          const existingUrls: string[] = JSON.parse(freshJob.billImageUrl);
+          if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
+            const existingAlreadyHasReceipt = existingUrls.some(
+              (u) => typeof u === 'string' && (u.includes(`receipt-${id}`) || u.includes('/receipt-'))
+            );
+            const incomingOnlyAddsReceipt = incomingUrls.every(
+              (u) =>
+                typeof u === 'string' &&
+                (u.includes(`receipt-${id}`) || u.includes('/receipt-') || existingUrls.includes(u))
+            );
+            if (existingAlreadyHasReceipt && incomingOnlyAddsReceipt) {
+              return { updatedJob: freshJob, effectiveChanges: {}, previousJob: freshJob };
+            }
+
+            const incomingProforma = incomingUrls.find((u) => typeof u === 'string' && u.includes('proforma-'));
+            if (incomingProforma) {
+              const match = incomingProforma.match(/(proforma-[a-zA-Z0-9_-]+?-rev\d+\.png)/i);
+              if (match && existingUrls.some((u) => typeof u === 'string' && u.includes(match[1]))) {
+                return { updatedJob: freshJob, effectiveChanges: {}, previousJob: freshJob };
+              }
+            }
+          }
+        } catch {}
+      }
+    }
 
     // Re-validate branch & rider permissions against the locked freshJob row
     if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
@@ -2799,6 +3028,9 @@ async function updateJobActionInternal(id: string, updates: any) {
   if (updates.paymentMethod !== undefined) data.paymentMethod = updates.paymentMethod;
   if (updates.paymentChannel !== undefined) data.paymentChannel = updates.paymentChannel;
   if (updates.isPaid !== undefined) {
+    if (updates.isPaid === true && existingJob?.isPaid !== true && (existingJob?.status === 'cancel' || updates.status === 'cancel')) {
+      throw new Error("งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
+    }
     data.isPaid = updates.isPaid;
     if (updates.isPaid === true && existingJob?.isPaid !== true) {
       data.csoPaidAt = new Date();
@@ -2807,6 +3039,9 @@ async function updateJobActionInternal(id: string, updates: any) {
     }
   }
   if (updates.isShopPaid !== undefined) {
+    if (updates.isShopPaid === true && existingJob?.isShopPaid !== true && (existingJob?.status === 'cancel' || updates.status === 'cancel')) {
+      throw new Error("งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
+    }
     data.isShopPaid = updates.isShopPaid;
     if (updates.isShopPaid === true && existingJob?.isShopPaid !== true) {
       data.shopPaidAt = new Date();
@@ -3311,6 +3546,10 @@ async function updateJobActionInternal(id: string, updates: any) {
   } catch (pErr: any) {
     console.warn("[updateJobAction] Promo coupon evaluation failed:", pErr?.message || pErr);
     followUpWarnings.push("promoEvaluation");
+  }
+
+  if (isAutoReceiptWorker && Object.keys(effectiveChanges).length === 0) {
+    return { ...updatedJob, issuedCoupons, followUpWarnings };
   }
 
   try {
@@ -6949,6 +7188,7 @@ export async function recordJobPaymentAction(data: {
       const job = await tx.job.findUnique({ where: { id: data.jobId } });
       if (!job) throw new Error("Job not found");
       if (!canUserAccessJob(authUser, job)) throw new Error("403 Forbidden: Cross-branch access denied");
+      if (job.status === 'cancel') throw new Error("งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
 
       const amount = Math.round(Number(data.amount) * 100) / 100;
       if (isNaN(amount) || amount <= 0) throw new Error("จำนวนเงินต้องมากกว่า 0");
@@ -8944,6 +9184,14 @@ export async function createPettyCashTransactionAction(data: {
     const isCredit = data.type === "TOPUP" || data.type === "ADJUST_ADD";
     const direction = isCredit ? "CREDIT" : "DEBIT";
 
+    if (isCredit) {
+      const role = (authUser.role || "").toLowerCase();
+      const canTopUp = role === "admin" || role === "superadmin" || role === "accounting" || (authUser.permissions || []).includes("approve-petty-cash");
+      if (!canTopUp) {
+        return { success: false, error: "เฉพาะฝ่ายบัญชี (Tier 1) หรือผู้ดูแลระบบเท่านั้นที่สามารถทำรายการ Company Top-up ได้" };
+      }
+    }
+
     // TOPUP / ADJUST_ADD by Accounting/Admin is auto-approved; EXPENSE starts as PENDING (but deducts balance immediately per rule #1!)
     const initialStatus = isCredit ? "APPROVED" : "PENDING";
     const now = new Date();
@@ -9095,6 +9343,11 @@ export async function reviewPettyCashTransactionAction(data: {
 }): Promise<{ success: boolean; error?: string }> {
   try {
     const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const role = (authUser.role || "").toLowerCase();
+    const canTransfer = role === "admin" || role === "superadmin" || role === "accounting" || (authUser.permissions || []).includes("approve-petty-cash");
+    if (!canTransfer) {
+      return { success: false, error: "เฉพาะฝ่ายบัญชี (Tier 1) หรือผู้ดูแลระบบเท่านั้นที่สามารถโอนวงเงินสดย่อยได้" };
+    }
     await ensurePettyCashTableExists();
 
     const existingRows: any[] = await prisma.$queryRaw`SELECT * FROM "PettyCashTransaction" WHERE "id" = ${data.id} LIMIT 1`;
@@ -9173,6 +9426,11 @@ export async function transferPettyCashAction(data: {
 }): Promise<{ success: boolean; error?: string; outId?: string; inId?: string }> {
   try {
     const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const role = (authUser.role || "").toLowerCase();
+    const canTransfer = role === "admin" || role === "superadmin" || role === "accounting" || (authUser.permissions || []).includes("approve-petty-cash");
+    if (!canTransfer) {
+      return { success: false, error: "เฉพาะฝ่ายบัญชี (Tier 1) หรือผู้ดูแลระบบเท่านั้นที่สามารถโอนวงเงินสดย่อยได้" };
+    }
     await ensurePettyCashTableExists();
 
     const amt = Math.round((Number(data.amount) || 0) * 100) / 100;

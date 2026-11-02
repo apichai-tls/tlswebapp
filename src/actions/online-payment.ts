@@ -124,6 +124,31 @@ async function markJobAsPaidInDb(params: {
       },
     });
 
+    if (!alreadyRecorded || didTransition) {
+      try {
+        await tx.activityLog.create({
+          data: {
+            entityId: job.id,
+            entityType: 'job',
+            action: 'update',
+            details: JSON.stringify({
+              isPaid: savedJob.isPaid,
+              isShopPaid: savedJob.isShopPaid,
+              paymentMethod: savedJob.paymentMethod,
+              paymentChannel: savedJob.paymentChannel,
+              totalAmount: savedJob.totalAmount,
+              ...(savedJob.subStatus !== job.subStatus ? { subStatus: savedJob.subStatus } : {}),
+            }),
+            userId: 'system',
+            userName: 'Beam Online Payment',
+            createdAt: savedJob.updatedAt,
+          },
+        });
+      } catch (logErr: any) {
+        console.warn('[markJobAsPaidInDb] Failed to write ActivityLog:', logErr?.message || logErr);
+      }
+    }
+
     return { updated: savedJob, transitionedToShopPaid: didTransition };
   });
 
@@ -174,6 +199,10 @@ export async function createJobOnlinePaymentAction(
 
     if (!canUserAccessJob(authUser, job)) {
       return { success: false, error: 'Forbidden: You do not have access to this job' };
+    }
+
+    if (job.status === 'cancel') {
+      return { success: false, error: 'งานที่อยู่ในสถานะ Cancel ไม่สามารถสร้างลิงก์ชำระเงินได้' };
     }
 
     if (job.isPaid || job.isShopPaid) {

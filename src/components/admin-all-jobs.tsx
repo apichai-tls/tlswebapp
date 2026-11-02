@@ -617,6 +617,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const handleCollectRiderCash = async (job: Job, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     if (!canManageJobs) return;
+    if (job.status === "cancel" || (job.status as string) === "cancelled") {
+      toast.error("งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
+      return;
+    }
     const staffName = (user as any)?.name || user?.email || "Staff";
     const actorDetails = user ? { actorId: user.id, actorName: staffName, actorRole: user.role } : undefined;
     const deliveryRider = riders.find(r => r.id === (job.deliveryRiderId || job.riderId));

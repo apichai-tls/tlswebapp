@@ -48,10 +48,21 @@ interface WisePaymentDialogProps {
   }) => void;
 }
 
+function sanitizeWiseDescription(raw: string): string {
+  // Wise API strictly allows only numbers, letters, spaces, or hyphens (-) and max 40 chars
+  return (raw || "")
+    .replace(/\//g, "-")
+    .replace(/[^a-zA-Z0-9 -]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40);
+}
+
 function buildWisePayUrl(rawTagOrUrl: string, amount: number, orderRef: string): string {
   const trimmed = (rawTagOrUrl || "").trim();
+  const safeDesc = sanitizeWiseDescription(orderRef);
   if (!trimmed) {
-    return `https://wise.com/pay/business/thatlaundryshopcoltd?amount=${amount}&currency=THB&description=${encodeURIComponent(orderRef)}`;
+    return `https://wise.com/pay/business/thatlaundryshopcoltd?amount=${amount}&currency=THB&description=${encodeURIComponent(safeDesc)}`;
   }
 
   // If user pasted a full Wise link (e.g. https://wise.com/pay/business/... or https://wise.com/pay/me/... or https://wise.com/pay/r/...)
@@ -61,7 +72,7 @@ function buildWisePayUrl(rawTagOrUrl: string, amount: number, orderRef: string):
       const urlObj = new URL(baseUrl);
       urlObj.searchParams.set("amount", String(amount));
       urlObj.searchParams.set("currency", "THB");
-      urlObj.searchParams.set("description", orderRef);
+      urlObj.searchParams.set("description", safeDesc);
       return urlObj.toString();
     } catch {
       return baseUrl;
@@ -73,7 +84,7 @@ function buildWisePayUrl(rawTagOrUrl: string, amount: number, orderRef: string):
   if (cleanHandle.toLowerCase() === "thatlaundryshop") {
     cleanHandle = "thatlaundryshopcoltd";
   }
-  return `https://wise.com/pay/business/${cleanHandle}?amount=${amount}&currency=THB&description=${encodeURIComponent(orderRef)}`;
+  return `https://wise.com/pay/business/${cleanHandle}?amount=${amount}&currency=THB&description=${encodeURIComponent(safeDesc)}`;
 }
 
 export function WisePaymentDialog({
@@ -110,8 +121,8 @@ export function WisePaymentDialog({
   }, [settings?.wiseTag]);
 
   const amountToPay = customAmount !== undefined ? customAmount : (job?.totalAmount || 0);
-  // Use full Job ID / Bill No so Wise transfers store the complete reference (e.g. 2026005636)
-  const orderRef = (job?.billNo || job?.id || "TLS-ORDER").toUpperCase();
+  // Use Job ID as primary Wise reference so it aligns with INV/REC and avoids slashes '/' in billNo
+  const orderRef = sanitizeWiseDescription((job?.id || job?.billNo || "TLS-ORDER").toUpperCase());
 
   const rawActiveTag = tagInput || settings?.wiseTag || "@thatlaundryshopcoltd";
   const activeWiseTagOrLink =
@@ -337,7 +348,7 @@ export function WisePaymentDialog({
                     ให้ลูกค้าสแกนด้วยแอป Wise หรือกล้องมือถือ
                   </p>
                   <p className="text-[10px] text-slate-500">
-                    Bill / Ref: <strong className="font-mono text-slate-700">{orderRef}</strong>
+                    Job / Ref: <strong className="font-mono text-slate-700">{orderRef}</strong>
                   </p>
                 </div>
               </div>

@@ -9,6 +9,7 @@ import { generateThermalReceiptImage, uploadReceiptImage } from "@/lib/thermal-c
 import { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } from "@/lib/a5-canvas-generator";
 import { isJobFullyPaid, cleanProformaNumber, computeCartHash } from "@/lib/utils";
 import { checkJobOnlinePaymentStatusAction } from "@/actions/online-payment";
+import { claimAutoReceiptGenerationAction } from "@/actions/db";
 
 /**
  * Silent Background Worker:
@@ -27,6 +28,7 @@ export function AutoReceiptWorker() {
   const completedRef = useRef<Set<string>>(new Set());
   const lastBeamCheckMap = useRef<Map<string, number>>(new Map());
   const isWorkingRef = useRef(false);
+  const instanceJitterMsRef = useRef<number>(Math.floor(Math.random() * 10000));
 
   useEffect(() => {
     // Process queue of jobs that need receipts or proformas
@@ -126,8 +128,24 @@ export function AutoReceiptWorker() {
         // grace period so the cashier machine's own background capture finishes first; if the receipt is
         // still missing after 20s (e.g. dialog/tab closed early), AutoReceiptWorker steps in as a safety net.
         const channel = (job.paymentChannel || "").toLowerCase();
-        const isOnlineGateway = channel.includes("beam") || channel.includes("gateway");
-        const minWaitMs = isOnlineGateway ? (1500 + (Math.abs((job.id || "").charCodeAt((job.id || "").length - 1) || 0) % 3) * 1000) : 20000;
+        const isOnlineGateway = channel.includes("beam") || channel.includes("gateway") || channel.includes("wise");
+        let isOwnerTab = false;
+        if (user?.name) {
+          const currentUserName = user.name.trim().toLowerCase();
+          if (job.createdBy && job.createdBy.trim().toLowerCase() === currentUserName) {
+            isOwnerTab = true;
+          } else if ((job as any).adminNotesJson) {
+            try {
+              const parsedNotes = JSON.parse((job as any).adminNotesJson);
+              if (parsedNotes?.billSentBy && String(parsedNotes.billSentBy).trim().toLowerCase() === currentUserName) {
+                isOwnerTab = true;
+              }
+            } catch {}
+          }
+        }
+        const minWaitMs = isOnlineGateway
+          ? (isOwnerTab ? 1500 : 8000 + instanceJitterMsRef.current)
+          : (isOwnerTab ? 20000 : 25000 + instanceJitterMsRef.current);
         if ((now - jobPaidTime) < minWaitMs) return false;
 
         // Guard: Job must have actual laundry items (excluding PACKAGE top-ups) to auto-generate receipt!
@@ -179,6 +197,13 @@ export function AutoReceiptWorker() {
         processingRef.current.add(jobId);
 
         try {
+          const claimRes = await claimAutoReceiptGenerationAction(jobId, filename);
+          if (!claimRes?.claimed) {
+            completedRef.current.add(`receipt_${jobId}_${pendingPaidJob.updatedAt || ""}`);
+            clearReceiptCaptureLock(filename);
+            return;
+          }
+
           const activeShop = shopLocations.find((s) => s.id === pendingPaidJob.branchId) || shopLocations[0];
           const receiptData = formatJobToReceiptData(pendingPaidJob);
           receiptData.isDraft = false;
@@ -204,11 +229,19 @@ export function AutoReceiptWorker() {
 
               const cleanFiltered = existingBills.filter((u: string) => !u.includes(`receipt-${jobId}`) && !u.includes("/receipt-"));
               const mergedBills = [publicUrl, ...cleanFiltered];
+              const chLower = (pendingPaidJob.paymentChannel || "").toLowerCase();
+              const systemActorName = (chLower.includes("beam") || chLower.includes("gateway"))
+                ? "Beam Online Payment"
+                : chLower.includes("wise")
+                  ? "Wise Online Payment"
+                  : "System (Auto-Receipt)";
               await jobStore.updateJobDetails(jobId, {
                 billImageUrl: JSON.stringify(mergedBills),
+                isAutoReceiptWorker: true,
+                systemActorName,
               } as any);
 
-              console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached receipt image for Job #${jobId}`);
+              console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached receipt image for Job #${jobId} as ${systemActorName}`);
             } else {
               clearReceiptCaptureLock(filename);
             }
@@ -267,9 +300,9 @@ export function AutoReceiptWorker() {
           return false;
         }
 
-        // Wait a 20-second grace period so the primary background capture in AdminPage finishes first
+        // Wait a 20-second grace period (+ per-tab jitter) so the primary background capture in AdminPage finishes first
         const latestActivityTime = Math.max(jobUpdatedTime, jobPaidTime);
-        if ((now - latestActivityTime) < 20000) return false;
+        if ((now - latestActivityTime) < 20000 + instanceJitterMsRef.current) return false;
 
         let itemsArr: any[] = [];
         try {
@@ -320,6 +353,13 @@ export function AutoReceiptWorker() {
         processingRef.current.add(jobId);
 
         try {
+          const claimRes = await claimAutoReceiptGenerationAction(jobId, filename);
+          if (!claimRes?.claimed) {
+            completedRef.current.add(`proforma_${jobId}_${cleanPf}_rev${rev}_${pendingProformaJob.updatedAt || ""}`);
+            clearReceiptCaptureLock(filename);
+            return;
+          }
+
           const activeShop = shopLocations.find((s) => s.id === pendingProformaJob.branchId) || shopLocations[0];
           const proformaAdminNotesJson = (() => {
             try {
@@ -385,6 +425,8 @@ export function AutoReceiptWorker() {
               });
               await jobStore.updateJobDetails(jobId, {
                 billImageUrl: JSON.stringify(mergedBills),
+                isAutoReceiptWorker: true,
+                systemActorName: "System (Auto-Proforma)",
               } as any);
 
               console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached missing proforma image (${filename}) for Job #${jobId}`);

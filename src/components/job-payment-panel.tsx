@@ -112,6 +112,10 @@ export function JobPaymentPanel({
       toast.error("กรุณาบันทึกสร้างงานก่อนบันทึกการชำระเงิน");
       return;
     }
+    if (job.status === "cancel" || (job.status as string) === "cancelled") {
+      toast.error("งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
+      return;
+    }
 
     const amt = parseFloat(payAmount !== "" ? payAmount : remaining.toString());
     if (isNaN(amt) || amt <= 0) {
@@ -528,6 +532,8 @@ export function JobPaymentPanel({
               disabled ||
               isProcessing ||
               !job?.id ||
+              job?.status === "cancel" ||
+              (job?.status as string) === "cancelled" ||
               effectiveAmount <= 0 ||
               isWalletExpired ||
               (isSelectedMemberWallet && isWalletInsufficient)

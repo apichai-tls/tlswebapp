@@ -1,4 +1,4 @@
-﻿import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -486,7 +486,7 @@ export function AdminCustomerProfileModal({
       return isMember;
     }).map((j: any) => ({
       id: `job-deduct-${j.id}`,
-      createdAt: new Date(j.createdAt),
+      createdAt: new Date(j.walletDeductedAt || j.createdAt),
       type: "DEDUCT",
       direction: "DEBIT" as const,
       amount: Number(j.totalAmount || j.fee || 0),
@@ -496,7 +496,7 @@ export function AdminCustomerProfileModal({
       paymentChannel: j.paymentChannel || "Deduct Member",
       slipImageUrl: null,
       receiptData: null,
-      balanceBefore: null,
+      balanceBefore: j.walletBalanceBefore != null ? Number(j.walletBalanceBefore) : null,
       balanceAfter: j.walletBalanceAfter != null ? Number(j.walletBalanceAfter) : null,
       approvalStatus: j.isPaid ? "APPROVED" : "PENDING",
       source: "JobDeduct",
@@ -508,6 +508,8 @@ export function AdminCustomerProfileModal({
     const handledAdjIds = new Set(wts.map((w: any) => w.id));
     const manualAdjustments = (customerAdjustments || []).filter((adj: any) => !handledAdjIds.has(adj.id)).map((adj: any) => {
       const isAdd = adj.adjustMode === "add";
+      const balBefore = adj.balanceBefore ?? adj.walletBalanceBefore;
+      const balAfter = adj.balanceAfter ?? adj.walletBalanceAfter;
       return {
         id: adj.id,
         createdAt: new Date(adj.createdAt),
@@ -520,8 +522,8 @@ export function AdminCustomerProfileModal({
         paymentChannel: adj.paymentChannel || "Manual Adjust",
         slipImageUrl: adj.slipImageUrl || null,
         receiptData: null,
-        balanceBefore: adj.balanceBefore != null ? Number(adj.balanceBefore) : null,
-        balanceAfter: adj.balanceAfter != null ? Number(adj.balanceAfter) : null,
+        balanceBefore: balBefore != null ? Number(balBefore) : null,
+        balanceAfter: balAfter != null ? Number(balAfter) : null,
         approvalStatus: adj.approvalStatus || "APPROVED",
         source: "ManualAdjustment",
         referenceId: adj.id,
@@ -561,14 +563,41 @@ export function AdminCustomerProfileModal({
       }
     });
 
-    // Check if earliest event started with an opening balance
+    // Determine earliest known wallet ledger timestamp (events with balance snapshots or explicit topup/wallet/adjust records)
+    const earliestKnownWalletTime = allEvents.reduce((min: number | null, cur: any) => {
+      const hasKnownWalletRecord =
+        (cur.effectiveBalBefore != null && !isNaN(cur.effectiveBalBefore)) ||
+        (cur.balanceAfter != null && !isNaN(cur.balanceAfter)) ||
+        cur.source === "TopUpTransaction" ||
+        cur.source === "WalletTransaction" ||
+        cur.source === "ManualAdjustment" ||
+        cur.source === "OpeningBalance";
+      if (!hasKnownWalletRecord) return min;
+      const t = cur.createdAt.getTime();
+      return min == null || t < min ? t : min;
+    }, null);
+
+    // Mark historical pre-wallet JobDeduct orders (which occurred before wallet tracking existed and have no balance snapshot)
+    allEvents.forEach((it: any) => {
+      if (
+        it.source === "JobDeduct" &&
+        it.balanceAfter == null &&
+        it.balanceBefore == null &&
+        (earliestKnownWalletTime == null || it.createdAt.getTime() < earliestKnownWalletTime)
+      ) {
+        it.isPreWalletHistory = true;
+      }
+    });
+
+    // Check if earliest wallet-era event started with an opening balance
     const hasOpening = allEvents.some(e => e.type === "OPENING_BALANCE");
-    if (!hasOpening && allEvents.length > 0) {
-      const earliestOverall = allEvents.reduce((min: any, cur: any) => {
+    const walletEraEvents = allEvents.filter(e => !e.isPreWalletHistory);
+    if (!hasOpening && walletEraEvents.length > 0) {
+      const earliestOverall = walletEraEvents.reduce((min: any, cur: any) => {
         return !min || cur.createdAt.getTime() < min.createdAt.getTime() ? cur : min;
       }, null);
 
-      const earliestWithKnownBal = allEvents.reduce((min: any, cur: any) => {
+      const earliestWithKnownBal = walletEraEvents.reduce((min: any, cur: any) => {
         if (cur.effectiveBalBefore != null && !isNaN(cur.effectiveBalBefore)) {
           if (!min || cur.createdAt.getTime() < min.createdAt.getTime()) return cur;
         }
@@ -576,7 +605,7 @@ export function AdminCustomerProfileModal({
       }, null);
 
       if (earliestWithKnownBal) {
-        const priorNetChange = allEvents.reduce((sum: number, cur: any) => {
+        const priorNetChange = walletEraEvents.reduce((sum: number, cur: any) => {
           if (cur === earliestWithKnownBal) return sum;
           if (cur.createdAt.getTime() < earliestWithKnownBal.createdAt.getTime() && cur.approvalStatus !== "REJECTED") {
             return sum + (cur.direction === "CREDIT" ? Number(cur.amount || 0) : -Number(cur.amount || 0));
@@ -596,7 +625,7 @@ export function AdminCustomerProfileModal({
             amount: inferredOpeningBal,
             paidAmount: inferredOpeningBal,
             bonusAmount: 0,
-          packageName: "Opening Balance / Initial Credit (ยอดยกมาก่อนรายการแรก)",
+            packageName: "Opening Balance / Initial Credit (ยอดยกมาก่อนรายการแรก)",
             paymentChannel: "Initial Balance",
             slipImageUrl: null,
             receiptData: null,
@@ -613,14 +642,20 @@ export function AdminCustomerProfileModal({
 
     // Chain comparator
     allEvents.sort((a: any, b: any) => {
-      if (a.balanceAfter != null && b.effectiveBalBefore != null && a.balanceAfter === b.effectiveBalBefore) return -1;
-      if (b.balanceAfter != null && a.effectiveBalBefore != null && b.balanceAfter === a.effectiveBalBefore) return 1;
+      if (!a.isPreWalletHistory && !b.isPreWalletHistory && Math.abs(a.createdAt.getTime() - b.createdAt.getTime()) < 48 * 3600 * 1000) {
+        if (a.balanceAfter != null && b.effectiveBalBefore != null && a.balanceAfter === b.effectiveBalBefore) return -1;
+        if (b.balanceAfter != null && a.effectiveBalBefore != null && b.balanceAfter === a.effectiveBalBefore) return 1;
+      }
       return a.createdAt.getTime() - b.createdAt.getTime();
     });
 
     // Compute running balance forward
     let runningBal = 0;
     allEvents.forEach((item: any) => {
+      if (item.isPreWalletHistory) {
+        item.displayBalance = null;
+        return;
+      }
       const isCredit = item.direction === "CREDIT";
       if (item.balanceAfter != null && !isNaN(item.balanceAfter)) {
         runningBal = item.balanceAfter;
@@ -1724,8 +1759,8 @@ export function AdminCustomerProfileModal({
                                   <TableCell className={`text-right font-black py-3 text-xs ${isCredit ? 'text-emerald-600' : 'text-rose-600'}`}>
                                     {isCredit ? '+' : '-'}฿{Number(tx.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                   </TableCell>
-                                  <TableCell className={`text-right text-[11px] font-mono font-bold py-3 whitespace-nowrap ${Number(tx.displayBalance || 0) < 0 ? 'text-rose-600 font-black' : 'text-slate-700'}`}>
-                                    {formatBaht(Number(tx.displayBalance || 0))}
+                                  <TableCell className={`text-right text-[11px] font-mono font-bold py-3 whitespace-nowrap ${tx.displayBalance == null ? 'text-slate-400' : Number(tx.displayBalance) < 0 ? 'text-rose-600 font-black' : 'text-slate-700'}`}>
+                                    {tx.displayBalance != null ? formatBaht(Number(tx.displayBalance)) : "-"}
                                   </TableCell>
                                   <TableCell className="text-right pr-4 py-2.5">
                                     <div className="flex items-center justify-end gap-1.5">

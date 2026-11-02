@@ -621,17 +621,19 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     }
   };
 
-  // Open Create Modal — Sender/Holder is always fixed to the logged-in user (currentUser)
+  // Open Create Modal — Sender/Holder defaults to logged-in user, or presetRecipient when TOPUP
   const handleOpenCreateModal = (
     mode: "EXPENSE" | "TOPUP" | "TRANSFER" | "RETURN",
     presetRecipient?: { id: string; name: string; branchId?: string | null }
   ) => {
     setEditingTx(null);
     setTxMode(mode);
-    const fixedHolderId = currentUser?.id || "";
-    const fixedHolderName = currentUser?.name || currentUser?.email || "Current User";
+    const fixedHolderId = (mode === "TOPUP" && presetRecipient?.id) ? presetRecipient.id : (currentUser?.id || "");
+    const fixedHolderName = (mode === "TOPUP" && presetRecipient?.name) ? presetRecipient.name : (currentUser?.name || currentUser?.email || "Current User");
     const fixedBranchId =
-      currentUser?.branchId || (branchFilter !== "ALL" ? branchFilter : "HQ");
+      (mode === "TOPUP" && presetRecipient?.branchId)
+        ? presetRecipient.branchId
+        : (currentUser?.branchId || (branchFilter !== "ALL" ? branchFilter : "HQ"));
 
     setFormHolderId(fixedHolderId);
     setFormHolderName(fixedHolderName);
@@ -991,34 +993,34 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setEditableCategories([...categories]);
-              setNewCategoryInput("");
-              setCatModalOpen(true);
-            }}
-            className="h-9 text-xs font-bold border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl gap-1.5 cursor-pointer"
-          >
-            <Settings2 size={14} className="text-slate-500" />
-            Categories (หมวดหมู่: {categories.length})
-          </Button>
-
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={handleExportCsv}
-            className="h-9 text-xs font-bold border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl gap-1.5 cursor-pointer"
-          >
-            <Download size={14} className="text-slate-500" />
-            Export CSV (ส่งออกไฟล์)
-          </Button>
-
           {canApproveOrTopUp && (
             <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setEditableCategories([...categories]);
+                  setNewCategoryInput("");
+                  setCatModalOpen(true);
+                }}
+                className="h-9 text-xs font-bold border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl gap-1.5 cursor-pointer"
+              >
+                <Settings2 size={14} className="text-slate-500" />
+                Categories (หมวดหมู่: {categories.length})
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleExportCsv}
+                className="h-9 text-xs font-bold border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl gap-1.5 cursor-pointer"
+              >
+                <Download size={14} className="text-slate-500" />
+                Export CSV (ส่งออกไฟล์)
+              </Button>
+
               <Button
                 type="button"
                 size="sm"
@@ -1257,12 +1259,16 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                           <strong className="text-indigo-700">-฿{h.transferOut.toLocaleString()}</strong> • Spent (จ่าย):{" "}
                           <strong className="text-rose-600">-฿{h.totalExpense.toLocaleString()}</strong>
                         </span>
-                        {canApproveOrTopUp && h.holderId === currentUser?.id && (
+                        {canApproveOrTopUp && (
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleOpenCreateModal("TOPUP");
+                              handleOpenCreateModal("TOPUP", {
+                                id: h.holderId,
+                                name: h.holderName,
+                                branchId: h.branchId,
+                              });
                             }}
                             className="px-2 py-0.5 rounded bg-emerald-600 text-white hover:bg-emerald-700 font-bold text-[9.5px] cursor-pointer"
                           >
@@ -1320,26 +1326,46 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                         </span>
                       </div>
 
-                      <div className="mt-2 pt-2 border-t border-slate-200/70 flex items-center justify-between text-[10px] text-slate-500">
+                      <div className="mt-2 pt-2 border-t border-slate-200/70 flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-500">
                         <span>
-                          Received (รับโอน): <strong className="text-emerald-600">+฿{h.totalTopup.toLocaleString()}</strong> • Spent (จ่าย):{" "}
+                          Received (รับเงิน): <strong className="text-emerald-600">+฿{h.totalTopup.toLocaleString()}</strong> • Spent (จ่าย):{" "}
                           <strong className="text-rose-600">-฿{h.totalExpense.toLocaleString()}</strong>
                         </span>
-                        {canApproveOrTopUp && h.holderId !== currentUser?.id && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleOpenCreateModal("TRANSFER", {
-                                id: h.holderId,
-                                name: h.holderName,
-                                branchId: h.branchId,
-                              });
-                            }}
-                            className="px-2 py-0.5 rounded bg-indigo-600 text-white hover:bg-indigo-700 font-bold text-[9.5px] cursor-pointer"
-                          >
-                            ⇄ Transfer (โอนให้)
-                          </button>
+                        {canApproveOrTopUp && (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenCreateModal("TOPUP", {
+                                  id: h.holderId,
+                                  name: h.holderName,
+                                  branchId: h.branchId,
+                                });
+                              }}
+                              className="px-2 py-0.5 rounded bg-emerald-600 text-white hover:bg-emerald-700 font-bold text-[9.5px] cursor-pointer"
+                              title="รับเงินโอนจากบริษัทเข้ากระเป๋าพนักงานคนนี้โดยตรง"
+                            >
+                              + Top-up
+                            </button>
+                            {h.holderId !== currentUser?.id && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenCreateModal("TRANSFER", {
+                                    id: h.holderId,
+                                    name: h.holderName,
+                                    branchId: h.branchId,
+                                  });
+                                }}
+                                className="px-2 py-0.5 rounded bg-indigo-600 text-white hover:bg-indigo-700 font-bold text-[9.5px] cursor-pointer"
+                                title="โอนเงินสดย่อยจากกระเป๋าบัญชีของคุณให้พนักงานคนนี้"
+                              >
+                                ⇄ Transfer (โอนให้)
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -1729,7 +1755,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                   <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center">
                     <ArrowDownLeft size={16} />
                   </div>
-                  <span>{editingTx ? "Edit Company Top-up (แก้ไขรายการรับเงินบริษัท)" : "Tier 1: Company Top-up (รับเงินโอนจากบริษัท)"}</span>
+                  <span>{editingTx ? "Edit Company Top-up (แก้ไขรายการรับเงินบริษัท)" : "Company Top-up (รับเงินโอนจากบริษัทเข้า Tier 1 / Tier 2)"}</span>
                 </>
               ) : txMode === "TRANSFER" ? (
                 <>
@@ -1749,7 +1775,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
             </DialogTitle>
             <DialogDescription className="text-xs text-slate-500">
               {txMode === "TOPUP"
-                ? "Record petty cash received from the company into your accounting wallet (บันทึกยอดโอนจากบริษัทเข้ากระเป๋าบัญชีของคุณ)"
+                ? "Record petty cash received from the company into an Accounting (Tier 1) or Store (Tier 2) wallet (บันทึกยอดโอนจากบริษัทเข้ากระเป๋าฝ่ายบัญชีหรือพนักงานหน้าร้านได้โดยตรง)"
                 : txMode === "TRANSFER"
                   ? "Deducts from your accounting wallet and credits the recipient's store wallet automatically (หักยอดจากบัญชีและเพิ่มเข้ากระเป๋าหน้าร้านอัตโนมัติ)"
                   : "Deducts from your wallet balance immediately upon submission (ตัดยอดออกจากคงเหลือของคุณทันที พร้อมแนบใบเสร็จ/สลิป)"}
@@ -1763,6 +1789,9 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 type="button"
                 onClick={() => {
                   setTxMode("EXPENSE");
+                  setFormHolderId(currentUser?.id || "");
+                  setFormHolderName(currentUser?.name || currentUser?.email || "Current User");
+                  setFormBranchId(currentUser?.branchId || (branchFilter !== "ALL" ? branchFilter : "HQ"));
                   setFormCategory(categories[0] || "Store Misc (ค่าใช้จ่ายหน้าร้าน/เบ็ดเตล็ด)");
                   setFormPaymentMethod("Cash");
                 }}
@@ -1780,6 +1809,9 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                     type="button"
                     onClick={() => {
                       setTxMode("TRANSFER");
+                      setFormHolderId(currentUser?.id || "");
+                      setFormHolderName(currentUser?.name || currentUser?.email || "Current User");
+                      setFormBranchId(currentUser?.branchId || (branchFilter !== "ALL" ? branchFilter : "HQ"));
                       setFormCategory("Transfer to Store (โอนวงเงินให้หน้าร้าน)");
                       setFormPaymentMethod("Transfer");
                       if (!formTargetHolderId && transferRecipientOptions[0]) {
@@ -1817,7 +1849,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
           )}
 
           <div className="space-y-3.5 py-1 text-xs">
-            {/* Row 1: Fixed Logged-in User (Sender / Holder) & Branch */}
+            {/* Row 1: Holder / Recipient & Branch */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label className="text-[11px] font-bold text-slate-700 flex items-center justify-between">
@@ -1825,25 +1857,64 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                     {txMode === "TRANSFER"
                       ? "From Accounting (ผู้โอนต้นทาง)"
                       : txMode === "TOPUP"
-                        ? "Recipient (ผู้รับเงินจากบริษัท)"
+                        ? "Recipient (ผู้รับเงินโอนจากบริษัท - Tier 1 / Tier 2)"
                         : "Petty Cash Holder (ผู้ถือเงินสดย่อย)"}{" "}
                     <span className="text-rose-500">*</span>
                   </span>
                   <span className="text-[10px] font-mono font-bold text-emerald-700">
-                    Bal (คงเหลือ): ฿{currentUserBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    Bal (คงเหลือ): ฿{(
+                      txMode === "TOPUP"
+                        ? (holderSummaries.find((h) => h.holderId === formHolderId)?.currentBalance ?? 0)
+                        : currentUserBalance
+                    ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </span>
                 </Label>
-                <div className="h-9 w-full rounded-xl border border-slate-200 bg-slate-100/90 px-3 text-xs font-bold text-slate-700 flex items-center justify-between select-none cursor-not-allowed">
-                  <span className="truncate">
-                    {formHolderName || currentUser?.name || currentUser?.email || "Current User"}
-                    {currentUser?.role && (!editingTx || editingTx.holderId === currentUser?.id)
-                      ? ` (${String(currentUser.role).toUpperCase()})`
-                      : ""}
-                  </span>
-                  <Badge className="bg-slate-200/80 text-slate-600 border-slate-300 text-[9px] font-bold px-1.5 py-0 shrink-0">
-                    Fixed User
-                  </Badge>
-                </div>
+                {txMode === "TOPUP" && canApproveOrTopUp ? (
+                  <select
+                    value={formHolderId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setFormHolderId(id);
+                      const found = holderOptions.find((h) => h.id === id);
+                      if (found) {
+                        setFormHolderName(found.name);
+                        setFormBranchId(found.branchId || "HQ");
+                      }
+                    }}
+                    className="h-9 w-full rounded-xl border border-emerald-300 bg-emerald-50/40 px-2.5 text-xs font-bold text-slate-900 outline-none focus:border-emerald-600"
+                  >
+                    <optgroup label="💼 Tier 1: Accounting Custodians (แผนกบัญชี)">
+                      {holderOptions
+                        .filter((h) => h.isAccounting)
+                        .map((h) => (
+                          <option key={h.id} value={h.id}>
+                            💼 {h.name} ({h.roleLabel}) — {getBranchDisplayName(h.branchId)}
+                          </option>
+                        ))}
+                    </optgroup>
+                    <optgroup label="🏪 Tier 2: Store Custodians (พนักงานหน้าร้าน)">
+                      {holderOptions
+                        .filter((h) => !h.isAccounting)
+                        .map((h) => (
+                          <option key={h.id} value={h.id}>
+                            🏪 {h.name} ({h.roleLabel}) — {getBranchDisplayName(h.branchId)}
+                          </option>
+                        ))}
+                    </optgroup>
+                  </select>
+                ) : (
+                  <div className="h-9 w-full rounded-xl border border-slate-200 bg-slate-100/90 px-3 text-xs font-bold text-slate-700 flex items-center justify-between select-none cursor-not-allowed">
+                    <span className="truncate">
+                      {formHolderName || currentUser?.name || currentUser?.email || "Current User"}
+                      {currentUser?.role && (!editingTx || editingTx.holderId === currentUser?.id)
+                        ? ` (${String(currentUser.role).toUpperCase()})`
+                        : ""}
+                    </span>
+                    <Badge className="bg-slate-200/80 text-slate-600 border-slate-300 text-[9px] font-bold px-1.5 py-0 shrink-0">
+                      Fixed User
+                    </Badge>
+                  </div>
+                )}
               </div>
 
               <div className="space-y-1">
@@ -1960,7 +2031,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 <Label className="text-[11px] font-bold text-slate-700">
                   Category (หมวดหมู่รายการ) <span className="text-rose-500">*</span>
                 </Label>
-                {txMode === "EXPENSE" && (
+                {txMode === "EXPENSE" && canApproveOrTopUp && (
                   <button
                     type="button"
                     onClick={() => setShowQuickAddCategory(!showQuickAddCategory)}

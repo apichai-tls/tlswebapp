@@ -1731,7 +1731,7 @@ export const api = {
         const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
         const existingUrls = JSON.parse(existingJob.billImageUrl);
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
-          const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole'].includes(k));
+          const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole', 'isAutoReceiptWorker', 'systemActorName'].includes(k));
           const incomingHasReceipt = incomingUrls.some((u: string) => typeof u === 'string' && (u.includes('/receipt-') || u.includes('receipt-')));
           const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid !== undefined || cleanUpdates.isPaid !== undefined || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined || cleanUpdates.walletBalanceAfter !== undefined);
           let baseExisting = (incomingHasReceipt || isRebillingOrPaying)
@@ -1772,8 +1772,9 @@ export const api = {
 
     const isSilentMediaUpdate = Boolean(
       (cleanUpdates as any).__silentBackground ||
+      (cleanUpdates as any).isAutoReceiptWorker ||
       Object.keys(cleanUpdates).every((k) =>
-        ['billImageUrl', 'actorId', 'actorName', 'actorRole', '__silentBackground', 'suppressThrow'].includes(k)
+        ['billImageUrl', 'actorId', 'actorName', 'actorRole', '__silentBackground', 'suppressThrow', 'isAutoReceiptWorker', 'systemActorName'].includes(k)
       )
     );
     delete (cleanUpdates as any).__silentBackground;
@@ -1792,7 +1793,7 @@ export const api = {
     // Track pending field keys so concurrent refreshes (including paid-state transitions) do not overwrite unconfirmed drafts
     const dirtySet = pendingFieldEdits.get(id) || new Set<string>();
     for (const k of Object.keys(cleanUpdates)) {
-      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo'].includes(k)) {
+      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName'].includes(k)) {
         dirtySet.add(k);
       }
     }
@@ -1933,7 +1934,7 @@ export const api = {
 
     const dirtySet = pendingFieldEdits.get(id) || new Set<string>();
     for (const k of Object.keys(cleanUpdates)) {
-      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo'].includes(k)) {
+      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName'].includes(k)) {
         dirtySet.add(k);
       }
     }
@@ -1944,7 +1945,7 @@ export const api = {
         const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
         const existingUrls = JSON.parse(existingJob.billImageUrl);
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
-          const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole'].includes(k));
+          const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole', 'isAutoReceiptWorker', 'systemActorName'].includes(k));
           const incomingHasReceipt = incomingUrls.some((u: string) => typeof u === 'string' && (u.includes('/receipt-') || u.includes('receipt-')));
           const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid !== undefined || cleanUpdates.isPaid !== undefined || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined || cleanUpdates.walletBalanceAfter !== undefined);
           let baseExisting = (incomingHasReceipt || isRebillingOrPaying)

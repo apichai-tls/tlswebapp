@@ -62,8 +62,10 @@ async function createConnectedClient(connectionString: string): Promise<Client> 
 
 export async function performProdToTestSync(): Promise<SyncSummary> {
   const startTime = Date.now();
-  const prodUrl = process.env.PROD_DATABASE_URL;
   const testUrl = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
+  const prodUrl =
+    process.env.PROD_DATABASE_URL ||
+    (testUrl && testUrl.includes('/tls_test') ? testUrl.replace(/\/tls_test(\?|$)/, '/postgres$1') : undefined);
 
   if (!prodUrl || !testUrl) {
     throw new Error('Missing required PROD_DATABASE_URL or TEST_DATABASE_URL environment configuration');
@@ -116,7 +118,8 @@ export async function performProdToTestSync(): Promise<SyncSummary> {
       }
 
       const BATCH_SIZE = 500;
-      const updateCols = commonCols.filter((c: string) => c !== 'id');
+      const conflictCol = table === 'Setting' && commonCols.includes('key') ? 'key' : 'id';
+      const updateCols = commonCols.filter((c: string) => c !== conflictCol);
       const updateClause = updateCols.length > 0
         ? `DO UPDATE SET ${updateCols.map((c: string) => `"${c}" = EXCLUDED."${c}"`).join(', ')}`
         : 'DO NOTHING';
@@ -140,7 +143,7 @@ export async function performProdToTestSync(): Promise<SyncSummary> {
         const insertSql = `
           INSERT INTO public."${table}" (${quotedCols})
           VALUES ${rowsPlaceholders.join(',\n')}
-          ON CONFLICT ("id") ${updateClause};
+          ON CONFLICT ("${conflictCol}") ${updateClause};
         `;
 
         await testClient.query(insertSql, valuesList);

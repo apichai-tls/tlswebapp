@@ -1,4 +1,4 @@
-﻿/* eslint-disable */
+/* eslint-disable */
 "use client";
 
 
@@ -2718,6 +2718,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
     if (loadedJobId) {
       const targetJob = jobs.find(j => j.id === loadedJobId) || latestJob;
+      if (targetJob?.status === "cancel" || (targetJob?.status as string) === "cancelled") {
+        toast.error(currentLanguage === "en" ? "Cannot process payment for a cancelled order." : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
+        return;
+      }
       setWisePaymentJob({
         id: loadedJobId,
         billNo: targetJob?.billNo,
@@ -2746,6 +2750,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
     if (loadedJobId) {
       const targetJob = jobs.find(j => j.id === loadedJobId) || latestJob;
+      if (targetJob?.status === "cancel" || (targetJob?.status as string) === "cancelled") {
+        toast.error(currentLanguage === "en" ? "Cannot process payment for a cancelled order." : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
+        return;
+      }
       const itemsPayload = cart.map(item => ({
         name: item.name,
         nameEn: item.nameEn || item.name,
@@ -2791,6 +2799,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     }
 
     const loadedJobForPay = loadedJobId ? jobs.find(j => j.id === loadedJobId) : null;
+    if (loadedJobForPay && (loadedJobForPay.status === "cancel" || (loadedJobForPay.status as string) === "cancelled")) {
+      toast.error(currentLanguage === "en" ? "Cannot process payment for a cancelled order." : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
+      return;
+    }
     const wasAlreadyShopPaid = Boolean(loadedJobForPay?.isShopPaid || (loadedJobForPay?.source === "pos" && loadedJobForPay?.isPaid));
     let existingPaymentsPre: any[] = [];
     if (loadedJobForPay?.adminNotesJson) {
@@ -5885,6 +5897,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               <Button 
                 disabled={
                   isProcessing || 
+                  Boolean(loadedJobId && (() => { const lj = jobs.find(j => j.id === loadedJobId) || latestJob; return lj?.status === "cancel" || (lj?.status as string) === "cancelled"; })()) ||
                   !!(isPaid && (!effectivePaymentChannel || effectivePaymentChannel === "")) ||
                   !!(isPaid && paymentMethod === "credit" && selectedCustomer && (((selectedCustomer.creditBalance || 0) < total) || isWalletExpired(selectedCustomer))) ||
                   !!(isPaid && paymentMethod === "cash" && (!receivedCash || isNaN(parseFloat(receivedCash)) || parseFloat(receivedCash) < total))
