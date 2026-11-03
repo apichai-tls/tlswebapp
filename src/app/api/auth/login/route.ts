@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword, hashPassword } from "@/lib/crypto";
 import { signStaffSessionToken, invalidateServerAuthCache, revokeSessionToken, resolveRequestUser } from "@/lib/server-auth";
+import { setRiderOfflineOnLogout } from "@/lib/rider-presence";
 
 export async function POST(req: NextRequest) {
   try {
@@ -98,7 +99,15 @@ export async function DELETE(req: NextRequest) {
     const token = bearerToken || cookieToken;
 
     const { user } = await resolveRequestUser(req);
-    await revokeSessionToken(token, user?.id || null);
+    const fallbackUserId = req.nextUrl.searchParams.get("userId") || null;
+    const effectiveUserId = user?.id || fallbackUserId;
+
+    await revokeSessionToken(token, effectiveUserId);
+
+    // Automatically mark Rider as offline in DB upon logout or idle session timeout
+    if (effectiveUserId) {
+      await setRiderOfflineOnLogout(effectiveUserId);
+    }
 
     const res = NextResponse.json({ success: true });
     res.cookies.set("tls_session", "", {

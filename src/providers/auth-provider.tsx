@@ -69,9 +69,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const logout = useCallback(async () => {
+    let currentUserId = '';
+    try {
+      const raw = localStorage.getItem('authUser');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.id) currentUserId = String(parsed.id);
+      }
+    } catch {}
     setUser(null);
     clearAuthStorage();
-    await fetch('/api/auth/login', { method: 'DELETE', keepalive: true, credentials: 'same-origin' }).catch(() => {});
+    const deleteUrl = currentUserId
+      ? `/api/auth/login?userId=${encodeURIComponent(currentUserId)}`
+      : '/api/auth/login';
+    await fetch(deleteUrl, { method: 'DELETE', keepalive: true, credentials: 'same-origin' }).catch(() => {});
   }, [clearAuthStorage]);
 
   const forceLogoutWithReason = useCallback(async (reason: 'new_deploy' | 'timeout') => {

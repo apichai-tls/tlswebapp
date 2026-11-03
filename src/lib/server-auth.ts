@@ -808,21 +808,22 @@ export function canAccessCustomerRecords(
   // Riders do not have access to the full customer database (only their assigned jobs)
   if (role === 'rider') return false;
 
-  // Full administrative, customer service, or accounting access
+  // Anyone with CRM ('customers') or POS ('pos') access, or administrative/CSO/accounting/marketing roles
+  // can view, edit, top up, and use Wallet across all branches
   if (
     role === 'admin' ||
     role === 'superadmin' ||
     role === 'manager' ||
     role === 'cso' ||
     role === 'accounting' ||
-    role === 'marketing'
+    role === 'marketing' ||
+    (Array.isArray(user.permissions) &&
+      (user.permissions.includes('customers') || user.permissions.includes('pos')))
   ) {
-    if (user.allowedBranchIds === 'ALL') return true;
-    if (!customerBranchId || customerBranchId.toUpperCase() === 'ONLINE') return true;
-    return user.allowedBranchIds.includes(customerBranchId);
+    return true;
   }
 
-  // Branch staff / cashiers can only access customers of their branch or unassigned
+  // Branch staff without CRM/POS permissions can only access customers of their branch or unassigned
   if (user.allowedBranchIds === 'ALL') return true;
   if (!customerBranchId || customerBranchId.toUpperCase() === 'ONLINE') return true;
   return user.allowedBranchIds.includes(customerBranchId);

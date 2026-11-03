@@ -6,7 +6,7 @@ import {
   Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, 
   Clock, AlertTriangle, Receipt, Eye, Coins, ImageIcon, ExternalLink, X, Edit, MessageCircle, 
   MessageSquare, ShieldCheck, CheckCircle2, Plus, Trash2, Tag, Check, Smartphone, Globe, 
-  AlertCircle, ChevronRight, UserCheck, Shield, Ticket, Gift, Sparkles, Copy, Ban, Truck, Loader2, Bike
+  AlertCircle, ChevronRight, UserCheck, Shield, Ticket, Gift, Sparkles, Copy, Ban, Truck, Loader2, Bike, FileDown
 } from "lucide-react";
 
 import { format } from "date-fns";
@@ -27,6 +27,7 @@ import {
 } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
+import { WalletStatementDialog } from "@/components/wallet-statement-dialog";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 import { isWalletExpired, isValidPhoneNumber, formatBaht, resolveCustomerPhones, isThaiPhoneNumber } from "@/lib/utils";
 import { toast } from "sonner";
@@ -242,6 +243,7 @@ export function AdminCustomerProfileModal({
   const [previewSlipModalOpen, setPreviewSlipModalOpen] = useState(false);
   const [previewSlipUrl, setPreviewSlipUrl] = useState<string | null>(null);
   const [previewSlipTitle, setPreviewSlipTitle] = useState("");
+  const [walletStatementOpen, setWalletStatementOpen] = useState(false);
 
   // Initialize and load customer data
   useEffect(() => {
@@ -1558,9 +1560,21 @@ export function AdminCustomerProfileModal({
                   </div>
 
                   {ordersSubTab === "ledger" && (
-                    <span className={`text-xs font-bold px-3 py-1 rounded-lg border ${(customer.creditBalance || 0) < 0 ? "text-rose-700 bg-rose-50 border-rose-200" : "text-emerald-700 bg-emerald-50 border-emerald-200"}`}>
-                      Current Credit: {formatBaht(customer.creditBalance || 0)}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`text-xs font-bold px-3 py-1.5 rounded-xl border ${(customer.creditBalance || 0) < 0 ? "text-rose-700 bg-rose-50 border-rose-200" : "text-emerald-700 bg-emerald-50 border-emerald-200"}`}>
+                        Current Credit: {formatBaht(customer.creditBalance || 0)}
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => setWalletStatementOpen(true)}
+                        disabled={isLoadingWallet || isLoadingTopUps}
+                        className="h-8 px-3.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl gap-1.5 cursor-pointer shadow-2xs"
+                      >
+                        <FileDown size={14} />
+                        Export PDF (ใบสรุปยอดลูกค้า)
+                      </Button>
+                    </div>
                   )}
 
                   {ordersSubTab === "coupons" && canSeeCoupons && (
@@ -2667,6 +2681,19 @@ export function AdminCustomerProfileModal({
           onOpenChange={setIssueCouponModalOpen}
           preselectedCustomer={customer}
           onSuccess={() => fetchCoupons()}
+        />
+      )}
+
+      {/* Customer Wallet Statement PDF / Image Export Modal */}
+      {walletStatementOpen && customer && (
+        <WalletStatementDialog
+          open={walletStatementOpen}
+          onOpenChange={setWalletStatementOpen}
+          customer={customer}
+          custCode={custCode}
+          ledger={unifiedLedger}
+          activeShop={activeShop}
+          displayPhone={displayThaiPhone || displayIntlPhone || customer.phone}
         />
       )}
     </>

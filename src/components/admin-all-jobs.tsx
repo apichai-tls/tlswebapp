@@ -6,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet, RotateCcw, CreditCard, Send, AlertCircle, ArrowRight, FileCheck2, FileWarning, Maximize2, Minimize2, Monitor, SlidersHorizontal, ZoomIn, ZoomOut, Columns, Split, Camera, ExternalLink, Copy, MessageCircle } from "lucide-react";
+import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet, RotateCcw, CreditCard, Send, AlertCircle, ArrowRight, FileCheck2, FileWarning, Maximize2, Minimize2, Monitor, SlidersHorizontal, ZoomIn, ZoomOut, Columns, Split, Camera, ExternalLink, Copy, MessageCircle, ShieldAlert, Store, History, Lock, Loader2, BarChart3 } from "lucide-react";
 import Papa from "papaparse";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,7 +17,7 @@ import { useRiders } from "@/lib/use-riders";
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
-import { jobStore, shopStore, customerStore, settingsStore, realtimeStore, type Job, type JobStatus } from "@/lib/store";
+import { jobStore, shopStore, customerStore, settingsStore, realtimeStore, shiftStore, computeLiveShiftStats, type Job, type JobStatus, type CashierShift } from "@/lib/store";
 import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown, formatLocationWithRoom, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId, getJobPackingCounts, getJobProcessingBranchId } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
 import { BranchFilterDropdown, getUserAssignedBranchIds, getCleanBranchName } from "@/components/branch-filter-dropdown";
@@ -495,6 +495,23 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   );
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const customers = useSyncExternalStore(customerStore.subscribe, customerStore.getSnapshot, customerStore.getSnapshot);
+  const { activeShift, branchActiveShift, allOpenShifts, hasLoaded: hasLoadedShift } = useSyncExternalStore(
+    shiftStore.subscribe,
+    shiftStore.getSnapshot,
+    shiftStore.getSnapshot
+  );
+
+  // Shift UI & Modal States for All Jobs
+  const [shiftOnlyFilter, setShiftOnlyFilter] = useState(false);
+  const [shiftSpectatorBypass, setShiftSpectatorBypass] = useState(false);
+  const [isOpenShiftModalOpen, setIsOpenShiftModalOpen] = useState(false);
+  const [isCloseShiftModalOpen, setIsCloseShiftModalOpen] = useState(false);
+  const [shiftModalBranchId, setShiftModalBranchId] = useState<string>("");
+  const [startingCashInput, setStartingCashInput] = useState<string>("");
+  const [openShiftNotesInput, setOpenShiftNotesInput] = useState<string>("");
+  const [actualCashInput, setActualCashInput] = useState<string>("");
+  const [closeShiftNotesInput, setCloseShiftNotesInput] = useState<string>("");
+  const [isShiftSubmitting, setIsShiftSubmitting] = useState(false);
 
   const buildUpdatedAdminNotesJson = (
     job: Job,
@@ -701,13 +718,71 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       toast.error("งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
       return;
     }
+
+    const jobBranch = shopLocations.find(s => s.id === job.branchId);
+    const jobBranchShift = getOpenShiftForBranch(job.branchId);
+    if (jobBranch?.isPosEnabled) {
+      if (jobBranchShift?.openedAt) {
+        const openedDate = new Date(jobBranchShift.openedAt);
+        const now = new Date();
+        const isPrevDay =
+          openedDate.getFullYear() !== now.getFullYear() ||
+          openedDate.getMonth() !== now.getMonth() ||
+          openedDate.getDate() !== now.getDate();
+        if (isPrevDay) {
+          toast.error(`สาขา ${getBranchShortName(jobBranch.name)} มีกะค้างของวันที่ ${format(openedDate, "dd/MM/yyyy")} กรุณาปิดกะเก่าก่อนรับเงินสด`);
+          setShiftModalBranchId(jobBranch.id);
+          setActualCashInput("");
+          setCloseShiftNotesInput("");
+          setIsCloseShiftModalOpen(true);
+          return;
+        }
+      }
+      if (!jobBranchShift) {
+        toast.error(`สาขา ${getBranchShortName(jobBranch.name)} ยังไม่ได้เปิดกะลิ้นชักเงินสดของวันนี้ กรุณาเปิดกะก่อนรับเงินสดจากไรเดอร์`);
+        setShiftModalBranchId(jobBranch.id);
+        setStartingCashInput("");
+        setOpenShiftNotesInput("");
+        setIsOpenShiftModalOpen(true);
+        return;
+      }
+    }
+
     const staffName = (user as any)?.name || user?.email || "Staff";
     const actorDetails = user ? { actorId: user.id, actorName: staffName, actorRole: user.role } : undefined;
     const deliveryRider = riders.find(r => r.id === (job.deliveryRiderId || job.riderId));
     const riderLabel = deliveryRider?.nickname || deliveryRider?.name || "Rider";
-    const amountFmt = (job.totalAmount || 0).toLocaleString();
+    const amountVal = Number(job.totalAmount) || 0;
+    const amountFmt = amountVal.toLocaleString();
+    const targetShiftId = (jobBranch?.isPosEnabled && jobBranchShift?.id) ? jobBranchShift.id : ((job as any).shiftId || null);
 
     try {
+      let existingPayments: any[] = [];
+      if (job.adminNotesJson) {
+        try {
+          const parsed = JSON.parse(job.adminNotesJson);
+          if (parsed && Array.isArray(parsed.payments)) {
+            existingPayments = [...parsed.payments];
+          }
+        } catch {}
+      }
+      const alreadyPaidSum = existingPayments.reduce((s, p) => s + (Number(p?.amount) || 0), 0);
+      const remainingCash = Math.max(0, Math.round((amountVal - alreadyPaidSum) * 100) / 100);
+      if (remainingCash > 0) {
+        existingPayments.push({
+          id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `pay-${Date.now()}`,
+          amount: remainingCash,
+          method: "cash",
+          channel: job.paymentChannel || "Cash / COD",
+          timestamp: new Date().toISOString(),
+          shiftId: targetShiftId,
+          paidBy: staffName,
+          note: `Collected from rider ${riderLabel}`,
+          received: remainingCash,
+          change: 0,
+        });
+      }
+
       const updatedAdminNotesJson = buildUpdatedAdminNotesJson(
         job,
         {
@@ -716,6 +791,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           cashCollectedFromRiderAt: new Date().toISOString(),
           cashCollectedBy: staffName,
           cashCollectedFromRider: riderLabel,
+          ...(existingPayments.length > 0 ? { payments: existingPayments } : {}),
         },
         `Cash ฿${amountFmt} collected from rider ${riderLabel} by ${staffName}`
       );
@@ -725,8 +801,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           isShopPaid: true,
           shopPaidAt: new Date().toISOString(),
           cashPlaced: true,
+          shiftId: targetShiftId,
           adminNotesJson: updatedAdminNotesJson,
-        },
+        } as any,
         actorDetails
       );
       toast.success(`Order #${formatJobDisplayId(job.id)}: Cash ฿${amountFmt} collected from ${riderLabel}`);
@@ -756,6 +833,158 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     if (!isAreaRestricted) return selectedBranchIds;
     return selectedBranchIds.filter((id) => allowedBranchIdSet.has(id));
   }, [isAreaRestricted, selectedBranchIds, allowedBranchIdSet]);
+
+  // Determine the active branch for Shift management in All Jobs
+  const activeShiftBranch = useMemo(() => {
+    if (effectiveSelectedBranchIds.length === 1) {
+      return shopLocations.find(s => s.id === effectiveSelectedBranchIds[0]) || null;
+    }
+    if (allowedBranches.length === 1) {
+      return allowedBranches[0] || null;
+    }
+    if (user?.branchId && user.branchId !== "all") {
+      return shopLocations.find(s => s.id === user.branchId) || null;
+    }
+    if (activeShift) {
+      return shopLocations.find(s => s.id === activeShift.branchId) || null;
+    }
+    return null;
+  }, [effectiveSelectedBranchIds, allowedBranches, user?.branchId, activeShift, shopLocations]);
+
+  const isShiftEnabledForActiveBranch = Boolean(activeShiftBranch?.isPosEnabled);
+
+  const getOpenShiftForBranch = React.useCallback((branchId?: string | null): CashierShift | null => {
+    if (!branchId) return null;
+    if (activeShift && activeShift.branchId === branchId && activeShift.status === "open") return activeShift;
+    if (branchActiveShift && branchActiveShift.branchId === branchId && branchActiveShift.status === "open") return branchActiveShift;
+    return allOpenShifts.find(s => s.branchId === branchId && s.status === "open") || null;
+  }, [activeShift, branchActiveShift, allOpenShifts]);
+
+  const currentBranchShift = useMemo(
+    () => getOpenShiftForBranch(activeShiftBranch?.id),
+    [getOpenShiftForBranch, activeShiftBranch?.id]
+  );
+
+  const modalTargetBranch = useMemo(() => {
+    if (shiftModalBranchId) {
+      return shopLocations.find(s => s.id === shiftModalBranchId) || activeShiftBranch;
+    }
+    return activeShiftBranch;
+  }, [shiftModalBranchId, shopLocations, activeShiftBranch]);
+
+  const modalTargetShift = useMemo(
+    () => getOpenShiftForBranch(modalTargetBranch?.id) || currentBranchShift,
+    [getOpenShiftForBranch, modalTargetBranch?.id, currentBranchShift]
+  );
+
+  const isShiftFromPreviousDay = useMemo(() => {
+    if (!currentBranchShift?.openedAt) return false;
+    const openedDate = new Date(currentBranchShift.openedAt);
+    const now = new Date();
+    return (
+      openedDate.getFullYear() !== now.getFullYear() ||
+      openedDate.getMonth() !== now.getMonth() ||
+      openedDate.getDate() !== now.getDate()
+    );
+  }, [currentBranchShift]);
+
+  const currentBranchShiftStats = useMemo(
+    () => computeLiveShiftStats(currentBranchShift, jobs),
+    [currentBranchShift, jobs]
+  );
+
+  const modalShiftStats = useMemo(
+    () => computeLiveShiftStats(modalTargetShift, jobs),
+    [modalTargetShift, jobs]
+  );
+
+  // Fetch active shift and all open shifts on mount / branch change
+  useEffect(() => {
+    if (user?.id) {
+      shiftStore.fetchActiveShift(user.id, activeShiftBranch?.id);
+      shiftStore.getOpenShifts();
+    }
+  }, [user?.id, activeShiftBranch?.id]);
+
+  // Listen for shift actions dispatched from page.tsx (Create Job / Pay Guard)
+  useEffect(() => {
+    const handleShiftEvent = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      if (!detail) return;
+      if (detail.branchId) {
+        setShiftModalBranchId(detail.branchId);
+      }
+      if (detail.action === "open") {
+        setStartingCashInput("");
+        setOpenShiftNotesInput("");
+        setIsOpenShiftModalOpen(true);
+      } else if (detail.action === "close") {
+        setActualCashInput("");
+        setCloseShiftNotesInput("");
+        setIsCloseShiftModalOpen(true);
+      }
+    };
+    window.addEventListener("alljobs-shift-action", handleShiftEvent);
+    return () => window.removeEventListener("alljobs-shift-action", handleShiftEvent);
+  }, []);
+
+  const handleOpenBranchShiftSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const targetBranch = modalTargetBranch || activeShiftBranch;
+    if (!user?.id || !targetBranch?.id) {
+      toast.error("กรุณาเลือกสาขาที่ต้องการเปิดกะ");
+      return;
+    }
+    const cashVal = parseFloat(startingCashInput === "" ? "0" : startingCashInput);
+    if (isNaN(cashVal) || cashVal < 0) {
+      toast.error("กรุณาระบุเงินทอนเริ่มต้นให้ถูกต้อง (ต้องไม่น้อยกว่า 0)");
+      return;
+    }
+    setIsShiftSubmitting(true);
+    try {
+      await shiftStore.openShift(
+        user.id,
+        (user as any).name || user.email || "Staff",
+        targetBranch.id,
+        cashVal,
+        openShiftNotesInput.trim() || undefined
+      );
+      await shiftStore.getOpenShifts();
+      toast.success(`เปิดรอบลิ้นชักเงินสดสาขา ${getBranchShortName(targetBranch.name)} สำเร็จแล้ว`);
+      setStartingCashInput("");
+      setOpenShiftNotesInput("");
+      setIsOpenShiftModalOpen(false);
+    } catch (err: any) {
+      toast.error(err?.message || "ไม่สามารถเปิดรอบลิ้นชักเงินสดได้");
+    } finally {
+      setIsShiftSubmitting(false);
+    }
+  };
+
+  const handleCloseBranchShiftSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const targetShift = modalTargetShift || currentBranchShift;
+    if (!targetShift?.id) return;
+    const cashVal = parseFloat(actualCashInput);
+    if (isNaN(cashVal) || cashVal < 0) {
+      toast.error("กรุณาระบุเงินสดนับจริงในลิ้นชักให้ถูกต้อง (ต้องไม่น้อยกว่า 0)");
+      return;
+    }
+    setIsShiftSubmitting(true);
+    try {
+      await shiftStore.closeShift(targetShift.id, cashVal, closeShiftNotesInput.trim() || undefined);
+      await shiftStore.getOpenShifts();
+      toast.success("ปิดรอบลิ้นชักเงินสดและส่งรายงานกะเรียบร้อยแล้ว");
+      setActualCashInput("");
+      setCloseShiftNotesInput("");
+      setIsCloseShiftModalOpen(false);
+      setShiftOnlyFilter(false);
+    } catch (err: any) {
+      toast.error(err?.message || "ไม่สามารถปิดรอบลิ้นชักเงินสดได้");
+    } finally {
+      setIsShiftSubmitting(false);
+    }
+  };
 
   const handleConfirmCancel = async () => {
     if (!cancellingJob || !cancelReason.trim()) return;
@@ -1162,6 +1391,14 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     const searchLower = searchTerm.toLowerCase().trim();
 
     return scopedOverviewJobs.filter((job) => {
+      // Current Shift Quick Filter
+      if (shiftOnlyFilter && currentBranchShift) {
+        const matchesShift =
+          (job as any).shiftId === currentBranchShift.id ||
+          currentBranchShiftStats.shiftJobIds.has(job.id);
+        if (!matchesShift) return false;
+      }
+
       // Stuck Filter: when checked, show ONLY stuck jobs (exclude completed/cancelled unless showCompleted is checked)
       if (stuckOnly && (!job.isStuck || (!showCompleted && ['completed', 'cancel', 'return'].includes(job.status)))) return false;
 
@@ -1298,7 +1535,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       ));
     });
   }, [
-    scopedOverviewJobs, stuckOnly, showCompleted, csoPaidFilter, selectedRiderId,
+    scopedOverviewJobs, shiftOnlyFilter, currentBranchShift, currentBranchShiftStats.shiftJobIds,
+    stuckOnly, showCompleted, csoPaidFilter, selectedRiderId,
     billingFilterMode, paymentChannelFilter, searchTerm, riders, customers,
     shopLocations
   ]);
@@ -1402,6 +1640,129 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Cashier Shift Drawer Status & Quick Controls */}
+            {isShiftEnabledForActiveBranch && activeShiftBranch && (
+              currentBranchShift ? (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-white border border-slate-200/90 shadow-2xs shrink-0 print:hidden">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600 border border-emerald-200/70 shrink-0">
+                    <Banknote size={14} />
+                  </div>
+                  <div className="text-left leading-none pr-1">
+                    <div className="flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="text-[9.5px] text-slate-500 font-bold">
+                        {getBranchShortName(activeShiftBranch.name)} • {currentBranchShift.userName}
+                      </span>
+                    </div>
+                    <p className="text-xs font-black text-emerald-700 mt-0.5">
+                      ลิ้นชัก: ฿{currentBranchShiftStats.expectedCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShiftOnlyFilter(prev => !prev)}
+                    className={`h-7 px-2.5 text-[10.5px] font-bold rounded-lg border transition-all cursor-pointer flex items-center gap-1 ${
+                      shiftOnlyFilter
+                        ? "bg-indigo-600 text-white border-indigo-600 shadow-2xs"
+                        : "bg-indigo-50/80 text-indigo-700 border-indigo-200/80 hover:bg-indigo-100"
+                    }`}
+                    title="Filter All Jobs to show only orders in the current active shift"
+                  >
+                    <span>กะนี้ ({currentBranchShiftStats.totalOrders})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShiftModalBranchId(activeShiftBranch.id);
+                      setActualCashInput("");
+                      setCloseShiftNotesInput("");
+                      setIsCloseShiftModalOpen(true);
+                    }}
+                    className="h-7 px-2.5 text-[10.5px] font-black text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200/80 rounded-lg cursor-pointer transition-colors"
+                    title="Count cash & close current shift"
+                  >
+                    ปิดกะ (Close Shift)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.location.hash = "#reports";
+                      setTimeout(() => {
+                        window.dispatchEvent(new CustomEvent("open-reports-tab", { detail: { tab: "shift" } }));
+                      }, 60);
+                    }}
+                    className="h-7 px-2 text-[10.5px] font-bold text-slate-600 bg-slate-100 hover:bg-slate-200/80 border border-slate-200/80 rounded-lg cursor-pointer transition-colors flex items-center gap-1"
+                    title="Open Shift Report"
+                  >
+                    <History size={11} />
+                    <span className="hidden xl:inline">Shift Report</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-50/90 border border-amber-200/90 shadow-2xs shrink-0 print:hidden">
+                  <ShieldAlert size={14} className="text-amber-600 shrink-0" />
+                  <span className="text-[11px] font-bold text-amber-900">
+                    {getBranchShortName(activeShiftBranch.name)}: ยังไม่เปิดกะ
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShiftModalBranchId(activeShiftBranch.id);
+                      setStartingCashInput("");
+                      setOpenShiftNotesInput("");
+                      setIsOpenShiftModalOpen(true);
+                    }}
+                    className="h-7 px-2.5 text-[10.5px] font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg cursor-pointer transition-colors shadow-2xs"
+                  >
+                    + เปิดกะลิ้นชัก
+                  </button>
+                </div>
+              )
+            )}
+            {!activeShiftBranch && shopLocations.some(s => s.isPosEnabled) && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-white border border-slate-200/90 shadow-2xs shrink-0 print:hidden">
+                <Banknote size={14} className="text-emerald-600 shrink-0" />
+                <span className="text-[11px] font-bold text-slate-700">
+                  กะที่เปิดอยู่: {allOpenShifts.length}/{shopLocations.filter(s => s.isPosEnabled).length} สาขา
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const firstPosBranch = shopLocations.find(s => s.isPosEnabled);
+                    if (firstPosBranch) {
+                      setShiftModalBranchId(firstPosBranch.id);
+                      const openSh = getOpenShiftForBranch(firstPosBranch.id);
+                      if (openSh) {
+                        setActualCashInput("");
+                        setCloseShiftNotesInput("");
+                        setIsCloseShiftModalOpen(true);
+                      } else {
+                        setStartingCashInput("");
+                        setOpenShiftNotesInput("");
+                        setIsOpenShiftModalOpen(true);
+                      }
+                    }
+                  }}
+                  className="h-7 px-2 text-[10.5px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/80 rounded-lg cursor-pointer transition-colors"
+                >
+                  จัดการกะ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.location.hash = "#reports";
+                    setTimeout(() => {
+                      window.dispatchEvent(new CustomEvent("open-reports-tab", { detail: { tab: "shift" } }));
+                    }, 60);
+                  }}
+                  className="h-7 px-2 text-[10.5px] font-bold text-slate-600 bg-slate-100 hover:bg-slate-200/80 border border-slate-200/80 rounded-lg cursor-pointer transition-colors flex items-center gap-1"
+                >
+                  <BarChart3 size={11} />
+                  <span>Shift Report</span>
+                </button>
+              </div>
+            )}
+
             {viewMode === "list" && (
               <div className="flex gap-1.5 shrink-0 print:hidden">
                 <button
@@ -1661,6 +2022,136 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
             </div>
           </div>
         </div>
+
+        {/* Policy C Shift Guard Overlay for Shift-Enabled Branch */}
+        {isShiftEnabledForActiveBranch && activeShiftBranch && hasLoadedShift && !shiftSpectatorBypass && (isShiftFromPreviousDay || !currentBranchShift) && (
+          <div className="bg-white rounded-2xl border-2 border-indigo-200/90 shadow-xl p-6 sm:p-8 max-w-xl mx-auto my-6 relative overflow-hidden">
+            <div className={`absolute top-0 left-0 right-0 h-1.5 ${isShiftFromPreviousDay ? "bg-gradient-to-r from-rose-500 to-amber-500" : "bg-gradient-to-r from-emerald-500 to-teal-500"}`} />
+            {isShiftFromPreviousDay && currentBranchShift ? (
+              <div className="text-center space-y-4">
+                <div className="w-14 h-14 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto">
+                  <ShieldAlert size={28} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">
+                    ตรวจพบกะค้างของวันก่อนหน้า ({getBranchShortName(activeShiftBranch.name)})
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                    มีกะลิ้นชักเงินสดของวันที่ <strong>{format(new Date(currentBranchShift.openedAt), "dd/MM/yyyy HH:mm")}</strong> (โดย {currentBranchShift.userName}) ที่ยังไม่ได้ปิดกะ
+                    กรุณาตรวจนับเงินสดในลิ้นชักและกดปิดกะเก่าก่อนเริ่มสร้างบิลหรือรับชำระเงินในวันนี้
+                  </p>
+                </div>
+                <div className="grid grid-cols-3 gap-2.5 bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 text-xs">
+                  <div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">เงินทอนตั้งต้น</div>
+                    <div className="font-black text-slate-800 mt-0.5">฿{currentBranchShift.startingCash.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">รับเงินสดในกะ</div>
+                    <div className="font-black text-emerald-600 mt-0.5">+฿{currentBranchShiftStats.cashSales.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">เงินสดควรมีในลิ้นชัก</div>
+                    <div className="font-black text-indigo-700 mt-0.5">฿{currentBranchShiftStats.expectedCash.toLocaleString()}</div>
+                  </div>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2.5 justify-center pt-1">
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      setShiftModalBranchId(activeShiftBranch.id);
+                      setActualCashInput("");
+                      setCloseShiftNotesInput("");
+                      setIsCloseShiftModalOpen(true);
+                    }}
+                    className="h-10 px-6 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl cursor-pointer shadow-md flex items-center justify-center gap-2"
+                  >
+                    <Banknote size={16} />
+                    <span>ปิดกะค้างและนับเงินสด (Close Pending Shift)</span>
+                  </Button>
+                  {isCsoOrAdmin && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setShiftSpectatorBypass(true)}
+                      className="h-10 px-4 text-xs font-bold text-slate-600 border-slate-200 rounded-xl cursor-pointer"
+                    >
+                      ดูบอร์ดงานก่อน (View Board)
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleOpenBranchShiftSubmit} className="space-y-4">
+                <div className="text-center">
+                  <div className="w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center mx-auto mb-3">
+                    <Banknote size={28} />
+                  </div>
+                  <h3 className="text-lg font-black text-slate-900">
+                    เปิดรอบลิ้นชักเงินสดประจำวัน ({getBranchShortName(activeShiftBranch.name)})
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    กรุณาระบุเงินทอนตั้งต้นในลิ้นชัก (Starting Float) เพื่อเปิดกะก่อนสร้างบิลหรือรับชำระเงินในระบบ All Jobs และ POS
+                  </p>
+                </div>
+
+                <div className="space-y-3 bg-slate-50/80 p-4 rounded-xl border border-slate-200/80">
+                  <div>
+                    <Label className="text-xs font-bold text-slate-700">
+                      เงินทอนเริ่มต้นในลิ้นชัก (Starting Cash Float ฿) *
+                    </Label>
+                    <div className="relative mt-1">
+                      <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">฿</span>
+                      <Input
+                        type="number"
+                        step="any"
+                        min="0"
+                        required
+                        placeholder="0.00"
+                        value={startingCashInput}
+                        onChange={(e) => setStartingCashInput(e.target.value)}
+                        className="pl-8 h-10 bg-white border-slate-200 font-black text-base text-slate-900 rounded-xl"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-xs font-bold text-slate-700">
+                      หมายเหตุเปิดกะ (Optional Notes)
+                    </Label>
+                    <Input
+                      type="text"
+                      placeholder="เช่น นับเงินทอนครบถ้วน..."
+                      value={openShiftNotesInput}
+                      onChange={(e) => setOpenShiftNotesInput(e.target.value)}
+                      className="mt-1 h-9 bg-white border-slate-200 text-xs rounded-xl"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2.5 justify-center pt-1">
+                  <Button
+                    type="submit"
+                    disabled={isShiftSubmitting}
+                    className="h-10 px-6 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl cursor-pointer shadow-md flex-1 flex items-center justify-center gap-2"
+                  >
+                    {isShiftSubmitting ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                    <span>เปิดกะและเริ่มงาน (Open Shift)</span>
+                  </Button>
+                  {isCsoOrAdmin && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setShiftSpectatorBypass(true)}
+                      className="h-10 px-4 text-xs font-bold text-slate-600 border-slate-200 rounded-xl cursor-pointer"
+                    >
+                      ดูบอร์ดงานอย่างเดียว (Spectator)
+                    </Button>
+                  )}
+                </div>
+              </form>
+            )}
+          </div>
+        )}
 
         {/* Clean Two-Row SaaS Command & Filter Bar */}
         <div className="bg-white rounded-2xl border border-slate-200/85 shadow-2xs p-3.5 space-y-3 print:hidden">
@@ -4447,6 +4938,196 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         customers={customers}
         onViewJob={onEditJob}
       />
+
+      {/* Open Cashier Shift Dialog (for All Jobs & Create/Pay Guard) */}
+      <Dialog open={isOpenShiftModalOpen} onOpenChange={setIsOpenShiftModalOpen}>
+        <DialogContent className="max-w-md p-5 bg-white border border-slate-200 shadow-2xl rounded-2xl">
+          <DialogHeader className="mb-2">
+            <DialogTitle className="text-base font-black text-slate-900 flex items-center gap-2">
+              <Banknote className="text-emerald-600" size={18} />
+              <span>เปิดรอบลิ้นชักเงินสด (Open Cashier Shift)</span>
+            </DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleOpenBranchShiftSubmit} className="space-y-4">
+            {shopLocations.filter(s => s.isPosEnabled).length > 1 && (
+              <div className="space-y-1.5">
+                <Label className="text-xs font-bold text-slate-700">สาขา (Branch)</Label>
+                <select
+                  value={modalTargetBranch?.id || ""}
+                  onChange={(e) => setShiftModalBranchId(e.target.value)}
+                  className="w-full h-9 px-3 text-xs font-bold border border-slate-200 rounded-xl bg-slate-50 text-slate-800 outline-none"
+                >
+                  {shopLocations.filter(s => s.isPosEnabled).map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {modalTargetBranch && (
+              <div className="px-3 py-2 rounded-xl bg-emerald-50/80 border border-emerald-200/80 text-xs font-bold text-emerald-900 flex items-center justify-between">
+                <span>สาขา: {getBranchShortName(modalTargetBranch.name)}</span>
+                <span>ผู้เปิดกะ: {(user as any)?.name || user?.email}</span>
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold text-slate-700">
+                เงินทอนเริ่มต้นในลิ้นชัก (Starting Float ฿) *
+              </Label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">฿</span>
+                <Input
+                  type="number"
+                  step="any"
+                  min="0"
+                  required
+                  placeholder="0.00"
+                  value={startingCashInput}
+                  onChange={(e) => setStartingCashInput(e.target.value)}
+                  className="pl-7 h-10 font-black text-base"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold text-slate-700">หมายเหตุเปิดกะ (Notes)</Label>
+              <Input
+                type="text"
+                placeholder="เช่น เงินทอนครบถ้วน..."
+                value={openShiftNotesInput}
+                onChange={(e) => setOpenShiftNotesInput(e.target.value)}
+                className="h-9 text-xs"
+              />
+            </div>
+            <DialogFooter className="pt-2 border-t border-slate-100 gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => setIsOpenShiftModalOpen(false)} className="h-9 rounded-xl text-xs font-bold cursor-pointer">
+                ยกเลิก
+              </Button>
+              <Button type="submit" disabled={isShiftSubmitting} className="h-9 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl cursor-pointer flex items-center gap-1.5">
+                {isShiftSubmitting ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                <span>ยืนยันเปิดกะลิ้นชัก</span>
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Close Cashier Shift & Drawer Summary Dialog */}
+      <Dialog open={isCloseShiftModalOpen} onOpenChange={setIsCloseShiftModalOpen}>
+        <DialogContent className="max-w-md p-5 bg-white border border-slate-200 shadow-2xl rounded-2xl">
+          <DialogHeader className="mb-2">
+            <DialogTitle className="text-base font-black text-slate-900 flex items-center gap-2">
+              <Banknote className="text-rose-600" size={18} />
+              <span>สรุปยอดลิ้นชักและปิดกะ (Close Shift Report)</span>
+            </DialogTitle>
+          </DialogHeader>
+          {modalTargetShift ? (
+            <form onSubmit={handleCloseBranchShiftSubmit} className="space-y-4">
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 space-y-2 text-xs font-semibold text-slate-700">
+                <div className="flex justify-between items-center text-[10.5px] text-slate-500 font-bold border-b border-slate-200 pb-1.5">
+                  <span>พนักงาน: {modalTargetShift.userName}</span>
+                  <span>เปิดเมื่อ: {format(new Date(modalTargetShift.openedAt), "dd/MM/yyyy HH:mm")}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">1. เงินทอนเริ่มต้น (Starting Float):</span>
+                  <span className="font-bold text-slate-900">฿{modalTargetShift.startingCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">2. ยอดรับเงินสดในกะ (Cash Sales):</span>
+                  <span className="font-bold text-emerald-600">+฿{modalShiftStats.cashSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+                <div className="flex justify-between font-black border-t border-dashed border-slate-300 pt-2 text-sm text-slate-900">
+                  <span>เงินสดที่ควรมีในลิ้นชัก (Expected Cash):</span>
+                  <span className="text-emerald-700">฿{modalShiftStats.expectedCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+
+                <div className="border-t border-slate-200 pt-2 mt-1 space-y-1 text-[11px]">
+                  <p className="text-slate-500 font-bold">ยอดรับชำระช่องทางอื่น (Non-Cash Sales):</p>
+                  <div className="flex justify-between text-slate-600">
+                    <span>• โอนเงิน / QR (Bank Transfer):</span>
+                    <span>฿{modalShiftStats.transferSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-600">
+                    <span>• บัตรเครดิต (Card):</span>
+                    <span>฿{modalShiftStats.cardSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-600">
+                    <span>• ตัดกระเป๋าสมาชิก (Member Wallet):</span>
+                    <span>฿{modalShiftStats.creditSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-200 pt-2 mt-1 flex items-center justify-between text-[11px] text-slate-700 font-bold">
+                  <span>จำนวนบิลที่รับชำระในกะนี้:</span>
+                  <span>
+                    {modalShiftStats.totalOrders} ออเดอร์ (หน้าร้าน {modalShiftStats.walkInOrders} • รับ-ส่ง {modalShiftStats.deliveryOrders})
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs font-bold text-slate-800">
+                  เงินสดนับจริงในลิ้นชัก (Actual Cash in Drawer ฿) *
+                </Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">฿</span>
+                  <Input
+                    type="number"
+                    step="any"
+                    min="0"
+                    required
+                    placeholder="0.00"
+                    value={actualCashInput}
+                    onChange={(e) => setActualCashInput(e.target.value)}
+                    className="pl-7 h-10 font-black text-base"
+                  />
+                </div>
+              </div>
+
+              {actualCashInput !== "" && !isNaN(parseFloat(actualCashInput)) && (() => {
+                const diff = parseFloat(actualCashInput) - modalShiftStats.expectedCash;
+                return (
+                  <div className="flex justify-between items-center text-xs font-bold rounded-xl p-2.5 border bg-slate-50">
+                    <span className="text-slate-600">ส่วนต่างลิ้นชัก (Variance):</span>
+                    {diff > 0 ? (
+                      <span className="text-blue-600 font-black">
+                        +฿{diff.toLocaleString(undefined, { minimumFractionDigits: 2 })} (เงินเกิน / Overage)
+                      </span>
+                    ) : diff < 0 ? (
+                      <span className="text-rose-600 font-black">
+                        ฿{diff.toLocaleString(undefined, { minimumFractionDigits: 2 })} (เงินขาด / Shortage)
+                      </span>
+                    ) : (
+                      <span className="text-emerald-600 font-black">฿0.00 (ยอดตรงพอดี / Balanced)</span>
+                    )}
+                  </div>
+                );
+              })()}
+
+              <div className="space-y-1.5">
+                <Label className="text-xs font-bold text-slate-800">หมายเหตุปิดกะ (Closing Notes)</Label>
+                <Input
+                  type="text"
+                  placeholder="เช่น ส่งยอดบัญชีเรียบร้อย..."
+                  value={closeShiftNotesInput}
+                  onChange={(e) => setCloseShiftNotesInput(e.target.value)}
+                  className="h-9 text-xs"
+                />
+              </div>
+
+              <DialogFooter className="pt-2 border-t border-slate-100 gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => setIsCloseShiftModalOpen(false)} className="h-9 rounded-xl text-xs font-bold cursor-pointer">
+                  ยกเลิก
+                </Button>
+                <Button type="submit" disabled={isShiftSubmitting} className="h-9 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl cursor-pointer flex items-center gap-1.5">
+                  {isShiftSubmitting ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                  <span>ยืนยันปิดกะลิ้นชัก</span>
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : (
+            <div className="py-6 text-center text-xs text-slate-500">ไม่พบรอบกะที่เปิดอยู่สำหรับสาขานี้</div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 });

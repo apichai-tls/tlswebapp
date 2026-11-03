@@ -659,7 +659,7 @@ export function AdminSettings() {
     if (isCorporateCatalog) {
       const validItems = customItems.filter(it => it.name.trim().length > 0);
       if (validItems.length === 0) {
-        toast.error("กรุณาระบุรายการสินค้าสำหรับสัญญานี้อย่างน้อย 1 รายการ");
+        toast.error("Please add at least 1 valid item to this corporate contract");
         return;
       }
 
@@ -676,10 +676,10 @@ export function AdminSettings() {
         });
         if (res?.isConflict && res?.latestPriceList) {
           applyPriceListToForm(res.latestPriceList);
-          toast.warning("แคตตาล็อกสัญญานี้ถูกแก้ไขโดยผู้ใช้อื่นเมื่อสักครู่ ระบบโหลดข้อมูลล่าสุดให้แล้ว กรุณาตรวจสอบก่อนบันทึกอีกครั้ง");
+          toast.warning("This corporate catalog was recently modified by another user. Latest data has been loaded—please review before saving again.");
           return;
         }
-        toast.success("อัปเดตแคตตาล็อกสัญญา Corporate สำเร็จ");
+        toast.success("Corporate B2B catalog updated");
       } else {
         await priceListStore.addPriceList({
           name: name.trim(),
@@ -687,14 +687,17 @@ export function AdminSettings() {
           customItems: validItems,
           servicePrices: {},
         });
-        toast.success("สร้างแคตตาล็อกสัญญา Corporate ใหม่สำเร็จ");
+        toast.success("Corporate B2B catalog created");
       }
     } else {
-      // Clean up: If override matches the base price, remove it so it inherits naturally
+      // Clean up: If override matches the base price or is obsolete/PACKAGE, remove it so it inherits naturally
       const cleanedServicePrices: Record<string, number> = {};
       for (const [serviceId, price] of Object.entries(servicePrices)) {
         const baseService = services.find(s => s.id === serviceId);
-        if (baseService && baseService.price === price) {
+        if (!baseService || baseService.category === "PACKAGE") {
+          continue;
+        }
+        if (baseService.price === price) {
           continue; // Inherit from base
         }
         cleanedServicePrices[serviceId] = price;
@@ -713,7 +716,7 @@ export function AdminSettings() {
         });
         if (res?.isConflict && res?.latestPriceList) {
           applyPriceListToForm(res.latestPriceList);
-          toast.warning("ตารางราคานี้ถูกแก้ไขโดยผู้ใช้อื่นเมื่อสักครู่ ระบบโหลดข้อมูลล่าสุดให้แล้ว กรุณาตรวจสอบก่อนบันทึกอีกครั้ง");
+          toast.warning("This price list was recently modified by another user. Latest data has been loaded—please review before saving again.");
           return;
         }
         toast.success("Price list updated");
@@ -1102,7 +1105,7 @@ export function AdminSettings() {
                       name: s.name,
                       nameEn: s.nameEn || null,
                       category: s.category || "GENERAL",
-                      unit: s.unit || "ชิ้น",
+                      unit: s.unit || "pcs",
                       price: s.price || 0,
                     }));
                   setCustomItems(initialItems);
@@ -1161,7 +1164,7 @@ export function AdminSettings() {
                           }`}>
                             <Tag size={12} className={isCorp ? 'text-amber-600' : 'text-slate-400'} />
                             <span>
-                              <strong className="font-black text-slate-900">{itemCount}</strong> {isCorp ? 'contract items (สินค้าตามสัญญา)' : 'overridden prices'}
+                              <strong className="font-black text-slate-900">{itemCount}</strong> {isCorp ? 'contract items' : 'overridden prices'}
                             </span>
                           </span>
                         </div>
@@ -2672,8 +2675,8 @@ export function AdminSettings() {
               </DialogTitle>
               <DialogDescription className="text-slate-300 text-sm mt-1">
                 {isCorporateCatalog 
-                  ? "กำหนดรายการสินค้าและราคาเฉพาะสัญญาสำหรับบริษัทนี้ สามารถเพิ่ม/ลบรายการและกำหนดราคาได้อย่างอิสระ" 
-                  : "กำหนดชื่อและราคา Override สำหรับบริการที่ต้องการ ช่องที่เว้นไว้จะใช้ราคามาตรฐานของร้าน"}
+                  ? "Define independent contract items and pricing exclusively for this corporate client. Add, remove, or customize items freely." 
+                  : "Configure custom price overrides for specific services. Unmodified items will automatically inherit the standard store base price."}
               </DialogDescription>
             </DialogHeader>
 
@@ -2682,7 +2685,7 @@ export function AdminSettings() {
                 {/* Catalog Type Switcher */}
                 <div className="space-y-2">
                   <Label className="text-xs font-black text-slate-400 uppercase tracking-widest">
-                    Catalog Type / ประเภทตารางราคา
+                    Catalog Type
                   </Label>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <button
@@ -2698,7 +2701,7 @@ export function AdminSettings() {
                               name: s.name,
                               nameEn: s.nameEn || null,
                               category: s.category || "GENERAL",
-                              unit: s.unit || "ชิ้น",
+                              unit: s.unit || "pcs",
                               price: servicePrices[s.id] ?? s.price ?? 0,
                             }));
                           setCustomItems(initialItems);
@@ -2722,7 +2725,7 @@ export function AdminSettings() {
                         )}
                       </div>
                       <p className="text-xs text-amber-900/80 leading-relaxed font-medium">
-                        ตารางสินค้าเฉพาะของบริษัทนี้ สามารถเพิ่ม/ลบรายการและกำหนดราคาเฉพาะสัญญาได้อิสระ
+                        Dedicated product catalog for this company. Freely add, remove, and set custom contract prices.
                       </p>
                     </button>
 
@@ -2747,7 +2750,7 @@ export function AdminSettings() {
                         )}
                       </div>
                       <p className="text-xs text-indigo-900/80 leading-relaxed font-medium">
-                        ใช้รายการสินค้าเดียวกับร้านทั้งหมด และกำหนดเฉพาะราคาลดพิเศษบางรายการ
+                        Uses the store's main service catalog with custom discounted overrides on selected items.
                       </p>
                     </button>
                   </div>
@@ -2774,17 +2777,17 @@ export function AdminSettings() {
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div>
                         <Label className="text-xs font-black text-slate-400 uppercase tracking-widest block mb-1">
-                          Contract Product Items (รายการสินค้าเฉพาะของบริษัทนี้)
+                          Contract Product Items
                         </Label>
                         <p className="text-xs text-slate-500 font-medium">
-                          ลบรายการที่ไม่ใช้ออกได้ หรือกดเพิ่มรายการใหม่เฉพาะของลูกค้ารายนี้ได้อิสระ
+                          Remove unused items or add custom items exclusive to this corporate contract.
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
                         <div className="relative">
                           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                           <Input
-                            placeholder="ค้นหารายการ..."
+                            placeholder="Search items..."
                             value={catalogSearch}
                             onChange={e => setCatalogSearch(e.target.value)}
                             className="h-9 pl-8 w-44 text-xs bg-white rounded-xl"
@@ -2798,15 +2801,15 @@ export function AdminSettings() {
                               name: "",
                               nameEn: "",
                               category: "B2B",
-                              unit: "ชิ้น",
+                              unit: "pcs",
                               price: 0,
                             };
                             setCustomItems(prev => [newItem, ...prev]);
-                            toast.success("เพิ่มแถวสินค้าใหม่แล้ว กรุณากรอกชื่อและราคา");
+                            toast.success("New item row added. Please enter item name and price.");
                           }}
                           className="h-9 px-3 text-xs bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl gap-1.5 shadow-sm cursor-pointer shrink-0"
                         >
-                          <Plus size={14} /> เพิ่มสินค้าเฉพาะบริษัท
+                          <Plus size={14} /> Add Contract Item
                         </Button>
                       </div>
                     </div>
@@ -2817,18 +2820,18 @@ export function AdminSettings() {
                           <thead className="bg-amber-50/70 border-b border-amber-200/60 text-[10px] uppercase font-black text-amber-950 tracking-wider sticky top-0 z-10">
                             <tr>
                               <th className="px-4 py-3 w-[45px]">#</th>
-                              <th className="px-4 py-3">ชื่อสินค้า / บริการเฉพาะ</th>
-                              <th className="px-4 py-3 w-[140px]">หมวดหมู่</th>
-                              <th className="px-4 py-3 w-[110px]">หน่วยนับ</th>
-                              <th className="px-4 py-3 w-[150px]">ราคาตามสัญญา (฿)</th>
-                              <th className="px-4 py-3 w-[60px] text-center">ลบ</th>
+                              <th className="px-4 py-3">Item / Service Name</th>
+                              <th className="px-4 py-3 w-[140px]">Category</th>
+                              <th className="px-4 py-3 w-[110px]">Unit</th>
+                              <th className="px-4 py-3 w-[150px]">Contract Price (฿)</th>
+                              <th className="px-4 py-3 w-[60px] text-center">Delete</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
                             {customItems.length === 0 ? (
                               <tr>
                                 <td colSpan={6} className="text-center py-10 text-slate-400 text-xs">
-                                  ยังไม่มีรายการสินค้าในสัญญานี้ กด "+ เพิ่มสินค้าเฉพาะบริษัท" เพื่อเริ่มสร้าง
+                                  No contract items yet. Click "+ Add Contract Item" to get started.
                                 </td>
                               </tr>
                             ) : (
@@ -2850,7 +2853,7 @@ export function AdminSettings() {
                                     </td>
                                     <td className="px-4 py-2.5">
                                       <Input
-                                        placeholder="ระบุชื่อสินค้า/บริการ e.g. ผ้าปูเตียง 350 เส้น"
+                                        placeholder="Enter item/service name, e.g. Bed Sheet 350 TC"
                                         value={item.name}
                                         onChange={e => {
                                           const val = e.target.value;
@@ -2880,7 +2883,7 @@ export function AdminSettings() {
                                     </td>
                                     <td className="px-4 py-2.5">
                                       <Input
-                                        placeholder="e.g. ผืน, ชิ้น"
+                                        placeholder="e.g. pcs, kg"
                                         value={item.unit || ""}
                                         onChange={e => {
                                           const val = e.target.value;
@@ -2921,7 +2924,7 @@ export function AdminSettings() {
                                           setCustomItems(prev => prev.filter((_, i) => i !== index));
                                         }}
                                         className="h-8 w-8 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer"
-                                        title="ลบรายการนี้ออกจากสัญญา"
+                                        title="Remove item from contract"
                                       >
                                         <Trash2 size={14} />
                                       </Button>
@@ -2933,7 +2936,7 @@ export function AdminSettings() {
                         </table>
                       </div>
                       <div className="p-3 bg-slate-50 border-t border-slate-200 text-xs font-bold text-slate-600 flex justify-between items-center">
-                        <span>จำนวนรายการในสัญญานี้: <strong className="text-amber-800">{customItems.length}</strong> รายการ</span>
+                        <span>Total items in this contract: <strong className="text-amber-800">{customItems.length}</strong> items</span>
                         <Button
                           type="button"
                           variant="outline"
@@ -2944,14 +2947,14 @@ export function AdminSettings() {
                               name: "",
                               nameEn: "",
                               category: "B2B",
-                              unit: "ชิ้น",
+                              unit: "pcs",
                               price: 0,
                             };
                             setCustomItems(prev => [...prev, newItem]);
                           }}
                           className="h-7 text-xs border-dashed border-amber-400 text-amber-800 hover:bg-amber-100 rounded-lg cursor-pointer"
                         >
-                          <Plus size={12} className="mr-1" /> เพิ่มอีก 1 รายการ
+                          <Plus size={12} className="mr-1" /> Add 1 More Item
                         </Button>
                       </div>
                     </div>
@@ -2961,7 +2964,20 @@ export function AdminSettings() {
                   /* STANDARD PRICE OVERRIDES TABLE                           */
                   /* ======================================================== */
                   <div className="space-y-3">
-                    <Label className="text-xs font-black text-slate-400 uppercase tracking-widest">Pricing Configuration</Label>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <Label className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                        Pricing Configuration ({services.filter(s => s.category !== "PACKAGE" && servicePrices[s.id] !== undefined && servicePrices[s.id] !== s.price).length} Overrides)
+                      </Label>
+                      <div className="relative w-full sm:w-64">
+                        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <Input
+                          placeholder="Search service name or category..."
+                          value={catalogSearch}
+                          onChange={e => setCatalogSearch(e.target.value)}
+                          className="h-9 pl-8 text-xs rounded-xl bg-white border-slate-200"
+                        />
+                      </div>
+                    </div>
                     <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
                       <table className="w-full text-sm text-left">
                         <thead className="bg-slate-100/50 border-b border-slate-200 text-[10px] uppercase font-black text-slate-500 tracking-wider">
@@ -2972,7 +2988,19 @@ export function AdminSettings() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {services.map(service => (
+                          {services
+                            .filter(service => service.category !== "PACKAGE")
+                            .filter(service => {
+                              if (!catalogSearch.trim()) return true;
+                              const q = catalogSearch.toLowerCase();
+                              return (
+                                service.name.toLowerCase().includes(q) ||
+                                (service.nameEn || "").toLowerCase().includes(q) ||
+                                (service.category || "").toLowerCase().includes(q) ||
+                                service.id.toLowerCase().includes(q)
+                              );
+                            })
+                            .map(service => (
                             <tr key={service.id} className="hover:bg-slate-50 transition-colors group">
                               <td className="px-6 py-4">
                                 <div className="font-bold text-slate-900 text-base">{service.name}</div>
@@ -3006,7 +3034,7 @@ export function AdminSettings() {
                                         });
                                       }}
                                       className="h-11 px-2.5 text-xs font-semibold text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl shrink-0 cursor-pointer"
-                                      title="รีเซ็ตกลับไปใช้ราคามาตรฐาน (Revert to Base Price)"
+                                      title="Revert to Base Price"
                                     >
                                       <RotateCcw size={12} className="mr-1" /> Revert
                                     </Button>
@@ -3030,7 +3058,7 @@ export function AdminSettings() {
             <DialogFooter className="p-6 border-t border-slate-100 bg-white shrink-0">
               <Button type="button" variant="ghost" onClick={() => setIsModalOpen(false)} className="h-12 rounded-xl px-6 font-semibold cursor-pointer">Cancel</Button>
               <Button type="submit" className="h-12 rounded-xl px-8 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-lg shadow-indigo-200 cursor-pointer">
-                {editingList ? "บันทึกสัญญา / ตารางราคา" : "สร้างสัญญา / ตารางราคา"}
+                {editingList ? "Save Price List" : "Create Price List"}
               </Button>
             </DialogFooter>
           </form>

@@ -29,9 +29,9 @@ export async function PATCH(req: NextRequest) {
 
     const body = await req.json();
     const riderId = body.riderId || body.id;
-    const { lat, lng } = body;
+    const { lat, lng, heartbeat } = body;
 
-    if (!riderId || typeof lat !== 'number' || typeof lng !== 'number') {
+    if (!riderId || (!heartbeat && (typeof lat !== 'number' || typeof lng !== 'number'))) {
       return NextResponse.json({ error: 'Missing riderId, lat, or lng' }, { status: 400 });
     }
 
@@ -40,13 +40,15 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Forbidden: Cannot update another rider location' }, { status: 403 });
     }
 
-    await prisma.rider.update({
-      where: { id: riderId },
-      data: {
-        currentLat: lat,
-        currentLng: lng,
-      },
-    });
+    if (typeof lat === 'number' && typeof lng === 'number') {
+      await prisma.rider.update({
+        where: { id: riderId },
+        data: {
+          currentLat: lat,
+          currentLng: lng,
+        },
+      });
+    }
     const gpsUpdatedAt = await recordRiderGpsTimestamp(riderId);
     riderLocationCache = null;
 
