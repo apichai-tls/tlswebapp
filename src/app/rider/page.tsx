@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { format, isToday, addDays, isSameDay, addMonths, isSameMonth, startOfDay, endOfDay, startOfMonth, endOfMonth } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
@@ -68,6 +68,7 @@ import {
 import { toast } from "sonner";
 import Link from "next/link";
 import { useAuth } from "@/providers/auth-provider";
+import { optimizeRiderRoute, calculateEstimatedDistanceKm } from "@/lib/route-optimizer";
 
 // Framer Motion variants
 const pageVariants = {
@@ -333,44 +334,44 @@ export interface RiderTask {
 }
 
 
-function RiderJobCard({ task, customer, onClick, showCommission, isHistory = false, branchName, processingBranchName }: { task: RiderTask, customer: any, onClick: () => void, showCommission: boolean, isHistory?: boolean, branchName?: string, processingBranchName?: string }) {
+function RiderJobCard({ task, customer, onClick, showCommission, isHistory = false, branchName, processingBranchName, stopNumber, distanceFromPrevKm }: { task: RiderTask, customer: any, onClick: () => void, showCommission: boolean, isHistory?: boolean, branchName?: string, processingBranchName?: string, stopNumber?: number, distanceFromPrevKm?: number }) {
   const job = task.job;
   const legType = task.legType;
   const customerIsVip = customer?.isVIP || false;
   const customerIsMember = customer?.isMember || false;
-  
+
   // Date parsing
   const displayDate = task.scheduledAt ? new Date(task.scheduledAt) : new Date();
-  const formattedTime = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(displayDate);
+  const formattedTime = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(displayDate);
   const targetLocation = task.targetLocation;
-  
-  // Format pure branch name (cut to max ~10 chars)
+
+  // Format pure branch name (compact single-line)
   const formattedBranch = (() => {
     if (!branchName) return null;
     const match = branchName.match(/\(([^)]+)\)/);
     const clean = match ? match[1].trim() : branchName.replace(/^That Laundry Shop\s*\(?/i, '').replace(/\)$/, '').trim();
-    return clean.length > 10 ? clean.slice(0, 10) + '...' : clean;
+    return clean.length > 14 ? clean.slice(0, 14) + '…' : clean;
   })();
 
   const formattedProcessingBranch = (() => {
     if (!processingBranchName || processingBranchName === branchName) return null;
     const match = processingBranchName.match(/\(([^)]+)\)/);
     const clean = match ? match[1].trim() : processingBranchName.replace(/^That Laundry Shop\s*\(?/i, '').replace(/\)$/, '').trim();
-    return clean.length > 12 ? clean.slice(0, 12) + '...' : clean;
+    return clean.length > 14 ? clean.slice(0, 14) + '…' : clean;
   })();
 
   // Parse Remark for specific tags
   const remarks = job.remark ? job.remark.split(" | ") : [];
   const isExpress50 = remarks.some(r => r.includes("Express 50%"));
   const isExpress100 = remarks.some(r => r.includes("Express 100%"));
-  
+
   // Find Leg specific instruction (Pickup / Delivery)
-  const legInstruction = remarks.find(r => 
-    legType === 'pickup' 
-      ? (r.startsWith('ไปรับ:') || r.startsWith('Pickup:')) 
+  const legInstruction = remarks.find(r =>
+    legType === 'pickup'
+      ? (r.startsWith('ไปรับ:') || r.startsWith('Pickup:'))
       : (r.startsWith('ไปส่ง:') || r.startsWith('Delivery:'))
   );
-  
+
   // Clean human remark string (filter out all system/billing tags)
   const cleanRemark = remarks.filter(r => {
     const t = r.trim();
@@ -391,154 +392,186 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
     return true;
   }).map(r => r.replace(/^Note:\s*/i, "").trim()).filter(Boolean).join(" | ");
 
+  const isWalkIn = job.source === 'pos' || (job.type as string) === 'in_store';
+  const isPaidEffective = isJobFullyPaid(job) || (isWalkIn ? Boolean(job.isShopPaid) : Boolean(job.isPaid));
+  const isCash = job.paymentChannel === "Cash / COD" || (job.paymentMethod || "").toLowerCase() === "cash";
+  const needsCashCollection = isCash && !isPaidEffective && legType === "delivery";
+
   return (
     <div
       onClick={onClick}
-      className={`rounded-xl overflow-hidden border shadow-sm cursor-pointer transition-all active:scale-[0.98] ${
-        legType === 'pickup' ? 'bg-amber-50 border-amber-200 hover:border-amber-400' : 'bg-emerald-50 border-emerald-200 hover:border-emerald-400'
+      className={`group relative rounded-2xl bg-white border border-slate-200/90 border-l-4 shadow-xs cursor-pointer transition-all hover:shadow-md active:scale-[0.99] overflow-hidden ${
+        legType === 'pickup'
+          ? 'border-l-amber-500 hover:border-amber-300'
+          : 'border-l-emerald-500 hover:border-emerald-300'
       } ${
-        (job.status === "completed" || isHistory) ? "opacity-70 grayscale-[0.2]" : "hover:shadow-md"
+        (job.status === "completed" || isHistory) ? "opacity-70 grayscale-[0.15]" : ""
       }`}
     >
-      <div className="pb-3 pt-3 px-4">
-        <div className="flex items-start justify-between mb-2">
-          <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-1.5 text-xs text-slate-500 font-semibold font-mono">
-              <span>#{job.id.split('-')[0].toUpperCase()}</span>
-              {formattedBranch && (
-                <>
-                  <span className="text-slate-300">•</span>
-                  <span 
-                    className="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide"
-                    title={branchName}
-                  >
-                    {formattedBranch}
+      <div className="p-3.5 space-y-2.5">
+        {/* Top Row: Stop Badge + Order ID + Branch on Left | Leg Type + Commission on Right */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+            {stopNumber && (
+              <span className="inline-flex items-center gap-1 bg-indigo-600 text-white text-[11px] font-black px-2 py-0.5 rounded-lg shadow-2xs whitespace-nowrap shrink-0">
+                <span>#{stopNumber}</span>
+                {distanceFromPrevKm !== undefined && (
+                  <span className="text-[10px] font-semibold text-indigo-100 border-l border-indigo-400/50 pl-1">
+                    +{distanceFromPrevKm} km
                   </span>
-                </>
-              )}
-              {formattedProcessingBranch && (
-                <span
-                  className="text-white bg-indigo-600 px-1.5 py-0.5 rounded text-[10px] font-black tracking-wide"
-                  title={`สาขาที่รับผ้า/ซัก: ${processingBranchName}`}
-                >
-                  ➔ {formattedProcessingBranch}
-                </span>
-              )}
-            </div>
-            <h3 className="text-base font-black text-slate-900 leading-tight flex items-center gap-1.5 flex-wrap">
-              {job.customerName || "Customer Guest"}
-              {customerIsVip && <span className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold flex items-center gap-1"><Crown size={12} className="fill-amber-500 text-amber-500"/> VIP</span>}
-              {!customerIsVip && customerIsMember && <span className="bg-indigo-100 text-indigo-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold">MEMBER</span>}
-            </h3>
-            
-            {/* Express Badges & Service Type */}
-            <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-              {(isExpress50 || isExpress100) && (
-                <>
-                  {isExpress50 && <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-orange-200 flex items-center gap-1"><Zap size={10} className="fill-orange-500" /> EXP 50%</span>}
-                  {isExpress100 && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-red-200 flex items-center gap-1"><Zap size={10} className="fill-red-500" /> EXP 100%</span>}
-                </>
-              )}
-              {job.laundryTypes && job.laundryTypes.length > 0 && (
-                <span className="bg-cyan-50 text-cyan-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-cyan-200 flex items-center gap-1">
-                  <Layers size={10} />
-                  {job.laundryTypes.map(t => t.toUpperCase()).join(', ')}
-                </span>
-              )}
-              {job.subStatus === 'billing' && <span className="bg-violet-100 text-violet-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-violet-200 flex items-center gap-1"><Receipt size={10} /> BILL</span>}
-              {job.subStatus === 'wash' && <span className="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-blue-200 flex items-center gap-1"><Droplets size={10} /> WASH</span>}
-              {job.subStatus === 'dry' && <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-orange-200 flex items-center gap-1"><Wind size={10} /> DRY</span>}
-              {job.subStatus === 'iron' && <span className="bg-indigo-100 text-indigo-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-indigo-200 flex items-center gap-1"><Shirt size={10} /> IRON</span>}
-              {job.subStatus === 'ready' && <span className="bg-emerald-100 text-emerald-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-emerald-200 flex items-center gap-1"><CheckCircle2 size={10} /> READY</span>}
-              {(() => {
-                const packing = getJobPackingCounts(job);
-                if (packing.hangerCount <= 0 && packing.foldedCount <= 0) return null;
-                return (
-                  <>
-                    {packing.hangerCount > 0 && (
-                      <span className="bg-transparent text-indigo-600 text-[13px] leading-tight px-2 py-0.5 rounded-md font-black border border-indigo-300">
-                        {packing.hangerCount}H
-                      </span>
-                    )}
-                    {packing.foldedCount > 0 && (
-                      <span className="bg-transparent text-emerald-600 text-[13px] leading-tight px-2 py-0.5 rounded-md font-black border border-emerald-300">
-                        {packing.foldedCount}F
-                      </span>
-                    )}
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-          
-          <div className="flex flex-col items-end gap-1 shrink-0">
-            <div className="flex items-center gap-1">
-              {(() => {
-                const isPaidEffective = isJobFullyPaid(job) || Boolean(job.isPaid);
-                const isCash = job.paymentChannel === "Cash / COD" || (job.paymentMethod || "").toLowerCase() === "cash";
-                if (isCash && !isPaidEffective && legType === "delivery") {
-                  return (
-                    <span className="flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border bg-red-50 text-red-600 border-red-200 animate-in fade-in duration-200">
-                      <Banknote size={10} className="text-red-500" />
-                      เก็บเงินสด{job.totalAmount ? ` ฿${Math.round(job.totalAmount).toLocaleString()}` : ""}
-                    </span>
-                  );
-                }
-                return null;
-              })()}
-              <span
-                className={`flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border ${legType === 'pickup' ? 'bg-amber-100 text-amber-700 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'}`}
-              >
-                {legType === 'pickup' ? <Package size={10} /> : <Truck size={10} />}
-                {legType.toUpperCase()}
+                )}
               </span>
-            </div>
+            )}
+            <span className="text-xs font-bold font-mono text-slate-500 whitespace-nowrap">
+              #{job.id.split('-')[0].toUpperCase()}
+            </span>
+            {formattedBranch && (
+              <span
+                className="text-slate-600 bg-slate-100 border border-slate-200/80 px-1.5 py-0.5 rounded-md text-[10px] font-bold whitespace-nowrap truncate max-w-[115px]"
+                title={branchName}
+              >
+                {formattedBranch}
+              </span>
+            )}
+            {formattedProcessingBranch && (
+              <span
+                className="text-white bg-indigo-600 px-1.5 py-0.5 rounded-md text-[10px] font-black whitespace-nowrap truncate max-w-[115px]"
+                title={`สาขาที่รับผ้า/ซัก: ${processingBranchName}`}
+              >
+                ➔ {formattedProcessingBranch}
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span
+              className={`inline-flex items-center gap-1 text-[10px] font-extrabold py-0.5 px-2 rounded-lg border whitespace-nowrap ${
+                legType === 'pickup'
+                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                  : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+              }`}
+            >
+              {legType === 'pickup' ? <Package size={11} /> : <Truck size={11} />}
+              {legType.toUpperCase()}
+            </span>
             {showCommission && (
-              <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-100 mt-0.5">
-                ฿{task.commission}
+              <span className="text-[11px] font-black text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded-lg border border-emerald-200 whitespace-nowrap">
+                +฿{task.commission}
               </span>
             )}
           </div>
         </div>
-        
-        <div className="flex items-center gap-2 text-slate-500 mt-1">
-          <Clock size={14} className="text-blue-500 shrink-0" />
-          <span className="text-xs font-bold text-slate-700">{formattedTime}</span>
+
+        {/* Row 2: Customer Name + Tier Badges + Service Tags */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+            <h3 className="text-[15px] font-black text-slate-900 leading-snug truncate">
+              {job.customerName || "Customer Guest"}
+            </h3>
+            {customerIsVip && (
+              <span className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded-md font-extrabold inline-flex items-center gap-0.5 whitespace-nowrap">
+                <Crown size={11} className="fill-amber-500 text-amber-500" /> VIP
+              </span>
+            )}
+            {!customerIsVip && customerIsMember && (
+              <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] px-1.5 py-0.5 rounded-md font-extrabold whitespace-nowrap">
+                MEMBER
+              </span>
+            )}
+          </div>
+
+          {/* Service & Packing Pills */}
+          <div className="flex items-center gap-1 flex-wrap">
+            {isExpress50 && (
+              <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-orange-200 inline-flex items-center gap-0.5 whitespace-nowrap">
+                <Zap size={10} className="fill-orange-500" /> EXP 50%
+              </span>
+            )}
+            {isExpress100 && (
+              <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-red-200 inline-flex items-center gap-0.5 whitespace-nowrap">
+                <Zap size={10} className="fill-red-500" /> EXP 100%
+              </span>
+            )}
+            {job.laundryTypes && job.laundryTypes.length > 0 && (
+              <span className="bg-cyan-50 text-cyan-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-cyan-200 inline-flex items-center gap-1 whitespace-nowrap">
+                <Layers size={10} />
+                {job.laundryTypes.map(t => t.toUpperCase()).join(', ')}
+              </span>
+            )}
+            {job.subStatus === 'billing' && <span className="bg-violet-50 text-violet-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-violet-200 inline-flex items-center gap-0.5 whitespace-nowrap"><Receipt size={10} /> BILL</span>}
+            {job.subStatus === 'wash' && <span className="bg-blue-50 text-blue-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-blue-200 inline-flex items-center gap-0.5 whitespace-nowrap"><Droplets size={10} /> WASH</span>}
+            {job.subStatus === 'dry' && <span className="bg-orange-50 text-orange-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-orange-200 inline-flex items-center gap-0.5 whitespace-nowrap"><Wind size={10} /> DRY</span>}
+            {job.subStatus === 'iron' && <span className="bg-indigo-50 text-indigo-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-indigo-200 inline-flex items-center gap-0.5 whitespace-nowrap"><Shirt size={10} /> IRON</span>}
+            {job.subStatus === 'ready' && <span className="bg-emerald-50 text-emerald-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-emerald-200 inline-flex items-center gap-0.5 whitespace-nowrap"><CheckCircle2 size={10} /> READY</span>}
+            {(() => {
+              const packing = getJobPackingCounts(job);
+              if (packing.hangerCount <= 0 && packing.foldedCount <= 0) return null;
+              return (
+                <>
+                  {packing.hangerCount > 0 && (
+                    <span className="bg-indigo-50 text-indigo-700 text-[11px] px-1.5 py-0.5 rounded-md font-black border border-indigo-200 whitespace-nowrap">
+                      {packing.hangerCount}H
+                    </span>
+                  )}
+                  {packing.foldedCount > 0 && (
+                    <span className="bg-emerald-50 text-emerald-700 text-[11px] px-1.5 py-0.5 rounded-md font-black border border-emerald-200 whitespace-nowrap">
+                      {packing.foldedCount}F
+                    </span>
+                  )}
+                </>
+              );
+            })()}
+          </div>
         </div>
 
-        <div className="flex flex-col gap-1 text-slate-500 mt-2">
-          {legInstruction && (
-            <div className="flex items-start gap-2 bg-orange-50 p-1.5 rounded-md border border-orange-100 mb-1">
-              <Info size={14} className="text-orange-600 shrink-0 mt-0.5" />
-              <span className="text-xs font-bold text-orange-800 leading-tight">{legInstruction}</span>
-            </div>
-          )}
-          <div className="flex items-start gap-2">
-            <MapPin size={14} className="text-red-500 shrink-0 mt-0.5" />
-            <span className="text-sm font-medium text-slate-700 line-clamp-2">{targetLocation}</span>
+        {/* Row 3: Special Instruction Callout (if any) */}
+        {legInstruction && (
+          <div className="flex items-center gap-2 bg-amber-50/90 px-2.5 py-1.5 rounded-xl border border-amber-200/80">
+            <Info size={14} className="text-amber-600 shrink-0" />
+            <span className="text-xs font-bold text-amber-900 leading-snug">{legInstruction}</span>
           </div>
-          
-          {!!job.totalAmount && job.totalAmount > 0 && (() => {
-            const isWalkIn = job.source === 'pos' || (job.type as string) === 'in_store';
-            const isPaidEffective = isWalkIn ? Boolean(job.isShopPaid) : Boolean(job.isPaid);
-            const isCash = job.paymentChannel === "Cash / COD" || (job.paymentMethod || "").toLowerCase() === "cash";
-            return (
-              <div className="flex items-center gap-2 mt-1">
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border flex items-center gap-1 ${
-                  isPaidEffective ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-orange-50 text-orange-700 border-orange-200'
-                }`}>
-                  <CreditCard size={10} className={isPaidEffective ? "text-emerald-500" : "text-orange-500"} />
-                  {[job.paymentMethod?.toUpperCase(), job.paymentChannel ? `(${job.paymentChannel})` : ""].filter(Boolean).join(" ")}
-                  {job.paymentMethod || job.paymentChannel ? " - " : ""}
-                  {isPaidEffective ? 'PAID' : (isCash && legType === 'pickup' ? 'COD (ชำระปลายทาง)' : 'UNPAID')} ฿{job.totalAmount}
+        )}
+
+        {/* Row 4: Destination & Schedule + Payment Box */}
+        <div className="bg-slate-50/90 rounded-xl p-2.5 border border-slate-100 space-y-2">
+          <div className="flex items-start gap-2">
+            <MapPin size={15} className="text-rose-500 shrink-0 mt-0.5" />
+            <span className="text-[13px] font-bold text-slate-800 leading-snug line-clamp-2">
+              {targetLocation}
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-200/60 flex-wrap">
+            <div className="flex items-center gap-1.5 text-slate-600">
+              <Clock size={13} className="text-indigo-500 shrink-0" />
+              <span className="text-xs font-bold text-slate-700">{formattedTime}</span>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              {needsCashCollection && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-extrabold py-0.5 px-2 rounded-md border bg-rose-50 text-rose-700 border-rose-200 whitespace-nowrap">
+                  <Banknote size={11} className="text-rose-600" />
+                  เก็บเงินสด{job.totalAmount ? ` ฿${Math.round(job.totalAmount).toLocaleString()}` : ""}
                 </span>
-              </div>
-            );
-          })()}
+              )}
+              {!!job.totalAmount && job.totalAmount > 0 && (
+                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border inline-flex items-center gap-1 whitespace-nowrap ${
+                  isPaidEffective
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    : 'bg-amber-50 text-amber-800 border-amber-200'
+                }`}>
+                  <CreditCard size={10} className={isPaidEffective ? "text-emerald-600" : "text-amber-600"} />
+                  <span>
+                    {isPaidEffective ? 'PAID' : (isCash && legType === 'pickup' ? 'COD' : 'UNPAID')} ฿{Math.round(job.totalAmount).toLocaleString()}
+                  </span>
+                </span>
+              )}
+            </div>
+          </div>
         </div>
 
         {cleanRemark && (
-          <div className="flex items-start gap-2 text-slate-500 mt-2 bg-rose-50 p-2 rounded-lg border border-rose-100">
+          <div className="flex items-start gap-2 bg-rose-50/80 px-2.5 py-1.5 rounded-xl border border-rose-100">
             <span className="text-xs font-semibold text-rose-700 line-clamp-2">{cleanRemark}</span>
           </div>
         )}
@@ -813,8 +846,21 @@ export default function RiderPage() {
     window.location.href = "/login";
   };
 
+  const [selectedPreviewRiderId, setSelectedPreviewRiderId] = useState<string>("");
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const qRider = params.get("riderId") || params.get("rider");
+      if (qRider) {
+        const matched = riders.find(r => r.id === qRider || r.name.toLowerCase().includes(qRider.toLowerCase()) || (r.nickname && r.nickname.toLowerCase().includes(qRider.toLowerCase())));
+        if (matched) setSelectedPreviewRiderId(matched.id);
+      }
+    }
+  }, [riders]);
+
   // Active Rider context
-  const activeRider = riders.find(r => r.id === user?.id) || riders.find(r => r.id === "RIDER-01");
+  const activeRider = (selectedPreviewRiderId && riders.find(r => r.id === selectedPreviewRiderId)) || riders.find(r => r.id === user?.id) || riders.find(r => r.id === "RIDER-01") || riders[0];
   const riderBranch = shopLocations.find(s => s.id === activeRider?.branchId);
   const showCommission = !riderBranch?.noCommission;
 
@@ -873,6 +919,11 @@ export default function RiderPage() {
     window.addEventListener("touchstart", handleUserActivity, { passive: true });
     window.addEventListener("scroll", handleUserActivity, { passive: true });
     window.addEventListener("click", handleUserActivity, { passive: true });
+
+    if (typeof window !== "undefined" && "caches" in window) {
+      caches.delete("tls-cache").catch(() => {});
+    }
+    api.reconcileDelta(0).catch(() => {});
 
     const interval = setInterval(() => {
       if (document.visibilityState === "hidden") {
@@ -1195,6 +1246,10 @@ export default function RiderPage() {
     });
   }
 
+  const [routeSortMode, setRouteSortMode] = useState<"time" | "optimized">("optimized");
+  const [showRouteTimeline, setShowRouteTimeline] = useState<boolean>(false);
+  const [isDemoPreviewMode, setIsDemoPreviewMode] = useState<boolean>(false);
+
   const myJobs = allTasks
     .filter(t => {
       if (!t.isActive || t.isCompleted) return false;
@@ -1218,6 +1273,208 @@ export default function RiderPage() {
       return true;
     })
     .sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
+
+  const effectiveMyJobs: RiderTask[] = useMemo(() => {
+    if (!isDemoPreviewMode) return myJobs;
+    const baseDate = new Date();
+    const mkTime = (h: number, m: number) => {
+      const d = new Date(baseDate);
+      d.setHours(h, m, 0, 0);
+      return d;
+    };
+    const demoStops: RiderTask[] = [
+      {
+        taskId: "DEMO-1-delivery",
+        legType: "delivery",
+        isCompleted: false,
+        isActive: true,
+        scheduledAt: mkTime(10, 0),
+        targetLocation: "Park Origin Thonglor (Room 4011 ตึก B)",
+        targetCoords: { lat: 13.7317104, lng: 100.5848328 },
+        distance: 3.8,
+        commission: 12,
+        job: {
+          id: "DEMO-01",
+          customerName: "ZAIF (DEMO)",
+          customerPhone: "081-000-0001",
+          pickupLocation: "That Laundry Shop (15 Sukhumvit)",
+          dropoffLocation: "Park Origin Thonglor (Room 4011 ตึก B)",
+          dropoffCoords: { lat: 13.7317104, lng: 100.5848328 },
+          status: "delivery",
+          subStatus: "wash",
+          laundryTypes: ["kilo"],
+          totalAmount: 543,
+          isPaid: true,
+          paymentMethod: "card",
+          paymentChannel: "Beam Checkout",
+          remark: "Delivery: Leave at Lobby",
+          scheduledAt: mkTime(10, 0),
+          createdAt: baseDate,
+        } as any,
+      },
+      {
+        taskId: "DEMO-2-delivery",
+        legType: "delivery",
+        isCompleted: false,
+        isActive: true,
+        scheduledAt: mkTime(11, 0),
+        targetLocation: "15 Sukhumvit Residences (Room 1204)",
+        targetCoords: { lat: 13.7418765, lng: 100.5580877 },
+        distance: 0.4,
+        commission: 6,
+        job: {
+          id: "DEMO-02",
+          customerName: "RAJKUMAR.K (DEMO)",
+          customerPhone: "081-000-0002",
+          pickupLocation: "That Laundry Shop (15 Sukhumvit)",
+          dropoffLocation: "15 Sukhumvit Residences (Room 1204)",
+          dropoffCoords: { lat: 13.7418765, lng: 100.5580877 },
+          status: "delivery",
+          subStatus: "iron",
+          laundryTypes: ["kilo", "dry"],
+          totalAmount: 904,
+          isPaid: true,
+          paymentMethod: "card",
+          paymentChannel: "Credit Card",
+          remark: "Delivery: Meet up",
+          scheduledAt: mkTime(11, 0),
+          createdAt: baseDate,
+        } as any,
+      },
+      {
+        taskId: "DEMO-3-delivery",
+        legType: "delivery",
+        isCompleted: false,
+        isActive: true,
+        scheduledAt: mkTime(12, 0),
+        targetLocation: "NIA by Sansiri Phra Khanong (Room 99)",
+        targetCoords: { lat: 13.7149103, lng: 100.6000502 },
+        distance: 6.8,
+        commission: 18,
+        job: {
+          id: "DEMO-03",
+          customerName: "RYU (DEMO)",
+          customerPhone: "081-000-0003",
+          pickupLocation: "That Laundry Shop (15 Sukhumvit)",
+          dropoffLocation: "NIA by Sansiri Phra Khanong (Room 99)",
+          dropoffCoords: { lat: 13.7149103, lng: 100.6000502 },
+          status: "delivery",
+          subStatus: "wash",
+          laundryTypes: ["kilo", "others"],
+          totalAmount: 836,
+          isPaid: true,
+          paymentMethod: "transfer",
+          paymentChannel: "PromptPay",
+          remark: "Delivery: Leave at Lobby",
+          scheduledAt: mkTime(12, 0),
+          createdAt: baseDate,
+        } as any,
+      },
+      {
+        taskId: "DEMO-4-delivery",
+        legType: "delivery",
+        isCompleted: false,
+        isActive: true,
+        scheduledAt: mkTime(13, 0),
+        targetLocation: "Novotel Living Sukhumvit Legacy Soi 29 (Room 2102)",
+        targetCoords: { lat: 13.7352048, lng: 100.5654247 },
+        distance: 1.4,
+        commission: 6,
+        job: {
+          id: "DEMO-04",
+          customerName: "LEGACY SUIT (DEMO)",
+          customerPhone: "081-000-0004",
+          pickupLocation: "That Laundry Shop (15 Sukhumvit)",
+          dropoffLocation: "Novotel Living Sukhumvit Legacy Soi 29 (Room 2102)",
+          dropoffCoords: { lat: 13.7352048, lng: 100.5654247 },
+          status: "delivery",
+          subStatus: "ready",
+          laundryTypes: ["linens"],
+          totalAmount: 650,
+          isPaid: true,
+          paymentMethod: "transfer",
+          paymentChannel: "PromptPay",
+          remark: "Delivery: Leave at Lobby",
+          scheduledAt: mkTime(13, 0),
+          createdAt: baseDate,
+        } as any,
+      },
+      {
+        taskId: "DEMO-5-delivery",
+        legType: "delivery",
+        isCompleted: false,
+        isActive: true,
+        scheduledAt: mkTime(14, 0),
+        targetLocation: "Raveevan Space Sukhumvit 39 (Room 6A)",
+        targetCoords: { lat: 13.7399234, lng: 100.570521 },
+        distance: 2.1,
+        commission: 6,
+        job: {
+          id: "DEMO-05",
+          customerName: "PETYA TZUMAN (DEMO)",
+          customerPhone: "081-000-0005",
+          pickupLocation: "That Laundry Shop (15 Sukhumvit)",
+          dropoffLocation: "Raveevan Space Sukhumvit 39 (Room 6A)",
+          dropoffCoords: { lat: 13.7399234, lng: 100.570521 },
+          status: "delivery",
+          subStatus: "wash",
+          laundryTypes: ["linens"],
+          totalAmount: 723,
+          isPaid: true,
+          paymentMethod: "credit",
+          paymentChannel: "Deduct Member",
+          remark: "Delivery: Leave at Lobby",
+          scheduledAt: mkTime(14, 0),
+          createdAt: baseDate,
+        } as any,
+      },
+    ];
+    return demoStops;
+  }, [isDemoPreviewMode, myJobs]);
+
+  // Optimize rider route from their live GPS coordinates (or assigned branch)
+  const riderOrigin = activeRider?.currentLocation || (activeRider?.branchId ? shopLocations.find(s => s.id === activeRider.branchId)?.coords : null) || { lat: 13.736717, lng: 100.523186 };
+
+  const optimizedRouteResult = useMemo(() => {
+    return optimizeRiderRoute(riderOrigin, effectiveMyJobs);
+  }, [riderOrigin, effectiveMyJobs]);
+
+  const chronologicalRouteMeta = useMemo(() => {
+    let totalKm = 0;
+    let prev = riderOrigin;
+    const items = effectiveMyJobs.map((task, idx) => {
+      const coords = task.targetCoords || prev;
+      const dist = calculateEstimatedDistanceKm(prev, coords);
+      totalKm = Math.round((totalKm + dist) * 10) / 10;
+      prev = coords;
+      return {
+        ...task,
+        stopNumber: idx + 1,
+        distanceFromPrevKm: dist,
+      };
+    });
+    return { items, totalDistanceKm: totalKm };
+  }, [riderOrigin, effectiveMyJobs]);
+
+  const routeSavedKm = useMemo(() => {
+    return Math.max(0, Math.round((chronologicalRouteMeta.totalDistanceKm - optimizedRouteResult.totalDistanceKm) * 10) / 10);
+  }, [chronologicalRouteMeta.totalDistanceKm, optimizedRouteResult.totalDistanceKm]);
+
+  const routeSavedPercent = useMemo(() => {
+    if (chronologicalRouteMeta.totalDistanceKm <= 0 || routeSavedKm <= 0) return 0;
+    return Math.round((routeSavedKm / chronologicalRouteMeta.totalDistanceKm) * 100);
+  }, [chronologicalRouteMeta.totalDistanceKm, routeSavedKm]);
+
+  const displayActiveJobs: (RiderTask & { stopNumber?: number; distanceFromPrevKm?: number })[] = useMemo(() => {
+    if (routeSortMode === "optimized" && optimizedRouteResult.orderedTasks.length > 0) {
+      return optimizedRouteResult.orderedTasks.map((item) => ({
+        ...item.task,
+        stopNumber: item.stopNumber,
+        distanceFromPrevKm: item.distanceFromPrevKm,
+      }));
+    }
+    return chronologicalRouteMeta.items;
+  }, [routeSortMode, optimizedRouteResult, chronologicalRouteMeta]);
 
   const historyJobs = allTasks
     .filter(t => {
@@ -1450,7 +1707,7 @@ export default function RiderPage() {
   }
 
   return (
-    <ProtectedRoute allowedRole="rider">
+    <ProtectedRoute allowedRole={["rider", "admin"]}>
       <input 
         type="file" 
         accept="image/*" 
@@ -1471,99 +1728,129 @@ export default function RiderPage() {
         exit="exit"
         key="rider-page"
       >
-        {/* Mobile Container */}
-        <div className="mx-auto max-w-md min-h-screen flex flex-col shadow-2xl bg-white">
-          {/* Header */}
-          <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-slate-100 shadow-sm pt-4 pb-4 px-4">
-            <div className="flex items-start justify-between">
-              {/* Left Side: Logo & Back */}
-              <div className="flex flex-col items-start gap-4">
-                <button onClick={handleLogout} className="text-red-500 hover:text-red-600 transition-colors flex items-center gap-1 text-xs font-bold uppercase tracking-widest pl-1 cursor-pointer py-1">
-                  <LogOut size={12} /> Logout
-                </button>
-                <Logo className="h-[38px] w-auto ml-1" />
+        {/* Admin Rider Preview Bar */}
+        {user?.role === "admin" && (
+          <div className="bg-slate-900 text-white sticky top-0 z-[100] border-b border-slate-800 shadow-sm">
+            <div className="max-w-md mx-auto px-3.5 py-2 flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-1.5 font-bold shrink-0 text-slate-300">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Rider View:</span>
               </div>
+              <div className="flex items-center gap-2 min-w-0 flex-1 justify-end">
+                <select
+                  value={activeRider?.id || ""}
+                  onChange={(e) => setSelectedPreviewRiderId(e.target.value)}
+                  className="bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs px-2.5 py-1 rounded-lg border border-slate-700 focus:outline-none cursor-pointer truncate max-w-[220px] transition-colors"
+                >
+                  {riders.map((r) => {
+                    const count = jobs.filter(j =>
+                      (j.pickupRiderId === r.id && ["pending", "accepted", "pickup"].includes(j.status)) ||
+                      ((j.deliveryRiderId === r.id || (!j.deliveryRiderId && j.riderId === r.id)) && ["washed", "delivery"].includes(j.status) && !j.isStuck)
+                    ).length;
+                    const label = r.nickname ? `${r.nickname} (${r.name})` : r.name;
+                    return (
+                      <option key={r.id} value={r.id}>
+                        {count > 0 ? `🟢 ${label} — ${count} stops` : label}
+                      </option>
+                    );
+                  })}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setIsDemoPreviewMode((v) => !v)}
+                  className={`text-[10.5px] font-extrabold px-2 py-1 rounded-md border shrink-0 transition-colors cursor-pointer ${
+                    isDemoPreviewMode
+                      ? "bg-amber-500 text-slate-950 border-amber-400"
+                      : "bg-slate-800 text-amber-300 border-slate-700 hover:bg-slate-700"
+                  }`}
+                  title="Preview 5 mock stops in browser memory without touching the database"
+                >
+                  {isDemoPreviewMode ? "🧪 Demo: ON" : "🧪 Demo"}
+                </button>
+                <Link href="/admin" className="text-[11px] font-bold text-indigo-300 hover:text-white px-2 py-1 rounded-md bg-slate-800/80 border border-slate-700 shrink-0 transition-colors">
+                  Admin
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
 
-              {/* Right Side: Rider Info Stacked */}
-              <div className="flex gap-3 text-right">
-                <div className="flex flex-col items-end justify-center pt-1">
-                  <h3 className="font-bold text-slate-900 text-base leading-tight">{activeRider?.name || "Rider"}</h3>
-                  <div className="flex items-center gap-1.5 mt-1">
-                    <span className="uppercase text-xs font-bold tracking-wider text-slate-500 bg-slate-100 px-2 py-0.5 rounded">{activeRider?.vehiclePlate || "1กข 1234"}</span>
-                    <span className="text-xs text-amber-500 font-bold">★ {activeRider?.rating.toFixed(1) || "5.0"}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 mt-1.5 justify-end flex-wrap">
-                    {(() => {
-                      const saveEntries = Object.values(realtimeState.jobSaveStates || {});
-                      const isSavingAny = saveEntries.some(s => s.status === 'saving');
-                      const isFailedAny = saveEntries.some(s => s.status === 'failed' || s.status === 'conflict');
-                      const conn = realtimeState.connectionStatus;
-                      if (isSavingAny) {
-                        return (
-                          <span className="flex items-center gap-1 text-[10px] uppercase font-bold text-sky-700 bg-sky-50 border border-sky-200 px-1.5 py-0.5 rounded">
-                            <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-ping" /> Saving...
-                          </span>
-                        );
-                      }
-                      if (isFailedAny) {
-                        return (
-                          <span className="flex items-center gap-1 text-[10px] uppercase font-bold text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
-                            Save Failed
-                          </span>
-                        );
-                      }
-                      if (conn === 'connected') {
-                        return (
-                          <span className="flex items-center gap-1 text-[10px] uppercase font-bold text-emerald-700 bg-emerald-50 border border-emerald-200/70 px-1.5 py-0.5 rounded">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Live
-                          </span>
-                        );
-                      }
-                      if (conn === 'reconnecting' || conn === 'connecting' || conn === 'fallback_polling') {
-                        return (
-                          <span className="flex items-center gap-1 text-[10px] uppercase font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" /> Syncing
-                          </span>
-                        );
-                      }
-                      return (
-                        <span className="flex items-center gap-1 text-[10px] uppercase font-bold text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
-                          Offline
-                        </span>
-                      );
-                    })()}
-                    {gpsActive && activeRider?.status !== 'offline' && (
-                      <span className="flex items-center gap-1 mr-1 text-[10px] uppercase font-bold text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded">
-                        <MapPin size={10} className="animate-pulse" /> GPS ON
-                      </span>
-                    )}
-                    <div className={`h-2 w-2 rounded-full ${
-                      activeRider?.status === 'online' ? 'bg-emerald-500 animate-pulse' :
-                      activeRider?.status === 'busy' ? 'bg-amber-500 animate-pulse' : 'bg-slate-400'
-                    }`} />
-                    <span className={`text-xs font-bold uppercase tracking-wider ${
-                      activeRider?.status === 'online' ? 'text-emerald-600' :
-                      activeRider?.status === 'busy' ? 'text-amber-600' : 'text-slate-500'
-                    }`}>{activeRider?.status || "Offline"}</span>
-                  </div>
-                </div>
-
-                <button 
+        {/* Mobile Container */}
+        <div className="mx-auto max-w-md min-h-screen flex flex-col shadow-xl bg-slate-50/70">
+          {/* Redesigned App Header */}
+          <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              {/* Left: Rider Avatar & Identity */}
+              <div className="flex items-center gap-3 min-w-0">
+                <button
                   onClick={toggleRiderStatus}
-                  className="relative group transition-transform hover:scale-105 active:scale-95 shrink-0"
+                  className="relative group transition-transform hover:scale-105 active:scale-95 shrink-0 cursor-pointer"
+                  title="Tap to toggle Online / Offline"
                 >
                   <motion.div
-                    className={`h-12 w-12 rounded-full flex items-center justify-center text-white font-bold text-sm shadow-md overflow-hidden border-[2.5px] bg-white ${
-                      activeRider?.status === 'online' ? 'border-emerald-500' :
-                      activeRider?.status === 'busy' ? 'border-amber-500' : 'border-slate-300'
+                    className={`h-11 w-11 rounded-full flex items-center justify-center text-white font-bold text-sm shadow-xs overflow-hidden border-2 bg-slate-100 ${
+                      activeRider?.status === 'online' ? 'border-emerald-500 ring-2 ring-emerald-500/20' :
+                      activeRider?.status === 'busy' ? 'border-amber-500 ring-2 ring-amber-500/20' : 'border-slate-300'
                     }`}
                   >
                     {activeRider?.avatarUrl ? (
                       <img src={activeRider.avatarUrl} alt="Avatar" className="h-full w-full object-cover" />
                     ) : (
-                      <div className="w-full h-full bg-slate-200"></div>
+                      <User size={20} className="text-slate-400" />
                     )}
                   </motion.div>
+                  <span className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white ${
+                    activeRider?.status === 'online' ? 'bg-emerald-500' :
+                    activeRider?.status === 'busy' ? 'bg-amber-500' : 'bg-slate-400'
+                  }`} />
+                </button>
+
+                <div className="min-w-0">
+                  <h3 className="font-black text-slate-900 text-[15px] leading-tight truncate">
+                    {activeRider?.name || "Rider"}
+                  </h3>
+                  <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                    <span className="uppercase text-[10.5px] font-bold tracking-wide text-slate-600 bg-slate-100 border border-slate-200/80 px-1.5 py-0.2 rounded-md whitespace-nowrap">
+                      {activeRider?.vehiclePlate || "1กข 1234"}
+                    </span>
+                    <span className="text-[11px] text-amber-500 font-extrabold whitespace-nowrap">
+                      ★ {activeRider?.rating.toFixed(1) || "5.0"}
+                    </span>
+                    {gpsActive && activeRider?.status !== 'offline' && (
+                      <span className="inline-flex items-center gap-0.5 text-[9.5px] uppercase font-extrabold text-blue-600 bg-blue-50 border border-blue-200/70 px-1.5 py-0.2 rounded-md whitespace-nowrap">
+                        <MapPin size={9} className="animate-pulse" /> GPS
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Right: Status Pill & Logout */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={toggleRiderStatus}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider border transition-all cursor-pointer ${
+                    activeRider?.status === 'online'
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                      : activeRider?.status === 'busy'
+                        ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                        : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+                  }`}
+                >
+                  <span className={`h-2 w-2 rounded-full ${
+                    activeRider?.status === 'online' ? 'bg-emerald-500 animate-pulse' :
+                    activeRider?.status === 'busy' ? 'bg-amber-500 animate-pulse' : 'bg-slate-400'
+                  }`} />
+                  <span>{activeRider?.status || "Offline"}</span>
+                </button>
+
+                <button
+                  onClick={handleLogout}
+                  title="Logout"
+                  className="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-100 transition-colors cursor-pointer"
+                >
+                  <LogOut size={16} />
                 </button>
               </div>
             </div>
@@ -1571,7 +1858,7 @@ export default function RiderPage() {
 
           {/* ============ Pull to Refresh Indicator ============ */}
           <div 
-            className="flex justify-center transition-all duration-150 overflow-hidden bg-white/50 backdrop-blur-sm border-b border-slate-100/50 sticky top-[73px] z-50"
+            className="flex justify-center transition-all duration-150 overflow-hidden bg-white/50 backdrop-blur-sm border-b border-slate-100/50 sticky top-[65px] z-50"
             style={{ 
               height: pullDistance > 0 || isPullRefreshing ? `${pullDistance}px` : "0px",
               opacity: pullDistance > 0 || isPullRefreshing ? 1 : 0
@@ -1595,28 +1882,28 @@ export default function RiderPage() {
 
           {/* Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col">
-            <div className="sticky top-[73px] z-40 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 pt-3 pb-3">
-              <TabsList className="grid w-full grid-cols-2 h-12 bg-slate-100 rounded-lg p-1">
+            <div className="sticky top-[65px] z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-4 py-2.5">
+              <TabsList className="grid w-full grid-cols-2 h-10 bg-slate-100/90 rounded-xl p-1">
                 <TabsTrigger
                   value="myjobs"
-                  className="gap-1.5 text-sm font-medium data-[state=active]:bg-white data-[state=active]:shadow-sm data-[state=active]:text-slate-900 cursor-pointer rounded-md"
+                  className="gap-1.5 text-xs font-extrabold data-[state=active]:bg-white data-[state=active]:shadow-xs data-[state=active]:text-slate-900 cursor-pointer rounded-lg transition-all"
                 >
-                  <Truck size={15} />
-                  My Jobs
-                  {myJobs.length > 0 && (
-                    <span className="ml-1 rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">
-                      {myJobs.length}
+                  <Truck size={14} />
+                  <span>My Jobs</span>
+                  {effectiveMyJobs.length > 0 && (
+                    <span className="ml-0.5 rounded-full bg-indigo-600 px-1.5 py-0.2 text-[10px] font-black text-white">
+                      {effectiveMyJobs.length}
                     </span>
                   )}
                 </TabsTrigger>
                 <TabsTrigger
                   value="history"
-                  className="gap-1.5 text-sm font-medium data-[state=active]:bg-white data-[state=active]:shadow-sm data-[state=active]:text-slate-900 cursor-pointer rounded-md"
+                  className="gap-1.5 text-xs font-extrabold data-[state=active]:bg-white data-[state=active]:shadow-xs data-[state=active]:text-slate-900 cursor-pointer rounded-lg transition-all"
                 >
-                  <CheckCircle2 size={15} />
-                  Job History
+                  <CheckCircle2 size={14} />
+                  <span>Job History</span>
                   {historyJobs.length > 0 && (
-                    <span className="ml-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">
+                    <span className="ml-0.5 rounded-full bg-emerald-100 px-1.5 py-0.2 text-[10px] font-black text-emerald-700">
                       {historyJobs.length}
                     </span>
                   )}
@@ -1625,7 +1912,7 @@ export default function RiderPage() {
             </div>
 
             {/* My Jobs */}
-            <TabsContent value="myjobs" className="flex-1 px-4 py-4 space-y-3 mt-0 relative">
+            <TabsContent value="myjobs" className="flex-1 px-3.5 py-3.5 space-y-3 mt-0 relative">
               {activeRider?.status === 'offline' && (
                 <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-white/60 backdrop-blur-sm rounded-xl">
                   <div className="bg-white p-6 rounded-2xl shadow-xl flex flex-col items-center max-w-[80%] text-center border border-slate-100">
@@ -1645,7 +1932,7 @@ export default function RiderPage() {
                   </div>
                 </div>
               )}
-              {myJobs.length === 0 ? (
+              {effectiveMyJobs.length === 0 ? (
                 <motion.div
                   initial={{ opacity: 0, scale: 0.9 }}
                   animate={{ opacity: 1, scale: 1 }}
@@ -1656,39 +1943,178 @@ export default function RiderPage() {
                   <p className="text-xs text-slate-400 mt-1">Accept a job to get started!</p>
                 </motion.div>
               ) : (
-                <AnimatePresence mode="popLayout">
-                  {myJobs.map((task, i) => {
-                    const customer = findMatchingCustomer(customers, {
-                      customerId: task.job.customerId,
-                      customerName: task.job.customerName,
-                      customerPhone: task.job.customerPhone,
-                    });
-                    return (
-                      <motion.div
-                        key={task.taskId}
-                        custom={i}
-                        variants={cardVariants}
-                        initial="initial"
-                        animate="animate"
-                        exit="exit"
-                        layout
-                        whileHover={{ scale: 1.01 }}
-                      >
-                        <RiderJobCard 
-                          task={task} 
-                          customer={customer} 
-                          showCommission={showCommission} 
-                          onClick={() => setSelectedJob(task)} 
-                          branchName={shopLocations.find(s => s.id === task.job.branchId)?.name}
-                          processingBranchName={(() => {
-                            const procId = getJobProcessingBranchId(task.job);
-                            return procId && procId !== task.job.branchId ? shopLocations.find(s => s.id === procId)?.name : undefined;
-                          })()}
-                        />
-                      </motion.div>
-                    );
-                  })}
-                </AnimatePresence>
+                <>
+                  {/* Compact Route Optimizer Card (shown when 2+ active jobs) */}
+                  {effectiveMyJobs.length >= 2 && (
+                    <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950 text-white p-3.5 rounded-2xl shadow-md border border-slate-800/90 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-8 h-8 rounded-xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center shrink-0">
+                            <Route size={16} className="text-amber-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-black tracking-wide flex items-center gap-1.5">
+                              <span>Smart Route</span>
+                              {routeSortMode === "optimized" ? (
+                                <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] px-1.5 py-0.2 rounded-md font-extrabold">
+                                  OPTIMIZED
+                                </span>
+                              ) : (
+                                <span className="bg-slate-800 text-slate-300 border border-slate-700 text-[9px] px-1.5 py-0.2 rounded-md font-bold">
+                                  BY TIME
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10.5px] text-slate-300 truncate">
+                              {effectiveMyJobs.length} stops • ~{routeSortMode === "optimized" ? optimizedRouteResult.totalDistanceKm : chronologicalRouteMeta.totalDistanceKm} km total
+                              {routeSavedKm > 0 && routeSortMode === "optimized" ? ` (saves ${routeSavedKm} km)` : ""}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Toggle between Shortest and By Time */}
+                        <div className="inline-flex bg-slate-800/90 p-0.5 rounded-xl border border-slate-700 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setRouteSortMode("optimized")}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer whitespace-nowrap ${
+                              routeSortMode === "optimized"
+                                ? "bg-indigo-600 text-white shadow-2xs"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            ⚡ Shortest
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRouteSortMode("time")}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer whitespace-nowrap ${
+                              routeSortMode === "time"
+                                ? "bg-indigo-600 text-white shadow-2xs"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            ⏰ By Time
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Compact 3-Metric Strip + Expandable Stop Preview */}
+                      <div className="grid grid-cols-3 gap-1.5 bg-slate-950/60 p-1.5 rounded-xl border border-slate-800/80 text-center">
+                        <div className="px-1.5 py-1 rounded-lg bg-indigo-950/50 border border-indigo-800/40">
+                          <div className="text-[8.5px] text-indigo-300 font-bold uppercase">⚡ Shortest</div>
+                          <div className="text-[11px] font-black text-white">~{optimizedRouteResult.totalDistanceKm} km</div>
+                        </div>
+                        <div className="px-1.5 py-1 rounded-lg bg-slate-900/70 border border-slate-800">
+                          <div className="text-[8.5px] text-slate-400 font-bold uppercase">⏰ By Time</div>
+                          <div className="text-[11px] font-bold text-slate-400 line-through">~{chronologicalRouteMeta.totalDistanceKm} km</div>
+                        </div>
+                        <div className="px-1.5 py-1 rounded-lg bg-emerald-950/60 border border-emerald-700/40">
+                          <div className="text-[8.5px] text-emerald-300 font-bold uppercase">Distance Saved</div>
+                          <div className="text-[11px] font-black text-emerald-400">
+                            {routeSavedKm > 0 ? `-${routeSavedKm} km (${routeSavedPercent}%)` : "Optimal"}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Collapsible Stop Timeline Drawer */}
+                      <div className="bg-slate-950/40 rounded-xl border border-slate-800/70 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setShowRouteTimeline((v) => !v)}
+                          className="w-full px-2.5 py-1.5 flex items-center justify-between text-[10.5px] font-bold text-slate-300 hover:text-white cursor-pointer transition-colors"
+                        >
+                          <div className="flex items-center gap-1.5 truncate">
+                            <span className="text-indigo-400">📍</span>
+                            <span className="truncate">
+                              {displayActiveJobs.map((it, idx) => `#${it.stopNumber || idx + 1} ${(it.targetLocation?.split("(")[0]?.replace("⭐ ", "") || it.job.customerName).slice(0, 10)}`).join(" ➔ ")}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-indigo-300 font-extrabold shrink-0 ml-2">
+                            {showRouteTimeline ? "Hide ▴" : "Stops ▾"}
+                          </span>
+                        </button>
+
+                        {showRouteTimeline && (
+                          <div className="px-2 pb-2 pt-1 space-y-1 border-t border-slate-800/70">
+                            {displayActiveJobs.map((item, idx) => (
+                              <div key={item.taskId} className="flex items-center justify-between gap-2 text-[11px] bg-slate-900/90 px-2 py-1 rounded-lg border border-slate-800">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className={`w-4 h-4 rounded-full text-[9.5px] font-black flex items-center justify-center shrink-0 ${
+                                    routeSortMode === "optimized" ? "bg-indigo-600 text-white" : "bg-slate-700 text-slate-200"
+                                  }`}>
+                                    {item.stopNumber || idx + 1}
+                                  </span>
+                                  <span className="font-bold text-slate-100 truncate">
+                                    {item.targetLocation?.split("(")[0]?.replace("⭐ ", "") || item.job.customerName}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <span className="text-[9.5px] text-slate-400 font-mono">
+                                    {format(item.scheduledAt, "HH:mm")}
+                                  </span>
+                                  <span className="text-[9.5px] font-extrabold text-emerald-400 bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-800/50 whitespace-nowrap">
+                                    +{item.distanceFromPrevKm ?? 0} km
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* One-click open full multi-stop navigation in Google Maps */}
+                      {optimizedRouteResult.googleMapsUrl && (
+                        <a
+                          href={optimizedRouteResult.googleMapsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white py-2.5 px-3 rounded-xl text-xs font-black transition-all shadow-sm shadow-emerald-950/40"
+                        >
+                          <Navigation size={14} className="fill-white" />
+                          <span>Start Full Route in Google Maps ({effectiveMyJobs.length} stops)</span>
+                          <ExternalLink size={12} className="opacity-80" />
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  <AnimatePresence mode="popLayout">
+                    {displayActiveJobs.map((task, i) => {
+                      const customer = findMatchingCustomer(customers, {
+                        customerId: task.job.customerId,
+                        customerName: task.job.customerName,
+                        customerPhone: task.job.customerPhone,
+                      });
+                      return (
+                        <motion.div
+                          key={task.taskId}
+                          custom={i}
+                          variants={cardVariants}
+                          initial="initial"
+                          animate="animate"
+                          exit="exit"
+                          layout
+                          whileHover={{ scale: 1.01 }}
+                        >
+                          <RiderJobCard 
+                            task={task} 
+                            customer={customer} 
+                            showCommission={showCommission} 
+                            onClick={() => setSelectedJob(task)} 
+                            branchName={shopLocations.find(s => s.id === task.job.branchId)?.name}
+                            processingBranchName={(() => {
+                              const procId = getJobProcessingBranchId(task.job);
+                              return procId && procId !== task.job.branchId ? shopLocations.find(s => s.id === procId)?.name : undefined;
+                            })()}
+                            stopNumber={task.stopNumber}
+                            distanceFromPrevKm={task.distanceFromPrevKm}
+                          />
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+                </>
               )}
             </TabsContent>
 

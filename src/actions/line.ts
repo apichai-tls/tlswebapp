@@ -1,5 +1,7 @@
 "use server";
 
+import fs from "fs";
+import path from "path";
 import { prisma } from "@/lib/prisma";
 import { invalidateDbCache } from "@/lib/db-cache";
 import { publishOrderEvent } from "@/lib/realtime-bus";
@@ -9,16 +11,22 @@ import {
   getLineUserProfile,
   sendLinePushMessage,
   isValidLineUserId,
+  issueLineChannelAccessTokenFromCredentials,
+  fetchLineFollowerIdsPage,
   type LineBotInfo,
   type LineContactRecord,
   type LineMessageObject,
 } from "@/lib/line";
 
-const DEFAULT_LINE_ACCESS_TOKEN =
+// Primary Brand: ThatLaundryShop (@thatlaundryshop / @wnp4531h)
+const TLS_CHANNEL_ID = "1657371072";
+const TLS_CHANNEL_SECRET = "b6eb43581993184cac88721953b211dd";
+const DEFAULT_LINE_BASIC_ID = "@thatlaundryshop";
+const DEFAULT_LINE_BOT_NAME = "ThatLaundryShop";
+
+// Secondary Brand: NoName Laundry (@050ehvzb, Channel 2011968333)
+const NONAME_ACCESS_TOKEN =
   "m37vbSx77LMvPDo1W96a25iygwrnEqsBdtzOeXM5qQoYBugNMtab0l1Xhvv7BinKNuTSFGz0dlPTZM7dWZxiYxhxASsfd0pmGvCHp0GAjTn0867M7DMdZWnM1ry+K//X7dbvrR2jEG3ec4MG4UCMAwdB04t89/1O/w1cDnyilFU=";
-const DEFAULT_LINE_CHANNEL_SECRET = "b6eb43581993184cac88721953b211dd";
-const DEFAULT_LINE_BASIC_ID = "@050ehvzb";
-const DEFAULT_LINE_BOT_NAME = "NoName Laundry";
 
 export interface LineOaSettings {
   enableLineOa: boolean;
@@ -29,7 +37,7 @@ export interface LineOaSettings {
   autoSendDeliveryPhoto: boolean;
 }
 
-export async function getStoredLineOaSettings(): Promise<LineOaSettings> {
+export async function getStoredLineOaSettings(brand?: string | null): Promise<LineOaSettings> {
   try {
     const keys = [
       "enableLineOa",
@@ -43,27 +51,49 @@ export async function getStoredLineOaSettings(): Promise<LineOaSettings> {
       where: { key: { in: keys } },
     });
     const map = new Map(rows.map((r) => [r.key, r.value]));
+
+    // If order is explicitly for NoName Laundry, use NoName Laundry token
+    if (brand === "noname_laundry") {
+      return {
+        enableLineOa: map.get("enableLineOa") !== "false",
+        channelAccessToken: NONAME_ACCESS_TOKEN,
+        channelSecret: "",
+        lineBasicId: "@050ehvzb",
+        botName: "NoName Laundry",
+        autoSendDeliveryPhoto: map.get("lineAutoSendDeliveryPhoto") !== "false",
+      };
+    }
+
+    // Default / That Laundry Shop: generate or use stored token for Channel 1657371072 (@thatlaundryshop)
+    let storedToken = map.get("lineChannelAccessToken") || process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
+    // If stored token is empty or was the NoName token, issue fresh token for ThatLaundryShop (1657371072)
+    if (!storedToken || storedToken === NONAME_ACCESS_TOKEN) {
+      storedToken = await issueLineChannelAccessTokenFromCredentials(
+        TLS_CHANNEL_ID,
+        TLS_CHANNEL_SECRET
+      );
+    }
+
     return {
       enableLineOa: map.get("enableLineOa") !== "false",
-      channelAccessToken:
-        map.get("lineChannelAccessToken") ||
-        process.env.LINE_CHANNEL_ACCESS_TOKEN ||
-        DEFAULT_LINE_ACCESS_TOKEN,
+      channelAccessToken: storedToken,
       channelSecret:
         map.get("lineChannelSecret") ||
         process.env.LINE_CHANNEL_SECRET ||
-        DEFAULT_LINE_CHANNEL_SECRET,
+        TLS_CHANNEL_SECRET,
       lineBasicId: map.get("lineBasicId") || DEFAULT_LINE_BASIC_ID,
       botName: map.get("lineBotName") || DEFAULT_LINE_BOT_NAME,
       autoSendDeliveryPhoto: map.get("lineAutoSendDeliveryPhoto") !== "false",
     };
   } catch {
+    const fallbackToken = await issueLineChannelAccessTokenFromCredentials(
+      TLS_CHANNEL_ID,
+      TLS_CHANNEL_SECRET
+    ).catch(() => "");
     return {
       enableLineOa: true,
-      channelAccessToken:
-        process.env.LINE_CHANNEL_ACCESS_TOKEN || DEFAULT_LINE_ACCESS_TOKEN,
-      channelSecret:
-        process.env.LINE_CHANNEL_SECRET || DEFAULT_LINE_CHANNEL_SECRET,
+      channelAccessToken: fallbackToken,
+      channelSecret: TLS_CHANNEL_SECRET,
       lineBasicId: DEFAULT_LINE_BASIC_ID,
       botName: DEFAULT_LINE_BOT_NAME,
       autoSendDeliveryPhoto: true,
@@ -74,25 +104,23 @@ export async function getStoredLineOaSettings(): Promise<LineOaSettings> {
 export async function testLineOaConnectionAction(customToken?: string): Promise<{
   success: boolean;
   botInfo?: LineBotInfo;
+  resolvedToken?: string;
   error?: string;
 }> {
   try {
     let token = (customToken || "").trim();
-    if (!token) {
-      const stored = await getStoredLineOaSettings();
-      token = stored.channelAccessToken;
-    }
-    if (!token) {
-      return {
-        success: false,
-        error: "Please enter your LINE Channel Access Token (Long-lived).",
-      };
+    if (!token || token === NONAME_ACCESS_TOKEN) {
+      token = await issueLineChannelAccessTokenFromCredentials(
+        TLS_CHANNEL_ID,
+        TLS_CHANNEL_SECRET
+      );
     }
 
     const botInfo = await getLineBotInfo(token);
     return {
       success: true,
       botInfo,
+      resolvedToken: token,
     };
   } catch (err: any) {
     return {
@@ -114,32 +142,34 @@ export async function saveLineOaSettingsAction(params: {
   error?: string;
 }> {
   try {
-    const token = (params.channelAccessToken || "").trim();
+    let token = (params.channelAccessToken || "").trim();
     let botInfo: LineBotInfo | undefined;
 
-    if (token) {
-      const testRes = await testLineOaConnectionAction(token);
-      if (!testRes.success) {
-        return { success: false, error: testRes.error };
-      }
-      botInfo = testRes.botInfo;
+    const testRes = await testLineOaConnectionAction(token);
+    if (!testRes.success) {
+      return { success: false, error: testRes.error };
+    }
+    botInfo = testRes.botInfo;
+    if (testRes.resolvedToken) {
+      token = testRes.resolvedToken;
     }
 
     const entries: Array<{ key: string; value: string }> = [
       { key: "enableLineOa", value: params.enableLineOa === false ? "false" : "true" },
       { key: "lineChannelAccessToken", value: token },
-      { key: "lineChannelSecret", value: (params.channelSecret || "").trim() },
+      { key: "lineChannelSecret", value: (params.channelSecret || "").trim() || TLS_CHANNEL_SECRET },
       {
         key: "lineBasicId",
         value:
-          (params.lineBasicId || "").trim() ||
-          botInfo?.basicId ||
-          botInfo?.premiumId ||
-          "@thatlaundryshop",
+          botInfo?.premiumId
+            ? `@${botInfo.premiumId.replace(/^@/, "")}`
+            : (params.lineBasicId || "").trim() ||
+              botInfo?.basicId ||
+              DEFAULT_LINE_BASIC_ID,
       },
       {
         key: "lineBotName",
-        value: botInfo?.displayName || "",
+        value: botInfo?.displayName || DEFAULT_LINE_BOT_NAME,
       },
       {
         key: "lineAutoSendDeliveryPhoto",
@@ -165,6 +195,157 @@ export async function saveLineOaSettingsAction(params: {
   }
 }
 
+function normalizeHandle(str?: string | null): string {
+  if (!str) return "";
+  return str.trim().toLowerCase().replace(/^@/, "");
+}
+
+/**
+ * Syncs existing followers directly from `@thatlaundryshop` via LINE's Verified Followers API
+ * (`GET /v2/bot/followers/ids` + `GET /v2/bot/profile/{userId}`) and automatically links them to CRM customers!
+ */
+export async function syncLineOaFollowersAction(maxToSync = 150): Promise<{
+  success: boolean;
+  syncedCount: number;
+  linkedCustomerCount: number;
+  contacts: LineContactRecord[];
+  error?: string;
+}> {
+  try {
+    const settings = await getStoredLineOaSettings("that_laundry_shop");
+    if (!settings.channelAccessToken) {
+      return {
+        success: false,
+        syncedCount: 0,
+        linkedCustomerCount: 0,
+        contacts: [],
+        error: "LINE Channel Access Token is not configured.",
+      };
+    }
+
+    // Load existing contacts cache
+    const row = await prisma.setting.findUnique({ where: { key: "lineOaContacts" } });
+    let existingContacts: LineContactRecord[] = [];
+    if (row?.value) {
+      try {
+        const parsed = JSON.parse(row.value);
+        if (Array.isArray(parsed)) existingContacts = parsed;
+      } catch {}
+    }
+    const existingById = new Map(existingContacts.map((c) => [c.userId, c]));
+
+    // Fetch ALL follower IDs across pages from LINE API (up to 5,000 followers)
+    const followerIds: string[] = [];
+    let nextCursor: string | undefined = undefined;
+    do {
+      const page = await fetchLineFollowerIdsPage(settings.channelAccessToken, nextCursor, 1000);
+      followerIds.push(...page.userIds);
+      nextCursor = page.next;
+    } while (nextCursor && followerIds.length < 5000);
+
+    // Fetch profiles for followers not yet in cache (up to maxToSync per batch so each click loads the next batch!)
+    const idsToFetch = followerIds
+      .filter((id) => !existingById.has(id))
+      .slice(0, maxToSync);
+
+    const allCustomers = await prisma.customer.findMany({
+      select: {
+        id: true,
+        name: true,
+        nickName: true,
+        phone: true,
+        lineId: true,
+      },
+    });
+
+    let linkedCustomerCount = 0;
+    const nowIso = new Date().toISOString();
+
+    // Fetch in parallel batches of 15
+    const batchSize = 15;
+    for (let i = 0; i < idsToFetch.length; i += batchSize) {
+      const slice = idsToFetch.slice(i, i + batchSize);
+      const profiles = await Promise.all(
+        slice.map((uid) => getLineUserProfile(settings.channelAccessToken, uid))
+      );
+
+      for (const prof of profiles) {
+        if (!prof || !prof.userId) continue;
+        const normDisplay = normalizeHandle(prof.displayName);
+
+        // Match against CRM customer by saved `lineId`, or unique `name` / `nickName`
+        let matchedCust =
+          allCustomers.find((c) => c.lineId === prof.userId) ||
+          (normDisplay
+            ? allCustomers.find(
+                (c) =>
+                  c.lineId &&
+                  !isValidLineUserId(c.lineId) &&
+                  normalizeHandle(c.lineId) === normDisplay
+              )
+            : undefined);
+
+        if (!matchedCust && normDisplay) {
+          const nameMatches = allCustomers.filter(
+            (c) =>
+              normalizeHandle(c.name) === normDisplay ||
+              (c.nickName && normalizeHandle(c.nickName) === normDisplay)
+          );
+          if (nameMatches.length === 1) {
+            matchedCust = nameMatches[0];
+          }
+        }
+
+        if (matchedCust && matchedCust.lineId !== prof.userId) {
+          await prisma.customer.update({
+            where: { id: matchedCust.id },
+            data: { lineId: prof.userId },
+          });
+          matchedCust.lineId = prof.userId;
+          linkedCustomerCount++;
+        }
+
+        existingById.set(prof.userId, {
+          userId: prof.userId,
+          displayName: prof.displayName || "LINE User",
+          pictureUrl: prof.pictureUrl,
+          statusMessage: prof.statusMessage,
+          lastInteractionAt: nowIso,
+          linkedCustomerId: matchedCust?.id || null,
+          linkedCustomerName: matchedCust?.name || null,
+          linkedCustomerPhone: matchedCust?.phone || null,
+        });
+      }
+    }
+
+    const mergedContacts = Array.from(existingById.values()).slice(0, 5000);
+    await prisma.setting.upsert({
+      where: { key: "lineOaContacts" },
+      update: { value: JSON.stringify(mergedContacts) },
+      create: { key: "lineOaContacts", value: JSON.stringify(mergedContacts) },
+    });
+
+    if (linkedCustomerCount > 0) {
+      invalidateDbCache();
+    }
+
+    return {
+      success: true,
+      syncedCount: idsToFetch.length,
+      linkedCustomerCount,
+      contacts: mergedContacts,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      syncedCount: 0,
+      linkedCustomerCount: 0,
+      contacts: [],
+      error: err instanceof Error ? err.message : "Failed to sync LINE followers",
+    };
+  }
+}
+
 export async function getLineOaContactsAction(): Promise<{
   success: boolean;
   contacts: LineContactRecord[];
@@ -184,7 +365,14 @@ export async function getLineOaContactsAction(): Promise<{
       } catch {}
     }
 
-    // Hydrate linked customer info from Customer table where lineId matches userId
+    // If contacts cache is empty on first load, automatically sync initial batch of followers from @thatlaundryshop!
+    if (contacts.length === 0) {
+      const syncRes = await syncLineOaFollowersAction(60);
+      if (syncRes.success && syncRes.contacts.length > 0) {
+        contacts = syncRes.contacts;
+      }
+    }
+
     if (contacts.length > 0) {
       const userIds = contacts.map((c) => c.userId).filter(Boolean);
       const linkedCustomers = await prisma.customer.findMany({
@@ -240,7 +428,6 @@ export async function linkLineUserToCustomerAction(params: {
       select: { id: true, name: true, phone: true },
     });
 
-    // Also update lineOaContacts cache if present
     try {
       const row = await prisma.setting.findUnique({ where: { key: "lineOaContacts" } });
       if (row?.value) {
@@ -304,9 +491,59 @@ function parseJobDeliveryPhotos(job: {
   return Array.from(new Set(urls));
 }
 
-function resolvePublicHttpsImageUrl(url: string): string | null {
+async function resolvePublicHttpsImageUrl(url: string): Promise<string | null> {
   const trimmed = (url || "").trim();
   if (!trimmed) return null;
+
+  // If it's a local relative path (e.g. "/uploads/job/proofs/T2026000023-1793634099947.png"),
+  // upload the local file buffer to a public HTTPS image relay so LINE's servers can fetch it!
+  if (trimmed.startsWith("/uploads/")) {
+    try {
+      const relWithoutLeadingSlash = trimmed.replace(/^\/+/, "");
+      const candidatePaths = [
+        path.resolve(process.cwd(), "storage", relWithoutLeadingSlash),
+        path.resolve(process.cwd(), "public", relWithoutLeadingSlash),
+      ];
+      const existingFile = candidatePaths.find((p) => fs.existsSync(p));
+      if (existingFile) {
+        const buf = await fs.promises.readFile(existingFile);
+        const fd = new FormData();
+        fd.append("key", "6d207e02198a847aa98d0a2a901485a5");
+        fd.append("action", "upload");
+        fd.append("source", buf.toString("base64"));
+        fd.append("format", "json");
+        const upRes = await fetch("https://freeimage.host/api/1/upload", {
+          method: "POST",
+          body: fd,
+        });
+        if (upRes.ok) {
+          const upData = await upRes.json();
+          if (upData?.image?.url && String(upData.image.url).startsWith("https://")) {
+            return String(upData.image.url);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[LINE Photo Upload Relay] Fallback to URL:", err);
+    }
+  }
+
+  // If it's a GCS URL, generate a public/signed HTTPS URL if needed
+  if (trimmed.startsWith("https://storage.googleapis.com/")) {
+    try {
+      const { generateDownloadUrl, bucketName } = await import("@/lib/gcs");
+      const prefix = `https://storage.googleapis.com/${bucketName}/`;
+      if (trimmed.startsWith(prefix)) {
+        const gcsKey = trimmed.slice(prefix.length);
+        const signed = await generateDownloadUrl(gcsKey, 60 * 24 * 7); // 7 days
+        if (signed && signed.startsWith("https://")) {
+          return signed;
+        }
+      }
+    } catch {}
+    return trimmed;
+  }
+
   if (trimmed.startsWith("https://")) return trimmed;
   if (trimmed.startsWith("http://")) {
     return trimmed.replace(/^http:\/\//i, "https://");
@@ -336,15 +573,6 @@ export async function sendDeliveryProofViaLineAction(params: {
   error?: string;
 }> {
   try {
-    const settings = await getStoredLineOaSettings();
-    if (!settings.channelAccessToken) {
-      return {
-        success: false,
-        error:
-          "LINE OA is not connected yet. Please paste your LINE Channel Access Token in Settings → Payments & Integrations.",
-      };
-    }
-
     const job = await prisma.job.findUnique({
       where: { id: params.jobId },
     });
@@ -352,7 +580,6 @@ export async function sendDeliveryProofViaLineAction(params: {
       return { success: false, error: `Order #${params.jobId} not found.` };
     }
 
-    // 1. Resolve Customer & LINE userId (`U...`)
     let customer = job.customerId
       ? await prisma.customer.findUnique({ where: { id: job.customerId } })
       : null;
@@ -363,22 +590,68 @@ export async function sendDeliveryProofViaLineAction(params: {
       });
     }
 
-    let lineUserId = (params.overrideLineUserId || customer?.lineId || "").trim();
+    const brand = customer?.brand || "that_laundry_shop";
+    const settings = await getStoredLineOaSettings(brand);
+    if (!settings.channelAccessToken) {
+      return {
+        success: false,
+        error: "LINE OA is not connected yet.",
+      };
+    }
 
-    // If customer.lineId is not a U... ID yet, check if lineOaContacts has a match by customerId or phone or displayName
+    let jobLineIdFromNotes = "";
+    if (job.adminNotesJson) {
+      try {
+        const parsedNotes = JSON.parse(job.adminNotesJson);
+        if (parsedNotes && typeof parsedNotes.customerLineId === "string") {
+          jobLineIdFromNotes = parsedNotes.customerLineId.trim();
+        }
+      } catch {}
+    }
+
+    let lineUserId = (
+      params.overrideLineUserId ||
+      (isValidLineUserId(jobLineIdFromNotes) ? jobLineIdFromNotes : "") ||
+      customer?.lineId ||
+      jobLineIdFromNotes ||
+      ""
+    ).trim();
+
     if (!isValidLineUserId(lineUserId)) {
       const contactsRes = await getLineOaContactsAction();
-      const matchedContact = contactsRes.contacts.find(
-        (c) =>
-          (customer && c.linkedCustomerId === customer.id) ||
-          (job.customerPhone &&
-            c.linkedCustomerPhone &&
-            c.linkedCustomerPhone.replace(/\D/g, "") === job.customerPhone.replace(/\D/g, "")) ||
-          (customer?.lineId &&
-            c.displayName.toLowerCase() === customer.lineId.toLowerCase().replace(/^@/, "")) ||
-          (job.customerName &&
-            c.displayName.toLowerCase() === job.customerName.toLowerCase())
-      );
+      const normSavedLineHandle = (jobLineIdFromNotes || customer?.lineId || "")
+        .trim()
+        .toLowerCase()
+        .replace(/^@/, "");
+      const normCustomerName = (customer?.name || job.customerName || "")
+        .trim()
+        .toLowerCase();
+
+      const matchedContact =
+        contactsRes.contacts.find(
+          (c) =>
+            (customer && c.linkedCustomerId === customer.id) ||
+            (job.customerPhone &&
+              c.linkedCustomerPhone &&
+              c.linkedCustomerPhone.replace(/\D/g, "") ===
+                job.customerPhone.replace(/\D/g, ""))
+        ) ||
+        (normSavedLineHandle
+          ? contactsRes.contacts.find(
+              (c) =>
+                c.displayName.trim().toLowerCase().replace(/^@/, "") ===
+                normSavedLineHandle
+            )
+          : undefined) ||
+        (normCustomerName
+          ? (() => {
+              const byName = contactsRes.contacts.filter(
+                (c) => c.displayName.trim().toLowerCase() === normCustomerName
+              );
+              return byName.length === 1 ? byName[0] : undefined;
+            })()
+          : undefined);
+
       if (matchedContact && isValidLineUserId(matchedContact.userId)) {
         lineUserId = matchedContact.userId;
         if (customer) {
@@ -393,33 +666,38 @@ export async function sendDeliveryProofViaLineAction(params: {
     if (!isValidLineUserId(lineUserId)) {
       return {
         success: false,
-        error: customer?.lineId
-          ? `Customer's LINE field ("${customer.lineId}") is a display handle, not a linked LINE OA User ID (U...). Ask the customer to send any message or their phone number to your LINE OA, or select them from Recent LINE Contacts.`
-          : "This customer does not have a linked LINE OA User ID yet. Ask them to message your LINE Official Account or link their LINE profile in Settings / Delivery Proof dialog.",
+        error:
+          "Could not find a linked LINE ID for this customer yet. Please select their LINE profile from the dropdown below.",
       };
     }
 
-    // If overrideLineUserId was provided and valid, persist it to the customer record for future auto-sends
-    if (params.overrideLineUserId && isValidLineUserId(params.overrideLineUserId) && customer && customer.lineId !== lineUserId) {
+    if (
+      params.overrideLineUserId &&
+      isValidLineUserId(params.overrideLineUserId) &&
+      customer &&
+      customer.lineId !== lineUserId
+    ) {
       await prisma.customer.update({
         where: { id: customer.id },
         data: { lineId: lineUserId },
       });
     }
 
-    // 2. Collect delivery proof photo URLs
     const rawPhotos = parseJobDeliveryPhotos(job);
-    const httpsPhotos = rawPhotos
-      .map(resolvePublicHttpsImageUrl)
-      .filter((u): u is string => Boolean(u));
+    const resolvedPhotos = await Promise.all(
+      rawPhotos.slice(0, 4).map((u) => resolvePublicHttpsImageUrl(u))
+    );
+    const httpsPhotos = resolvedPhotos.filter((u): u is string => Boolean(u));
 
     const displayId = formatJobDisplayId(job.id);
     const customerDisplayName = job.customerName || customer?.name || "Valued Customer";
     const dropoffText = job.dropoffLocation ? `\n📍 Location: ${job.dropoffLocation}` : "";
+    const shopBrandLabel =
+      brand === "noname_laundry" ? "NoName Laundry" : "That Laundry Shop";
 
     const textMessage =
       params.customMessage?.trim() ||
-      `✨ Hello ${customerDisplayName},\nYour laundry order #${displayId} has been delivered! 🧺🚚${dropoffText}\n\nThank you for choosing That Laundry Shop! 💚`;
+      `✨ Hello ${customerDisplayName},\nYour laundry order #${displayId} has been delivered! 🧺🚚${dropoffText}\n\nThank you for choosing ${shopBrandLabel}! 💚`;
 
     const messages: LineMessageObject[] = [
       {
@@ -428,7 +706,6 @@ export async function sendDeliveryProofViaLineAction(params: {
       },
     ];
 
-    // Attach up to 4 delivery proof photos (total max 5 messages per push)
     for (const photoUrl of httpsPhotos.slice(0, 4)) {
       messages.push({
         type: "image",
@@ -450,7 +727,6 @@ export async function sendDeliveryProofViaLineAction(params: {
       };
     }
 
-    // 3. Mark job as `isDeliveryPhotoSent = true` inside `adminNotesJson`
     let existingMeta: Record<string, any> = {};
     if (job.adminNotesJson) {
       try {
@@ -512,10 +788,6 @@ export async function sendDeliveryProofViaLineAction(params: {
   }
 }
 
-/**
- * Helper triggered automatically when a rider uploads a delivery proof photo (`deliveryProofImageUrl`)
- * Checks if `autoSendDeliveryPhoto` is enabled and the customer has a linked LINE OA `userId`.
- */
 export async function tryAutoSendLineDeliveryProofOnUpload(jobId: string): Promise<void> {
   try {
     const settings = await getStoredLineOaSettings();
@@ -526,7 +798,6 @@ export async function tryAutoSendLineDeliveryProofOnUpload(jobId: string): Promi
     const job = await prisma.job.findUnique({ where: { id: jobId } });
     if (!job) return;
 
-    // Avoid duplicate auto-send if already marked as sent
     if (job.adminNotesJson) {
       try {
         const meta = JSON.parse(job.adminNotesJson);

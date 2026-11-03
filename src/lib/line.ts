@@ -1,6 +1,7 @@
 import crypto from "crypto";
 
 const LINE_API_BASE = "https://api.line.me/v2/bot";
+const LINE_OAUTH_URL = "https://api.line.me/v2/oauth/accessToken";
 
 export interface LineBotInfo {
   userId: string;
@@ -43,6 +44,79 @@ export type LineMessageObject =
       previewImageUrl: string;
     };
 
+let cachedOAuthToken: { token: string; expiresAt: number } | null = null;
+
+/**
+ * Generates a fresh Channel Access Token from Channel ID + Channel Secret
+ * (used for ThatLaundryShop Channel 1657371072 so it never expires)
+ */
+export async function issueLineChannelAccessTokenFromCredentials(
+  channelId: string,
+  channelSecret: string
+): Promise<string> {
+  if (cachedOAuthToken && Date.now() < cachedOAuthToken.expiresAt - 60_000) {
+    return cachedOAuthToken.token;
+  }
+
+  const body = new URLSearchParams({
+    grant_type: "client_credentials",
+    client_id: channelId.trim(),
+    client_secret: channelSecret.trim(),
+  });
+
+  const res = await fetch(LINE_OAUTH_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`LINE OAuth Error (${res.status}): ${errText || res.statusText}`);
+  }
+
+  const data = await res.json();
+  const token = String(data.access_token || "");
+  const expiresInSec = Number(data.expires_in) || 2592000;
+  cachedOAuthToken = {
+    token,
+    expiresAt: Date.now() + expiresInSec * 1000,
+  };
+  return token;
+}
+
+export async function fetchLineFollowerIdsPage(
+  channelAccessToken: string,
+  startCursor?: string,
+  limit = 300
+): Promise<{ userIds: string[]; next?: string }> {
+  const token = channelAccessToken.trim();
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (startCursor) params.set("start", startCursor);
+
+  const res = await fetch(`${LINE_API_BASE}/followers/ids?${params.toString()}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`LINE Followers API (${res.status}): ${errText || res.statusText}`);
+  }
+
+  const data = await res.json();
+  return {
+    userIds: Array.isArray(data.userIds) ? data.userIds : [],
+    next: data.next || undefined,
+  };
+}
+
 export function isValidLineUserId(val?: string | null): boolean {
   if (!val) return false;
   return /^U[0-9a-f]{32}$/i.test(val.trim());
@@ -54,7 +128,6 @@ export function verifyLineWebhookSignature(
   channelSecret?: string | null
 ): boolean {
   if (!channelSecret || !channelSecret.trim()) {
-    // If channel secret is not configured yet, allow webhook payload processing
     return true;
   }
   if (!signature) return false;
@@ -118,14 +191,13 @@ export async function sendLinePushMessage(
   if (!isValidLineUserId(recipient)) {
     return {
       ok: false,
-      error: `Invalid LINE User ID "${recipient}". Must be a 33-character ID starting with 'U' (captured automatically when the customer messages or follows your LINE OA).`,
+      error: `Invalid LINE User ID "${recipient}". Must be a 33-character ID starting with 'U'.`,
     };
   }
   if (!messages.length) {
     return { ok: false, error: "No messages to send." };
   }
 
-  // LINE push message allows max 5 message objects per request
   const batch = messages.slice(0, 5);
   const res = await fetch(`${LINE_API_BASE}/message/push`, {
     method: "POST",

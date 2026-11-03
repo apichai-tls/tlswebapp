@@ -607,6 +607,10 @@ export const jobStore = {
     emitJobChange();
   },
 
+  async updateJob(id: string, updates: Partial<Job>, actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {
+    return this.updateJobDetails(id, updates, actorDetails);
+  },
+
   async updateJobDetails(id: string, updates: Partial<Job>, actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {
     const jobs = api.sync.getJobs();
     const job = jobs.find(j => j.id === id);

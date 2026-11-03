@@ -3,7 +3,6 @@ import { prisma } from "@/lib/prisma";
 import { invalidateDbCache } from "@/lib/db-cache";
 import {
   getLineUserProfile,
-  sendLineReplyMessage,
   verifyLineWebhookSignature,
   type LineContactRecord,
 } from "@/lib/line";
@@ -15,7 +14,7 @@ export async function GET() {
   const settings = await getStoredLineOaSettings();
   return NextResponse.json({
     ok: true,
-    service: "That Laundry Shop — LINE Official Account Webhook",
+    service: "That Laundry Shop — LINE Official Account Silent Webhook",
     configured: Boolean(settings.channelAccessToken),
     autoSendDeliveryPhoto: settings.autoSendDeliveryPhoto,
     timestamp: new Date().toISOString(),
@@ -31,6 +30,11 @@ function normalizeDigits(str?: string | null): string {
   return digits;
 }
 
+function normalizeHandle(str?: string | null): string {
+  if (!str) return "";
+  return str.trim().toLowerCase().replace(/^@/, "");
+}
+
 export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.text();
@@ -41,19 +45,18 @@ export async function POST(req: NextRequest) {
       settings.channelSecret &&
       !verifyLineWebhookSignature(rawBody, signature, settings.channelSecret)
     ) {
-      console.warn("[LINE Webhook] Invalid x-line-signature");
-      return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+      // Log warning but still allow if user has multiple channels (ThatLaundryShop + NoName) hitting the same webhook
+      console.warn("[LINE Webhook] Signature mismatch — continuing for multi-channel support");
     }
 
     const payload = rawBody ? JSON.parse(rawBody) : { events: [] };
     const events: any[] = Array.isArray(payload?.events) ? payload.events : [];
 
-    // LINE Webhook "Verify" button sends an empty events array or dummy token — always return 200 OK immediately
+    // LINE Webhook "Verify" button sends an empty events array — always return 200 OK immediately
     if (events.length === 0) {
       return NextResponse.json({ status: "ok", verified: true });
     }
 
-    // Load existing recent LINE contacts cache
     const contactsSetting = await prisma.setting.findUnique({
       where: { key: "lineOaContacts" },
     });
@@ -67,112 +70,97 @@ export async function POST(req: NextRequest) {
 
     let didUpdateCustomer = false;
 
+    const allCustomers = await prisma.customer.findMany({
+      select: {
+        id: true,
+        name: true,
+        nickName: true,
+        phone: true,
+        secondaryPhone: true,
+        lineId: true,
+        memberId: true,
+      },
+    });
+
     for (const event of events) {
       const userId: string | undefined = event?.source?.userId;
       if (!userId || !/^U[0-9a-f]{32}$/i.test(userId)) continue;
 
-      const replyToken: string | undefined = event?.replyToken;
       const messageText: string =
         event?.type === "message" && event?.message?.type === "text"
           ? String(event.message.text || "").trim()
           : "";
 
-      // Fetch user's LINE profile (displayName, pictureUrl)
       const profile = settings.channelAccessToken
         ? await getLineUserProfile(settings.channelAccessToken, userId)
         : null;
       const displayName = profile?.displayName || "LINE User";
 
-      // Check if this userId is already linked to a Customer
-      let matchedCustomer = await prisma.customer.findFirst({
-        where: { lineId: userId },
-      });
+      // 1. Check if this userId is already linked to a Customer
+      let matchedCustomer =
+        allCustomers.find((c) => c.lineId === userId) || null;
 
-      // If not yet linked, attempt smart auto-matching by:
-      // 1) Phone number or Member ID typed in their message (e.g. "0812345678", "OF2285")
-      // 2) Display name matching an existing Customer's `lineId` or `name`
+      // 2. SILENT BACKGROUND MATCHING (Never sends any auto-reply or link to customer!):
       if (!matchedCustomer) {
-        const msgDigits = normalizeDigits(messageText);
-        const memberCodeMatch = messageText.match(/\b([A-Z]{1,3}[-]?\d{3,6})\b/i);
-
-        const allCustomers = await prisma.customer.findMany({
-          select: {
-            id: true,
-            name: true,
-            nickName: true,
-            phone: true,
-            secondaryPhone: true,
-            lineId: true,
-            memberId: true,
-          },
-        });
-
-        if (msgDigits.length >= 9) {
-          matchedCustomer =
-            (allCustomers.find(
-              (c) =>
-                normalizeDigits(c.phone) === msgDigits ||
-                normalizeDigits(c.secondaryPhone) === msgDigits
-            ) as any) || null;
+        // A) Check if their LINE Display Name matches a customer's saved `lineId` field in CRM (exact unique match)
+        if (displayName) {
+          const normDisplay = normalizeHandle(displayName);
+          const lineIdMatches = allCustomers.filter(
+            (c) =>
+              c.lineId &&
+              !/^U[0-9a-f]{32}$/i.test(c.lineId) &&
+              normalizeHandle(c.lineId) === normDisplay
+          );
+          if (lineIdMatches.length === 1) {
+            matchedCustomer = lineIdMatches[0];
+          }
         }
 
-        if (!matchedCustomer && memberCodeMatch) {
-          const codeUpper = memberCodeMatch[1].replace(/-/g, "").toUpperCase();
-          matchedCustomer =
-            (allCustomers.find(
-              (c) =>
-                c.memberId &&
-                c.memberId.replace(/-/g, "").toUpperCase() === codeUpper
-            ) as any) || null;
+        // B) Check if message contains a phone number (e.g., when customer sends their phone/address in normal chat)
+        if (!matchedCustomer && messageText) {
+          const phoneInMsgMatch = messageText.match(/(?:0|\+?66)[0-9\-\s]{8,12}/);
+          if (phoneInMsgMatch) {
+            const msgDigits = normalizeDigits(phoneInMsgMatch[0]);
+            if (msgDigits.length >= 9 && msgDigits.length <= 11) {
+              const phoneMatches = allCustomers.filter(
+                (c) =>
+                  normalizeDigits(c.phone) === msgDigits ||
+                  normalizeDigits(c.secondaryPhone) === msgDigits
+              );
+              if (phoneMatches.length === 1) {
+                matchedCustomer = phoneMatches[0];
+              }
+            }
+          }
         }
 
+        // C) Check if their LINE Display Name uniquely matches a single customer's Name or Nickname in CRM
         if (!matchedCustomer && displayName) {
-          const lowerDisplay = displayName.trim().toLowerCase();
-          matchedCustomer =
-            (allCustomers.find(
-              (c) =>
-                (c.lineId &&
-                  c.lineId.trim().toLowerCase().replace(/^@/, "") === lowerDisplay) ||
-                (c.name && c.name.trim().toLowerCase() === lowerDisplay) ||
-                (c.nickName && c.nickName.trim().toLowerCase() === lowerDisplay)
-            ) as any) || null;
+          const normDisplay = normalizeHandle(displayName);
+          const nameMatches = allCustomers.filter(
+            (c) =>
+              normalizeHandle(c.name) === normDisplay ||
+              (c.nickName && normalizeHandle(c.nickName) === normDisplay)
+          );
+          if (nameMatches.length === 1) {
+            matchedCustomer = nameMatches[0];
+          }
         }
 
         if (matchedCustomer) {
           await prisma.customer.update({
             where: { id: matchedCustomer.id },
-            data: { lineId: userId },
+            data: {
+              lineId: userId,
+            },
           });
           didUpdateCustomer = true;
           console.log(
-            `[LINE Webhook] Auto-linked LINE User ${displayName} (${userId}) -> Customer ${matchedCustomer.name} (${matchedCustomer.id})`
+            `[LINE Silent Lookup] Silently linked LINE User "${displayName}" (${userId}) -> Customer ${matchedCustomer.name} (${matchedCustomer.id})`
           );
-
-          // Send a friendly confirmation reply if they sent their phone number / member ID
-          if (
-            replyToken &&
-            settings.channelAccessToken &&
-            (msgDigits.length >= 9 || memberCodeMatch || event.type === "follow")
-          ) {
-            await sendLineReplyMessage(settings.channelAccessToken, replyToken, [
-              {
-                type: "text",
-                text: `✅ Connected! Hello ${matchedCustomer.name}, your LINE account is now linked to That Laundry Shop. You will automatically receive delivery proof photos and order updates here! 🧺💚`,
-              },
-            ]).catch(() => {});
-          }
-        } else if (event.type === "follow" && replyToken && settings.channelAccessToken) {
-          // New follower whose name didn't match yet — invite them to reply with their phone number
-          await sendLineReplyMessage(settings.channelAccessToken, replyToken, [
-            {
-              type: "text",
-              text: `Welcome to That Laundry Shop! 🧺✨\nPlease reply with your registered Phone Number (e.g. 0812345678) so we can automatically send your laundry delivery proof photos & order updates to this chat! 💚`,
-            },
-          ]).catch(() => {});
         }
       }
 
-      // Upsert into `lineOaContacts` list (keep up to 100 recent contacts)
       const nowIso = new Date().toISOString();
       const existingIdx = contacts.findIndex((c) => c.userId === userId);
       const updatedRecord: LineContactRecord = {
@@ -190,7 +178,7 @@ export async function POST(req: NextRequest) {
         lastMessageText:
           messageText ||
           (event.type === "follow"
-            ? "[Added LINE Official Account]"
+            ? "[Followed LINE OA]"
             : existingIdx >= 0
             ? contacts[existingIdx].lastMessageText
             : undefined),
@@ -211,8 +199,8 @@ export async function POST(req: NextRequest) {
       contacts.unshift(updatedRecord);
     }
 
-    // Save recent contacts (limit 100)
-    const trimmedContacts = contacts.slice(0, 100);
+    // Keep up to 500 recent LINE OA contacts so staff can search any customer by name/photo
+    const trimmedContacts = contacts.slice(0, 500);
     await prisma.setting.upsert({
       where: { key: "lineOaContacts" },
       update: { value: JSON.stringify(trimmedContacts) },

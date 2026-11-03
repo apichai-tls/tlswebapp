@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useSyncExternalStore } from "react";
-import { MapContainer, TileLayer, Marker, Popup, Tooltip, useMap, ZoomControl } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Tooltip, useMap, ZoomControl, Polyline } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import {
@@ -113,6 +113,30 @@ function getShopIcon(shop: { id?: string; name: string; address: string }) {
     shopIconCache.set(key, icon);
   }
   return icon;
+}
+
+
+// Route Stop Marker Icon for Rider Optimized Route Path
+function createRouteStopIcon(stopNumber: number, legType: "pickup" | "delivery") {
+  const bg = legType === "pickup" ? "bg-amber-500" : "bg-teal-600";
+  const border = legType === "pickup" ? "border-amber-600 ring-amber-400/30" : "border-teal-700 ring-teal-400/30";
+  return L.divIcon({
+    className: "bg-transparent border-none overflow-visible",
+    html: `
+      <div style="position: absolute; transform: translate(-14px, -30px);" class="flex flex-col items-center group cursor-pointer transition-transform hover:scale-115">
+        <div class="w-7 h-7 ${bg} text-white rounded-full border-2 border-white shadow-md flex items-center justify-center text-xs font-black ring-4 ${border}">
+          ${stopNumber}
+        </div>
+        <div class="w-1.5 h-1.5 ${bg} rotate-45 -mt-0.5"></div>
+        <div class="mt-0.5 bg-slate-950/90 text-white text-[8.5px] font-black px-1.5 py-0.2 rounded shadow-xs uppercase whitespace-nowrap">
+          #${stopNumber} ${legType}
+        </div>
+      </div>
+    `,
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+    popupAnchor: [0, -32],
+  });
 }
 
 function MapUpdater({ center, zoom }: { center: [number, number]; zoom: number }) {
@@ -963,7 +987,35 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
                 </div>
               </div>
 
-              <div className="mt-3 flex items-center gap-2">
+              {/* Optimized Multi-Stop Route Box */}
+              {selectedRiderOptimizedRoute && selectedRiderOptimizedRoute.orderedTasks.length > 0 && (
+                <div className="mt-2.5 p-2.5 bg-indigo-50/90 rounded-xl border border-indigo-200/80 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-black text-indigo-950 flex items-center gap-1">
+                      <Zap size={13} className="text-amber-500" />
+                      <span>Optimized Route</span>
+                    </span>
+                    <span className="bg-indigo-600 text-white text-[10px] font-black px-1.5 py-0.2 rounded-md">
+                      {selectedRiderOptimizedRoute.orderedTasks.length} stops • ~{selectedRiderOptimizedRoute.totalDistanceKm} km
+                    </span>
+                  </div>
+
+                  {selectedRiderOptimizedRoute.googleMapsUrl && (
+                    <a
+                      href={selectedRiderOptimizedRoute.googleMapsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-[11px] font-black shadow-2xs transition-colors"
+                    >
+                      <Navigation size={12} className="fill-white" />
+                      <span>Open Full Route in Google Maps</span>
+                      <ExternalLink size={10} className="opacity-80" />
+                    </a>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-2.5 flex items-center gap-2">
                 {selectedRider.phone && (
                   <a
                     href={`tel:${selectedRider.phone}`}
@@ -977,9 +1029,9 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
                     href={`https://www.google.com/maps/search/?api=1&query=${selectedRider.effectiveLocation.lat},${selectedRider.effectiveLocation.lng}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-colors"
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold transition-colors"
                   >
-                    <ExternalLink size={12} /> Google Maps
+                    <ExternalLink size={12} /> Live Pin
                   </a>
                 )}
               </div>
@@ -1020,6 +1072,46 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
                   </Tooltip>
                 </Marker>
               ))}
+
+            {/* Render Selected Rider's Optimized Route Path */}
+            {selectedRiderOptimizedRoute && selectedRiderOptimizedRoute.orderedTasks.length > 0 && (
+              <>
+                <Polyline
+                  positions={selectedRiderOptimizedRoute.routeCoordinates.map((c) => [c.lat, c.lng] as [number, number])}
+                  pathOptions={{
+                    color: "#4f46e5",
+                    weight: 4,
+                    dashArray: "6, 8",
+                    opacity: 0.85,
+                  }}
+                />
+                {selectedRiderOptimizedRoute.orderedTasks.map((item) => (
+                  <Marker
+                    key={`route-stop-${item.task.job.id}-${item.task.legType}`}
+                    position={[item.targetCoords.lat, item.targetCoords.lng]}
+                    icon={createRouteStopIcon(item.stopNumber, item.task.legType)}
+                    zIndexOffset={1600}
+                  >
+                    <Popup className="rounded-xl font-sans" offset={[0, -26]}>
+                      <div className="p-1 min-w-[210px] text-xs">
+                        <div className="flex items-center justify-between gap-1 mb-1">
+                          <span className="font-mono font-bold text-slate-500">#{item.task.job.id.split("-")[0].toUpperCase()}</span>
+                          <span className={`px-1.5 py-0.2 rounded font-black text-[9.5px] uppercase ${item.task.legType === "pickup" ? "bg-amber-100 text-amber-800" : "bg-teal-100 text-teal-800"}`}>
+                            Stop #${item.stopNumber} (${item.task.legType})
+                          </span>
+                        </div>
+                        <div className="font-extrabold text-slate-900 text-sm">{item.task.customerName || "Customer"}</div>
+                        <div className="text-slate-600 text-[11px] mt-0.5 line-clamp-2">{item.task.targetLocation}</div>
+                        <div className="mt-1.5 pt-1.5 border-t border-slate-100 flex items-center justify-between text-[10.5px]">
+                          <span className="text-slate-400 font-semibold">Leg Distance:</span>
+                          <span className="font-bold text-indigo-700">+${item.distanceFromPrevKm} km</span>
+                        </div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                ))}
+              </>
+            )}
 
             {/* Render Live Riders (De-clustered with clear name badges) */}
             {mapVisibleRiders.map((rider) => {

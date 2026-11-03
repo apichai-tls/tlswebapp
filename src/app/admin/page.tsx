@@ -1185,6 +1185,22 @@ function AdminPageContent() {
 
   // --- POS/Cashier Shift Enhancements ---
   const [dialogCart, setDialogCart] = useState<any[]>([]);
+  const [dialogContactChannel, setDialogContactChannel] = useState<"line" | "whatsapp" | null>(null);
+  const [dialogLineProfileId, setDialogLineProfileId] = useState<string>("");
+  const [dialogWhatsappId, setDialogWhatsappId] = useState<string>("");
+
+  // When selecting a customer on a new order, hydrate their stored LINE Profile ID / WhatsApp ID automatically
+  useEffect(() => {
+    if (editingJobId || !selectedProfileCustomer) return;
+    const custLine = (selectedProfileCustomer.lineId || "").trim();
+    const custWa = (selectedProfileCustomer.whatsappId || (selectedProfileCustomer.isWhatsapp ? selectedProfileCustomer.phone || "" : "")).trim();
+    if (custLine && !dialogLineProfileId) setDialogLineProfileId(custLine);
+    if (custWa && !dialogWhatsappId) setDialogWhatsappId(custWa);
+    if (!dialogContactChannel) {
+      if (custLine) setDialogContactChannel("line");
+      else if (selectedProfileCustomer.isWhatsapp || custWa) setDialogContactChannel("whatsapp");
+    }
+  }, [selectedProfileCustomer?.id, editingJobId]);
 
   // Reconcile external server changes safely without overwriting unsaved user edits
   useEffect(() => {
@@ -2080,12 +2096,18 @@ function AdminPageContent() {
     setDialogDiscountPercent(0);
     setDbCustomerJobs([]);
     setPastJobIndex(0);
+    setDialogContactChannel(null);
+    setDialogLineProfileId("");
+    setDialogWhatsappId("");
   };
 
   const resetDialogForm = () => {
     originalJobRef.current = null;
     editingJobIdRef.current = null;
     setEditingJobId(null);
+    setDialogContactChannel(null);
+    setDialogLineProfileId("");
+    setDialogWhatsappId("");
     setBagImageUrls([]);
     setBillImageUrls([]);
     setPickupProofImageUrls([]);
@@ -2922,6 +2944,32 @@ function AdminPageContent() {
       customerPhone: job.customerPhone,
     });
     setSelectedProfileCustomer(foundCustomer || null);
+
+    let loadedJobChannel: "line" | "whatsapp" | null = null;
+    let loadedJobLineId = "";
+    let loadedJobWhatsappId = "";
+    if (job.adminNotesJson) {
+      try {
+        const parsedNotes = JSON.parse(job.adminNotesJson);
+        if (parsedNotes && typeof parsedNotes === "object" && !Array.isArray(parsedNotes)) {
+          if (parsedNotes.contactChannel === "line" || parsedNotes.contactChannel === "whatsapp") {
+            loadedJobChannel = parsedNotes.contactChannel;
+          }
+          if (typeof parsedNotes.customerLineId === "string") {
+            loadedJobLineId = parsedNotes.customerLineId.trim();
+          }
+          if (typeof parsedNotes.customerWhatsappId === "string") {
+            loadedJobWhatsappId = parsedNotes.customerWhatsappId.trim();
+          }
+        }
+      } catch {}
+    }
+    const effectiveLineId = loadedJobLineId || (foundCustomer?.lineId || "").trim();
+    const effectiveWaId = loadedJobWhatsappId || (foundCustomer?.whatsappId || (foundCustomer?.isWhatsapp ? foundCustomer?.phone || "" : "")).trim();
+    const effectiveChannel = loadedJobChannel || (effectiveLineId ? "line" : (foundCustomer?.isWhatsapp || effectiveWaId ? "whatsapp" : null));
+    setDialogContactChannel(effectiveChannel);
+    setDialogLineProfileId(effectiveLineId);
+    setDialogWhatsappId(effectiveWaId);
 
     const resolvedPhones = resolveCustomerPhones({
       customerPhone: job.customerPhone,
@@ -3806,6 +3854,9 @@ function AdminPageContent() {
           hangerCount: hasHanger ? Math.max(0, Number(hangerCount) || 0) : 0,
           foldedCount: hasFolded ? Math.max(0, Number(foldedCount) || 0) : 0,
           processingBranchId: (processingBranchId && processingBranchId !== shop.id) ? processingBranchId : null,
+          contactChannel: dialogContactChannel || existingParsedNotes?.contactChannel || null,
+          customerLineId: dialogLineProfileId.trim() || existingParsedNotes?.customerLineId || null,
+          customerWhatsappId: dialogWhatsappId.trim() || existingParsedNotes?.customerWhatsappId || null,
         };
         if (isNoChargePrepaidJob) {
           notesObj.isBillSent = true;
@@ -3899,7 +3950,10 @@ function AdminPageContent() {
               const hangerCountVal = Math.max(0, Number(p?.hangerCount) || 0);
               const foldedCountVal = Math.max(0, Number(p?.foldedCount) || 0);
               const processingBranchIdVal = p?.processingBranchId || null;
-              return JSON.stringify({ notes, payments, isTaxInvoiceRequested: isTax, isRewash, rewashFromJobId, noRiderCommission, hangerCount: hangerCountVal, foldedCount: foldedCountVal, processingBranchId: processingBranchIdVal });
+              const contactChannelVal = p?.contactChannel || null;
+              const customerLineIdVal = p?.customerLineId || null;
+              const customerWhatsappIdVal = p?.customerWhatsappId || null;
+              return JSON.stringify({ notes, payments, isTaxInvoiceRequested: isTax, isRewash, rewashFromJobId, noRiderCommission, hangerCount: hangerCountVal, foldedCount: foldedCountVal, processingBranchId: processingBranchIdVal, contactChannel: contactChannelVal, customerLineId: customerLineIdVal, customerWhatsappId: customerWhatsappIdVal });
             } catch {
               return String(raw);
             }
@@ -4754,6 +4808,23 @@ function AdminPageContent() {
               console.warn("[AutoReceipt] Background new-job receipt capture failed:", e);
             }
           });
+        }
+
+        // Sync pasted LINE Profile ID or WhatsApp ID onto the selected customer's CRM record as well
+        if (selectedProfileCustomer?.id) {
+          const custSyncUpdates: Record<string, any> = {};
+          if (dialogLineProfileId.trim() && dialogLineProfileId.trim() !== (selectedProfileCustomer.lineId || "")) {
+            custSyncUpdates.lineId = dialogLineProfileId.trim();
+          }
+          if (dialogContactChannel === "whatsapp" || dialogWhatsappId.trim()) {
+            if (!selectedProfileCustomer.isWhatsapp) custSyncUpdates.isWhatsapp = true;
+            if (dialogWhatsappId.trim() && dialogWhatsappId.trim() !== (selectedProfileCustomer.whatsappId || "")) {
+              custSyncUpdates.whatsappId = dialogWhatsappId.trim();
+            }
+          }
+          if (Object.keys(custSyncUpdates).length > 0) {
+            customerStore.updateCustomer(selectedProfileCustomer.id, custSyncUpdates).catch(() => {});
+          }
         }
 
         // Close dialog immediately — UI updates in 0ms!
@@ -7368,6 +7439,300 @@ function AdminPageContent() {
                             )}
                           </div>
                         </div>
+
+                        {/* Customer Contact Channel Indicator & Copy-Paste LINE / WhatsApp Profile ID */}
+                        {(() => {
+                          const activeEditJob = editingJobId ? jobs.find((j) => j.id === editingJobId) : null;
+                          const primaryChannel = dialogContactChannel;
+
+                          const persistContactDetails = async (
+                            nextChannel: "line" | "whatsapp" | null,
+                            nextLineId: string,
+                            nextWaId: string,
+                            showToastMessage?: string
+                          ) => {
+                            const trimmedLine = nextLineId.trim();
+                            const trimmedWa = nextWaId.trim();
+                            if (activeEditJob) {
+                              let baseObj: Record<string, any> = {};
+                              if (activeEditJob.adminNotesJson) {
+                                try {
+                                  const p = JSON.parse(activeEditJob.adminNotesJson);
+                                  if (p && typeof p === "object" && !Array.isArray(p)) baseObj = { ...p };
+                                } catch {}
+                              }
+                              baseObj.contactChannel = nextChannel;
+                              baseObj.customerLineId = trimmedLine || null;
+                              baseObj.customerWhatsappId = trimmedWa || null;
+                              const nextJson = JSON.stringify(baseObj);
+                              if (originalJobRef.current && String(originalJobRef.current.id) === String(activeEditJob.id)) {
+                                originalJobRef.current.adminNotesJson = nextJson;
+                              }
+                              await jobStore.updateJobDetails(activeEditJob.id, {
+                                adminNotesJson: nextJson,
+                              });
+                            }
+                            if (selectedProfileCustomer) {
+                              const custUpdates: Record<string, any> = {};
+                              if (nextChannel === "line" && trimmedLine && trimmedLine !== (selectedProfileCustomer.lineId || "")) {
+                                custUpdates.lineId = trimmedLine;
+                              }
+                              if (nextChannel === "whatsapp") {
+                                if (!selectedProfileCustomer.isWhatsapp) custUpdates.isWhatsapp = true;
+                                if (trimmedWa && trimmedWa !== (selectedProfileCustomer.whatsappId || "")) {
+                                  custUpdates.whatsappId = trimmedWa;
+                                }
+                              }
+                              if (Object.keys(custUpdates).length > 0) {
+                                await customerStore.updateCustomer(selectedProfileCustomer.id, custUpdates);
+                                setSelectedProfileCustomer((prev) => (prev ? { ...prev, ...custUpdates } : null));
+                              }
+                            }
+                            if (showToastMessage) {
+                              toast.success(showToastMessage);
+                            }
+                          };
+
+                          const handleSetContactChannel = async (ch: "line" | "whatsapp") => {
+                            const nextVal = dialogContactChannel === ch ? null : ch;
+                            setDialogContactChannel(nextVal);
+                            await persistContactDetails(
+                              nextVal,
+                              dialogLineProfileId,
+                              dialogWhatsappId,
+                              nextVal === "line"
+                                ? "Selected LINE OA 💚 — paste customer's LINE Profile ID below"
+                                : nextVal === "whatsapp"
+                                  ? "Selected WhatsApp 💬 — paste customer's WhatsApp ID below"
+                                  : "Cleared contact channel"
+                            );
+                          };
+
+                          return (
+                            <div className="flex flex-col gap-2 px-2.5 py-2 rounded-xl bg-slate-50 border border-slate-200/80 text-xs">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10.5px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
+                                  <span>Contacted Via:</span>
+                                  {primaryChannel === "line" && (
+                                    <span className="text-[10px] font-black text-[#06C755]">LINE OA</span>
+                                  )}
+                                  {primaryChannel === "whatsapp" && (
+                                    <span className="text-[10px] font-black text-teal-700">WhatsApp</span>
+                                  )}
+                                  {!primaryChannel && (
+                                    <span className="text-[10px] text-slate-400 font-normal">Select channel</span>
+                                  )}
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSetContactChannel("line")}
+                                    className={`px-2 py-0.5 rounded-lg text-[10px] font-black border transition-all cursor-pointer ${
+                                      primaryChannel === "line"
+                                        ? "bg-[#06C755] text-white border-[#06C755] shadow-2xs"
+                                        : "bg-white text-slate-600 border-slate-200 hover:border-[#06C755] hover:text-[#06C755]"
+                                    }`}
+                                  >
+                                    💚 LINE OA {primaryChannel === "line" ? "✓" : ""}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSetContactChannel("whatsapp")}
+                                    className={`px-2 py-0.5 rounded-lg text-[10px] font-black border transition-all cursor-pointer ${
+                                      primaryChannel === "whatsapp"
+                                        ? "bg-teal-600 text-white border-teal-600 shadow-2xs"
+                                        : "bg-white text-slate-600 border-slate-200 hover:border-teal-600 hover:text-teal-700"
+                                    }`}
+                                  >
+                                    💬 WhatsApp {primaryChannel === "whatsapp" ? "✓" : ""}
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Inline Copy & Paste Input for LINE Profile ID when LINE OA is selected */}
+                              {primaryChannel === "line" && (
+                                <div className="flex flex-col gap-1 pt-1 border-t border-slate-200/70">
+                                  <div className="flex items-center justify-between text-[10px] font-bold text-[#059642]">
+                                    <span>💚 Customer LINE Profile Name / ID:</span>
+                                    {dialogLineProfileId.trim() && (
+                                      <span className="text-[9.5px] font-mono bg-[#06C755]/10 text-[#059642] px-1.5 py-0.2 rounded border border-[#06C755]/30 truncate max-w-[160px]">
+                                        {dialogLineProfileId.trim()}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <Input
+                                      value={dialogLineProfileId}
+                                      onChange={(e) => setDialogLineProfileId(e.target.value)}
+                                      onBlur={() => {
+                                        persistContactDetails("line", dialogLineProfileId, dialogWhatsappId);
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          e.preventDefault();
+                                          persistContactDetails(
+                                            "line",
+                                            dialogLineProfileId,
+                                            dialogWhatsappId,
+                                            `Saved LINE Profile ID: ${dialogLineProfileId.trim()}`
+                                          );
+                                        }
+                                      }}
+                                      placeholder="Paste customer LINE Profile Name / ID (e.g. Jsirias)..."
+                                      className="h-7.5 text-[11px] bg-white border-[#06C755]/40 focus-visible:ring-[#06C755]/30 rounded-lg font-medium flex-1 min-w-0"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        try {
+                                          const clip = await navigator.clipboard.readText();
+                                          if (clip && clip.trim()) {
+                                            const val = clip.trim();
+                                            setDialogLineProfileId(val);
+                                            await persistContactDetails(
+                                              "line",
+                                              val,
+                                              dialogWhatsappId,
+                                              `Pasted & saved LINE Profile ID: ${val}`
+                                            );
+                                          } else {
+                                            toast.info("Clipboard is empty — press Ctrl+V inside the box");
+                                          }
+                                        } catch {
+                                          toast.info("Press Ctrl+V inside the box to paste");
+                                        }
+                                      }}
+                                      className="h-7.5 px-2 rounded-lg text-[10px] font-bold bg-white hover:bg-[#06C755]/10 text-[#059642] border border-[#06C755]/40 shrink-0 cursor-pointer transition-colors"
+                                      title="Paste LINE Profile ID from clipboard"
+                                    >
+                                      📋 Paste
+                                    </button>
+                                    {dialogLineProfileId.trim() && (
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          try {
+                                            await navigator.clipboard.writeText(dialogLineProfileId.trim());
+                                            toast.success(`Copied LINE ID: ${dialogLineProfileId.trim()}`);
+                                          } catch {}
+                                        }}
+                                        className="h-7.5 px-2 rounded-lg text-[10px] font-bold bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shrink-0 cursor-pointer transition-colors"
+                                        title="Copy LINE Profile ID"
+                                      >
+                                        Copy
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        persistContactDetails(
+                                          "line",
+                                          dialogLineProfileId,
+                                          dialogWhatsappId,
+                                          `Saved LINE Profile ID: ${dialogLineProfileId.trim() || "Cleared"}`
+                                        )
+                                      }
+                                      className="h-7.5 px-2.5 rounded-lg text-[10px] font-black bg-[#06C755] hover:bg-[#05b34c] text-white shrink-0 cursor-pointer transition-colors shadow-2xs"
+                                    >
+                                      Save
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Inline Copy & Paste Input for WhatsApp ID when WhatsApp is selected */}
+                              {primaryChannel === "whatsapp" && (
+                                <div className="flex flex-col gap-1 pt-1 border-t border-slate-200/70">
+                                  <div className="flex items-center justify-between text-[10px] font-bold text-teal-700">
+                                    <span>💬 Customer WhatsApp ID / Number:</span>
+                                    {dialogWhatsappId.trim() && (
+                                      <span className="text-[9.5px] font-mono bg-teal-50 text-teal-800 px-1.5 py-0.2 rounded border border-teal-200 truncate max-w-[160px]">
+                                        {dialogWhatsappId.trim()}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <Input
+                                      value={dialogWhatsappId}
+                                      onChange={(e) => setDialogWhatsappId(e.target.value)}
+                                      onBlur={() => {
+                                        persistContactDetails("whatsapp", dialogLineProfileId, dialogWhatsappId);
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          e.preventDefault();
+                                          persistContactDetails(
+                                            "whatsapp",
+                                            dialogLineProfileId,
+                                            dialogWhatsappId,
+                                            `Saved WhatsApp ID: ${dialogWhatsappId.trim()}`
+                                          );
+                                        }
+                                      }}
+                                      placeholder="Paste customer WhatsApp ID / Number (e.g. +65 9123 4567)..."
+                                      className="h-7.5 text-[11px] bg-white border-teal-300 focus-visible:ring-teal-500/30 rounded-lg font-medium flex-1 min-w-0"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        try {
+                                          const clip = await navigator.clipboard.readText();
+                                          if (clip && clip.trim()) {
+                                            const val = clip.trim();
+                                            setDialogWhatsappId(val);
+                                            await persistContactDetails(
+                                              "whatsapp",
+                                              dialogLineProfileId,
+                                              val,
+                                              `Pasted & saved WhatsApp ID: ${val}`
+                                            );
+                                          } else {
+                                            toast.info("Clipboard is empty — press Ctrl+V inside the box");
+                                          }
+                                        } catch {
+                                          toast.info("Press Ctrl+V inside the box to paste");
+                                        }
+                                      }}
+                                      className="h-7.5 px-2 rounded-lg text-[10px] font-bold bg-white hover:bg-teal-50 text-teal-700 border border-teal-300 shrink-0 cursor-pointer transition-colors"
+                                      title="Paste WhatsApp ID from clipboard"
+                                    >
+                                      📋 Paste
+                                    </button>
+                                    {dialogWhatsappId.trim() && (
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          try {
+                                            await navigator.clipboard.writeText(dialogWhatsappId.trim());
+                                            toast.success(`Copied WhatsApp ID: ${dialogWhatsappId.trim()}`);
+                                          } catch {}
+                                        }}
+                                        className="h-7.5 px-2 rounded-lg text-[10px] font-bold bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shrink-0 cursor-pointer transition-colors"
+                                        title="Copy WhatsApp ID"
+                                      >
+                                        Copy
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        persistContactDetails(
+                                          "whatsapp",
+                                          dialogLineProfileId,
+                                          dialogWhatsappId,
+                                          `Saved WhatsApp ID: ${dialogWhatsappId.trim() || "Cleared"}`
+                                        )
+                                      }
+                                      className="h-7.5 px-2.5 rounded-lg text-[10px] font-black bg-teal-600 hover:bg-teal-700 text-white shrink-0 cursor-pointer transition-colors shadow-2xs"
+                                    >
+                                      Save
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {/* Origin Store Branch & Service Mode (Well-proportioned so Branch dropdown never squishes) */}
                         <div className="space-y-2 pb-2.5 border-b border-slate-100 shrink-0">

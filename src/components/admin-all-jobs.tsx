@@ -25,7 +25,7 @@ import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { DailySaleDialog } from "@/components/daily-sale-dialog";
-import { sendDeliveryProofViaLineAction, getLineOaContactsAction, linkLineUserToCustomerAction } from "@/actions/line";
+import { sendDeliveryProofViaLineAction, getLineOaContactsAction, linkLineUserToCustomerAction, syncLineOaFollowersAction } from "@/actions/line";
 import type { LineContactRecord } from "@/lib/line";
 
 export type KanbanColumnId = "tba" | "pending" | "pickup" | "billing" | "process" | "delivery" | "completed" | "cancel" | "return" | "topup";
@@ -98,6 +98,9 @@ export interface JobBillingMeta {
   deliveryPhotoSentBy: string | null;
   isRiderDelivered: boolean;
   deliveredAt: string | null;
+  contactChannel: "line" | "whatsapp" | "phone" | null;
+  customerLineId: string | null;
+  customerWhatsappId: string | null;
 }
 
 const jobBillingMetaCache = new Map<string, JobBillingMeta>();
@@ -143,6 +146,9 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
   let deliveryPhotoSentBy: string | null = null;
   let isRiderDeliveredFlag = false;
   let deliveredAt: string | null = null;
+  let contactChannel: "line" | "whatsapp" | "phone" | null = null;
+  let customerLineId: string | null = null;
+  let customerWhatsappId: string | null = null;
 
   let deliveryPhotoUrls: string[] = [];
   if (job.deliveryProofImageUrl && job.deliveryProofImageUrl !== "[]") {
@@ -181,10 +187,24 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
         if (parsed.kanbanStage === "billing" || parsed.kanbanStage === "process") {
           kanbanStage = parsed.kanbanStage;
         }
+        if (parsed.contactChannel === "line" || parsed.contactChannel === "whatsapp" || parsed.contactChannel === "phone") {
+          contactChannel = parsed.contactChannel;
+        }
+        if (typeof parsed.customerLineId === "string" && parsed.customerLineId.trim()) {
+          customerLineId = parsed.customerLineId.trim();
+        }
+        if (typeof parsed.customerWhatsappId === "string" && parsed.customerWhatsappId.trim()) {
+          customerWhatsappId = parsed.customerWhatsappId.trim();
+        }
       }
     } catch {
       // ignore malformed JSON
     }
+  }
+
+  if (!contactChannel && job.remark) {
+    if (/Channel:\s*LINE/i.test(job.remark)) contactChannel = "line";
+    else if (/Channel:\s*(?:WhatsApp|WA)/i.test(job.remark)) contactChannel = "whatsapp";
   }
 
   const resultMeta: JobBillingMeta = {
@@ -209,10 +229,50 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
     deliveryPhotoSentBy,
     isRiderDelivered: deliveryPhotoUrls.length > 0 || isRiderDeliveredFlag || job.legs?.deliveryOutbound?.status === "completed" || job.status === "completed",
     deliveredAt: deliveredAt || (job.legs?.deliveryOutbound?.completedAt ? String(job.legs.deliveryOutbound.completedAt) : null) || (job.completedAt ? String(job.completedAt) : null),
+    contactChannel,
+    customerLineId,
+    customerWhatsappId,
   };
   if (jobBillingMetaCache.size > 4000) jobBillingMetaCache.clear();
   jobBillingMetaCache.set(cacheKey, resultMeta);
   return resultMeta;
+}
+
+export function getCustomerContactChannels(
+  job: Job,
+  matchedCustomer?: {
+    lineId?: string | null;
+    whatsappId?: string | null;
+    isWhatsapp?: boolean | null;
+    isSecondaryWhatsapp?: boolean | null;
+  } | null,
+  bMeta?: JobBillingMeta
+): {
+  primary: "line" | "whatsapp" | "phone" | null;
+  hasLine: boolean;
+  hasWhatsApp: boolean;
+} {
+  const explicit = bMeta?.contactChannel || null;
+  const hasLine = Boolean(
+    explicit === "line" ||
+      (bMeta?.customerLineId && bMeta.customerLineId.trim()) ||
+      (matchedCustomer?.lineId && matchedCustomer.lineId.trim()) ||
+      (job.customerPhone && /^LINE:/i.test(job.customerPhone.trim()))
+  );
+  const hasWhatsApp = Boolean(
+    explicit === "whatsapp" ||
+      (bMeta?.customerWhatsappId && bMeta.customerWhatsappId.trim()) ||
+      matchedCustomer?.isWhatsapp ||
+      matchedCustomer?.isSecondaryWhatsapp ||
+      (matchedCustomer?.whatsappId && matchedCustomer.whatsappId.trim()) ||
+      (job.customerPhone && /^WA:/i.test(job.customerPhone.trim()))
+  );
+
+  const primary =
+    explicit ||
+    (hasLine ? "line" : hasWhatsApp ? "whatsapp" : null);
+
+  return { primary, hasLine, hasWhatsApp };
 }
 
 export function getJobKanbanColumn(job: Job): KanbanColumnId {
@@ -380,9 +440,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     [deliveryPhotoPreviewJobId, jobs]
   );
   const [isSendingLineProof, setIsSendingLineProof] = useState(false);
+  const [isSyncingLineFollowers, setIsSyncingLineFollowers] = useState(false);
   const [isCopyingPhoto, setIsCopyingPhoto] = useState(false);
   const [lineOaContacts, setLineOaContacts] = useState<LineContactRecord[]>([]);
   const [selectedLineUserId, setSelectedLineUserId] = useState<string>("");
+  const [lineContactSearch, setLineContactSearch] = useState<string>("");
 
   useEffect(() => {
     if (deliveryPhotoPreviewJobId) {
@@ -2261,12 +2323,78 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               {(() => {
                                 const rawPhone = job.customerPhone && job.customerPhone !== "-" ? job.customerPhone : "";
                                 const displayContact = rawPhone || (matchedCustomer?.whatsappId ? `WA: ${matchedCustomer.whatsappId}` : (matchedCustomer?.lineId ? `LINE: ${matchedCustomer.lineId}` : "No Phone"));
+                                const chInfo = getCustomerContactChannels(job, matchedCustomer, bMeta);
                                 return (
                                   <>
                                     <span className="truncate max-w-[140px]">{displayContact}</span>
-                                    {matchedCustomer?.whatsappId && rawPhone && !rawPhone.toLowerCase().includes(matchedCustomer.whatsappId.toLowerCase()) && (
-                                      <span className="text-[9px] font-semibold text-emerald-700 bg-emerald-50 px-1 py-0 rounded border border-emerald-200">
-                                        WA: {matchedCustomer.whatsappId}
+                                    {chInfo.hasLine && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const nextChannel = bMeta.contactChannel === "line" ? null : "line";
+                                          const nextJson = buildUpdatedAdminNotesJson(job, { contactChannel: nextChannel });
+                                          jobStore.updateJobDetails(job.id, { adminNotesJson: nextJson });
+                                          toast.success(nextChannel ? "Marked order contact channel as LINE OA 💚" : "Cleared explicit contact channel");
+                                        }}
+                                        title="Customer contacted via LINE OA (Click to toggle priority)"
+                                        className={`inline-flex items-center gap-0.5 text-[8.5px] font-black px-1.5 py-0 rounded border cursor-pointer transition-all ${
+                                          chInfo.primary === "line"
+                                            ? "bg-[#06C755] text-white border-[#06C755] shadow-2xs"
+                                            : "bg-emerald-50 text-[#06C755] border-emerald-200 hover:bg-emerald-100"
+                                        }`}
+                                      >
+                                        <span>LINE OA</span>
+                                      </button>
+                                    )}
+                                    {chInfo.hasWhatsApp && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const nextChannel = bMeta.contactChannel === "whatsapp" ? null : "whatsapp";
+                                          const nextJson = buildUpdatedAdminNotesJson(job, { contactChannel: nextChannel });
+                                          jobStore.updateJobDetails(job.id, { adminNotesJson: nextJson });
+                                          toast.success(nextChannel ? "Marked order contact channel as WhatsApp 💬" : "Cleared explicit contact channel");
+                                        }}
+                                        title="Customer contacted via WhatsApp (Click to toggle priority)"
+                                        className={`inline-flex items-center gap-0.5 text-[8.5px] font-black px-1.5 py-0 rounded border cursor-pointer transition-all ${
+                                          chInfo.primary === "whatsapp"
+                                            ? "bg-teal-600 text-white border-teal-600 shadow-2xs"
+                                            : "bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100"
+                                        }`}
+                                      >
+                                        <span>WhatsApp</span>
+                                      </button>
+                                    )}
+                                    {!chInfo.hasLine && !chInfo.hasWhatsApp && (
+                                      <span className="inline-flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            const nextJson = buildUpdatedAdminNotesJson(job, { contactChannel: "line" });
+                                            jobStore.updateJobDetails(job.id, { adminNotesJson: nextJson });
+                                            toast.success("Marked order contact channel as LINE OA 💚");
+                                          }}
+                                          className="text-[8px] font-bold text-slate-400 hover:text-[#06C755] bg-slate-50 hover:bg-emerald-50 px-1 py-0 rounded border border-slate-200 hover:border-emerald-200 cursor-pointer"
+                                          title="Click to tag this order as LINE OA"
+                                        >
+                                          +LINE
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            const nextJson = buildUpdatedAdminNotesJson(job, { contactChannel: "whatsapp" });
+                                            jobStore.updateJobDetails(job.id, { adminNotesJson: nextJson });
+                                            toast.success("Marked order contact channel as WhatsApp 💬");
+                                          }}
+                                          className="text-[8px] font-bold text-slate-400 hover:text-teal-700 bg-slate-50 hover:bg-teal-50 px-1 py-0 rounded border border-slate-200 hover:border-teal-200 cursor-pointer"
+                                          title="Click to tag this order as WhatsApp"
+                                        >
+                                          +WA
+                                        </button>
                                       </span>
                                     )}
                                   </>
@@ -3164,11 +3292,21 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                     customerName: job.customerName,
                                     customerPhone: job.customerPhone,
                                   });
-                                  if (!c) return null;
+                                  const chInfo = getCustomerContactChannels(job, c, bMeta);
                                   return (
                                     <>
-                                      {c.isVIP && <Badge className="text-[8px] px-1.5 py-0 h-3.5 bg-gradient-to-r from-amber-200 to-amber-400 text-amber-900 border-none font-black">VIP</Badge>}
-                                      {c.isMember && <Badge className="text-[8px] px-1.5 py-0 h-3.5 bg-blue-100 text-blue-700 border-none font-bold">MEMBER</Badge>}
+                                      {c?.isVIP && <Badge className="text-[8px] px-1.5 py-0 h-3.5 bg-gradient-to-r from-amber-200 to-amber-400 text-amber-900 border-none font-black">VIP</Badge>}
+                                      {c?.isMember && <Badge className="text-[8px] px-1.5 py-0 h-3.5 bg-blue-100 text-blue-700 border-none font-bold">MEMBER</Badge>}
+                                      {chInfo.primary === "line" && (
+                                        <Badge className="text-[8px] px-1.5 py-0 h-3.5 bg-[#06C755] text-white border-none font-black">
+                                          LINE OA
+                                        </Badge>
+                                      )}
+                                      {chInfo.primary === "whatsapp" && (
+                                        <Badge className="text-[8px] px-1.5 py-0 h-3.5 bg-teal-600 text-white border-none font-black">
+                                          WhatsApp
+                                        </Badge>
+                                      )}
                                     </>
                                   );
                                 })()}
@@ -3807,8 +3945,30 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
               deliveryPhotoPreviewJob.customerPhone,
               deliveryPhotoPreviewJob.customerName
             );
-            const customerLineId = matchedCustomer?.lineId || "";
+            const customerLineId = bMeta.customerLineId || matchedCustomer?.lineId || "";
             const isLinkedLineUserId = /^U[0-9a-f]{32}$/i.test(customerLineId.trim());
+            const autoMatchedLineContact = !isLinkedLineUserId
+              ? lineOaContacts.find(
+                  (c) =>
+                    (matchedCustomer && c.linkedCustomerId === matchedCustomer.id) ||
+                    (customerLineId &&
+                      c.displayName.trim().toLowerCase().replace(/^@/, "") ===
+                        customerLineId.trim().toLowerCase().replace(/^@/, "")) ||
+                    ((matchedCustomer?.name || deliveryPhotoPreviewJob.customerName) &&
+                      c.displayName.trim().toLowerCase() ===
+                        (matchedCustomer?.name || deliveryPhotoPreviewJob.customerName || "")
+                          .trim()
+                          .toLowerCase())
+                )
+              : undefined;
+            const effectiveLineUserId =
+              selectedLineUserId ||
+              (isLinkedLineUserId ? customerLineId.trim() : autoMatchedLineContact?.userId || "");
+            const linkedLineContact = lineOaContacts.find(
+              (c) =>
+                c.userId === effectiveLineUserId ||
+                (matchedCustomer && c.linkedCustomerId === matchedCustomer.id)
+            );
 
             const handleCopyPhotoToClipboard = async (photoUrl: string) => {
               setIsCopyingPhoto(true);
@@ -3870,7 +4030,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
               try {
                 const res = await sendDeliveryProofViaLineAction({
                   jobId: deliveryPhotoPreviewJob.id,
-                  overrideLineUserId: selectedLineUserId || undefined,
+                  overrideLineUserId: effectiveLineUserId || undefined,
                   actorName: (user as any)?.name || user?.email || "Staff",
                 });
                 if (res.success) {
@@ -3905,12 +4065,49 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
                 <div className="space-y-4 py-2">
                   <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
-                    <div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-slate-500 font-medium">Customer: </span>
                       <span className="font-bold text-slate-900">{deliveryPhotoPreviewJob.customerName || "Walk-in"}</span>
                       {deliveryPhotoPreviewJob.customerPhone && (
-                        <span className="text-slate-500 ml-2">({deliveryPhotoPreviewJob.customerPhone})</span>
+                        <span className="text-slate-500">({deliveryPhotoPreviewJob.customerPhone})</span>
                       )}
+                      {(() => {
+                        const chInfo = getCustomerContactChannels(deliveryPhotoPreviewJob, matchedCustomer, bMeta);
+                        return (
+                          <span className="inline-flex items-center gap-1 ml-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextJson = buildUpdatedAdminNotesJson(deliveryPhotoPreviewJob, { contactChannel: "line" });
+                                jobStore.updateJobDetails(deliveryPhotoPreviewJob.id, { adminNotesJson: nextJson });
+                                toast.success("Set order contact channel to LINE OA 💚");
+                              }}
+                              className={`px-2 py-0.5 rounded text-[10px] font-black border cursor-pointer transition-all ${
+                                chInfo.primary === "line"
+                                  ? "bg-[#06C755] text-white border-[#06C755] shadow-2xs"
+                                  : "bg-white text-slate-600 border-slate-200 hover:border-[#06C755]"
+                              }`}
+                            >
+                              💚 Contacted via LINE OA {chInfo.primary === "line" ? "✓" : ""}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextJson = buildUpdatedAdminNotesJson(deliveryPhotoPreviewJob, { contactChannel: "whatsapp" });
+                                jobStore.updateJobDetails(deliveryPhotoPreviewJob.id, { adminNotesJson: nextJson });
+                                toast.success("Set order contact channel to WhatsApp 💬");
+                              }}
+                              className={`px-2 py-0.5 rounded text-[10px] font-black border cursor-pointer transition-all ${
+                                chInfo.primary === "whatsapp"
+                                  ? "bg-teal-600 text-white border-teal-600 shadow-2xs"
+                                  : "bg-white text-slate-600 border-slate-200 hover:border-teal-600"
+                              }`}
+                            >
+                              💬 Contacted via WhatsApp {chInfo.primary === "whatsapp" ? "✓" : ""}
+                            </button>
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-slate-500 font-medium">Delivered by: </span>
@@ -3972,20 +4169,20 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                   {photos.length > 0 && (
                     <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 text-xs">
+                        <div className="flex items-center gap-2 text-xs flex-wrap">
                           <span className="px-2 py-0.5 rounded bg-[#06C755] text-white font-black text-[10px]">
                             LINE OA
                           </span>
                           <span className="font-bold text-slate-800">
-                            Send Delivery Proof to Customer
+                            LINE ID Lookup:
                           </span>
-                          {isLinkedLineUserId ? (
-                            <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 text-[10px]">
-                              LINE Linked ✓
+                          {effectiveLineUserId ? (
+                            <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 text-[10px] font-bold">
+                              ✓ Found LINE ID ({linkedLineContact?.displayName || matchedCustomer?.name || effectiveLineUserId.slice(0, 10) + "..."})
                             </Badge>
                           ) : (
-                            <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300 bg-amber-50">
-                              {customerLineId ? `Handle: ${customerLineId}` : "Not Linked Yet"}
+                            <Badge variant="outline" className="text-[10px] text-amber-800 border-amber-300 bg-amber-50 font-bold">
+                              {customerLineId ? `Saved Handle: ${customerLineId} (Awaiting Chat Sync)` : "No LINE ID on Profile"}
                             </Badge>
                           )}
                         </div>
@@ -4017,9 +4214,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           <Button
                             type="button"
                             size="sm"
-                            disabled={isSendingLineProof}
+                            disabled={isSendingLineProof || !effectiveLineUserId}
                             onClick={handleSendViaLineOa}
-                            className="h-8 text-xs font-bold bg-[#06C755] hover:bg-[#05b34c] text-white shadow-2xs cursor-pointer"
+                            className="h-8 text-xs font-bold bg-[#06C755] hover:bg-[#05b34c] text-white shadow-2xs disabled:opacity-50 cursor-pointer"
                           >
                             <Send size={13} className="mr-1.5" />
                             <span>{isSendingLineProof ? "Sending..." : "Send via LINE OA"}</span>
@@ -4027,25 +4224,98 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                         </div>
                       </div>
 
-                      {!isLinkedLineUserId && lineOaContacts.length > 0 && (
-                        <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-2 border-t border-slate-200/80 text-xs">
-                          <span className="text-slate-500 font-medium shrink-0">
-                            Link to recent LINE follower:
+                      {/* Verified Recipient Identity Card */}
+                      {effectiveLineUserId && (
+                        <div className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-emerald-50/70 border border-emerald-200 text-xs">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            {linkedLineContact?.pictureUrl ? (
+                              <img
+                                src={linkedLineContact.pictureUrl}
+                                alt={linkedLineContact.displayName}
+                                className="w-7 h-7 rounded-full object-cover border border-emerald-300 shrink-0"
+                              />
+                            ) : (
+                              <div className="w-7 h-7 rounded-full bg-[#06C755] text-white font-black flex items-center justify-center text-[11px] shrink-0">
+                                LINE
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <p className="font-bold text-emerald-950 truncate">
+                                Sending to LINE: {linkedLineContact?.displayName || matchedCustomer?.name || "Matched Customer"}
+                              </p>
+                              <p className="text-[10px] text-emerald-700 font-mono truncate">
+                                CRM Customer: {matchedCustomer?.name || deliveryPhotoPreviewJob.customerName} ({deliveryPhotoPreviewJob.customerPhone || "No phone"}) • LINE ID: {effectiveLineUserId.slice(0, 14)}...
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex flex-col gap-2 pt-2 border-t border-slate-200/80 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-slate-600 font-bold">
+                            Look up Customer ID from @thatlaundryshop Followers ({lineOaContacts.length} loaded):
                           </span>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={isSyncingLineFollowers}
+                            onClick={async () => {
+                              setIsSyncingLineFollowers(true);
+                              try {
+                                const res = await syncLineOaFollowersAction(150);
+                                if (res.success) {
+                                  setLineOaContacts(res.contacts || []);
+                                  toast.success(
+                                    `Synced ${res.syncedCount} new LINE followers (${res.linkedCustomerCount} auto-matched to CRM customers)!`
+                                  );
+                                } else {
+                                  toast.error(res.error || "Failed to sync LINE followers");
+                                }
+                              } catch (err: any) {
+                                toast.error(err?.message || "Sync failed");
+                              } finally {
+                                setIsSyncingLineFollowers(false);
+                              }
+                            }}
+                            className="h-7 px-2.5 text-[11px] font-bold border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50 cursor-pointer"
+                          >
+                            <RefreshCw size={11} className={`mr-1 ${isSyncingLineFollowers ? "animate-spin" : ""}`} />
+                            <span>{isSyncingLineFollowers ? "Syncing @thatlaundryshop..." : "Sync @thatlaundryshop Followers"}</span>
+                          </Button>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <Input
+                            value={lineContactSearch}
+                            onChange={(e) => setLineContactSearch(e.target.value)}
+                            placeholder="Search by customer's LINE name..."
+                            className="h-8 text-xs sm:w-56 bg-white"
+                          />
                           <select
-                            value={selectedLineUserId}
+                            value={selectedLineUserId || effectiveLineUserId}
                             onChange={(e) => setSelectedLineUserId(e.target.value)}
                             className="flex-1 h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-bold text-slate-800"
                           >
-                            <option value="">-- Select customer from recent LINE OA chats --</option>
-                            {lineOaContacts.map((c) => (
-                              <option key={c.userId} value={c.userId}>
-                                {c.displayName} {c.linkedCustomerName ? `(Linked: ${c.linkedCustomerName})` : ""} — {c.userId.slice(0, 10)}...
-                              </option>
-                            ))}
+                            <option value="">-- Select customer by LINE Display Name / ID --</option>
+                            {lineOaContacts
+                              .filter(
+                                (c) =>
+                                  !lineContactSearch.trim() ||
+                                  c.displayName.toLowerCase().includes(lineContactSearch.trim().toLowerCase()) ||
+                                  (c.linkedCustomerName &&
+                                    c.linkedCustomerName.toLowerCase().includes(lineContactSearch.trim().toLowerCase()))
+                              )
+                              .slice(0, 200)
+                              .map((c) => (
+                                <option key={c.userId} value={c.userId}>
+                                  {c.displayName} {c.linkedCustomerName ? `(CRM: ${c.linkedCustomerName})` : ""} — {c.userId.slice(0, 10)}...
+                                </option>
+                              ))}
                           </select>
                         </div>
-                      )}
+                      </div>
                     </div>
                   )}
 

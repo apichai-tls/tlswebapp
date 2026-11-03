@@ -23,7 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { LocationInput } from "@/components/location-input";
 import { getWiseLiveBalancesAction, getWiseRecentTransactionsAction, testWiseApiConnectionAction, saveWiseApiCredentialsAction } from "@/actions/wise";
 import type { WiseBalanceItem, WiseActivityItem } from "@/lib/wise";
-import { testLineOaConnectionAction, saveLineOaSettingsAction, getLineOaContactsAction } from "@/actions/line";
+import { testLineOaConnectionAction, saveLineOaSettingsAction, getLineOaContactsAction, syncLineOaFollowersAction } from "@/actions/line";
 import type { LineContactRecord } from "@/lib/line";
 
 export function AdminSettings() {
@@ -104,8 +104,8 @@ export function AdminSettings() {
     "m37vbSx77LMvPDo1W96a25iygwrnEqsBdtzOeXM5qQoYBugNMtab0l1Xhvv7BinKNuTSFGz0dlPTZM7dWZxiYxhxASsfd0pmGvCHp0GAjTn0867M7DMdZWnM1ry+K//X7dbvrR2jEG3ec4MG4UCMAwdB04t89/1O/w1cDnyilFU="
   );
   const [lineChannelSecret, setLineChannelSecret] = useState("b6eb43581993184cac88721953b211dd");
-  const [lineBasicId, setLineBasicId] = useState("@050ehvzb");
-  const [lineBotName, setLineBotName] = useState("NoName Laundry");
+  const [lineBasicId, setLineBasicId] = useState("@thatlaundryshop");
+  const [lineBotName, setLineBotName] = useState("ThatLaundryShop");
   const [lineAutoSendDeliveryPhoto, setLineAutoSendDeliveryPhoto] = useState(true);
   const [showLineToken, setShowLineToken] = useState(false);
   const [isLoadingLineApi, setIsLoadingLineApi] = useState(false);
@@ -292,8 +292,8 @@ export function AdminSettings() {
           "m37vbSx77LMvPDo1W96a25iygwrnEqsBdtzOeXM5qQoYBugNMtab0l1Xhvv7BinKNuTSFGz0dlPTZM7dWZxiYxhxASsfd0pmGvCHp0GAjTn0867M7DMdZWnM1ry+K//X7dbvrR2jEG3ec4MG4UCMAwdB04t89/1O/w1cDnyilFU="
       );
       setLineChannelSecret(systemSettings.lineChannelSecret || "b6eb43581993184cac88721953b211dd");
-      setLineBasicId(systemSettings.lineBasicId || "@050ehvzb");
-      setLineBotName(systemSettings.lineBotName || "NoName Laundry");
+      setLineBasicId(systemSettings.lineBasicId || "@thatlaundryshop");
+      setLineBotName(systemSettings.lineBotName || "ThatLaundryShop");
       setLineAutoSendDeliveryPhoto(systemSettings.lineAutoSendDeliveryPhoto !== "false");
 
       // Cash drawer settings
@@ -2018,27 +2018,54 @@ export function AdminSettings() {
               </div>
 
               {/* Recent LINE Followers / Contacts */}
-              {lineContacts.length > 0 && (
-                <div className="space-y-2 pt-2 border-t border-slate-100">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                      Recent LINE OA Contacts ({lineContacts.length})
-                    </Label>
-                    <button
-                      type="button"
-                      onClick={loadLineContacts}
-                      className="text-[11px] font-bold text-[#06C755] hover:underline cursor-pointer"
-                    >
-                      Refresh List
-                    </button>
-                  </div>
-                  <div className="max-h-48 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-2xl bg-white">
-                    {lineContacts.slice(0, 15).map((contact) => (
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                    Synced @thatlaundryshop Followers &amp; Contacts ({lineContacts.length})
+                  </Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={isLoadingLineApi}
+                    onClick={async () => {
+                      setIsLoadingLineApi(true);
+                      try {
+                        const res = await syncLineOaFollowersAction(150);
+                        if (res.success) {
+                          setLineContacts(res.contacts || []);
+                          toast.success(
+                            `Synced ${res.syncedCount} followers from @thatlaundryshop (${res.linkedCustomerCount} auto-linked to CRM)!`
+                          );
+                        } else {
+                          toast.error(res.error || "Sync failed");
+                        }
+                      } finally {
+                        setIsLoadingLineApi(false);
+                      }
+                    }}
+                    className="h-7 px-3 text-[11px] font-bold border-emerald-300 text-emerald-800 hover:bg-emerald-50 cursor-pointer"
+                  >
+                    <RefreshCw size={11} className={`mr-1.5 ${isLoadingLineApi ? "animate-spin" : ""}`} />
+                    <span>Sync Followers from @thatlaundryshop</span>
+                  </Button>
+                </div>
+                {lineContacts.length > 0 && (
+                  <div className="max-h-56 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-2xl bg-white">
+                    {lineContacts.slice(0, 50).map((contact) => (
                       <div key={contact.userId} className="p-2.5 px-3.5 flex items-center justify-between text-xs">
                         <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="w-7 h-7 rounded-full bg-[#06C755]/15 text-[#06C755] font-black flex items-center justify-center shrink-0 text-[11px]">
-                            {contact.displayName.slice(0, 2).toUpperCase()}
-                          </div>
+                          {contact.pictureUrl ? (
+                            <img
+                              src={contact.pictureUrl}
+                              alt={contact.displayName}
+                              className="w-7 h-7 rounded-full object-cover border border-slate-200 shrink-0"
+                            />
+                          ) : (
+                            <div className="w-7 h-7 rounded-full bg-[#06C755]/15 text-[#06C755] font-black flex items-center justify-center shrink-0 text-[11px]">
+                              {contact.displayName.slice(0, 2).toUpperCase()}
+                            </div>
+                          )}
                           <div className="min-w-0">
                             <p className="font-bold text-slate-900 truncate">{contact.displayName}</p>
                             <p className="text-[10px] text-slate-400 font-mono truncate">{contact.userId}</p>
@@ -2051,15 +2078,15 @@ export function AdminSettings() {
                             </Badge>
                           ) : (
                             <Badge variant="outline" className="text-[10px] text-slate-500">
-                              Unlinked
+                              Available
                             </Badge>
                           )}
                         </div>
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
 
             <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">

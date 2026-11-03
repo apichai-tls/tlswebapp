@@ -115,29 +115,57 @@ export async function getRoute(pickup: LatLng, dropoff: LatLng): Promise<RouteRe
       }
     }
 
-    // 2. Fallback to Free OSRM API (Using 'driving' profile)
-    const url = `https://router.project-osrm.org/route/v1/driving/${pickup.lng},${pickup.lat};${dropoff.lng},${dropoff.lat}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
-    const data = await res.json();
+    // 2. Fallback to Free OSRM API (Using 'driving' profile with timeout)
+    try {
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timeoutId = controller ? setTimeout(() => controller.abort(), 4000) : null;
+      const url = `https://router.project-osrm.org/route/v1/driving/${pickup.lng},${pickup.lat};${dropoff.lng},${dropoff.lat}?overview=full&geometries=geojson`;
+      const res = await fetch(url, { signal: controller ? controller.signal : undefined });
+      if (timeoutId) clearTimeout(timeoutId);
 
-    if (data.code !== "Ok" || !data.routes || data.routes.length === 0) {
-      return null;
+      if (res.ok) {
+        const data = await res.json();
+        if (data.code === "Ok" && data.routes && data.routes.length > 0) {
+          const route = data.routes[0];
+          const distanceMeters = route.distance;
+          const distanceKm = Math.round((distanceMeters / 1000) * 10) / 10;
+          
+          const coordinates: LatLng[] = route.geometry.coordinates.map((coord: number[]) => ({
+            lat: coord[1],
+            lng: coord[0],
+          }));
+
+          const result = { distanceKm, coordinates };
+          routeCache.set(cacheKey, result);
+          return result;
+        }
+      }
+    } catch (osrmErr) {
+      console.warn("OSRM routing service unavailable or timed out, using direct estimate:", (osrmErr as any)?.message || osrmErr);
     }
 
-    const route = data.routes[0];
-    const distanceMeters = route.distance;
-    const distanceKm = Math.round((distanceMeters / 1000) * 10) / 10;
-    
-    const coordinates: LatLng[] = route.geometry.coordinates.map((coord: number[]) => ({
-      lat: coord[1],
-      lng: coord[0],
-    }));
+    // 3. Fallback to direct distance calculation if routing services fail
+    const R = 6371; // km
+    const dLat = ((dropoff.lat - pickup.lat) * Math.PI) / 180;
+    const dLng = ((dropoff.lng - pickup.lng) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((pickup.lat * Math.PI) / 180) *
+        Math.cos((dropoff.lat * Math.PI) / 180) *
+        Math.sin(dLng / 2) *
+        Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const straightKm = R * c;
+    const estimatedRoadKm = Math.round(straightKm * 1.25 * 10) / 10;
 
-    const result = { distanceKm, coordinates };
-    routeCache.set(cacheKey, result);
-    return result;
+    const fallbackResult = {
+      distanceKm: estimatedRoadKm,
+      coordinates: [pickup, dropoff],
+    };
+    routeCache.set(cacheKey, fallbackResult);
+    return fallbackResult;
   } catch (error) {
-    console.error("Routing failed:", error);
+    console.warn("Routing failed:", error);
     return null;
   }
 }
