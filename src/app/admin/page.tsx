@@ -1054,7 +1054,7 @@ function AdminPageContent() {
   
   const getServicePrice = useCallback((service: ServiceItem, customer: Customer | null = selectedProfileCustomer, plId: string | null = customerPriceListId) => {
     const targetPlId = plId || customer?.priceListId;
-    if (targetPlId) {
+    if (targetPlId && targetPlId !== "regular") {
       const customPl = priceLists.find(pl => pl.id === targetPlId);
       if (customPl && (customPl.isCorporate || (customPl.customItems && customPl.customItems.length > 0)) && customPl.customItems) {
         const found = customPl.customItems.find(it => it.id === service.id || it.serviceId === service.id);
@@ -1064,9 +1064,10 @@ function AdminPageContent() {
         return customPl.servicePrices[service.id];
       }
     }
-    if (customer?.isMember) {
-      if (service.memberPrice !== undefined && service.memberPrice > 0 && service.category !== "PACKAGE") {
-        return service.memberPrice;
+    if (customer?.isMember && (!targetPlId || targetPlId === "regular")) {
+      const memberPl = priceLists.find(pl => pl.id === "PL-MP56NWKW" || pl.name.toLowerCase().includes("member"));
+      if (memberPl?.servicePrices && memberPl.servicePrices[service.id] !== undefined) {
+        return memberPl.servicePrices[service.id];
       }
     }
     return service.price;
@@ -1389,32 +1390,51 @@ function AdminPageContent() {
   const [categorySearch, setCategorySearch] = useState<string>("");
   
   // Cashier shift state
-  const { activeShift } = useSyncExternalStore(shiftStore.subscribe, shiftStore.getSnapshot, shiftStore.getSnapshot);
+  const { activeShift, branchActiveShift, allOpenShifts } = useSyncExternalStore(shiftStore.subscribe, shiftStore.getSnapshot, shiftStore.getSnapshot);
   const currentLanguage = systemSettings?.language || "th";
   
   // Derived lock states
   const currentShopConfig = shopLocations[selectedStoreIndex] || shopLocations[0];
   const activeShopConfig = activeJob ? shopLocations.find(s => s.id === activeJob.branchId) : currentShopConfig;
-  // CASHIER_SHIFT_ENABLED=false: force POS UI always on, remove shift-based locks
-  const isPosEnabled = true; // was: activeShopConfig?.isPosEnabled ?? false
+  // Keep POS cart UI enabled in job dialog while respecting branch-level shift setting (isPosEnabled)
+  const isPosEnabled = true;
+  const isBranchShiftEnabled = Boolean(activeShopConfig?.isPosEnabled);
   
   useEffect(() => {
-    if (user && (activeShopConfig?.isPosEnabled ?? false)) {
+    if (user) {
       shiftStore.fetchActiveShift(user.id, activeShopConfig?.id);
     }
-  }, [user, activeShopConfig?.isPosEnabled, activeShopConfig?.id]);
-  const isShiftFromPreviousDay = useMemo(() => {
-    if (!activeShift?.openedAt) return false;
-    const openedDate = new Date(activeShift.openedAt);
+  }, [user, activeShopConfig?.id]);
+
+  const getBranchOpenShift = useCallback((branchId?: string | null) => {
+    if (!branchId) return null;
+    if (activeShift && activeShift.branchId === branchId && activeShift.status === "open") return activeShift;
+    if (branchActiveShift && branchActiveShift.branchId === branchId && branchActiveShift.status === "open") return branchActiveShift;
+    return allOpenShifts.find(s => s.branchId === branchId && s.status === "open") || null;
+  }, [activeShift, branchActiveShift, allOpenShifts]);
+
+  const isShiftDateFromPreviousDay = useCallback((shift?: { openedAt?: Date | string | null } | null) => {
+    if (!shift?.openedAt) return false;
+    const openedDate = new Date(shift.openedAt);
     const today = new Date();
     return (
       openedDate.getFullYear() !== today.getFullYear() ||
       openedDate.getMonth() !== today.getMonth() ||
       openedDate.getDate() !== today.getDate()
     );
-  }, [activeShift]);
+  }, []);
 
-  const hasValidActiveShift = !!activeShift && !isShiftFromPreviousDay;
+  const currentDialogBranchShift = useMemo(
+    () => getBranchOpenShift(activeShopConfig?.id),
+    [getBranchOpenShift, activeShopConfig?.id]
+  );
+
+  const isShiftFromPreviousDay = useMemo(
+    () => isShiftDateFromPreviousDay(currentDialogBranchShift || activeShift),
+    [isShiftDateFromPreviousDay, currentDialogBranchShift, activeShift]
+  );
+
+  const hasValidActiveShift = !!currentDialogBranchShift && !isShiftFromPreviousDay;
 
   const isNewCustomer = useMemo(() => {
     // If no customer selected or typed, not a new customer
@@ -2215,6 +2235,35 @@ function AdminPageContent() {
   };
 
   const handleCreateNewJob = () => {
+    const userBranchIdx = user?.branchId ? shopLocations.findIndex(s => s.id === user.branchId) : -1;
+    const defaultShop = userBranchIdx >= 0 ? shopLocations[userBranchIdx] : (shopLocations[selectedStoreIndex] || shopLocations[0]);
+    if (defaultShop?.isPosEnabled) {
+      const bShift = getBranchOpenShift(defaultShop.id);
+      if (bShift && isShiftDateFromPreviousDay(bShift)) {
+        toast.error(
+          currentLanguage === "en"
+            ? `Branch "${defaultShop.name}" has an unclosed shift from ${format(new Date(bShift.openedAt), "dd/MM/yyyy")}. Please close it first.`
+            : `สาขา "${defaultShop.name}" มีกะค้างของวันที่ ${format(new Date(bShift.openedAt), "dd/MM/yyyy")} กรุณาปิดกะเก่าก่อนสร้างบิลใหม่`
+        );
+        if (activeTab !== "jobs") handleTabChange("jobs");
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "close", branchId: defaultShop.id } }));
+        }, 50);
+        return;
+      }
+      if (!bShift) {
+        toast.error(
+          currentLanguage === "en"
+            ? `Please open today's cashier shift for "${defaultShop.name}" before creating a new job.`
+            : `กรุณาเปิดกะลิ้นชักเงินสดของสาขา "${defaultShop.name}" ก่อนสร้างบิลใหม่`
+        );
+        if (activeTab !== "jobs") handleTabChange("jobs");
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "open", branchId: defaultShop.id } }));
+        }, 50);
+        return;
+      }
+    }
     resetDialogForm();
     setDialogOpen(true);
   };
@@ -3270,9 +3319,35 @@ function AdminPageContent() {
     }
     
     const shop = shopLocations[selectedStoreIndex] || shopLocations[0];
-    const targetShift = (isWalkIn && activeShift && activeShift.branchId === shop.id) ? activeShift : null;
+    const branchShift = getBranchOpenShift(shop?.id);
 
-    const targetShiftId = targetShift?.id || (existingJob ? (existingJob as any).shiftId : null) || null;
+    // Shift Guard (Policy C): When branch has shift system enabled (isPosEnabled), require an open shift from today for creating jobs or recording payment
+    if (shop?.isPosEnabled && (!editingJobId || isPayment)) {
+      if (branchShift && isShiftDateFromPreviousDay(branchShift)) {
+        abortSubmit(
+          currentLanguage === "en"
+            ? `Branch "${shop.name}" has an unclosed shift from ${format(new Date(branchShift.openedAt), "dd/MM/yyyy")}. Please close the pending shift first.`
+            : `สาขา "${shop.name}" มีกะค้างของวันที่ ${format(new Date(branchShift.openedAt), "dd/MM/yyyy")} กรุณาปิดกะเก่าก่อน${isPayment ? "รับชำระเงิน" : "สร้างบิลใหม่"}`
+        );
+        window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "close", branchId: shop.id } }));
+        return;
+      }
+      if (!branchShift) {
+        abortSubmit(
+          currentLanguage === "en"
+            ? `Please open today's cashier shift for "${shop.name}" before ${isPayment ? "recording payment" : "creating a job"}.`
+            : `สาขา "${shop.name}" ยังไม่ได้เปิดกะลิ้นชักเงินสดของวันนี้ กรุณาเปิดกะก่อน${isPayment ? "กด Pay รับชำระเงิน" : "สร้างบิลใหม่"}`
+        );
+        window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "open", branchId: shop.id } }));
+        return;
+      }
+    }
+
+    const targetShift = shop?.isPosEnabled ? branchShift : null;
+    const existingShiftId = existingJob ? (existingJob as any).shiftId : null;
+    const targetShiftId = isPayment
+      ? (targetShift?.id || existingShiftId || null)
+      : (existingShiftId || targetShift?.id || null);
 
     const getValidDateOrNull = (timeStr: string): Date | null => {
 
@@ -3923,7 +3998,7 @@ function AdminPageContent() {
             'pickupScheduledAt', 'pickupScheduledEndAt', 'deliveryScheduledAt', 'deliveryScheduledEndAt',
             'pickupRiderId', 'deliveryRiderId', 'isPaid', 'fee', 'totalAmount', 'discount', 'discountPercent', 'serviceType',
             'pickupDistance', 'deliveryDistance', 'pickupCommission', 'deliveryCommission',
-            'remark', 'adminNotesJson', 'branchId', 'createdBy', 'cashPlaced',
+            'remark', 'adminNotesJson', 'branchId', 'createdBy', 'cashPlaced', 'shiftId',
             'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
             'laundryTypes', 'items', 'paymentChannel', 'isShopPaid', 'billNo',
             'proformaNumber', 'proformaRevision', 'proformaCartHash',
@@ -4121,7 +4196,7 @@ function AdminPageContent() {
         let resolvedFinalProformaNum = "";
         let resolvedFinalRevision = 0;
         let resolvedFinalCartHash = effectiveProformaCartHash;
-        if (shouldCaptureProforma) {
+        if (targetProformaNum) {
           let finalProformaNum = targetProformaNum!;
           if (targetEditingJobId.startsWith("RF-")) {
             finalProformaNum = cleanProformaNumber(finalProformaNum) || (cleanOriginalId ? `PR-${cleanOriginalId}` : generateProformaBaseNumber(targetEditingJobId));
@@ -4133,14 +4208,23 @@ function AdminPageContent() {
           resolvedFinalCartHash = effectiveProformaCartHash;
 
           // Merge proforma metadata into main payload ONLY IF changed so we don't send unchanged fields!
+          // CRITICAL: When items, fee, or totalAmount are in payload (or Proforma was pressed in this session),
+          // always include proformaNumber, proformaRevision, and proformaCartHash so the backend Auto-Bump Guard
+          // knows the exact revision already determined by the frontend and never falsely bumps rev0 -> rev1!
           const origPf = originalJobRef.current as any;
-          if (!origPf || (origPf.proformaNumber || null) !== (resolvedFinalProformaNum || null)) {
+          const isPricingOrItemsInPayload = Boolean(
+            payload.items !== undefined ||
+            payload.totalAmount !== undefined ||
+            payload.fee !== undefined ||
+            proformaPressedSinceLastEdit
+          );
+          if (isPricingOrItemsInPayload || !origPf || (origPf.proformaNumber || null) !== (resolvedFinalProformaNum || null)) {
             (payload as any).proformaNumber = resolvedFinalProformaNum;
           }
-          if (!origPf || (origPf.proformaRevision ?? null) !== (resolvedFinalRevision ?? null)) {
+          if (isPricingOrItemsInPayload || !origPf || (origPf.proformaRevision ?? null) !== (resolvedFinalRevision ?? null)) {
             (payload as any).proformaRevision = resolvedFinalRevision;
           }
-          if (!origPf || (origPf.proformaCartHash || null) !== (resolvedFinalCartHash || null)) {
+          if (isPricingOrItemsInPayload || !origPf || (origPf.proformaCartHash || null) !== (resolvedFinalCartHash || null)) {
             (payload as any).proformaCartHash = resolvedFinalCartHash;
           }
         }
@@ -9835,7 +9919,11 @@ function AdminPageContent() {
                                       proformaNumber: targetProformaNum,
                                       proformaRevision: targetRevision,
                                       proformaCartHash: cartHash,
-                                    } as any);
+                                    } as any).then((confirmed) => {
+                                      if (confirmed?.updatedAt && originalJobRef.current) {
+                                        (originalJobRef.current as any).updatedAt = confirmed.updatedAt;
+                                      }
+                                    });
                                   } else {
                                     targetProformaNum = "DRAFT";
                                     targetRevision = 0;

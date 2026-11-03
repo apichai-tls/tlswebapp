@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
 import { useRiders } from "@/lib/use-riders";
-import { shopStore, shiftStore, jobStore, walletApprovalStore, type CashierShift, type Customer } from "@/lib/store";
+import { shopStore, shiftStore, computeLiveShiftStats, jobStore, walletApprovalStore, type CashierShift, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -40,7 +40,9 @@ import {
   Sparkles,
   LayoutGrid,
   CreditCard,
-  Receipt
+  Receipt,
+  Banknote,
+  RefreshCw
 } from "lucide-react";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
@@ -166,23 +168,35 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
 
 
 
-  // Closed shifts state
+  // Closed & Open shifts state
   const [closedShifts, setClosedShifts] = useState<any[]>([]);
+  const [openShiftsList, setOpenShiftsList] = useState<CashierShift[]>([]);
   const [isLoadingShifts, setIsLoadingShifts] = useState(false);
+  const [shiftStatusFilter, setShiftStatusFilter] = useState<"all" | "open" | "closed" | "variance">("all");
+  const [shiftSearchQuery, setShiftSearchQuery] = useState("");
 
-  // Load Closed Shifts when Shift Tab is active
+  const fetchAllShiftsForReport = useCallback(async () => {
+    setIsLoadingShifts(true);
+    try {
+      const [closedRes, openRes] = await Promise.all([
+        shiftStore.getClosedShifts(),
+        shiftStore.getOpenShifts(),
+      ]);
+      setClosedShifts(closedRes || []);
+      setOpenShiftsList(openRes || []);
+    } catch (err) {
+      console.error("Failed to load shifts for report:", err);
+    } finally {
+      setIsLoadingShifts(false);
+    }
+  }, []);
+
+  // Load Open & Closed Shifts when Shift Tab is active
   useEffect(() => {
     if (subTab === "shift") {
-      setIsLoadingShifts(true);
-      shiftStore.getClosedShifts().then(res => {
-        setClosedShifts(res);
-        setIsLoadingShifts(false);
-      }).catch(err => {
-        console.error("Failed to load closed shifts:", err);
-        setIsLoadingShifts(false);
-      });
+      fetchAllShiftsForReport();
     }
-  }, [subTab]);
+  }, [subTab, fetchAllShiftsForReport]);
 
   // Listen for open-reports-tab custom event (e.g. from top header notification button)
   useEffect(() => {
@@ -788,13 +802,171 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
   const barW = Math.max(3, Math.min(22, (plotW / Math.max(1, trendBuckets.length)) * 0.55));
   const stepW = plotW / Math.max(1, trendBuckets.length);
 
-  // 1. Shift Report calculations
+  // 1. Shift Report calculations (combines Open + Closed shifts with live stats from All Jobs & POS)
   const shiftReportData = useMemo(() => {
-    return closedShifts.filter(shift => {
-      if (selectedBranch !== "all" && shift.branchId !== selectedBranch) return false;
-      return true;
+    const today = new Date();
+    let rangeStart = startOfDay(today).getTime();
+    let rangeEnd = endOfDay(today).getTime();
+
+    if (dateRange === "7days") {
+      rangeStart = startOfDay(subDays(today, 7)).getTime();
+    } else if (dateRange === "30days") {
+      rangeStart = startOfDay(subDays(today, 30)).getTime();
+    } else if (dateRange === "month") {
+      const mStart = new Date(today.getFullYear(), today.getMonth(), 1);
+      mStart.setHours(0, 0, 0, 0);
+      rangeStart = mStart.getTime();
+    } else if (dateRange === "custom") {
+      if (customStartDate) {
+        const s = new Date(customStartDate);
+        s.setHours(0, 0, 0, 0);
+        rangeStart = s.getTime();
+      } else {
+        rangeStart = 0;
+      }
+      if (customEndDate) {
+        const e = new Date(customEndDate);
+        e.setHours(23, 59, 59, 999);
+        rangeEnd = e.getTime();
+      }
+    }
+
+    // Merge open shifts and closed shifts without duplicates
+    const combinedMap = new Map<string, any>();
+    openShiftsList.forEach(s => combinedMap.set(s.id, { ...s, status: "open" }));
+    closedShifts.forEach(s => {
+      if (!combinedMap.has(s.id)) {
+        combinedMap.set(s.id, { ...s, status: s.status || "closed" });
+      }
     });
-  }, [closedShifts, selectedBranch]);
+
+    const enriched = Array.from(combinedMap.values()).map((shift) => {
+      const live = computeLiveShiftStats(shift, jobs);
+      const isOpen = shift.status === "open";
+      const cashSales = isOpen ? live.cashSales : Math.max(Number(shift.cashSales) || 0, live.cashSales);
+      const transferSales = isOpen ? live.transferSales : Math.max(Number(shift.transferSales) || 0, live.transferSales);
+      const cardSales = isOpen ? live.cardSales : Math.max(Number(shift.cardSales) || 0, live.cardSales);
+      const creditSales = isOpen ? live.creditSales : Math.max(Number(shift.creditSales) || 0, live.creditSales);
+      const expectedCash = isOpen ? live.expectedCash : (Number(shift.expectedCash) || ((Number(shift.startingCash) || 0) + cashSales));
+      const totalOrders = isOpen ? live.totalOrders : Math.max(Number(shift.totalOrders) || 0, live.totalOrders);
+      const cashOrders = isOpen ? live.cashOrders : Math.max(Number(shift.cashOrders) || 0, live.cashOrders);
+      const transferOrders = isOpen ? live.transferOrders : Math.max(Number(shift.transferOrders) || 0, live.transferOrders);
+      const cardOrders = isOpen ? live.cardOrders : Math.max(Number(shift.cardOrders) || 0, live.cardOrders);
+      const creditOrders = isOpen ? live.creditOrders : Math.max(Number(shift.creditOrders) || 0, live.creditOrders);
+      const totalRevenue = cashSales + transferSales + cardSales + creditSales;
+      const nonCashSales = transferSales + cardSales + creditSales;
+      const variance = isOpen ? 0 : ((Number(shift.actualCash) || 0) - expectedCash);
+
+      return {
+        ...shift,
+        cashSales,
+        transferSales,
+        cardSales,
+        creditSales,
+        nonCashSales,
+        totalRevenue,
+        expectedCash,
+        totalOrders,
+        cashOrders,
+        transferOrders,
+        cardOrders,
+        creditOrders,
+        walkInOrders: live.walkInOrders,
+        deliveryOrders: live.deliveryOrders,
+        variance,
+      };
+    });
+
+    const q = shiftSearchQuery.trim().toLowerCase();
+
+    return enriched
+      .filter((shift) => {
+        if (selectedBranch !== "all" && shift.branchId !== selectedBranch) return false;
+
+        // Status filter
+        if (shiftStatusFilter === "open" && shift.status !== "open") return false;
+        if (shiftStatusFilter === "closed" && shift.status !== "closed") return false;
+        if (shiftStatusFilter === "variance" && (shift.status !== "closed" || Math.abs(shift.variance) < 0.01)) return false;
+
+        // Date range filter (always keep currently open shifts visible when viewing 'today')
+        const openedMs = shift.openedAt ? new Date(shift.openedAt).getTime() : 0;
+        const closedMs = shift.closedAt ? new Date(shift.closedAt).getTime() : openedMs;
+        const inDateRange =
+          (openedMs >= rangeStart && openedMs <= rangeEnd) ||
+          (closedMs >= rangeStart && closedMs <= rangeEnd) ||
+          (shift.status === "open" && dateRange === "today");
+        if (!inDateRange) return false;
+
+        if (q) {
+          const branchName = (shops.find(s => s.id === shift.branchId)?.name || "").toLowerCase();
+          const matchId = shift.id.toLowerCase().includes(q);
+          const matchUser = (shift.userName || "").toLowerCase().includes(q);
+          const matchNotes = (shift.notes || "").toLowerCase().includes(q);
+          const matchBranch = branchName.includes(q);
+          if (!matchId && !matchUser && !matchNotes && !matchBranch) return false;
+        }
+
+        return true;
+      })
+      .sort((a, b) => {
+        if (a.status === "open" && b.status !== "open") return -1;
+        if (a.status !== "open" && b.status === "open") return 1;
+        return new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime();
+      });
+  }, [
+    openShiftsList,
+    closedShifts,
+    jobs,
+    selectedBranch,
+    dateRange,
+    customStartDate,
+    customEndDate,
+    shiftStatusFilter,
+    shiftSearchQuery,
+    shops,
+  ]);
+
+  const shiftSummaryStats = useMemo(() => {
+    let openCount = 0;
+    let closedCount = 0;
+    let totalOrders = 0;
+    let totalCashSales = 0;
+    let totalNonCashSales = 0;
+    let totalRevenue = 0;
+    let totalStartingCash = 0;
+    let netVariance = 0;
+    let shortageShiftCount = 0;
+    let overageShiftCount = 0;
+
+    shiftReportData.forEach((s) => {
+      if (s.status === "open") openCount++;
+      else closedCount++;
+      totalOrders += s.totalOrders || 0;
+      totalCashSales += s.cashSales || 0;
+      totalNonCashSales += s.nonCashSales || 0;
+      totalRevenue += s.totalRevenue || 0;
+      totalStartingCash += s.startingCash || 0;
+      if (s.status === "closed") {
+        netVariance += s.variance || 0;
+        if (s.variance < -0.01) shortageShiftCount++;
+        else if (s.variance > 0.01) overageShiftCount++;
+      }
+    });
+
+    return {
+      totalShifts: shiftReportData.length,
+      openCount,
+      closedCount,
+      totalOrders,
+      totalCashSales,
+      totalNonCashSales,
+      totalRevenue,
+      totalStartingCash,
+      netVariance,
+      shortageShiftCount,
+      overageShiftCount,
+    };
+  }, [shiftReportData]);
 
   // Shift orders list calculation for modal
   const shiftJobsList = useMemo(() => {
@@ -813,8 +985,9 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
           const parsed = JSON.parse(job.adminNotesJson);
           if (parsed && Array.isArray(parsed.payments)) {
             for (const pay of parsed.payments) {
+              if (pay.shiftId && pay.shiftId === shift.id) return true;
               const payTime = new Date(pay.timestamp).getTime();
-              if (payTime >= shiftOpenTime && payTime <= shiftCloseTime) {
+              if (!pay.shiftId && payTime >= shiftOpenTime && payTime <= shiftCloseTime) {
                 return true;
               }
             }
@@ -837,6 +1010,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       const q = shiftOrdersSearchQuery.toLowerCase();
       return filtered.filter(j => 
         j.id?.toLowerCase().includes(q) ||
+        j.billNo?.toLowerCase().includes(q) ||
         j.customerName?.toLowerCase().includes(q) ||
         j.customerPhone?.toLowerCase().includes(q)
       );
@@ -1000,16 +1174,19 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       });
 
     } else if (subTab === "shift") {
-      csvContent += "Closed Cashier Shifts Report\n\n";
-      csvContent += "Shift ID,Cashier,Open Date,Close Date,Expected Cash,Actual Cash,Difference,Status\n";
+      csvContent += "Cashier Drawer Shifts Report (All Jobs & POS)\n\n";
+      csvContent += "Shift ID,Status,Branch,Cashier,Open Date,Close Date,Total Orders,Walk-In Orders,Delivery Orders,Start Float,Cash Sales,Transfer Sales,Card Sales,Member Wallet Sales,Total Revenue,Expected Cash,Actual Cash,Variance,Notes\n";
       
       shiftReportData.forEach(shift => {
         const openStr = shift.openedAt ? format(new Date(shift.openedAt), "yyyy-MM-dd HH:mm:ss") : "";
-        const closeStr = shift.closedAt ? format(new Date(shift.closedAt), "yyyy-MM-dd HH:mm:ss") : "";
+        const closeStr = shift.closedAt ? format(new Date(shift.closedAt), "yyyy-MM-dd HH:mm:ss") : "-";
+        const branchName = (shops.find(s => s.id === shift.branchId)?.name || shift.branchId || "").replace(/"/g, '""');
+        const cashierName = (shift.userName || shift.userEmail || "").replace(/"/g, '""');
+        const notesStr = (shift.notes || "").replace(/"/g, '""');
         const expected = shift.expectedCash || 0;
-        const actual = shift.actualCash || 0;
-        const diff = actual - expected;
-        csvContent += `"${shift.id}","${shift.userEmail || ""}","${openStr}","${closeStr}",${expected},${actual},${diff},"${shift.status}"\n`;
+        const actual = shift.status === "open" ? "" : (shift.actualCash ?? 0);
+        const diff = shift.status === "open" ? "" : (shift.variance ?? 0);
+        csvContent += `"${shift.id}","${(shift.status || 'closed').toUpperCase()}","${branchName}","${cashierName}","${openStr}","${closeStr}",${shift.totalOrders || 0},${shift.walkInOrders || 0},${shift.deliveryOrders || 0},${shift.startingCash || 0},${shift.cashSales || 0},${shift.transferSales || 0},${shift.cardSales || 0},${shift.creditSales || 0},${shift.totalRevenue || 0},${expected},${actual},${diff},"${notesStr}"\n`;
       });
 
     } else if (subTab === "order") {
@@ -1963,87 +2140,242 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
 
       {/* 3. SHIFT REPORT */}
       {subTab === "shift" && (
-        <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
-          <div className="flex justify-between items-center">
-            <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide">Cashier Drawer Shift History</h3>
+        <div className="space-y-4">
+          {/* Shift Summary KPI Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-4 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">จำนวนรอบกะ (Total Shifts)</span>
+                <History size={15} className="text-indigo-500" />
+              </div>
+              <div className="text-xl font-black text-slate-800 dark:text-slate-100 mt-1">
+                {shiftSummaryStats.totalShifts} รอบกะ
+              </div>
+              <div className="flex items-center gap-2 mt-1.5 text-[10.5px] font-bold">
+                <span className="text-emerald-600">🟢 เปิดอยู่ {shiftSummaryStats.openCount}</span>
+                <span className="text-slate-300">•</span>
+                <span className="text-slate-500">⚪ ปิดแล้ว {shiftSummaryStats.closedCount}</span>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-4 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">ยอดรับชำระรวมในกะ (Shift Revenue)</span>
+                <TrendingUp size={15} className="text-indigo-600" />
+              </div>
+              <div className="text-xl font-black text-indigo-600 dark:text-indigo-400 mt-1">
+                ฿{shiftSummaryStats.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </div>
+              <div className="text-[10.5px] text-slate-500 font-semibold mt-1.5">
+                รวม {shiftSummaryStats.totalOrders} ออเดอร์ (เงินสด + โอน + บัตร + สมาชิก)
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-4 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">ยอดรับเงินสดเข้าลิ้นชัก (Cash Sales)</span>
+                <Banknote size={15} className="text-emerald-600" />
+              </div>
+              <div className="text-xl font-black text-emerald-600 dark:text-emerald-400 mt-1">
+                +฿{shiftSummaryStats.totalCashSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </div>
+              <div className="text-[10.5px] text-slate-500 font-semibold mt-1.5">
+                ช่องทางอื่น (Non-Cash): ฿{shiftSummaryStats.totalNonCashSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-4 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">ส่วนต่างลิ้นชักสุทธิ (Net Variance)</span>
+                <AlertCircle size={15} className={shiftSummaryStats.netVariance < 0 ? "text-rose-500" : "text-emerald-500"} />
+              </div>
+              <div className={`text-xl font-black mt-1 ${
+                Math.abs(shiftSummaryStats.netVariance) < 0.01
+                  ? "text-emerald-600"
+                  : shiftSummaryStats.netVariance > 0
+                  ? "text-blue-600"
+                  : "text-rose-600"
+              }`}>
+                {Math.abs(shiftSummaryStats.netVariance) < 0.01
+                  ? "฿0.00 (Balanced)"
+                  : `${shiftSummaryStats.netVariance > 0 ? "+" : ""}฿${shiftSummaryStats.netVariance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+              </div>
+              <div className="text-[10.5px] text-slate-500 font-semibold mt-1.5">
+                เงินขาด {shiftSummaryStats.shortageShiftCount} กะ • เงินเกิน {shiftSummaryStats.overageShiftCount} กะ
+              </div>
+            </div>
           </div>
 
-          {isLoadingShifts ? (
-            <div className="flex flex-col items-center justify-center py-10 gap-2">
-              <Loader2 className="animate-spin text-indigo-600" />
-              <span className="text-xs text-slate-500">Loading cashier shifts...</span>
+          {/* Shift Filter & Table Card */}
+          <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide">
+                  Cashier Drawer Shift Report (All Jobs & POS)
+                </h3>
+                <p className="text-[11px] text-slate-400 font-semibold mt-0.5">
+                  รายงานการเปิด-ปิดลิ้นชักเงินสดรายวัน ยอดรับชำระแยกช่องทาง และตรวจสอบส่วนต่างเงินสด (รองรับทั้งบิล Walk-in และ Delivery)
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative">
+                  <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="ค้นหาพนักงาน / รหัสกะ / หมายเหตุ..."
+                    value={shiftSearchQuery}
+                    onChange={(e) => setShiftSearchQuery(e.target.value)}
+                    className="h-8 pl-8 pr-3 text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-indigo-500 w-52"
+                  />
+                </div>
+
+                <div className="inline-flex bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200/70 dark:border-slate-700 text-[11px] font-bold">
+                  {[
+                    { id: "all", label: "ทั้งหมด" },
+                    { id: "open", label: "🟢 เปิดอยู่" },
+                    { id: "closed", label: "⚪ ปิดแล้ว" },
+                    { id: "variance", label: "⚠️ มีส่วนต่าง" },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setShiftStatusFilter(tab.id as any)}
+                      className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                        shiftStatusFilter === tab.id
+                          ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-300 shadow-2xs font-black"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={fetchAllShiftsForReport}
+                  className="h-8 px-2.5 text-xs font-bold rounded-xl cursor-pointer flex items-center gap-1"
+                >
+                  <RefreshCw size={12} className={isLoadingShifts ? "animate-spin" : ""} />
+                  <span>รีเฟรช</span>
+                </Button>
+              </div>
             </div>
-          ) : shiftReportData.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs font-semibold text-left">
-                <thead>
-                  <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-black">
-                    <th className="pb-3">Shift ID</th>
-                    <th className="pb-3">Branch</th>
-                    <th className="pb-3">Cashier</th>
-                    <th className="pb-3 text-center">Open Time</th>
-                    <th className="pb-3 text-center">Close Time</th>
-                    <th className="pb-3 text-center">Orders</th>
-                    <th className="pb-3 text-right">Start Float</th>
-                    <th className="pb-3 text-right">Expected Drawer</th>
-                    <th className="pb-3 text-right">Actual Drawer</th>
-                    <th className="pb-3 text-right">Variance</th>
-                    <th className="pb-3 text-right pr-2">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
-                  {shiftReportData.map((shift) => {
-                    const variance = (shift.actualCash || 0) - shift.expectedCash;
-                    const branchName = shops.find(s => s.id === shift.branchId)?.name || shift.branchId;
-                    return (
-                      <tr key={shift.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
-                        <td className="py-3 font-mono text-[10px] text-slate-400">{shift.id.slice(-8).toUpperCase()}</td>
-                        <td className="py-3">{branchName}</td>
-                        <td className="py-3 font-bold text-slate-800 dark:text-slate-100">{shift.userName}</td>
-                        <td className="py-3 text-center text-slate-400">{format(new Date(shift.openedAt), "dd/MM/yyyy HH:mm")}</td>
-                        <td className="py-3 text-center text-slate-400">{shift.closedAt ? format(new Date(shift.closedAt), "dd/MM/yyyy HH:mm") : "-"}</td>
-                        <td className="py-3 text-center font-bold text-slate-800 dark:text-slate-200">
-                          <button
-                            onClick={() => {
-                              setSelectedShiftForOrders(shift);
-                              setSelectedJobForDetails(null);
-                            }}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-600 dark:bg-indigo-950/40 dark:hover:bg-indigo-900/60 dark:text-indigo-400 font-bold transition-all cursor-pointer border border-indigo-200/60 dark:border-indigo-800/40 shadow-xs"
-                          >
-                            <Eye size={12} />
-                            <span>{shift.totalOrders || 0} ออเดอร์</span>
-                            <span className="text-[9.5px] opacity-80 font-medium whitespace-nowrap hidden lg:inline">(💵{shift.cashOrders || 0} | 📱{shift.transferOrders || 0} | 💳{shift.cardOrders || 0} | 👑{shift.creditOrders || 0})</span>
-                          </button>
-                        </td>
-                        <td className="py-3 text-right">฿{shift.startingCash.toLocaleString()}</td>
-                        <td className="py-3 text-right">฿{shift.expectedCash.toLocaleString()}</td>
-                        <td className="py-3 text-right font-bold text-slate-800 dark:text-slate-100">฿{(shift.actualCash || 0).toLocaleString()}</td>
-                        <td className={`py-3 text-right font-black ${variance === 0 ? "text-emerald-600" : variance > 0 ? "text-blue-500" : "text-rose-600"}`}>
-                          {variance === 0 ? "฿0.00" : `${variance > 0 ? "+" : ""}฿${variance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
-                        </td>
-                        <td className="py-3 text-right pr-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              setSelectedShiftForOrders(shift);
-                              setSelectedJobForDetails(null);
-                            }}
-                            className="h-7 px-2.5 text-[11px] font-bold border-indigo-200 text-indigo-600 hover:bg-indigo-50 dark:border-indigo-900 dark:text-indigo-400 dark:hover:bg-indigo-950/40 rounded-lg cursor-pointer transition-colors shadow-xs"
-                          >
-                            <Eye size={12} className="mr-1" />
-                            ดูรายการออเดอร์
-                          </Button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="text-center py-10 text-slate-400 font-semibold">No closed shifts found.</div>
-          )}
+
+            {isLoadingShifts ? (
+              <div className="flex flex-col items-center justify-center py-10 gap-2">
+                <Loader2 className="animate-spin text-indigo-600" />
+                <span className="text-xs text-slate-500">Loading cashier shifts...</span>
+              </div>
+            ) : shiftReportData.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs font-semibold text-left">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-black">
+                      <th className="pb-3">Shift ID</th>
+                      <th className="pb-3">Status</th>
+                      <th className="pb-3">Branch</th>
+                      <th className="pb-3">Cashier</th>
+                      <th className="pb-3 text-center">Open / Close Time</th>
+                      <th className="pb-3 text-center">Orders</th>
+                      <th className="pb-3 text-right">Start Float</th>
+                      <th className="pb-3 text-right">Cash Sales</th>
+                      <th className="pb-3 text-right">Non-Cash</th>
+                      <th className="pb-3 text-right">Expected Cash</th>
+                      <th className="pb-3 text-right">Actual Cash</th>
+                      <th className="pb-3 text-right">Variance</th>
+                      <th className="pb-3 text-right pr-2">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
+                    {shiftReportData.map((shift) => {
+                      const isOpen = shift.status === "open";
+                      const variance = shift.variance || 0;
+                      const branchName = shops.find(s => s.id === shift.branchId)?.name || shift.branchId;
+                      return (
+                        <tr key={shift.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                          <td className="py-3 font-mono text-[10px] text-slate-500 font-bold">#{shift.id.slice(-8).toUpperCase()}</td>
+                          <td className="py-3">
+                            {isOpen ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                OPEN
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                                CLOSED
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3">{branchName}</td>
+                          <td className="py-3">
+                            <div className="font-bold text-slate-800 dark:text-slate-100">{shift.userName}</div>
+                            {shift.notes && (
+                              <div className="text-[10px] text-slate-400 truncate max-w-[160px]" title={shift.notes}>
+                                📝 {shift.notes}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3 text-center text-[11px]">
+                            <div className="text-slate-700 dark:text-slate-200 font-bold">{format(new Date(shift.openedAt), "dd/MM/yyyy HH:mm")}</div>
+                            <div className="text-[10px] text-slate-400">
+                              {shift.closedAt ? `ถึง ${format(new Date(shift.closedAt), "dd/MM/yyyy HH:mm")}` : "กำลังเปิดกะ..."}
+                            </div>
+                          </td>
+                          <td className="py-3 text-center font-bold text-slate-800 dark:text-slate-200">
+                            <button
+                              onClick={() => {
+                                setSelectedShiftForOrders(shift);
+                                setSelectedJobForDetails(null);
+                              }}
+                              className="inline-flex flex-col items-center px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-600 dark:bg-indigo-950/40 dark:hover:bg-indigo-900/60 dark:text-indigo-400 font-bold transition-all cursor-pointer border border-indigo-200/60 dark:border-indigo-800/40 shadow-xs"
+                            >
+                              <span className="inline-flex items-center gap-1">
+                                <Eye size={11} />
+                                <span>{shift.totalOrders || 0} ออเดอร์</span>
+                              </span>
+                              <span className="text-[9px] opacity-80 font-medium whitespace-nowrap">
+                                💵{shift.cashOrders || 0} | 📱{shift.transferOrders || 0} | 💳{shift.cardOrders || 0} | 👑{shift.creditOrders || 0}
+                              </span>
+                            </button>
+                          </td>
+                          <td className="py-3 text-right">฿{(shift.startingCash || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-3 text-right text-emerald-600 font-bold">+฿{(shift.cashSales || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-3 text-right text-indigo-600 font-bold">฿{(shift.nonCashSales || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-3 text-right font-black text-slate-900 dark:text-slate-100">฿{(shift.expectedCash || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-3 text-right font-bold text-slate-800 dark:text-slate-100">
+                            {isOpen ? <span className="text-slate-400 italic text-[11px]">รอนับปิดกะ</span> : `฿${(shift.actualCash || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                          </td>
+                          <td className={`py-3 text-right font-black ${isOpen ? "text-slate-400" : Math.abs(variance) < 0.01 ? "text-emerald-600" : variance > 0 ? "text-blue-500" : "text-rose-600"}`}>
+                            {isOpen ? "-" : Math.abs(variance) < 0.01 ? "฿0.00" : `${variance > 0 ? "+" : ""}฿${variance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                          </td>
+                          <td className="py-3 text-right pr-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setSelectedShiftForOrders(shift);
+                                setSelectedJobForDetails(null);
+                              }}
+                              className="h-7 px-2.5 text-[11px] font-bold border-indigo-200 text-indigo-600 hover:bg-indigo-50 dark:border-indigo-900 dark:text-indigo-400 dark:hover:bg-indigo-950/40 rounded-lg cursor-pointer transition-colors shadow-xs"
+                            >
+                              <Eye size={12} className="mr-1" />
+                              ดูสรุปกะ
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="text-center py-10 text-slate-400 font-semibold">ไม่พบข้อมูลรอบกะในช่วงเวลาหรือตัวกรองที่เลือก</div>
+            )}
+          </div>
         </div>
       )}
 
@@ -2409,22 +2741,50 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
               /* STATE 1: Shift Orders List */
               <>
                 {/* Top Info Bar */}
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-white dark:bg-slate-850 p-3.5 rounded-xl border border-slate-200/60 dark:border-slate-800 text-xs font-semibold">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-white dark:bg-slate-850 p-3.5 rounded-xl border border-slate-200/60 dark:border-slate-800 text-xs font-semibold">
                   <div className="flex flex-col">
                     <span className="text-slate-400 text-[10px] uppercase font-bold">จำนวนออเดอร์ในกะ</span>
                     <span className="text-slate-800 dark:text-slate-100 font-black text-base mt-0.5">{shiftJobsList.length} ออเดอร์</span>
+                    <span className="text-[10px] text-slate-500 mt-0.5">
+                      หน้าร้าน {(selectedShiftForOrders as any)?.walkInOrders || 0} • รับ-ส่ง {(selectedShiftForOrders as any)?.deliveryOrders || 0}
+                    </span>
                   </div>
                   <div className="flex flex-col">
-                    <span className="text-slate-400 text-[10px] uppercase font-bold">เงินทอนเริ่มต้น</span>
-                    <span className="text-slate-800 dark:text-slate-100 font-bold mt-0.5">฿{(selectedShiftForOrders?.startingCash || 0).toLocaleString()}</span>
+                    <span className="text-slate-400 text-[10px] uppercase font-bold">เงินทอน + รับเงินสด</span>
+                    <span className="text-slate-800 dark:text-slate-100 font-bold mt-0.5">
+                      ฿{(selectedShiftForOrders?.startingCash || 0).toLocaleString()} <span className="text-emerald-600">+฿{(selectedShiftForOrders?.cashSales || 0).toLocaleString()}</span>
+                    </span>
+                    <span className="text-[10px] text-slate-500 mt-0.5">
+                      ควรมีในลิ้นชัก: <strong className="text-emerald-600">฿{(selectedShiftForOrders?.expectedCash || 0).toLocaleString()}</strong>
+                    </span>
                   </div>
                   <div className="flex flex-col">
-                    <span className="text-slate-400 text-[10px] uppercase font-bold">เงินสดลิ้นชักคาดการณ์</span>
-                    <span className="text-emerald-600 dark:text-emerald-400 font-black text-base mt-0.5">฿{(selectedShiftForOrders?.expectedCash || 0).toLocaleString()}</span>
+                    <span className="text-slate-400 text-[10px] uppercase font-bold">ยอดโอน / บัตร / สมาชิก</span>
+                    <span className="text-indigo-600 dark:text-indigo-400 font-black text-base mt-0.5">
+                      ฿{(((selectedShiftForOrders?.transferSales || 0) + (selectedShiftForOrders?.cardSales || 0) + (selectedShiftForOrders?.creditSales || 0))).toLocaleString()}
+                    </span>
+                    <span className="text-[10px] text-slate-500 mt-0.5">
+                      โอน ฿{(selectedShiftForOrders?.transferSales || 0).toLocaleString()} • บัตร ฿{(selectedShiftForOrders?.cardSales || 0).toLocaleString()} • สมาชิก ฿{(selectedShiftForOrders?.creditSales || 0).toLocaleString()}
+                    </span>
                   </div>
                   <div className="flex flex-col">
-                    <span className="text-slate-400 text-[10px] uppercase font-bold">เงินสดนับได้จริง</span>
-                    <span className="text-slate-800 dark:text-slate-100 font-bold mt-0.5">฿{(selectedShiftForOrders?.actualCash || 0).toLocaleString()}</span>
+                    <span className="text-slate-400 text-[10px] uppercase font-bold">เงินสดนับได้จริง / ส่วนต่าง</span>
+                    <span className="text-slate-800 dark:text-slate-100 font-bold mt-0.5">
+                      {selectedShiftForOrders?.status === "open"
+                        ? "กำลังเปิดกะอยู่"
+                        : `฿${(selectedShiftForOrders?.actualCash || 0).toLocaleString()}`}
+                    </span>
+                    {selectedShiftForOrders?.status !== "open" && (
+                      <span className={`text-[10px] font-black mt-0.5 ${
+                        ((selectedShiftForOrders?.actualCash || 0) - (selectedShiftForOrders?.expectedCash || 0)) === 0
+                          ? "text-emerald-600"
+                          : ((selectedShiftForOrders?.actualCash || 0) - (selectedShiftForOrders?.expectedCash || 0)) > 0
+                          ? "text-blue-600"
+                          : "text-rose-600"
+                      }`}>
+                        ส่วนต่าง: {((selectedShiftForOrders?.actualCash || 0) - (selectedShiftForOrders?.expectedCash || 0)) > 0 ? "+" : ""}฿{((selectedShiftForOrders?.actualCash || 0) - (selectedShiftForOrders?.expectedCash || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    )}
                   </div>
                 </div>
 

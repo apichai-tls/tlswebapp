@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/providers/auth-provider";
@@ -12,9 +12,25 @@ const inter = Inter({
 
 export const dynamic = "force-dynamic";
 
+export const viewport: Viewport = {
+  themeColor: "#ffffff",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  viewportFit: "cover",
+};
+
 export const metadata: Metadata = {
-  title: "That Laundry Shop — Rider Management",
-  description: "Rider Management System for That Laundry Shop",
+  title: "TLS Admin — That Laundry Shop",
+  description: "Admin Dashboard & Rider Management System for That Laundry Shop",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "TLS Admin",
+  },
+  formatDetection: {
+    telephone: false,
+  },
 };
 
 export default function RootLayout({

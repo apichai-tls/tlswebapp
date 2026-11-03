@@ -1,4 +1,4 @@
-﻿import {
+import {
   api,
   registerOpenShiftsSyncCallback,
   subscribeRealtime,
@@ -1059,9 +1059,150 @@ export interface CashierShift {
   creditOrders?: number;
 }
 
+export function computeLiveShiftStats(shift: CashierShift | null, jobs: Job[]) {
+  if (!shift) {
+    return {
+      cashSales: 0,
+      transferSales: 0,
+      cardSales: 0,
+      creditSales: 0,
+      expectedCash: 0,
+      totalOrders: 0,
+      cashOrders: 0,
+      transferOrders: 0,
+      cardOrders: 0,
+      creditOrders: 0,
+      walkInOrders: 0,
+      deliveryOrders: 0,
+      totalRevenue: 0,
+      shiftJobIds: new Set<string>(),
+    };
+  }
+
+  let cashSales = 0;
+  let transferSales = 0;
+  let cardSales = 0;
+  let creditSales = 0;
+  let totalOrders = 0;
+  let cashOrders = 0;
+  let transferOrders = 0;
+  let cardOrders = 0;
+  let creditOrders = 0;
+  let walkInOrders = 0;
+  let deliveryOrders = 0;
+  const shiftJobIds = new Set<string>();
+
+  const shiftOpenTime = new Date(shift.openedAt).getTime();
+  const shiftCloseTime = shift.closedAt ? new Date(shift.closedAt).getTime() : Infinity;
+
+  for (const job of jobs) {
+    if (job.branchId !== shift.branchId) continue;
+    if (job.status === 'cancel' || (job.status as string) === 'cancelled') continue;
+    if (!(job.isShopPaid || (job.source === 'pos' && job.isPaid))) continue;
+
+    let hasPaymentLog = false;
+    let usedCash = false;
+    let usedTransfer = false;
+    let usedCard = false;
+    let usedCredit = false;
+
+    if (job.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(job.adminNotesJson);
+        if (parsed && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
+          hasPaymentLog = true;
+          for (const pay of parsed.payments) {
+            const payTime = pay.timestamp ? new Date(pay.timestamp).getTime() : 0;
+            const belongsToShift =
+              (pay.shiftId && pay.shiftId === shift.id) ||
+              (!pay.shiftId && job.shiftId === shift.id) ||
+              (!pay.shiftId && !job.shiftId && payTime >= shiftOpenTime && payTime <= shiftCloseTime);
+            if (belongsToShift) {
+              const method = (pay.method || '').toLowerCase();
+              const ch = (pay.channel || '').toLowerCase();
+              const amount = Number(pay.amount) || 0;
+              if (method === 'cash' || ch.includes('cash')) {
+                cashSales += amount;
+                usedCash = true;
+              } else if (method === 'transfer' || ch.includes('transfer') || ch.includes('promptpay') || ch.includes('qr')) {
+                transferSales += amount;
+                usedTransfer = true;
+              } else if (method === 'card' || ch.includes('card')) {
+                cardSales += amount;
+                usedCard = true;
+              } else if (method === 'credit' || ch.includes('member') || ch.includes('wallet') || ch.includes('deduct') || ch.includes('credit')) {
+                creditSales += amount;
+                usedCredit = true;
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    if (!hasPaymentLog) {
+      const jobTime = job.createdAt ? new Date(job.createdAt).getTime() : 0;
+      const belongsByShiftOrTime =
+        job.shiftId === shift.id ||
+        (!job.shiftId && jobTime >= shiftOpenTime && jobTime <= shiftCloseTime);
+      if (belongsByShiftOrTime) {
+        const method = (job.paymentMethod || '').toLowerCase();
+        const ch = (job.paymentChannel || '').toLowerCase();
+        const amount = Number(job.totalAmount) || 0;
+        if (method === 'cash' || ch.includes('cash')) {
+          cashSales += amount;
+          usedCash = true;
+        } else if (method === 'transfer' || ch.includes('transfer') || ch.includes('promptpay') || ch.includes('qr')) {
+          transferSales += amount;
+          usedTransfer = true;
+        } else if (method === 'card' || ch.includes('card')) {
+          cardSales += amount;
+          usedCard = true;
+        } else if (method === 'credit' || ch.includes('member') || ch.includes('wallet') || ch.includes('deduct') || ch.includes('credit')) {
+          creditSales += amount;
+          usedCredit = true;
+        }
+      }
+    }
+
+    if (usedCash || usedTransfer || usedCard || usedCredit) {
+      shiftJobIds.add(job.id);
+      totalOrders += 1;
+      if (usedCash) cashOrders += 1;
+      if (usedTransfer) transferOrders += 1;
+      if (usedCard) cardOrders += 1;
+      if (usedCredit) creditOrders += 1;
+      const isWalkIn = job.source === 'pos' || (job.type as string) === 'in_store';
+      if (isWalkIn) walkInOrders += 1;
+      else deliveryOrders += 1;
+    }
+  }
+
+  const expectedCash = (shift.startingCash || 0) + cashSales;
+  const totalRevenue = cashSales + transferSales + cardSales + creditSales;
+
+  return {
+    cashSales,
+    transferSales,
+    cardSales,
+    creditSales,
+    expectedCash,
+    totalOrders,
+    cashOrders,
+    transferOrders,
+    cardOrders,
+    creditOrders,
+    walkInOrders,
+    deliveryOrders,
+    totalRevenue,
+    shiftJobIds,
+  };
+}
+
 const shiftListeners: Set<Listener> = new Set();
 let activeShift: CashierShift | null = null;
 let branchActiveShift: CashierShift | null = null;
+let allOpenShifts: CashierShift[] = [];
 let hasLoadedActiveShift = false;
 let isFetchingShift = false;       // guard against concurrent fetches
 let lastShiftFetchTime = 0;        // TTL: timestamp of last successful fetch
@@ -1085,6 +1226,7 @@ if (typeof window !== 'undefined') {
       });
       activeShift = parsed.activeShift ?? null;
       branchActiveShift = parsed.branchActiveShift ?? null;
+      allOpenShifts = Array.isArray(parsed.allOpenShifts) ? parsed.allOpenShifts : [];
       hasLoadedActiveShift = true; // skip spinner — we have a cached value
       lastShiftFetchTime = parsed.cachedAt ?? 0;
       currentUserId = parsed.userId ?? null;
@@ -1094,10 +1236,10 @@ if (typeof window !== 'undefined') {
   }
 }
 
-let shiftSnapshot: { activeShift: CashierShift | null; branchActiveShift: CashierShift | null; hasLoaded: boolean } = { activeShift, branchActiveShift, hasLoaded: hasLoadedActiveShift };
+let shiftSnapshot: { activeShift: CashierShift | null; branchActiveShift: CashierShift | null; allOpenShifts: CashierShift[]; hasLoaded: boolean } = { activeShift, branchActiveShift, allOpenShifts, hasLoaded: hasLoadedActiveShift };
 
 function emitShiftChange() {
-  shiftSnapshot = { activeShift, branchActiveShift, hasLoaded: hasLoadedActiveShift };
+  shiftSnapshot = { activeShift, branchActiveShift, allOpenShifts, hasLoaded: hasLoadedActiveShift };
   shiftListeners.forEach((l) => l());
 }
 
@@ -1189,10 +1331,13 @@ export const shiftStore = {
         return value;
       }) as CashierShift) : null;
       branchActiveShift = activeShift;
+      if (activeShift) {
+        allOpenShifts = [activeShift, ...allOpenShifts.filter(s => s.id !== activeShift!.id && s.branchId !== activeShift!.branchId)];
+      }
       hasLoadedActiveShift = true;
       lastShiftFetchTime = Date.now(); // mark fresh
       // Save opened shift to cache immediately
-      try { if (typeof window !== 'undefined') localStorage.setItem(SHIFT_CACHE_KEY, JSON.stringify({ activeShift, branchActiveShift, cachedAt: lastShiftFetchTime })); } catch (e) {}
+      try { if (typeof window !== 'undefined') localStorage.setItem(SHIFT_CACHE_KEY, JSON.stringify({ activeShift, branchActiveShift, allOpenShifts, cachedAt: lastShiftFetchTime })); } catch (e) {}
       emitShiftChange();
       return activeShift;
     } catch (e) {
@@ -1205,8 +1350,9 @@ export const shiftStore = {
       const res = await api.closeCashierShift(id, actualCash, notes);
       recentlyClosedShiftId = id;
       recentlyClosedAt = Date.now();
-      activeShift = null;
-      branchActiveShift = null;
+      if (activeShift?.id === id) activeShift = null;
+      if (branchActiveShift?.id === id) branchActiveShift = null;
+      allOpenShifts = allOpenShifts.filter(s => s.id !== id);
       hasLoadedActiveShift = true;
       lastShiftFetchTime = 0; // expire TTL so next open will re-fetch
       // Clear localStorage cache so next open shows no stale shift
@@ -1221,6 +1367,7 @@ export const shiftStore = {
   clearActiveShiftLocal() {
     activeShift = null;
     branchActiveShift = null;
+    allOpenShifts = [];
     hasLoadedActiveShift = false;
     // Also clear localStorage cache so next open starts fresh
     try { if (typeof window !== 'undefined') localStorage.removeItem(SHIFT_CACHE_KEY); } catch (e) {}
@@ -1231,20 +1378,23 @@ export const shiftStore = {
    * No DB call needed — openShifts is already included in the poll response.
    */
   syncFromPoll(openShifts: Array<{ id: string; userId: string; branchId: string; userName: string; openedAt: string; startingCash: number; status: string }>) {
-    if (!currentUserId) return; // not initialized yet
-
     // Filter out recently closed shift within the last 15 seconds to prevent resurrection from in-flight polls
     const validOpenShifts = (recentlyClosedShiftId && (Date.now() - recentlyClosedAt < 15_000))
       ? openShifts.filter(s => s.id !== recentlyClosedShiftId)
       : openShifts;
 
-    const userShift = validOpenShifts.find(s => s.userId === currentUserId) || null;
+    const newAllOpenShifts = validOpenShifts.map(s => JSON.parse(JSON.stringify(s), (key, value) => {
+      if (key.includes('At') && value) return new Date(value);
+      return value;
+    }) as CashierShift);
+
+    const userShift = currentUserId ? (validOpenShifts.find(s => s.userId === currentUserId) || null) : null;
     const bShift = currentBranchId ? (validOpenShifts.find(s => s.branchId === currentBranchId) || null) : null;
 
     const newActiveShift = userShift ? (JSON.parse(JSON.stringify(userShift), (key, value) => {
       if (key.includes('At') && value) return new Date(value);
       return value;
-    }) as CashierShift) : null;
+    }) as CashierShift) : activeShift;
     const newBranchShift = bShift ? (JSON.parse(JSON.stringify(bShift), (key, value) => {
       if (key.includes('At') && value) return new Date(value);
       return value;
@@ -1253,10 +1403,14 @@ export const shiftStore = {
     // Only emit if state actually changed
     const changed =
       JSON.stringify(activeShift) !== JSON.stringify(newActiveShift) ||
-      JSON.stringify(branchActiveShift) !== JSON.stringify(newBranchShift);
+      JSON.stringify(branchActiveShift) !== JSON.stringify(newBranchShift || newActiveShift) ||
+      JSON.stringify(allOpenShifts) !== JSON.stringify(newAllOpenShifts);
 
-    activeShift = newActiveShift;
-    branchActiveShift = newBranchShift || newActiveShift;
+    if (currentUserId) {
+      activeShift = userShift ? newActiveShift : null;
+      branchActiveShift = newBranchShift || activeShift;
+    }
+    allOpenShifts = newAllOpenShifts;
     hasLoadedActiveShift = true;
     lastShiftFetchTime = Date.now();
     if (changed) emitShiftChange();
@@ -1282,10 +1436,13 @@ export const shiftStore = {
   async getOpenShifts() {
     try {
       const res = await api.getOpenCashierShifts();
-      return JSON.parse(JSON.stringify(res), (key, value) => {
+      const parsed = JSON.parse(JSON.stringify(res), (key, value) => {
         if (key.includes('At') && value) return new Date(value);
         return value;
       }) as CashierShift[];
+      allOpenShifts = parsed;
+      emitShiftChange();
+      return parsed;
     } catch (e) {
       console.error("Failed to get open shifts:", e);
       return [];

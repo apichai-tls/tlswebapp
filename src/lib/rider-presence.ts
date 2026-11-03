@@ -12,6 +12,11 @@ let gpsTimestampsCache: Map<string, string> | null = null;
 let gpsTimestampsLoadedAt = 0;
 const GPS_CACHE_TTL_MS = 30000;
 
+let lastInactiveCheckAt = 0;
+let inFlightInactivePromise: Promise<boolean> | null = null;
+const INACTIVE_CHECK_INTERVAL_MS = 30000;
+const DEFAULT_RIDER_IDLE_MINUTES = 20;
+
 /**
  * Returns the current date string ("YYYY-MM-DD") in Asia/Bangkok (UTC+7).
  */
@@ -24,9 +29,124 @@ export function getBangkokDateKey(now: Date = new Date()): string {
 }
 
 /**
+ * Automatically sets any non-offline rider whose last GPS/heartbeat timestamp
+ * (`rider_gps_at:<id>`) is older than `sessionTimeoutMinutes` (default 20 mins)
+ * to `status = 'offline'`. Throttled in-memory to run at most once every 30s.
+ */
+export async function ensureInactiveRidersOffline(now: Date = new Date()): Promise<boolean> {
+  const nowMs = now.getTime();
+  if (nowMs - lastInactiveCheckAt < INACTIVE_CHECK_INTERVAL_MS) {
+    return false;
+  }
+  if (inFlightInactivePromise) {
+    return inFlightInactivePromise;
+  }
+
+  lastInactiveCheckAt = nowMs;
+  inFlightInactivePromise = (async () => {
+    try {
+      const [activeOnlineRiders, timeoutSetting, gpsMap] = await Promise.all([
+        prisma.rider.findMany({
+          where: {
+            status: { not: 'offline' },
+          },
+          select: { id: true, name: true, status: true },
+        }),
+        prisma.setting.findUnique({
+          where: { key: 'sessionTimeoutMinutes' },
+        }),
+        getRiderGpsTimestampsMap(),
+      ]);
+
+      if (activeOnlineRiders.length === 0) {
+        return false;
+      }
+
+      const rawMins = timeoutSetting?.value !== undefined ? Number(timeoutSetting.value) : DEFAULT_RIDER_IDLE_MINUTES;
+      const timeoutMins = !isNaN(rawMins) && rawMins >= 0 ? rawMins : DEFAULT_RIDER_IDLE_MINUTES;
+      if (timeoutMins <= 0) {
+        return false; // 0 = disabled
+      }
+      const timeoutMs = timeoutMins * 60 * 1000;
+
+      const staleRiderIds: string[] = [];
+      for (const r of activeOnlineRiders) {
+        const lastIso = gpsMap.get(r.id);
+        if (!lastIso) {
+          // Initialize baseline timestamp so newly online riders without a prior GPS ping start their window now
+          await recordRiderGpsTimestamp(r.id, now);
+          continue;
+        }
+        const lastMs = new Date(lastIso).getTime();
+        if (!isNaN(lastMs) && nowMs - lastMs >= timeoutMs) {
+          staleRiderIds.push(r.id);
+        }
+      }
+
+      if (staleRiderIds.length === 0) {
+        return false;
+      }
+
+      const updateRes = await prisma.rider.updateMany({
+        where: {
+          id: { in: staleRiderIds },
+          status: { not: 'offline' },
+        },
+        data: {
+          status: 'offline',
+        },
+      });
+
+      if (updateRes.count > 0) {
+        invalidateDbCache('riders');
+        console.log(
+          `[RiderIdleOffline] Marked ${updateRes.count} inactive rider(s) offline after ${timeoutMins}m idle: ${staleRiderIds.join(', ')}`
+        );
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('[RiderIdleOffline] Failed to check inactive riders:', err);
+      return false;
+    } finally {
+      inFlightInactivePromise = null;
+    }
+  })();
+
+  return inFlightInactivePromise;
+}
+
+/**
+ * Immediately marks a rider as offline in the database (used on Logout or Idle Timeout).
+ */
+export async function setRiderOfflineOnLogout(riderId: string): Promise<boolean> {
+  if (!riderId) return false;
+  try {
+    const res = await prisma.rider.updateMany({
+      where: {
+        id: riderId,
+        status: { not: 'offline' },
+      },
+      data: {
+        status: 'offline',
+      },
+    });
+    if (res.count > 0) {
+      invalidateDbCache('riders');
+      console.log(`[RiderPresence] Set rider ${riderId} to offline on logout/timeout`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error(`[RiderPresence] Failed to set rider ${riderId} offline on logout:`, err);
+    return false;
+  }
+}
+
+/**
  * Ensures all riders are automatically set to "offline" once a new calendar day
  * begins at 00:00 Bangkok time (UTC+7), while preserving their last known coordinates
- * (currentLat / currentLng).
+ * (currentLat / currentLng), and also checks for idle riders (>20m inactive).
  *
  * Uses an in-memory date check so subsequent calls within the same day take 0ms.
  */
@@ -34,7 +154,7 @@ export async function ensureDailyRiderOfflineReset(now: Date = new Date()): Prom
   const todayKey = getBangkokDateKey(now);
 
   if (lastVerifiedBangkokDate === todayKey) {
-    return false;
+    return ensureInactiveRidersOffline(now);
   }
 
   if (inFlightResetPromise) {

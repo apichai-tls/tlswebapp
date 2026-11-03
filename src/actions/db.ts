@@ -37,7 +37,10 @@ function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string;
 }
 
 export async function getNextMemberIdAction(branchId?: string | null): Promise<string> {
-  await assertServerActionAuthorized({ forbidRoles: ['rider'], targetBranchId: branchId || null });
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  if (!canAccessCustomerRecords(authUser, branchId || null)) {
+    throw new Error('Forbidden: You do not have access to customer records in this branch');
+  }
   const { prefix, baseStartingNum } = resolveBranchPrefixAndBase(branchId);
   const regex = new RegExp(`^${prefix}-?(\\d+)$`, 'i');
 
@@ -71,8 +74,10 @@ export async function addCustomerAction(data: any): Promise<{ success: boolean; 
     const authUser = await assertServerActionAuthorized({
       requireWrite: true,
       forbidRoles: ['rider'],
-      targetBranchId: data?.branchId || null,
     });
+    if (!canAccessCustomerRecords(authUser, data?.branchId || null)) {
+      return { success: false, error: '403 Forbidden: You do not have access to customer records in this branch' };
+    }
     data.actorId = authUser.id;
     data.actorName = authUser.name || authUser.email;
     let memberId = null;
@@ -531,7 +536,6 @@ export async function updateCustomerAction(
   try {
     const authUser = await assertServerActionAuthorized({
       requireWrite: true,
-      targetBranchId: updates?.branchId || null,
     });
     if (authUser?.role === 'rider') {
       return { success: false, error: "403 Forbidden: Riders are not permitted to modify customer records." };
@@ -2243,7 +2247,7 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
     }
 
     const whereClause: any = { OR: orConditions };
-    if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+    if (!isAdminOrSuperadmin(authUser) && !canAccessCustomerRecords(authUser, '__cross_branch__') && authUser.branchId && authUser.branchId !== 'all') {
       whereClause.branchId = authUser.branchId;
     }
     const [jobsRaw, adjustLogs] = await Promise.all([
@@ -2561,7 +2565,7 @@ export async function getCustomerJobCountsAction(customerIds: string[]) {
       .map(c => c.id);
     if (!allowedCustomerIds.length) return {};
     const jobWhere: any = { customerId: { in: allowedCustomerIds } };
-    if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+    if (!isAdminOrSuperadmin(authUser) && !canAccessCustomerRecords(authUser, '__cross_branch__') && authUser.branchId && authUser.branchId !== 'all') {
       jobWhere.branchId = authUser.branchId;
     }
     const counts = await prisma.job.groupBy({
@@ -3140,7 +3144,25 @@ async function updateJobActionInternal(id: string, updates: any) {
     const newTotal = data.totalAmount !== undefined ? (Number(data.totalAmount) || 0) : oldTotal;
     const isTotalChanged = data.totalAmount !== undefined && Math.abs(newTotal - oldTotal) > 0.01;
 
-    if (isItemsChanged || isFeeChanged || isTotalChanged) {
+    // Guard against duplicate rev0 -> rev1 bump when Proforma button saved proformaCartHash ahead of Save Changes:
+    // If existingJob.proformaCartHash already matches the incoming items & fee (while existingJob.itemsJson in DB was still old/empty),
+    // the current proformaRevision already represents this cart state — do NOT bump revision again!
+    let isAlreadyMatchedByProformaHash = false;
+    const existingCartHashStr = (data as any).proformaCartHash || existingJob.proformaCartHash;
+    if (existingCartHashStr) {
+      try {
+        const parsedHash = JSON.parse(existingCartHashStr);
+        const newArr = newItems ? JSON.parse(newItems) : [];
+        const newItemsOnlyHash = JSON.parse(computeCartHash({ items: newArr })).items;
+        const hashItemsMatch = JSON.stringify(parsedHash.items || []) === JSON.stringify(newItemsOnlyHash || []);
+        const hashFeeMatch = parsedHash.fee === undefined || Math.abs(Number(parsedHash.fee) - newFee) <= 0.01;
+        if (hashItemsMatch && hashFeeMatch) {
+          isAlreadyMatchedByProformaHash = true;
+        }
+      } catch {}
+    }
+
+    if ((isItemsChanged || isFeeChanged || isTotalChanged) && !isAlreadyMatchedByProformaHash) {
       const nextRev = (existingJob.proformaRevision ?? 0) + 1;
       (data as any).proformaRevision = nextRev;
       if (!existingJob.proformaNumber && !(data as any).proformaNumber) {
@@ -3226,7 +3248,7 @@ async function updateJobActionInternal(id: string, updates: any) {
       'status', 'subStatus', 'isPaid', 'paymentMethod', 'paymentChannel', 'riderId', 
       'pickupRiderId', 'deliveryRiderId', 'pickupScheduledAt', 'pickupScheduledEndAt',
       'deliveryScheduledAt', 'deliveryScheduledEndAt', 'scheduledAt', 'fee', 'discount', 'discountPercent',
-      'totalAmount', 'remark', 'isStuck', 'cashPlaced',
+      'totalAmount', 'remark', 'isStuck', 'cashPlaced', 'shiftId',
       'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
       'adminNotesJson', 'billNo', 'isShopPaid', 'customerId', 'customerName', 'customerPhone',
       'pickupLocation', 'dropoffLocation', 'pickupCoords', 'dropoffCoords', 'serviceType', 'type',
@@ -3627,7 +3649,7 @@ export async function updateRiderAction(id: string, updates: any) {
   if (data.isActive === false) data.status = 'offline';
   const updatedRider = await prisma.rider.update({ where: { id }, data });
   let gpsUpdatedAt: string | undefined;
-  if (hasGpsUpdate) {
+  if (hasGpsUpdate || data.status === 'online' || data.status === 'busy') {
     gpsUpdatedAt = await recordRiderGpsTimestamp(id);
   }
   invalidateDbCache('riders');
@@ -4704,6 +4726,7 @@ export async function getShiftStatusAction(userId: string, branchId?: string) {
 function calculateShiftSales(
   shift: { id: string; startingCash: number },
   jobs: Array<{
+    shiftId?: string | null;
     totalAmount: number | null;
     paymentChannel: string | null;
     status: string;
@@ -4721,25 +4744,30 @@ function calculateShiftSales(
     if (job.status === 'cancel') continue;
     if (!job.isShopPaid && !(job.source === 'pos' && job.isPaid)) continue;
 
-    let jobCounted = false;
+    let hasStructuredPayments = false;
     let usedCash = false, usedTransfer = false, usedCard = false, usedCredit = false;
 
-    // Parse structured payment records from adminNotesJson (supports split payments)
+    // Parse structured payment records from adminNotesJson (supports split payments & All Jobs payments)
     if (job.adminNotesJson) {
       try {
         const parsed = JSON.parse(job.adminNotesJson);
-        if (parsed && Array.isArray(parsed.payments)) {
+        if (parsed && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
+          hasStructuredPayments = true;
           for (const pay of parsed.payments) {
-            // Only count payments that belong to THIS shift (if shiftId is recorded)
-            if (pay.shiftId && pay.shiftId !== shift.id) continue;
+            // Only count payments that belong to THIS shift
+            if (pay.shiftId) {
+              if (pay.shiftId !== shift.id) continue;
+            } else {
+              if (job.shiftId && job.shiftId !== shift.id) continue;
+            }
             const method = (pay.method || '').toLowerCase();
+            const ch = (pay.channel || '').toLowerCase();
             const amount = Number(pay.amount) || 0;
-            if (method === 'cash') { cashSales += amount; usedCash = true; }
-            else if (method === 'transfer') { transferSales += amount; usedTransfer = true; }
-            else if (method === 'card') { cardSales += amount; usedCard = true; }
-            else if (method === 'credit') { creditSales += amount; usedCredit = true; }
+            if (method === 'cash' || ch.includes('cash')) { cashSales += amount; usedCash = true; }
+            else if (method === 'transfer' || ch.includes('transfer') || ch.includes('promptpay') || ch.includes('qr')) { transferSales += amount; usedTransfer = true; }
+            else if (method === 'card' || ch.includes('card')) { cardSales += amount; usedCard = true; }
+            else if (method === 'credit' || ch.includes('member') || ch.includes('wallet') || ch.includes('deduct') || ch.includes('credit')) { creditSales += amount; usedCredit = true; }
           }
-          jobCounted = usedCash || usedTransfer || usedCard || usedCredit;
         }
       } catch (e) {
         // Fall back to legacy check
@@ -4747,13 +4775,13 @@ function calculateShiftSales(
     }
 
     // Legacy fallback: single paymentChannel when adminNotesJson has no payments array
-    if (!jobCounted) {
+    if (!hasStructuredPayments && (!job.shiftId || job.shiftId === shift.id)) {
       const amount = job.totalAmount || 0;
       const ch = (job.paymentChannel || '').toLowerCase();
-      if (ch === 'cash / cod' || ch === 'cash') { cashSales += amount; usedCash = true; }
-      else if (ch === 'transfer') { transferSales += amount; usedTransfer = true; }
-      else if (ch === 'credit card' || ch === 'card') { cardSales += amount; usedCard = true; }
-      else if (ch === 'hq/credit' || ch === 'credit') { creditSales += amount; usedCredit = true; }
+      if (ch === 'cash / cod' || ch === 'cash' || ch.includes('cash')) { cashSales += amount; usedCash = true; }
+      else if (ch === 'transfer' || ch.includes('transfer') || ch.includes('promptpay') || ch.includes('qr')) { transferSales += amount; usedTransfer = true; }
+      else if (ch === 'credit card' || ch === 'card' || ch.includes('card')) { cardSales += amount; usedCard = true; }
+      else if (ch === 'hq/credit' || ch === 'credit' || ch.includes('member') || ch.includes('wallet') || ch.includes('deduct')) { creditSales += amount; usedCredit = true; }
       // Notice: unknown payment channels are NEVER counted as cash
     }
 
@@ -4793,8 +4821,13 @@ export async function getOpenShiftAction(userId: string) {
 
     const [jobs, refunds] = await Promise.all([
       prisma.job.findMany({
-        where: { shiftId: shift.id },
-        select: { totalAmount: true, paymentChannel: true, status: true, isPaid: true, isShopPaid: true, source: true, adminNotesJson: true }
+        where: {
+          OR: [
+            { shiftId: shift.id },
+            { branchId: shift.branchId, adminNotesJson: { contains: shift.id } }
+          ]
+        },
+        select: { shiftId: true, totalAmount: true, paymentChannel: true, status: true, isPaid: true, isShopPaid: true, source: true, adminNotesJson: true }
       }),
       prisma.jobRefund.findMany({
         where: { shiftId: shift.id, shiftAffected: true },
@@ -4829,8 +4862,13 @@ export async function getBranchOpenShiftAction(branchId: string) {
 
     const [jobs, refunds] = await Promise.all([
       prisma.job.findMany({
-        where: { shiftId: shift.id },
-        select: { totalAmount: true, paymentChannel: true, status: true, isPaid: true, isShopPaid: true, source: true, adminNotesJson: true }
+        where: {
+          OR: [
+            { shiftId: shift.id },
+            { branchId: shift.branchId, adminNotesJson: { contains: shift.id } }
+          ]
+        },
+        select: { shiftId: true, totalAmount: true, paymentChannel: true, status: true, isPaid: true, isShopPaid: true, source: true, adminNotesJson: true }
       }),
       prisma.jobRefund.findMany({
         where: { shiftId: shift.id, shiftAffected: true },
@@ -4856,7 +4894,7 @@ export async function getBranchOpenShiftAction(branchId: string) {
 
 export async function openShiftAction(data: { userId: string, userName: string, branchId: string, startingCash: number, notes?: string }) {
   try {
-    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'], targetBranchId: data?.branchId || null });
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     data.userId = authUser.id;
     data.userName = authUser.name || authUser.email;
     const startingCashNum = Number(data.startingCash);
@@ -4929,8 +4967,14 @@ export async function closeShiftAction(data: { shiftId: string, actualCash: numb
       // Fetch all jobs and cash refunds linked to this shift
       const [jobs, refunds] = await Promise.all([
         tx.job.findMany({
-          where: { shiftId: data.shiftId },
+          where: {
+            OR: [
+              { shiftId: data.shiftId },
+              { branchId: shift.branchId, adminNotesJson: { contains: data.shiftId } }
+            ]
+          },
           select: {
+            shiftId: true,
             totalAmount: true,
             paymentChannel: true,
             status: true,
@@ -5653,7 +5697,7 @@ export async function getTopUpTransactionsAction(
       targetBranchId = filterOrCustomerId.branchId;
     }
 
-    if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+    if (!isAdminOrSuperadmin(authUser) && !canAccessCustomerRecords(authUser, '__cross_branch__') && authUser.branchId && authUser.branchId !== 'all') {
       targetBranchId = authUser.branchId;
     }
     if (targetBranchId && targetBranchId !== 'all') {
@@ -5806,7 +5850,7 @@ export async function createWalletTransactionAction(data: {
   createdByName?: string | null;
   branchId?: string | null;
 }) {
-  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'], targetBranchId: data?.branchId || null });
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   const targetCustomer = await prisma.customer.findUnique({
     where: { id: data.customerId },
     select: { id: true, branchId: true },
@@ -5851,7 +5895,7 @@ export async function getWalletTransactionsAction(filters?: {
   endDate?: string;
   branchId?: string;
 }) {
-  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'], targetBranchId: filters?.branchId || null });
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   if (filters?.customerId) {
     const targetCustomer = await prisma.customer.findUnique({
       where: { id: filters.customerId },
@@ -5862,7 +5906,7 @@ export async function getWalletTransactionsAction(filters?: {
       throw new Error("Forbidden: Customer branch restriction");
     }
   }
-  if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+  if (!isAdminOrSuperadmin(authUser) && !canAccessCustomerRecords(authUser, '__cross_branch__') && authUser.branchId && authUser.branchId !== 'all') {
     filters = { ...(filters || {}), branchId: authUser.branchId };
   }
   const where: any = {};
@@ -5922,7 +5966,7 @@ export async function getPendingWalletCountAction(customerId?: string) {
   }
   const where: any = { approvalStatus: 'PENDING' };
   if (customerId) where.customerId = customerId;
-  if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+  if (!isAdminOrSuperadmin(authUser) && !canAccessCustomerRecords(authUser, '__cross_branch__') && authUser.branchId && authUser.branchId !== 'all') {
     where.branchId = authUser.branchId;
   }
   return await prisma.walletTransaction.count({ where });
@@ -5931,7 +5975,7 @@ export async function getPendingWalletCountAction(customerId?: string) {
 export async function getPendingWalletMapAction() {
   const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   const where: any = { approvalStatus: 'PENDING' };
-  if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+  if (!isAdminOrSuperadmin(authUser) && !canAccessCustomerRecords(authUser, '__cross_branch__') && authUser.branchId && authUser.branchId !== 'all') {
     where.branchId = authUser.branchId;
   }
   const pendingTxs = await prisma.walletTransaction.findMany({
@@ -9095,22 +9139,110 @@ async function recalculateHolderPettyCashBalances(holderId: string) {
   }
 }
 
+async function ensureSequentialPettyCashTxNumbers(): Promise<void> {
+  const allRows: any[] = await prisma.$queryRaw`
+    SELECT "id", "txNumber", "type", "relatedTxId", "transactionDate", "createdAt"
+    FROM "PettyCashTransaction"
+    ORDER BY "transactionDate" ASC, "createdAt" ASC, "id" ASC
+  `;
+  if (!allRows || allRows.length === 0) return;
+
+  // Check if any row still uses the old random 4-digit number (>= 1000 when total rows < 900) or is missing txNumber
+  const needsRenumber = allRows.some((r) => {
+    const txNo = String(r.txNumber || "");
+    if (!txNo) return true;
+    const m = txNo.match(/^PC-(?:TR-)?\d{4}-(\d{4})/);
+    if (!m) return true;
+    const num = parseInt(m[1], 10);
+    return num >= 1000 && allRows.length < 900;
+  });
+
+  if (!needsRenumber) return;
+
+  const pcCounters: Record<string, number> = {};
+  const trCounters: Record<string, number> = {};
+  const assignedTransferSeq: Record<string, string> = {};
+
+  for (const r of allRows) {
+    const d = r.transactionDate ? new Date(r.transactionDate) : new Date(r.createdAt || Date.now());
+    const ym = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
+    let newTxNo = "";
+
+    if (r.type === "TRANSFER_OUT" || r.type === "TRANSFER_IN") {
+      const suffix = r.type === "TRANSFER_OUT" ? "OUT" : "IN";
+      let seqStr = assignedTransferSeq[r.id];
+      if (!seqStr && r.relatedTxId && assignedTransferSeq[r.relatedTxId]) {
+        seqStr = assignedTransferSeq[r.relatedTxId];
+      }
+      if (!seqStr) {
+        trCounters[ym] = (trCounters[ym] || 0) + 1;
+        seqStr = String(trCounters[ym]).padStart(4, "0");
+        assignedTransferSeq[r.id] = seqStr;
+        if (r.relatedTxId) {
+          assignedTransferSeq[r.relatedTxId] = seqStr;
+        }
+      }
+      newTxNo = `PC-TR-${ym}-${seqStr}-${suffix}`;
+    } else {
+      pcCounters[ym] = (pcCounters[ym] || 0) + 1;
+      const seqStr = String(pcCounters[ym]).padStart(4, "0");
+      newTxNo = `PC-${ym}-${seqStr}`;
+    }
+
+    if (r.txNumber !== newTxNo) {
+      await prisma.$executeRaw`
+        UPDATE "PettyCashTransaction"
+        SET "txNumber" = ${newTxNo}
+        WHERE "id" = ${r.id}
+      `;
+    }
+  }
+}
+
+async function getNextPettyCashSeq(txDate: Date, isTransfer: boolean): Promise<{ ym: string; seqStr: string }> {
+  await ensureSequentialPettyCashTxNumbers();
+  const ym = `${String(txDate.getFullYear()).slice(-2)}${String(txDate.getMonth() + 1).padStart(2, "0")}`;
+  const likePattern = isTransfer ? `PC-TR-${ym}-%` : `PC-${ym}-%`;
+  const existingRows: any[] = await prisma.$queryRaw`
+    SELECT "txNumber" FROM "PettyCashTransaction"
+    WHERE "txNumber" LIKE ${likePattern}
+  `;
+  let maxSeq = 0;
+  const regex = isTransfer
+    ? new RegExp(`^PC-TR-${ym}-(\\d+)-(?:OUT|IN)$`)
+    : new RegExp(`^PC-${ym}-(\\d+)$`);
+  for (const row of existingRows) {
+    const m = String(row.txNumber || "").match(regex);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (!isNaN(n) && n > maxSeq) {
+        maxSeq = n;
+      }
+    }
+  }
+  const seqStr = String(maxSeq + 1).padStart(4, "0");
+  return { ym, seqStr };
+}
+
 export async function getPettyCashDataAction(): Promise<{
   success: boolean;
   error?: string;
   transactions: any[];
   categories: string[];
+  holderLimits?: Record<string, number>;
 }> {
   try {
     await assertServerActionAuthorized({ forbidRoles: ["rider"] });
     await ensurePettyCashTableExists();
+    await ensureSequentialPettyCashTxNumbers();
 
-    const [rows, catSetting] = await Promise.all([
+    const [rows, catSetting, limitSetting] = await Promise.all([
       prisma.$queryRaw<any[]>`
         SELECT * FROM "PettyCashTransaction"
         ORDER BY "transactionDate" DESC, "createdAt" DESC
       `,
       prisma.setting.findUnique({ where: { key: "pettyCashCategories" } }),
+      prisma.setting.findUnique({ where: { key: "pettyCashHolderLimits" } }),
     ]);
 
     let categories = DEFAULT_PETTY_CASH_CATEGORIES;
@@ -9119,6 +9251,16 @@ export async function getPettyCashDataAction(): Promise<{
         const parsed = JSON.parse(catSetting.value);
         if (Array.isArray(parsed) && parsed.length > 0) {
           categories = parsed.map((c: any) => String(c).trim()).filter(Boolean);
+        }
+      } catch {}
+    }
+
+    let holderLimits: Record<string, number> = {};
+    if (limitSetting?.value) {
+      try {
+        const parsed = JSON.parse(limitSetting.value);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          holderLimits = parsed;
         }
       } catch {}
     }
@@ -9142,6 +9284,7 @@ export async function getPettyCashDataAction(): Promise<{
       success: true,
       transactions,
       categories,
+      holderLimits,
     };
   } catch (err: any) {
     console.error("[getPettyCashDataAction] Error:", err);
@@ -9150,6 +9293,7 @@ export async function getPettyCashDataAction(): Promise<{
       error: err?.message || "Failed to load petty cash data",
       transactions: [],
       categories: DEFAULT_PETTY_CASH_CATEGORIES,
+      holderLimits: {},
     };
   }
 }
@@ -9197,9 +9341,8 @@ export async function createPettyCashTransactionAction(data: {
     const now = new Date();
     const txDate = data.transactionDate ? new Date(data.transactionDate) : now;
     const id = crypto.randomUUID();
-    const ym = `${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
-    const randSuffix = String(Math.floor(1000 + Math.random() * 9000));
-    const txNumber = `PC-${ym}-${randSuffix}`;
+    const { ym, seqStr } = await getNextPettyCashSeq(txDate, false);
+    const txNumber = `PC-${ym}-${seqStr}`;
 
     const receiptJson = JSON.stringify(Array.isArray(data.receiptUrls) ? data.receiptUrls : []);
     const slipJson = JSON.stringify(Array.isArray(data.slipUrls) ? data.slipUrls : []);
@@ -9451,10 +9594,9 @@ export async function transferPettyCashAction(data: {
     const txDate = data.transactionDate ? new Date(data.transactionDate) : now;
     const outId = crypto.randomUUID();
     const inId = crypto.randomUUID();
-    const ym = `${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
-    const randSuffix = String(Math.floor(1000 + Math.random() * 9000));
-    const outTxNo = `PC-TR-${ym}-${randSuffix}-OUT`;
-    const inTxNo = `PC-TR-${ym}-${randSuffix}-IN`;
+    const { ym, seqStr } = await getNextPettyCashSeq(txDate, true);
+    const outTxNo = `PC-TR-${ym}-${seqStr}-OUT`;
+    const inTxNo = `PC-TR-${ym}-${seqStr}-IN`;
 
     const receiptJson = JSON.stringify(Array.isArray(data.receiptUrls) ? data.receiptUrls : []);
     const slipJson = JSON.stringify(Array.isArray(data.slipUrls) ? data.slipUrls : []);
@@ -9510,7 +9652,7 @@ export async function transferPettyCashAction(data: {
         action: "PETTY_CASH_TRANSFER",
         entityType: "petty_cash",
         entityId: outId,
-        details: `[PC-TR-${ym}-${randSuffix}] โอนวงเงินสดย่อย ฿${amt.toLocaleString()} จาก ${data.fromHolderName} -> ${data.toHolderName} (${cleanDesc})`,
+        details: `[PC-TR-${ym}-${seqStr}] โอนวงเงินสดย่อย ฿${amt.toLocaleString()} จาก ${data.fromHolderName} -> ${data.toHolderName} (${cleanDesc})`,
       },
     }).catch(() => {});
 
@@ -9541,5 +9683,54 @@ export async function savePettyCashCategoriesAction(categories: string[]): Promi
   } catch (err: any) {
     console.error("[savePettyCashCategoriesAction] Error:", err);
     return { success: false, error: err?.message || "Failed to save categories" };
+  }
+}
+
+export async function savePettyCashHolderLimitAction(
+  holderId: string,
+  limitAmount: number
+): Promise<{
+  success: boolean;
+  error?: string;
+  holderLimits?: Record<string, number>;
+}> {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const role = (authUser.role || "").toLowerCase();
+    const canManageLimit =
+      role === "admin" ||
+      role === "superadmin" ||
+      role === "accounting" ||
+      (authUser.permissions || []).includes("approve-petty-cash");
+    if (!canManageLimit) {
+      return { success: false, error: "เฉพาะฝ่ายบัญชีหรือผู้ดูแลระบบเท่านั้นที่สามารถกำหนดวงเงินสดย่อยได้" };
+    }
+    if (!holderId) {
+      return { success: false, error: "ไม่พบรหัสผู้ถือเงินสดย่อย" };
+    }
+    const cleanLimit = Math.max(0, Math.round((Number(limitAmount) || 0) * 100) / 100);
+
+    const existing = await prisma.setting.findUnique({ where: { key: "pettyCashHolderLimits" } });
+    let currentMap: Record<string, number> = {};
+    if (existing?.value) {
+      try {
+        const parsed = JSON.parse(existing.value);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          currentMap = parsed;
+        }
+      } catch {}
+    }
+    currentMap[holderId] = cleanLimit;
+
+    await prisma.setting.upsert({
+      where: { key: "pettyCashHolderLimits" },
+      update: { value: JSON.stringify(currentMap) },
+      create: { key: "pettyCashHolderLimits", value: JSON.stringify(currentMap) },
+    });
+
+    return { success: true, holderLimits: currentMap };
+  } catch (err: any) {
+    console.error("[savePettyCashHolderLimitAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to save holder limit" };
   }
 }

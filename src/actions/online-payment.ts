@@ -540,7 +540,6 @@ export async function createTopUpOnlinePaymentAction(
     const authUser = await assertServerActionAuthorized({
       requireWrite: true,
       forbidRoles: ['rider'],
-      targetBranchId: params.branchId || null,
     });
 
     const amount = Number(params.amount);

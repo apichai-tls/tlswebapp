@@ -564,6 +564,7 @@ export default function RiderPage() {
   // This ref lets us restore the correct status after each refresh, scoped to the current Bangkok calendar day.
   const intendedStatusRef = useRef<string | null>(null);
   const intendedStatusDateRef = useRef<string | null>(null);
+  const intendedStatusSetAtRef = useRef<number>(0);
 
   function getBangkokDateString(now: Date = new Date()): string {
     const bkk = new Date(now.getTime() + 7 * 60 * 60 * 1000);
@@ -809,6 +810,15 @@ export default function RiderPage() {
   };
 
   const handleLogout = async () => {
+    intendedStatusRef.current = null;
+    intendedStatusDateRef.current = null;
+    sessionStorage.removeItem("riderWelcomedDate");
+    sessionStorage.removeItem("riderWelcomed");
+    if (activeRider && activeRider.status !== "offline") {
+      try {
+        await riderStore.updateRider(activeRider.id, { status: "offline" });
+      } catch {}
+    }
     await logout();
     window.location.href = "/login";
   };
@@ -832,8 +842,8 @@ export default function RiderPage() {
     }
   }, [activeRider?.id]); // ✅ only fire on rider ID change, not on every status update
 
-  // ✅ FIX: After every refreshDb, if DB returned a stale status within the SAME Bangkok day, restore intended status.
-  // If a new Bangkok day has started (after 00:00), clear intendedStatusRef so midnight auto-offline takes effect.
+  // ✅ FIX: After every refreshDb, if DB returned a stale status within 15s of manual toggle, restore intended status.
+  // If a new Bangkok day has started (after 00:00) or server marked rider offline after idle timeout, respect offline.
   useEffect(() => {
     if (!activeRider) return;
     const todayBkk = getBangkokDateString();
@@ -849,6 +859,11 @@ export default function RiderPage() {
       return;
     }
     if (!intendedStatusRef.current) return;
+    if (activeRider.status === "offline" && Date.now() - intendedStatusSetAtRef.current > 15000) {
+      // Server or admin marked rider offline (e.g., idle timeout) — accept offline state
+      intendedStatusRef.current = null;
+      return;
+    }
     if (activeRider.status !== intendedStatusRef.current) {
       riderStore.updateRider(activeRider.id, { status: intendedStatusRef.current as any });
     }
@@ -879,6 +894,15 @@ export default function RiderPage() {
         return;
       }
       api.reconcileDelta().catch(() => {});
+      // If rider is actively interacting with the page, send a lightweight heartbeat so server presence stays fresh
+      const currentRiderId = activeRiderIdRef.current;
+      if (currentRiderId && Date.now() - lastActiveTime.current < 60000) {
+        fetch('/api/rider-location', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ riderId: currentRiderId, heartbeat: true }),
+        }).catch(() => {});
+      }
     }, 30000);
 
     return () => {
@@ -912,6 +936,7 @@ export default function RiderPage() {
       const todayBkk = getBangkokDateString();
       intendedStatusRef.current = "online"; // ✅ lock intended status
       intendedStatusDateRef.current = todayBkk;
+      intendedStatusSetAtRef.current = Date.now();
       riderStore.updateRider(activeRider.id, { status: "online" });
       sessionStorage.setItem("riderWelcomed", "true");
       sessionStorage.setItem("riderWelcomedDate", todayBkk);
@@ -960,12 +985,18 @@ export default function RiderPage() {
     }
 
     const pushLocation = async (lat: number, lng: number, isNative: boolean) => {
+      const nowMs = Date.now();
       lastPushedLat = lat;
       lastPushedLng = lng;
-      lastPushTime = Date.now();
+      lastPushTime = nowMs;
+      lastActiveTime.current = nowMs;
+      // Moving on GPS counts as active riding so the 20-minute idle timer does not kick the rider out mid-ride
+      try {
+        localStorage.setItem('lastActivityAt', String(nowMs));
+      } catch {}
       const riderId = activeRiderIdRef.current;
       if (!riderId) return;
-      const nowIso = new Date().toISOString();
+      const nowIso = new Date(nowMs).toISOString();
       riderStore.updateRiderLocal(riderId, { currentLocation: { lat, lng }, gpsUpdatedAt: nowIso });
 
       if (isNative) {
@@ -1436,6 +1467,7 @@ export default function RiderPage() {
     }
     const newStatus = activeRider.status === "online" ? "offline" : "online";
     intendedStatusRef.current = newStatus; // ✅ lock intended status so refreshDb can't overwrite it
+    intendedStatusSetAtRef.current = Date.now();
     riderStore.updateRider(activeRider.id, { status: newStatus });
     if (newStatus === "online") {
       const todayBkk = getBangkokDateString();

@@ -1858,7 +1858,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   }, [selectedCustomer?.id, selectedCustomer?.priceListId]);
 
   const getProductPrice = useCallback((product: ServiceItem) => {
-    if (selectedCustomer?.priceListId) {
+    if (selectedCustomer?.priceListId && selectedCustomer.priceListId !== "regular") {
       const pl = priceLists.find(p => p.id === selectedCustomer.priceListId);
       if (pl && (pl.isCorporate || (pl.customItems && pl.customItems.length > 0)) && pl.customItems) {
         const found = pl.customItems.find(it => it.id === product.id || it.serviceId === product.id);
@@ -1868,7 +1868,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         return pl.servicePrices[product.id];
       }
     }
-    return isMemberRate ? product.memberPrice : product.price;
+    if (isMemberRate) {
+      const memberPl = priceLists.find(p => p.id === "PL-MP56NWKW" || p.name.toLowerCase().includes("member"));
+      if (memberPl?.servicePrices && memberPl.servicePrices[product.id] !== undefined) {
+        return memberPl.servicePrices[product.id];
+      }
+    }
+    return product.price;
   }, [selectedCustomer, priceLists, isMemberRate]);
 
   // Recalculate cart prices if customer or member rate toggled

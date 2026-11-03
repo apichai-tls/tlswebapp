@@ -607,7 +607,7 @@ export function AdminServiceMenu() {
                         setFormData({ 
                           ...formData, 
                           category: newCat,
-                          memberPrice: newCat === "PACKAGE" ? formData.memberPrice || formData.price : formData.memberPrice
+                          memberPrice: newCat === "PACKAGE" ? formData.memberPrice || formData.price : formData.price
                         });
                       }}
                     >
