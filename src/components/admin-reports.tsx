@@ -42,8 +42,10 @@ import {
   CreditCard,
   Receipt,
   Banknote,
-  RefreshCw
+  RefreshCw,
+  Wallet
 } from "lucide-react";
+import { getTopUpTransactionsAction } from "@/actions/db";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { ReportsSalesSummary } from "@/components/reports-sales-summary";
@@ -59,7 +61,7 @@ function normalizeReportChannelName(name?: string | null): string {
   const trimmed = name.trim();
   const lower = trimmed.toLowerCase();
   if (lower === "cash" || lower === "cash / cod" || lower === "cash/cod") return "Cash / COD";
-  if (lower === "promptpay" || lower === "prompt pay" || lower.includes("promptpay") || lower.includes("พร้อมเพย์")) return "PromptPay";
+  if (lower === "promptpay" || lower === "prompt pay" || lower.includes("promptpay") || lower.includes("พร้อมเพย์") || lower === "qr code" || lower === "qr" || lower.includes("qr code")) return "PromptPay / QR";
   if (lower === "transfer" || lower === "โอน" || lower === "โอนเงิน") return "Transfer";
   if (lower === "credit card" || lower === "credit_card" || lower === "card" || lower === "บัตรเครดิต") return "Credit Card";
   if (lower === "deduct member" || lower === "wallet" || lower === "credit") return "Deduct Member";
@@ -76,7 +78,7 @@ function getChannelBadgeStyle(channelName: string) {
       textColor: "text-emerald-500 dark:text-emerald-400",
     };
   }
-  if (lower.includes("promptpay") || lower.includes("พร้อมเพย์")) return { barColor: "bg-blue-500", textColor: "text-blue-500 dark:text-blue-400" };
+  if (lower.includes("promptpay") || lower.includes("พร้อมเพย์") || lower.includes("qr")) return { barColor: "bg-blue-500", textColor: "text-blue-500 dark:text-blue-400" };
   if (lower.includes("transfer") || lower.includes("โอน")) {
     return {
       barColor: "bg-indigo-500",
@@ -128,6 +130,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
   const [customerSegment, setCustomerSegment] = useState<"retail" | "corporate" | "all">("retail");
+  const [topUpTransactions, setTopUpTransactions] = useState<any[]>([]);
 
   const { customerIdMap, customerPhoneMap } = useMemo(() => {
     const idMap = new Map<string, Customer>();
@@ -240,12 +243,28 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       start = startOfDay(subDays(today, 30));
     }
 
+    let active = true;
     const timer = setTimeout(() => {
       jobStore.fetchHistoricalJobs(start, end).catch(err => {
         console.error("Failed to load historical jobs for reports:", err);
       });
+      getTopUpTransactionsAction({
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
+      })
+        .then((res) => {
+          if (active && Array.isArray(res)) {
+            setTopUpTransactions(res);
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to load top-up transactions for overview report:", err);
+        });
     }, 250);
-    return () => clearTimeout(timer);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [dateRange, customStartDate, customEndDate]);
 
   useEffect(() => {
@@ -334,7 +353,135 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
     });
   }, [jobs, selectedBranch, dateRange, customStartDate, customEndDate, isTopUpJob]);
 
-  // Segment counts for jobs within selected timeframe & branch
+  // Helper to check if a top-up transaction belongs to a corporate customer
+  const isTopUpCorporate = useCallback((tx: any): boolean => {
+    let c: Customer | undefined;
+    if (tx.memberId && customerIdMap.has(tx.memberId)) {
+      c = customerIdMap.get(tx.memberId);
+    } else if (tx.customerPhone) {
+      const cleanPhone = String(tx.customerPhone).replace(/\D/g, "");
+      if (cleanPhone.length >= 8) {
+        c = customerPhoneMap.get(cleanPhone.slice(-9));
+      }
+    }
+    return Boolean(c && (c.isCorporate || c.tier === "corporate"));
+  }, [customerIdMap, customerPhoneMap]);
+
+  // Filtered Member Top-Up Transactions within selected branch & timeframe (plus any fallback TU- jobs)
+  const filteredTopUps = useMemo(() => {
+    const today = new Date();
+    const isDateInRange = (d: Date) => {
+      if (isNaN(d.getTime())) return false;
+      if (dateRange === "today") {
+        return d >= startOfDay(today) && d <= endOfDay(today);
+      } else if (dateRange === "7days") {
+        return d >= startOfDay(subDays(today, 7));
+      } else if (dateRange === "30days") {
+        return d >= startOfDay(subDays(today, 30));
+      } else if (dateRange === "month") {
+        return d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
+      } else if (dateRange === "custom") {
+        if (customStartDate) {
+          const startMs = new Date(customStartDate).setHours(0, 0, 0, 0);
+          if (d.getTime() < startMs) return false;
+        }
+        if (customEndDate) {
+          const endMs = new Date(customEndDate).setHours(23, 59, 59, 999);
+          if (d.getTime() > endMs) return false;
+        }
+        return true;
+      }
+      return true;
+    };
+
+    const list: Array<{
+      id: string;
+      memberId: string;
+      customerName: string;
+      customerPhone: string;
+      amount: number;
+      bonusAmount: number;
+      totalCredit: number;
+      packageName: string;
+      paymentChannel: string;
+      branchId: string | null;
+      createdAt: string;
+    }> = [];
+    const seenIds = new Set<string>();
+
+    topUpTransactions.forEach((t: any) => {
+      const statusUpper = String(t.status || "").toUpperCase();
+      if (statusUpper === "REJECTED" || statusUpper === "VOID" || statusUpper === "CANCELLED") return;
+      if (selectedBranch !== "all" && t.branchId && t.branchId !== selectedBranch) return;
+      const tDate = new Date(t.createdAt);
+      if (!isDateInRange(tDate)) return;
+
+      const rawAmt = Math.max(0, Number(t.amount) || 0);
+      if (rawAmt <= 0) return;
+      const bonus = Math.max(0, Number(t.bonusAmount) || 0);
+      const totalCred = Math.max(0, Number(t.totalCredit) || 0);
+      const amt =
+        bonus > 0 && totalCred > 0 && Math.abs(rawAmt - totalCred) < 0.01
+          ? Math.max(0, rawAmt - bonus)
+          : rawAmt;
+      const credit = Math.max(amt, totalCred || amt + bonus);
+
+      seenIds.add(String(t.id));
+      list.push({
+        id: String(t.id),
+        memberId: t.memberId || "",
+        customerName: t.customerName || "Member",
+        customerPhone: t.customerPhone || "",
+        amount: amt,
+        bonusAmount: bonus,
+        totalCredit: credit,
+        packageName: t.packageName || "Member Top-Up",
+        paymentChannel: t.paymentChannel || "PromptPay / QR",
+        branchId: t.branchId || null,
+        createdAt: t.createdAt,
+      });
+    });
+
+    // Also include any paid Top-Up jobs in jobs that were not already in topUpTransactions
+    jobs.forEach((job: any) => {
+      if (!isTopUpJob(job) || !job.isShopPaid || job.status === "cancel") return;
+      if (seenIds.has(String(job.id))) return;
+      if (selectedBranch !== "all" && job.branchId !== selectedBranch) return;
+      const rawDate = job.shopPaidAt || job.csoPaidAt || job.createdAt;
+      if (!rawDate) return;
+      const jDate = new Date(rawDate);
+      if (!isDateInRange(jDate)) return;
+
+      const amt = Math.max(0, Number(job.totalAmount) || 0);
+      if (amt <= 0) return;
+
+      const duplicate = list.some(
+        (existing) =>
+          Math.abs(existing.amount - amt) < 1 &&
+          Math.abs(new Date(existing.createdAt).getTime() - jDate.getTime()) < 5 * 60 * 1000
+      );
+      if (duplicate) return;
+
+      seenIds.add(String(job.id));
+      list.push({
+        id: String(job.id),
+        memberId: job.customerId || "",
+        customerName: job.customerName || "Member",
+        customerPhone: job.customerPhone || "",
+        amount: amt,
+        bonusAmount: 0,
+        totalCredit: amt,
+        packageName: "Member Top-Up",
+        paymentChannel: job.paymentChannel || job.paymentMethod || "PromptPay / QR",
+        branchId: job.branchId || null,
+        createdAt: jDate.toISOString(),
+      });
+    });
+
+    return list;
+  }, [topUpTransactions, jobs, isTopUpJob, selectedBranch, dateRange, customStartDate, customEndDate]);
+
+  // Segment counts for jobs + member top-ups within selected timeframe & branch
   const segmentCounts = useMemo(() => {
     let retail = 0;
     let corporate = 0;
@@ -345,12 +492,19 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         retail++;
       }
     });
+    filteredTopUps.forEach((tx) => {
+      if (isTopUpCorporate(tx)) {
+        corporate++;
+      } else {
+        retail++;
+      }
+    });
     return {
       retail,
       corporate,
-      all: filteredJobs.length,
+      all: retail + corporate,
     };
-  }, [filteredJobs, isJobCorporate]);
+  }, [filteredJobs, filteredTopUps, isJobCorporate, isTopUpCorporate]);
 
   // Jobs filtered by customer segment specifically for Overview Dashboard
   const overviewJobs = useMemo(() => {
@@ -358,6 +512,13 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
     if (customerSegment === "corporate") return filteredJobs.filter((j) => isJobCorporate(j));
     return filteredJobs.filter((j) => !isJobCorporate(j));
   }, [filteredJobs, customerSegment, isJobCorporate]);
+
+  // Top-Ups filtered by customer segment specifically for Overview Dashboard
+  const overviewTopUps = useMemo(() => {
+    if (customerSegment === "all") return filteredTopUps;
+    if (customerSegment === "corporate") return filteredTopUps.filter((t) => isTopUpCorporate(t));
+    return filteredTopUps.filter((t) => !isTopUpCorporate(t));
+  }, [filteredTopUps, customerSegment, isTopUpCorporate]);
 
   // CRM customer count by segment
   const segmentCustomersCount = useMemo(() => {
@@ -368,9 +529,25 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
     return customers.filter((c) => !c.isCorporate && c.tier !== "corporate").length;
   }, [customers, customerSegment]);
 
-  // Metric summaries for Overview Panel
+  // Active Members count in CRM
+  const activeMembersCount = useMemo(() => {
+    return customers.filter(
+      (c) =>
+        c.isMember ||
+        c.tier === "member" ||
+        (c.memberId && String(c.memberId).trim().length > 0) ||
+        (Number(c.creditBalance) || 0) > 0
+    ).length;
+  }, [customers]);
+
+  // Metric summaries for Overview Panel (including Member Top-Ups)
   const overviewStats = useMemo(() => {
-    let totalRevenue = 0;
+    let laundryRevenue = 0;
+    let topUpRevenue = 0;
+    let topUpBonus = 0;
+    let topUpTotalCredit = 0;
+    let topUpCount = 0;
+
     let completedCount = 0;
     let pendingCount = 0;
     let cancelledCount = 0;
@@ -381,8 +558,31 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
     let creditSum = 0;
 
     const channelMap: Record<string, { channel: string; revenue: number; count: number }> = {};
-    const productSales: Record<string, { count: number; revenue: number }> = {};
+    const productSales: Record<string, { count: number; revenue: number; isTopUp?: boolean }> = {};
 
+    const addPaymentToChannelAndCategory = (rawChannel: string | undefined | null, rawMethod: string | undefined | null, amt: number) => {
+      if (amt <= 0) return;
+      const normName = normalizeReportChannelName(rawChannel || rawMethod);
+      if (!channelMap[normName]) {
+        channelMap[normName] = { channel: normName, revenue: 0, count: 0 };
+      }
+      channelMap[normName].revenue += amt;
+      channelMap[normName].count += 1;
+
+      const ch = normName.toLowerCase();
+      const m = (rawMethod || "").toLowerCase();
+      if (ch.includes("cash") || m.includes("cash")) {
+        cashSum += amt;
+      } else if (ch.includes("transfer") || ch.includes("promptpay") || ch.includes("qr") || ch.includes("wise") || m.includes("transfer")) {
+        transferSum += amt;
+      } else if (ch.includes("card") || ch.includes("gateway") || ch.includes("beam") || m.includes("card")) {
+        cardSum += amt;
+      } else {
+        creditSum += amt;
+      }
+    };
+
+    // 1. Process Laundry Service Jobs
     overviewJobs.forEach(job => {
       if (job.status === "cancel") {
         cancelledCount++;
@@ -396,7 +596,8 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       }
 
       if (job.isShopPaid) {
-        totalRevenue += job.totalAmount || 0;
+        const jobAmt = job.totalAmount || 0;
+        laundryRevenue += jobAmt;
         
         let splitProcessed = false;
         if (job.adminNotesJson) {
@@ -405,25 +606,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
             if (Array.isArray(parsed?.payments) && parsed.payments.length > 0) {
               parsed.payments.forEach((p: any) => {
                 const amt = Number(p.amount) || 0;
-                if (amt <= 0) return;
-                const normName = normalizeReportChannelName(p.channel || p.method);
-                if (!channelMap[normName]) {
-                  channelMap[normName] = { channel: normName, revenue: 0, count: 0 };
-                }
-                channelMap[normName].revenue += amt;
-                channelMap[normName].count += 1;
-
-                const ch = normName.toLowerCase();
-                const m = (p.method || "").toLowerCase();
-                if (ch.includes("cash") || m === "cash") {
-                  cashSum += amt;
-                } else if (ch.includes("transfer") || ch.includes("promptpay") || m === "transfer") {
-                  transferSum += amt;
-                } else if (ch.includes("card") || ch.includes("gateway") || ch.includes("beam") || m === "card") {
-                  cardSum += amt;
-                } else {
-                  creditSum += amt;
-                }
+                addPaymentToChannelAndCategory(p.channel, p.method, amt);
               });
               splitProcessed = true;
             }
@@ -431,32 +614,11 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         }
 
         if (!splitProcessed) {
-          const amt = job.totalAmount || 0;
-          if (amt > 0) {
-            const normName = normalizeReportChannelName(job.paymentChannel || job.paymentMethod);
-            if (!channelMap[normName]) {
-              channelMap[normName] = { channel: normName, revenue: 0, count: 0 };
-            }
-            channelMap[normName].revenue += amt;
-            channelMap[normName].count += 1;
-
-            const channel = normName.toLowerCase();
-            const method = (job.paymentMethod || "").toLowerCase();
-
-            if (channel.includes("cash") || method.includes("cash")) {
-              cashSum += amt;
-            } else if (channel.includes("transfer") || method.includes("transfer")) {
-              transferSum += amt;
-            } else if (channel.includes("card") || method.includes("card")) {
-              cardSum += amt;
-            } else {
-              creditSum += amt;
-            }
-          }
+          addPaymentToChannelAndCategory(job.paymentChannel, job.paymentMethod, jobAmt);
         }
       }
 
-      // Item breakdown (excluding Top-Up package items)
+      // Item breakdown (Laundry items)
       try {
         if (job.items) {
           const itemsList = typeof job.items === "string" ? JSON.parse(job.items) : job.items;
@@ -475,7 +637,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
               const rev = qty * price;
 
               if (!productSales[name]) {
-                productSales[name] = { count: 0, revenue: 0 };
+                productSales[name] = { count: 0, revenue: 0, isTopUp: false };
               }
               productSales[name].count = Math.round((productSales[name].count + qty) * 100) / 100;
               productSales[name].revenue = Math.round((productSales[name].revenue + rev) * 100) / 100;
@@ -485,8 +647,32 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       } catch (e) {}
     });
 
+    // 2. Process Member Top-Up Transactions
+    overviewTopUps.forEach((tx) => {
+      const amt = Number(tx.amount) || 0;
+      if (amt <= 0) return;
+      topUpRevenue += amt;
+      topUpBonus += Number(tx.bonusAmount) || 0;
+      topUpTotalCredit += Number(tx.totalCredit) || amt;
+      topUpCount += 1;
+
+      // Add top-up payment into Payment Channels Share & Payment Category Breakdown
+      addPaymentToChannelAndCategory(tx.paymentChannel, tx.paymentChannel, amt);
+
+      // Add Member Top-Up into Top-Selling Products & Services
+      const topUpItemName = "MEMBER TOP-UP (แพ็กเกจเติมเงินสมาชิก)";
+      if (!productSales[topUpItemName]) {
+        productSales[topUpItemName] = { count: 0, revenue: 0, isTopUp: true };
+      }
+      productSales[topUpItemName].count += 1;
+      productSales[topUpItemName].revenue = Math.round((productSales[topUpItemName].revenue + amt) * 100) / 100;
+    });
+
+    const totalRevenue = laundryRevenue + topUpRevenue;
     const paidOrdersCount = completedCount + pendingCount;
-    const averageTicket = paidOrdersCount > 0 ? totalRevenue / paidOrdersCount : 0;
+    const totalTransactionsCount = paidOrdersCount + topUpCount;
+    const averageTicket = totalTransactionsCount > 0 ? totalRevenue / totalTransactionsCount : 0;
+    const laundryAverageTicket = paidOrdersCount > 0 ? laundryRevenue / paidOrdersCount : 0;
 
     const channelBreakdown = Object.values(channelMap)
       .map(item => ({
@@ -495,17 +681,31 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       }))
       .sort((a, b) => b.revenue - a.revenue);
 
-    const topProducts = Object.entries(productSales)
+    const allProductsSorted = Object.entries(productSales)
       .map(([name, data]) => ({ name, ...data }))
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 5);
+      .sort((a, b) => b.revenue - a.revenue);
+
+    const totalProductRevenue = allProductsSorted.reduce((acc, p) => acc + p.revenue, 0);
+    const totalProductUnits = allProductsSorted
+      .filter((p) => !p.isTopUp)
+      .reduce((acc, p) => acc + p.count, 0);
+    const topProducts = allProductsSorted.slice(0, 8);
 
     return {
       totalRevenue,
+      laundryRevenue,
+      topUpRevenue,
+      topUpBonus,
+      topUpTotalCredit,
+      topUpCount,
       completedCount,
       pendingCount,
       cancelledCount,
       averageTicket,
+      laundryAverageTicket,
+      totalTransactionsCount,
+      totalProductRevenue,
+      totalProductUnits,
       paymentBreakdown: {
         cash: cashSum,
         transfer: transferSum,
@@ -515,13 +715,13 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       channelBreakdown,
       topProducts
     };
-  }, [overviewJobs]);
+  }, [overviewJobs, overviewTopUps]);
 
   // --- Sales Trend & Operations Volume Chart States & Logic ---
   const [trendMetric, setTrendMetric] = useState<"both" | "sales" | "volume">("both");
   const [hoveredTrendIndex, setHoveredTrendIndex] = useState<number | null>(null);
 
-  // Time-bucket aggregation for Overview Chart
+  // Time-bucket aggregation for Overview Chart (Includes Laundry Orders + Member Top-Ups)
   const trendBuckets = useMemo(() => {
     const today = new Date();
     interface Bucket {
@@ -529,14 +729,31 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       label: string;
       subLabel: string;
       sales: number;
+      laundrySales: number;
+      topUpSales: number;
       volume: number;
+      laundryVolume: number;
+      topUpVolume: number;
       dateStart: Date;
       dateEnd: Date;
     }
     const buckets: Bucket[] = [];
 
+    const makeEmptyBucket = (id: string, label: string, subLabel: string, dateStart: Date, dateEnd: Date): Bucket => ({
+      id,
+      label,
+      subLabel,
+      sales: 0,
+      laundrySales: 0,
+      topUpSales: 0,
+      volume: 0,
+      laundryVolume: 0,
+      topUpVolume: 0,
+      dateStart,
+      dateEnd,
+    });
+
     if (dateRange === "today") {
-      // 12 two-hour intervals across today (00:00 - 24:00)
       for (let h = 0; h < 24; h += 2) {
         const s = new Date(today);
         s.setHours(h, 0, 0, 0);
@@ -544,64 +761,23 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         e.setHours(h + 1, 59, 59, 999);
         const startStr = `${String(h).padStart(2, "0")}:00`;
         const endStr = `${String(h + 2).padStart(2, "0")}:00`;
-        buckets.push({
-          id: `h-${h}`,
-          label: startStr,
-          subLabel: `${startStr} - ${endStr}`,
-          sales: 0,
-          volume: 0,
-          dateStart: s,
-          dateEnd: e,
-        });
+        buckets.push(makeEmptyBucket(`h-${h}`, startStr, `${startStr} - ${endStr}`, s, e));
       }
     } else if (dateRange === "7days") {
-      // 7 days up to today
       for (let i = 6; i >= 0; i--) {
         const d = subDays(today, i);
-        const s = startOfDay(d);
-        const e = endOfDay(d);
-        buckets.push({
-          id: `d-${format(d, "yyyy-MM-dd")}`,
-          label: format(d, "EEE d/M"),
-          subLabel: format(d, "EEEE, d MMM yyyy"),
-          sales: 0,
-          volume: 0,
-          dateStart: s,
-          dateEnd: e,
-        });
+        buckets.push(makeEmptyBucket(`d-${format(d, "yyyy-MM-dd")}`, format(d, "EEE d/M"), format(d, "EEEE, d MMM yyyy"), startOfDay(d), endOfDay(d)));
       }
     } else if (dateRange === "30days") {
-      // 30 days up to today
       for (let i = 29; i >= 0; i--) {
         const d = subDays(today, i);
-        const s = startOfDay(d);
-        const e = endOfDay(d);
-        buckets.push({
-          id: `d-${format(d, "yyyy-MM-dd")}`,
-          label: format(d, "d/M"),
-          subLabel: format(d, "EEEE, d MMM yyyy"),
-          sales: 0,
-          volume: 0,
-          dateStart: s,
-          dateEnd: e,
-        });
+        buckets.push(makeEmptyBucket(`d-${format(d, "yyyy-MM-dd")}`, format(d, "d/M"), format(d, "EEEE, d MMM yyyy"), startOfDay(d), endOfDay(d)));
       }
     } else if (dateRange === "month") {
-      // Days in current month
       const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
       for (let day = 1; day <= daysInMonth; day++) {
         const d = new Date(today.getFullYear(), today.getMonth(), day);
-        const s = startOfDay(d);
-        const e = endOfDay(d);
-        buckets.push({
-          id: `d-${format(d, "yyyy-MM-dd")}`,
-          label: String(day),
-          subLabel: format(d, "EEEE, d MMM yyyy"),
-          sales: 0,
-          volume: 0,
-          dateStart: s,
-          dateEnd: e,
-        });
+        buckets.push(makeEmptyBucket(`d-${format(d, "yyyy-MM-dd")}`, String(day), format(d, "EEEE, d MMM yyyy"), startOfDay(d), endOfDay(d)));
       }
     } else if (dateRange === "custom") {
       const sDate = customStartDate ? new Date(customStartDate) : subDays(today, 30);
@@ -611,7 +787,6 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       const diffDays = Math.max(1, Math.round((eTime - sTime) / (1000 * 60 * 60 * 24)));
 
       if (diffDays <= 2) {
-        // Hourly (2-hour bins)
         for (let h = 0; h < 24; h += 2) {
           const s = new Date(sDate);
           s.setHours(h, 0, 0, 0);
@@ -619,45 +794,19 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
           e.setHours(h + 1, 59, 59, 999);
           const startStr = `${String(h).padStart(2, "0")}:00`;
           const endStr = `${String(h + 2).padStart(2, "0")}:00`;
-          buckets.push({
-            id: `h-${h}`,
-            label: startStr,
-            subLabel: `${startStr} - ${endStr}`,
-            sales: 0,
-            volume: 0,
-            dateStart: s,
-            dateEnd: e,
-          });
+          buckets.push(makeEmptyBucket(`h-${h}`, startStr, `${startStr} - ${endStr}`, s, e));
         }
       } else if (diffDays <= 35) {
-        // Daily
         for (let i = 0; i < diffDays; i++) {
           const d = new Date(sTime + i * 24 * 60 * 60 * 1000);
-          buckets.push({
-            id: `d-${format(d, "yyyy-MM-dd")}`,
-            label: format(d, "d/M"),
-            subLabel: format(d, "EEEE, d MMM yyyy"),
-            sales: 0,
-            volume: 0,
-            dateStart: startOfDay(d),
-            dateEnd: endOfDay(d),
-          });
+          buckets.push(makeEmptyBucket(`d-${format(d, "yyyy-MM-dd")}`, format(d, "d/M"), format(d, "EEEE, d MMM yyyy"), startOfDay(d), endOfDay(d)));
         }
       } else {
-        // Weekly
         const numWeeks = Math.ceil(diffDays / 7);
         for (let w = 0; w < numWeeks; w++) {
           const s = new Date(sTime + w * 7 * 24 * 60 * 60 * 1000);
           const e = new Date(Math.min(eTime, sTime + (w + 1) * 7 * 24 * 60 * 60 * 1000 - 1));
-          buckets.push({
-            id: `w-${w}`,
-            label: `W${w + 1}`,
-            subLabel: `${format(s, "d/M")} - ${format(e, "d/M/yy")}`,
-            sales: 0,
-            volume: 0,
-            dateStart: s,
-            dateEnd: e,
-          });
+          buckets.push(makeEmptyBucket(`w-${w}`, `W${w + 1}`, `${format(s, "d/M")} - ${format(e, "d/M/yy")}`, s, e));
         }
       }
     }
@@ -675,25 +824,54 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       );
       if (b) {
         b.volume += 1;
+        b.laundryVolume += 1;
         if (job.isShopPaid) {
-          b.sales += job.totalAmount || 0;
+          const amt = job.totalAmount || 0;
+          b.sales += amt;
+          b.laundrySales += amt;
         }
       }
     });
 
+    // Populate data from overviewTopUps
+    overviewTopUps.forEach((tx) => {
+      if (!tx.createdAt) return;
+      const txTime = new Date(tx.createdAt).getTime();
+      if (isNaN(txTime)) return;
+
+      const b = buckets.find(
+        (b) => txTime >= b.dateStart.getTime() && txTime <= b.dateEnd.getTime()
+      );
+      if (b) {
+        const amt = Number(tx.amount) || 0;
+        b.volume += 1;
+        b.topUpVolume += 1;
+        b.sales += amt;
+        b.topUpSales += amt;
+      }
+    });
+
     return buckets;
-  }, [overviewJobs, dateRange, customStartDate, customEndDate]);
+  }, [overviewJobs, overviewTopUps, dateRange, customStartDate, customEndDate]);
 
   // Calculations for chart scaling and coordinates
   const trendChartStats = useMemo(() => {
     let totalSales = 0;
+    let laundrySales = 0;
+    let topUpSales = 0;
     let totalVolume = 0;
+    let laundryVolume = 0;
+    let topUpVolume = 0;
     let maxSales = 0;
     let maxVolume = 0;
 
     trendBuckets.forEach((b) => {
       totalSales += b.sales;
+      laundrySales += b.laundrySales;
+      topUpSales += b.topUpSales;
       totalVolume += b.volume;
+      laundryVolume += b.laundryVolume;
+      topUpVolume += b.topUpVolume;
       if (b.sales > maxSales) maxSales = b.sales;
       if (b.volume > maxVolume) maxVolume = b.volume;
     });
@@ -723,20 +901,24 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
 
     return {
       totalSales,
+      laundrySales,
+      topUpSales,
       totalVolume,
+      laundryVolume,
+      topUpVolume,
       maxSales,
       maxVolume,
       avgTicket,
     };
   }, [trendBuckets]);
 
-  // SVG Chart Geometry for Overview Trend Chart
-  const chartW = 600;
-  const chartH = 200;
-  const pLeft = 52;
+  // SVG Chart Geometry for Overview Trend Chart (High-Resolution Proportional ViewBox)
+  const chartW = 820;
+  const chartH = 225;
+  const pLeft = 58;
   const pRight = 44;
-  const pTop = 16;
-  const pBottom = 30;
+  const pTop = 18;
+  const pBottom = 28;
   const plotW = chartW - pLeft - pRight;
   const plotH = chartH - pTop - pBottom;
   const baselineY = pTop + plotH;
@@ -1155,7 +1337,10 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       csvContent += `Customer Segment,${customerSegment === "corporate" ? "Corporate" : customerSegment === "retail" ? "Retail" : "All"}\n\n`;
       
       csvContent += "Metric,Value\n";
-      csvContent += `Total Paid Revenue,฿${overviewStats.totalRevenue.toFixed(2)}\n`;
+      csvContent += `Total Combined Revenue (Incl. Top-Up),฿${overviewStats.totalRevenue.toFixed(2)}\n`;
+      csvContent += `Laundry Service Revenue,฿${overviewStats.laundryRevenue.toFixed(2)}\n`;
+      csvContent += `Member Top-Up Revenue (${overviewStats.topUpCount} Top-Ups),฿${overviewStats.topUpRevenue.toFixed(2)}\n`;
+      csvContent += `Member Top-Up Bonus Given,฿${overviewStats.topUpBonus.toFixed(2)}\n`;
       csvContent += `Completed Orders,${overviewStats.completedCount}\n`;
       csvContent += `Pending Orders,${overviewStats.pendingCount}\n`;
       csvContent += `Cancelled Orders,${overviewStats.cancelledCount}\n`;
@@ -1229,469 +1414,509 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto max-h-[calc(100vh-4rem)] bg-slate-50 dark:bg-slate-900 font-sans">
       
-      {/* Upper Title Block */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-black text-slate-800 dark:text-slate-100 tracking-tight">Reports & Analytics</h1>
-          <p className="text-xs text-slate-500 font-semibold mt-1">Live business performance metrics, transaction analytics, and sales summaries</p>
+      {/* Upper Title & Filter Command Bar */}
+      <div className="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+          <div className="flex items-start sm:items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 flex items-center justify-center text-white shadow-md shadow-indigo-500/20 shrink-0">
+              <BarChart2 size={22} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                  Reports & Analytics
+                </h1>
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-50 dark:bg-indigo-950/80 text-indigo-600 dark:text-indigo-400 border border-indigo-200/60 dark:border-indigo-800/60">
+                  Executive Insights
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">
+                รายงานวิเคราะห์ผลประกอบการ ยอดขาย ช่องทางการชำระเงิน และสถิติการดำเนินงานแบบเรียลไทม์
+              </p>
+            </div>
+          </div>
+
+          {/* Filter Toolbar Controls */}
+          {subTab !== "sales-summary" && subTab !== "sale-report" && subTab !== "sales-by-item" && subTab !== "sales-by-category" && subTab !== "sales-by-employee" && subTab !== "sales-by-payment-type" && subTab !== "receipts" && subTab !== "taxes" && (
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Branch Select */}
+              <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200/90 dark:border-slate-700 rounded-xl px-3 py-1.5 shadow-2xs">
+                <Store size={14} className="text-indigo-600 dark:text-indigo-400" />
+                <select
+                  value={selectedBranch}
+                  onChange={(e) => setSelectedBranch(e.target.value)}
+                  className="bg-transparent text-xs font-bold text-slate-700 dark:text-slate-200 outline-none cursor-pointer border-none p-0 pr-5 select-none"
+                >
+                  <option value="all">All Branches (ทุกสาขา)</option>
+                  <option value="ONLINE">Online</option>
+                  {shops.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Timeframe selector */}
+              <div className="flex items-center bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 rounded-xl p-1">
+                {(["today", "7days", "30days", "month", "custom"] as const).map(range => (
+                  <button
+                    key={range}
+                    onClick={() => setDateRange(range)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold capitalize transition-all cursor-pointer ${
+                      dateRange === range
+                        ? "bg-indigo-600 text-white shadow-xs font-black"
+                        : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                    }`}
+                  >
+                    {range === "7days" ? "7 Days" : range === "30days" ? "30 Days" : range}
+                  </button>
+                ))}
+              </div>
+
+              {/* Custom Date Picker Inputs */}
+              {dateRange === "custom" && (
+                <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 shadow-2xs animate-in fade-in duration-200">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">From:</span>
+                  <input
+                    type="date"
+                    className="bg-transparent text-xs font-bold text-slate-750 dark:text-slate-200 outline-none cursor-pointer border-none p-0 focus:ring-0"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                  />
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">To:</span>
+                  <input
+                    type="date"
+                    className="bg-transparent text-xs font-bold text-slate-750 dark:text-slate-200 outline-none cursor-pointer border-none p-0 focus:ring-0"
+                    value={customEndDate}
+                    onChange={(e) => setCustomEndDate(e.target.value)}
+                  />
+                  {(customStartDate || customEndDate) && (
+                    <button
+                      onClick={() => {
+                        setCustomStartDate("");
+                        setCustomEndDate("");
+                      }}
+                      className="text-[10px] text-rose-500 hover:text-rose-600 font-extrabold uppercase ml-1 cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <button 
+                onClick={handleExportExcel}
+                className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-xs font-bold text-emerald-700 dark:text-emerald-300 rounded-xl px-3.5 py-2 shadow-2xs cursor-pointer transition-all"
+              >
+                <Download size={14} className="text-emerald-600 dark:text-emerald-400" />
+                Export Excel
+              </button>
+
+              <button 
+                onClick={() => {
+                  document.body.classList.add("printing-report");
+                  setTimeout(() => {
+                    window.print();
+                  }, 50);
+                }}
+                className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-750 text-xs font-bold text-slate-700 dark:text-slate-200 rounded-xl px-3.5 py-2 shadow-2xs cursor-pointer transition-all"
+              >
+                <Printer size={14} className="text-slate-500" />
+                {subTab === "overview" ? "Print Overview" :
+                 subTab === "shift" ? "Print Shift Report" :
+                 subTab === "order" ? "Print Order Report" :
+                 subTab === "pos" ? "Print POS Report" : "Print Report"}
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Filter Toolbar Controls (Hidden when in Sales Summary, Sale Report, Receipts, or Taxes as they have dedicated toolbars) */}
-        {subTab !== "sales-summary" && subTab !== "sale-report" && subTab !== "sales-by-item" && subTab !== "sales-by-category" && subTab !== "sales-by-employee" && subTab !== "sales-by-payment-type" && subTab !== "receipts" && subTab !== "taxes" && (
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Branch Select */}
-            <div className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 shadow-sm">
-              <Store size={14} className="text-slate-400" />
-              <select
-                value={selectedBranch}
-                onChange={(e) => setSelectedBranch(e.target.value)}
-                className="bg-transparent text-xs font-bold text-slate-700 dark:text-slate-200 outline-none cursor-pointer border-none p-0 pr-6 select-none"
+        {/* Modern Pill Sub-Tab Navigation Dock */}
+        <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center gap-1.5 overflow-x-auto scrollbar-hide">
+          {[
+            { id: "overview", label: "Overview Dashboard", icon: BarChart2, activeMatch: (t: string) => t === "overview" },
+            { id: "sales-summary", label: "Sales Summary", icon: TrendingUp, activeMatch: (t: string) => t === "sales-summary" },
+            { id: "sale-report", label: "Sale Report", icon: ShoppingBag, activeMatch: (t: string) => ["sale-report", "sales-by-item", "sales-by-category", "sales-by-employee", "sales-by-payment-type"].includes(t) },
+            { id: "receipts", label: "Receipts", icon: Receipt, activeMatch: (t: string) => t === "receipts" },
+            { id: "taxes", label: "Taxes", icon: Percent, activeMatch: (t: string) => t === "taxes" },
+            { id: "shift", label: "Shift Report", icon: History, activeMatch: (t: string) => t === "shift" },
+            { id: "order", label: "Order Report", icon: ClipboardList, activeMatch: (t: string) => t === "order" },
+            { id: "pos", label: "POS Report", icon: Store, activeMatch: (t: string) => t === "pos" },
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const isActive = tab.activeMatch(subTab);
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setSubTab(tab.id as any)}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-extrabold uppercase tracking-wider transition-all shrink-0 cursor-pointer ${
+                  isActive
+                    ? "bg-indigo-600 text-white shadow-sm shadow-indigo-500/20"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100/80 dark:hover:bg-slate-800"
+                }`}
               >
-                <option value="all">All Branches</option>
-                <option value="ONLINE">Online</option>
-                {shops.map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Timeframe selector */}
-            <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-1 shadow-sm">
-              {(["today", "7days", "30days", "month", "custom"] as const).map(range => (
-                <button
-                  key={range}
-                  onClick={() => setDateRange(range)}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold capitalize transition-all cursor-pointer ${
-                    dateRange === range
-                      ? "bg-indigo-600 text-white shadow-sm"
-                      : "text-slate-500 dark:text-slate-400 hover:text-slate-900 hover:bg-slate-100 dark:hover:bg-slate-750"
-                  }`}
-                >
-                  {range === "7days" ? "7 Days" : range === "30days" ? "30 Days" : range}
-                </button>
-              ))}
-            </div>
-
-            {/* Custom Date Picker Inputs */}
-            {dateRange === "custom" && (
-              <div className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1 shadow-sm animate-in fade-in duration-200">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">From:</span>
-                <input
-                  type="date"
-                  className="bg-transparent text-xs font-bold text-slate-750 dark:text-slate-200 outline-none cursor-pointer border-none p-0 focus:ring-0"
-                  value={customStartDate}
-                  onChange={(e) => setCustomStartDate(e.target.value)}
-                />
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">To:</span>
-                <input
-                  type="date"
-                  className="bg-transparent text-xs font-bold text-slate-750 dark:text-slate-200 outline-none cursor-pointer border-none p-0 focus:ring-0"
-                  value={customEndDate}
-                  onChange={(e) => setCustomEndDate(e.target.value)}
-                />
-                {(customStartDate || customEndDate) && (
-                  <button
-                    onClick={() => {
-                      setCustomStartDate("");
-                      setCustomEndDate("");
-                    }}
-                    className="text-[10px] text-rose-500 hover:text-rose-600 font-extrabold uppercase ml-1 cursor-pointer"
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-            )}
-
-            <button 
-              onClick={handleExportExcel}
-              className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-250 dark:border-emerald-900/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/80 text-xs font-bold text-emerald-700 dark:text-emerald-300 rounded-xl px-3 py-2 shadow-sm cursor-pointer transition-colors"
-            >
-              <Download size={14} className="text-emerald-500" />
-              Export Excel
-            </button>
-
-            <button 
-              onClick={() => {
-                document.body.classList.add("printing-report");
-                setTimeout(() => {
-                  window.print();
-                }, 50);
-              }}
-              className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-750 text-xs font-bold text-slate-700 dark:text-slate-200 rounded-xl px-3 py-2 shadow-sm cursor-pointer transition-colors"
-            >
-              <Download size={14} className="text-slate-400" />
-              {subTab === "overview" ? "Print Overview" :
-               subTab === "shift" ? "Print Shift Report" :
-               subTab === "order" ? "Print Order Report" :
-               subTab === "pos" ? "Print POS Report" : "Print Report"}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Sub-tab navigation bar */}
-      <div className="flex gap-2 border-b border-slate-200 dark:border-slate-800 pb-px overflow-x-auto scrollbar-hide shrink-0">
-        <button
-          onClick={() => setSubTab("overview")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "overview"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <BarChart2 size={14} />
-          Overview Dashboard
-        </button>
-
-        <button
-          onClick={() => setSubTab("sales-summary")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "sales-summary"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <TrendingUp size={14} />
-          Sales summary
-        </button>
-
-        <button
-          onClick={() => setSubTab("sale-report")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "sale-report" || subTab === "sales-by-item" || subTab === "sales-by-category" || subTab === "sales-by-employee" || subTab === "sales-by-payment-type"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <ShoppingBag size={14} />
-          SALE REPORT
-        </button>
-
-        <button
-          onClick={() => setSubTab("receipts")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "receipts"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <Receipt size={14} />
-          Receipts
-        </button>
-
-        <button
-          onClick={() => setSubTab("taxes")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "taxes"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <Percent size={14} />
-          Taxes
-        </button>
-
-        <button
-          onClick={() => setSubTab("shift")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "shift"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <History size={14} />
-          Shift Report
-        </button>
-
-        <button
-          onClick={() => setSubTab("order")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "order"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <ClipboardList size={14} />
-          Order Report
-        </button>
-
-        <button
-          onClick={() => setSubTab("pos")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "pos"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <Store size={14} />
-          POS Report
-        </button>
+                <Icon size={14} className={isActive ? "text-white" : "text-slate-400"} />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* RENDER ACTIVE SUBTAB CONTENT */}
 
       {/* 1. OVERVIEW DASHBOARD */}
       {subTab === "overview" && (
-        <>
-          {/* Customer Segment Filter Bar: Retail (Default) / Corporate / All */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-850 p-2.5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs">
-            <div className="flex items-center gap-2 px-2 text-xs font-black text-slate-700 dark:text-slate-200 uppercase tracking-wide">
-              <Building size={15} className="text-indigo-600 dark:text-indigo-400" />
-              <span>กลุ่มลูกค้า / Customer Segment</span>
+        <div className="space-y-5">
+          {/* Unified Customer Segment & Live Operations Context Bar */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-white dark:bg-slate-850 p-3 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2 px-2 text-xs font-black text-slate-700 dark:text-slate-200 uppercase tracking-wide">
+                <div className="w-7 h-7 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+                  <Building size={14} />
+                </div>
+                <div>
+                  <span className="block text-[11px] font-black text-slate-800 dark:text-slate-100 leading-tight">กลุ่มลูกค้า / Customer Segment</span>
+                  <span className="block text-[10px] font-medium text-slate-400 leading-tight">เลือกกรองข้อมูลตามประเภทลูกค้า</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200/60 dark:border-slate-700">
+                {/* 1. Retail */}
+                <button
+                  type="button"
+                  onClick={() => setCustomerSegment("retail")}
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    customerSegment === "retail"
+                      ? "bg-white dark:bg-slate-700 text-indigo-700 dark:text-indigo-300 shadow-xs font-black"
+                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                  }`}
+                >
+                  <User size={13} className={customerSegment === "retail" ? "text-indigo-600 dark:text-indigo-400" : "text-slate-400"} />
+                  <span>ทั่วไป (Retail)</span>
+                  <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-black font-mono ${
+                    customerSegment === "retail" ? "bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300" : "bg-slate-200/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
+                  }`}>
+                    {segmentCounts.retail}
+                  </span>
+                </button>
+
+                {/* 2. Corporate */}
+                <button
+                  type="button"
+                  onClick={() => setCustomerSegment("corporate")}
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    customerSegment === "corporate"
+                      ? "bg-white dark:bg-slate-700 text-amber-700 dark:text-amber-400 shadow-xs font-black"
+                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                  }`}
+                >
+                  <Building size={13} className={customerSegment === "corporate" ? "text-amber-600 dark:text-amber-400" : "text-slate-400"} />
+                  <span>องค์กร (Corporate)</span>
+                  <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-black font-mono ${
+                    customerSegment === "corporate" ? "bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300" : "bg-slate-200/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
+                  }`}>
+                    {segmentCounts.corporate}
+                  </span>
+                </button>
+
+                {/* 3. All */}
+                <button
+                  type="button"
+                  onClick={() => setCustomerSegment("all")}
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    customerSegment === "all"
+                      ? "bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-xs font-black"
+                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                  }`}
+                >
+                  <Layers size={13} className={customerSegment === "all" ? "text-slate-800 dark:text-slate-200" : "text-slate-400"} />
+                  <span>ทั้งหมด (All)</span>
+                  <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-black font-mono ${
+                    customerSegment === "all" ? "bg-slate-200 dark:bg-slate-600 text-slate-800 dark:text-slate-100" : "bg-slate-200/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
+                  }`}>
+                    {segmentCounts.all}
+                  </span>
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-xl">
-              {/* 1. Retail (Default) */}
-              <button
-                type="button"
-                onClick={() => setCustomerSegment("retail")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  customerSegment === "retail"
-                    ? "bg-white dark:bg-slate-700 text-indigo-700 dark:text-indigo-300 shadow-xs font-extrabold"
-                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
-                }`}
-              >
-                <User size={14} className={customerSegment === "retail" ? "text-indigo-600 dark:text-indigo-400" : "text-slate-400"} />
-                <span>ทั่วไป (Retail)</span>
-                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${
-                  customerSegment === "retail" ? "bg-indigo-100 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300" : "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
-                }`}>
-                  {segmentCounts.retail}
-                </span>
-              </button>
 
-              {/* 2. Corporate */}
-              <button
-                type="button"
-                onClick={() => setCustomerSegment("corporate")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  customerSegment === "corporate"
-                    ? "bg-white dark:bg-slate-700 text-amber-700 dark:text-amber-400 shadow-xs font-extrabold"
-                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
-                }`}
-              >
-                <Building size={14} className={customerSegment === "corporate" ? "text-amber-600 dark:text-amber-400" : "text-slate-400"} />
-                <span>องค์กร (Corporate)</span>
-                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${
-                  customerSegment === "corporate" ? "bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300" : "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
-                }`}>
-                  {segmentCounts.corporate}
+            {/* Right: Live Context Summary Pills */}
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700">
+                <Store size={13} className="text-indigo-500" />
+                <span className="text-slate-500 dark:text-slate-400 font-medium">สาขา:</span>
+                <span className="font-bold text-slate-800 dark:text-slate-200">{activeBranchName}</span>
+              </div>
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-800/60">
+                <CheckCircle2 size={13} className="text-emerald-600 dark:text-emerald-400" />
+                <span className="text-emerald-700 dark:text-emerald-300 font-medium">อัตราจบงาน:</span>
+                <span className="font-mono font-black text-emerald-800 dark:text-emerald-200">
+                  {overviewStats.completedCount + overviewStats.pendingCount > 0
+                    ? `${Math.round((overviewStats.completedCount / (overviewStats.completedCount + overviewStats.pendingCount)) * 100)}%`
+                    : "0%"}
                 </span>
-              </button>
-
-              {/* 3. All */}
-              <button
-                type="button"
-                onClick={() => setCustomerSegment("all")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  customerSegment === "all"
-                    ? "bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-xs font-extrabold"
-                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
-                }`}
-              >
-                <Layers size={14} className={customerSegment === "all" ? "text-slate-800 dark:text-slate-200" : "text-slate-400"} />
-                <span>ทั้งหมด</span>
-                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${
-                  customerSegment === "all" ? "bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200" : "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
-                }`}>
-                  {segmentCounts.all}
+              </div>
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-800/60">
+                <Package size={13} className="text-amber-600 dark:text-amber-400" />
+                <span className="text-amber-800 dark:text-amber-300 font-medium">จำนวนชิ้นรวม:</span>
+                <span className="font-mono font-black text-amber-900 dark:text-amber-200">
+                  {(overviewStats.totalProductUnits || 0).toLocaleString(undefined, { maximumFractionDigits: 1 })} ชิ้น
                 </span>
-              </button>
+              </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-5 relative overflow-hidden">
-              <div className="absolute top-0 right-0 p-4 opacity-5">
-                <DollarSign size={80} className="text-indigo-600" />
-              </div>
-              <div className="flex justify-between items-start">
-                <div>
-                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Sales Revenue</span>
-                  <h3 className="text-2xl font-black text-slate-800 dark:text-slate-100 mt-1.5">
+          {/* 5 Executive KPI Cards (Includes Member Top-Ups) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+            {/* Card 1: Total Combined Revenue (Laundry + Member Top-Ups) */}
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 border-t-4 border-t-indigo-600 shadow-xs rounded-2xl p-4 sm:p-5 flex flex-col justify-between relative overflow-hidden group hover:shadow-md transition-all">
+              <div className="flex justify-between items-start gap-2.5">
+                <div className="space-y-1 min-w-0">
+                  <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-400 block truncate">
+                    Total Revenue (ยอดขายรวมทั้งหมด)
+                  </span>
+                  <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white font-mono tracking-tight truncate">
                     ฿{overviewStats.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </h3>
                 </div>
-                <span className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-bold flex items-center gap-0.5">
-                  <TrendingUp size={12} />
-                  {customerSegment === "corporate" ? "Corp" : customerSegment === "retail" ? "Retail" : "+14%"}
-                </span>
-              </div>
-              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold font-sans">
-                Active: {activeBranchName} • {customerSegment === "corporate" ? "Corporate Only" : customerSegment === "retail" ? "Retail Only" : "All Customers"}
-              </p>
-            </div>
-
-            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-5 relative overflow-hidden">
-              <div className="absolute top-0 right-0 p-4 opacity-5">
-                <ShoppingBag size={80} className="text-indigo-600" />
-              </div>
-              <div className="flex justify-between items-start">
-                <div>
-                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Completed Orders</span>
-                  <h3 className="text-2xl font-black text-slate-800 dark:text-slate-100 mt-1.5">
-                    {overviewStats.completedCount}
-                  </h3>
+                <div className="w-10 h-10 rounded-2xl bg-indigo-50 dark:bg-indigo-950/80 border border-indigo-100 dark:border-indigo-800/60 flex items-center justify-center text-indigo-600 dark:text-indigo-400 shrink-0">
+                  <DollarSign size={20} />
                 </div>
-                <span className="p-2 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 text-xs font-bold flex items-center gap-0.5">
-                  <ArrowUpRight size={12} />
-                  Jobs
+              </div>
+
+              <div className="mt-3.5 pt-2.5 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-1 text-[11px]">
+                <span className="text-slate-500 dark:text-slate-400 font-medium">
+                  ซักรีด: <strong className="font-mono text-slate-800 dark:text-slate-200">฿{overviewStats.laundryRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+                </span>
+                <span className="px-1.5 py-0.5 rounded-md bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-bold text-[10px] font-mono">
+                  +เติมเงิน: ฿{overviewStats.topUpRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </span>
               </div>
-              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold">
-                Pending completion: {overviewStats.pendingCount} bills ({customerSegment === "corporate" ? "Corp" : customerSegment === "retail" ? "Retail" : "All"})
-              </p>
             </div>
 
-            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-5 relative overflow-hidden">
-              <div className="absolute top-0 right-0 p-4 opacity-5">
-                <Percent size={80} className="text-indigo-600" />
+            {/* Card 2: Member Top-Ups (ยอดเติมเงินสมาชิก) */}
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 border-t-4 border-t-purple-600 shadow-xs rounded-2xl p-4 sm:p-5 flex flex-col justify-between relative overflow-hidden group hover:shadow-md transition-all">
+              <div className="flex justify-between items-start gap-2.5">
+                <div className="space-y-1 min-w-0">
+                  <span className="text-[10.5px] font-black uppercase tracking-wider text-purple-600 dark:text-purple-400 block truncate">
+                    Member Top-Ups (เติมเงินสมาชิก)
+                  </span>
+                  <div className="flex items-baseline gap-1.5 flex-wrap">
+                    <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white font-mono tracking-tight">
+                      ฿{overviewStats.topUpRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </h3>
+                    <span className="text-[11px] font-black text-purple-600 dark:text-purple-400 font-mono">
+                      ({overviewStats.topUpCount} รายการ)
+                    </span>
+                  </div>
+                </div>
+                <div className="w-10 h-10 rounded-2xl bg-purple-50 dark:bg-purple-950/80 border border-purple-100 dark:border-purple-800/60 flex items-center justify-center text-purple-600 dark:text-purple-400 shrink-0">
+                  <Wallet size={19} />
+                </div>
               </div>
-              <div className="flex justify-between items-start">
-                <div>
-                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Average Order Size</span>
-                  <h3 className="text-2xl font-black text-slate-800 dark:text-slate-100 mt-1.5">
+
+              <div className="mt-3.5 pt-2.5 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-1 text-[11px]">
+                <span className="text-slate-500 dark:text-slate-400 font-medium">
+                  โบนัสแถม: <strong className="font-mono text-emerald-600 dark:text-emerald-400">+฿{overviewStats.topUpBonus.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+                </span>
+                <span className="px-1.5 py-0.5 rounded-md bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-bold text-[10px] font-mono">
+                  เครดิตรวม: ฿{overviewStats.topUpTotalCredit.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                </span>
+              </div>
+            </div>
+
+            {/* Card 3: Completed Orders */}
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 border-t-4 border-t-emerald-500 shadow-xs rounded-2xl p-4 sm:p-5 flex flex-col justify-between relative overflow-hidden group hover:shadow-md transition-all">
+              <div className="flex justify-between items-start gap-2.5">
+                <div className="space-y-1 min-w-0">
+                  <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-400 block truncate">
+                    Completed Orders (งานที่สำเร็จ)
+                  </span>
+                  <div className="flex items-baseline gap-1.5">
+                    <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white font-mono tracking-tight">
+                      {overviewStats.completedCount.toLocaleString()}
+                    </h3>
+                    <span className="text-xs font-bold text-slate-400">
+                      / {(overviewStats.completedCount + overviewStats.pendingCount).toLocaleString()} บิล
+                    </span>
+                  </div>
+                </div>
+                <div className="w-10 h-10 rounded-2xl bg-emerald-50 dark:bg-emerald-950/80 border border-emerald-100 dark:border-emerald-800/60 flex items-center justify-center text-emerald-600 dark:text-emerald-400 shrink-0">
+                  <ShoppingBag size={19} />
+                </div>
+              </div>
+
+              <div className="mt-3.5 pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px]">
+                <span className="text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1">
+                  <Clock size={12} className="text-amber-500" />
+                  รอดำเนินการ: <strong className="font-mono text-amber-600 dark:text-amber-400">{overviewStats.pendingCount} บิล</strong>
+                </span>
+                <span className="px-1.5 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-bold text-[10px]">
+                  +Top-Up {overviewStats.topUpCount}
+                </span>
+              </div>
+            </div>
+
+            {/* Card 4: Average Order Size */}
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 border-t-4 border-t-amber-500 shadow-xs rounded-2xl p-4 sm:p-5 flex flex-col justify-between relative overflow-hidden group hover:shadow-md transition-all">
+              <div className="flex justify-between items-start gap-2.5">
+                <div className="space-y-1 min-w-0">
+                  <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-400 block truncate">
+                    Average Ticket (ยอดเฉลี่ย/รายการ)
+                  </span>
+                  <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white font-mono tracking-tight">
                     ฿{overviewStats.averageTicket.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </h3>
                 </div>
-                <span className="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 text-xs font-bold">
-                  Value
+                <div className="w-10 h-10 rounded-2xl bg-amber-50 dark:bg-amber-950/80 border border-amber-100 dark:border-amber-800/60 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0">
+                  <Percent size={19} />
+                </div>
+              </div>
+
+              <div className="mt-3.5 pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px]">
+                <span className="text-slate-500 dark:text-slate-400 font-medium truncate">
+                  เฉลี่ยซักรีด: <strong className="font-mono text-slate-700 dark:text-slate-200">฿{overviewStats.laundryAverageTicket.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+                </span>
+                <span className="px-1.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 font-bold text-[10px] shrink-0">
+                  {overviewStats.totalTransactionsCount} รายการ
                 </span>
               </div>
-              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold">
-                Calculated from paid receipts ({customerSegment === "corporate" ? "Corp" : customerSegment === "retail" ? "Retail" : "All"})
-              </p>
             </div>
 
-            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-5 relative overflow-hidden">
-              <div className="absolute top-0 right-0 p-4 opacity-5">
-                <Users size={80} className="text-indigo-600" />
-              </div>
-              <div className="flex justify-between items-start">
-                <div>
-                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                    {customerSegment === "corporate" ? "Corporate CRM Accounts" : customerSegment === "retail" ? "Retail CRM Users" : "Active CRM Users"}
+            {/* Card 5: CRM Users & Members */}
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 border-t-4 border-t-sky-500 shadow-xs rounded-2xl p-4 sm:p-5 flex flex-col justify-between relative overflow-hidden group hover:shadow-md transition-all">
+              <div className="flex justify-between items-start gap-2.5">
+                <div className="space-y-1 min-w-0">
+                  <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-400 block truncate">
+                    {customerSegment === "corporate" ? "Corporate CRM (ลูกค้าองค์กร)" : "CRM & Members (ฐานลูกค้า)"}
                   </span>
-                  <h3 className="text-2xl font-black text-slate-800 dark:text-slate-100 mt-1.5">
-                    {segmentCustomersCount}
+                  <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white font-mono tracking-tight">
+                    {segmentCustomersCount.toLocaleString()}
                   </h3>
                 </div>
-                <span className={`p-2 rounded-xl text-xs font-bold ${
-                  customerSegment === "corporate"
-                    ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
-                    : "bg-purple-500/10 text-purple-600 dark:text-purple-400"
-                }`}>
-                  {customerSegment === "corporate" ? "Corporate" : customerSegment === "retail" ? "Retail" : "Users"}
+                <div className="w-10 h-10 rounded-2xl bg-sky-50 dark:bg-sky-950/80 border border-sky-100 dark:border-sky-800/60 flex items-center justify-center text-sky-600 dark:text-sky-400 shrink-0">
+                  <Users size={19} />
+                </div>
+              </div>
+
+              <div className="mt-3.5 pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px]">
+                <span className="text-slate-500 dark:text-slate-400 font-medium">
+                  สมาชิก (Members): <strong className="font-mono text-purple-600 dark:text-purple-400">{activeMembersCount.toLocaleString()}</strong>
+                </span>
+                <span className="px-1.5 py-0.5 rounded-md bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 font-bold text-[10px]">
+                  {customerSegment === "corporate" ? "B2B Corp" : customerSegment === "retail" ? "B2C Retail" : "All CRM"}
                 </span>
               </div>
-              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold">
-                {customerSegment === "corporate"
-                  ? "Registered corporate client profiles"
-                  : customerSegment === "retail"
-                  ? "Registered retail customer profiles"
-                  : "Registered customer profiles"}
-              </p>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Sales Trend & Operations Volume Chart */}
-            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-5 lg:col-span-2 shadow-sm relative flex flex-col justify-between">
-              {/* Header with Title, Stats & Metric Toggles */}
-              <div className="flex flex-wrap justify-between items-start gap-3 mb-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide">
-                      Sales Trend & Operations Volume
-                    </h3>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200/50 dark:border-indigo-800/50">
-                      Real Data
-                    </span>
+          {/* Main 12-Column Analytics Section: Trend Chart (8 cols) + Payment Channels Share (4 cols) */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            {/* Left 8 Cols: Sales Trend & Operations Volume Chart */}
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 lg:col-span-8 shadow-xs flex flex-col justify-between">
+              <div>
+                {/* Header with Title & Metric Toggles */}
+                <div className="flex flex-wrap justify-between items-start gap-3 pb-4 border-b border-slate-100 dark:border-slate-800">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="w-2.5 h-2.5 rounded-full bg-indigo-600" />
+                      <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-slate-100 uppercase tracking-tight">
+                        Sales Trend & Operations Volume (รวมยอดเติมเงินสมาชิก)
+                      </h3>
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border border-purple-200/60 dark:border-purple-800/50">
+                        Includes Member Top-Ups
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">
+                      กราฟแนวโน้มยอดขายรายวัน (งานซักรีด + เติมเงินสมาชิก) เปรียบเทียบกับปริมาณรายการทั้งหมด
+                    </p>
                   </div>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold mt-1 flex flex-wrap items-center gap-x-2">
-                    <span>
-                      ยอดขาย:{" "}
-                      <span className="text-indigo-600 dark:text-indigo-400 font-mono font-black">
-                        ฿{trendChartStats.totalSales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </span>
-                    </span>
-                    <span className="text-slate-300 dark:text-slate-700">•</span>
-                    <span>
-                      จำนวนงาน:{" "}
-                      <span className="text-emerald-600 dark:text-emerald-400 font-mono font-black">
-                        {trendChartStats.totalVolume.toLocaleString()} ออเดอร์
-                      </span>
-                    </span>
-                    {trendChartStats.totalVolume > 0 && (
-                      <>
-                        <span className="text-slate-300 dark:text-slate-700">•</span>
-                        <span>
-                          เฉลี่ย/บิล:{" "}
-                          <span className="text-slate-700 dark:text-slate-200 font-mono font-bold">
-                            ฿{trendChartStats.avgTicket.toFixed(2)}
-                          </span>
-                        </span>
-                      </>
-                    )}
-                  </p>
+
+                  {/* Metric Selector Buttons */}
+                  <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200/60 dark:border-slate-700/60 text-xs font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setTrendMetric("both")}
+                      className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                        trendMetric === "both"
+                          ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs font-black"
+                          : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-300"
+                      }`}
+                    >
+                      รวม / Both
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTrendMetric("sales")}
+                      className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                        trendMetric === "sales"
+                          ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs font-black"
+                          : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-300"
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-indigo-600 inline-block" />
+                      ยอดขาย (Sales)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTrendMetric("volume")}
+                      className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                        trendMetric === "volume"
+                          ? "bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-xs font-black"
+                          : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-300"
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                      จำนวนงาน (Volume)
+                    </button>
+                  </div>
                 </div>
 
-                {/* Metric Selector Buttons */}
-                <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200/60 dark:border-slate-700/60 text-[11px] font-bold">
-                  <button
-                    type="button"
-                    onClick={() => setTrendMetric("both")}
-                    className={`px-2.5 py-1 rounded-lg transition-all ${
-                      trendMetric === "both"
-                        ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs font-black"
-                        : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
-                    }`}
-                  >
-                    รวม / Both
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTrendMetric("sales")}
-                    className={`px-2.5 py-1 rounded-lg transition-all flex items-center gap-1.5 ${
-                      trendMetric === "sales"
-                        ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs font-black"
-                        : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
-                    }`}
-                  >
-                    <span className="w-2 h-2 rounded-full bg-indigo-600 inline-block" />
-                    ยอดขาย (Sales)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTrendMetric("volume")}
-                    className={`px-2.5 py-1 rounded-lg transition-all flex items-center gap-1.5 ${
-                      trendMetric === "volume"
-                        ? "bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-xs font-black"
-                        : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
-                    }`}
-                  >
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
-                    จำนวนงาน (Volume)
-                  </button>
+                {/* 4 Inline Summary Metrics Strip (Total Sales, Laundry Sales, Member Top-Ups, Volume) */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 my-4">
+                  <div className="bg-slate-50/90 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/60 rounded-xl px-3.5 py-2.5">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block">ยอดขายรวมตามกราฟ (Total)</span>
+                    <span className="text-sm sm:text-base font-black text-indigo-600 dark:text-indigo-400 font-mono mt-0.5 block">
+                      ฿{trendChartStats.totalSales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="bg-slate-50/90 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/60 rounded-xl px-3.5 py-2.5">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block">ยอดงานซักรีด (Laundry)</span>
+                    <span className="text-sm sm:text-base font-black text-slate-800 dark:text-slate-100 font-mono mt-0.5 block">
+                      ฿{trendChartStats.laundrySales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="bg-purple-50/60 dark:bg-purple-950/25 border border-purple-200/60 dark:border-purple-800/50 rounded-xl px-3.5 py-2.5">
+                    <span className="text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase block">เติมเงินสมาชิก (Top-Ups)</span>
+                    <span className="text-sm sm:text-base font-black text-purple-700 dark:text-purple-300 font-mono mt-0.5 block">
+                      ฿{trendChartStats.topUpSales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="bg-slate-50/90 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/60 rounded-xl px-3.5 py-2.5">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block">ปริมาณรายการรวม (Volume)</span>
+                    <span className="text-sm sm:text-base font-black text-emerald-600 dark:text-emerald-400 font-mono mt-0.5 block">
+                      {trendChartStats.laundryVolume.toLocaleString()} บิล + {trendChartStats.topUpVolume} เติมเงิน
+                    </span>
+                  </div>
                 </div>
               </div>
 
               {/* Chart Visual Area */}
               <div 
-                className="w-full relative pt-1 select-none"
+                className="w-full relative pt-2 select-none"
                 onMouseLeave={() => setHoveredTrendIndex(null)}
               >
                 {/* Floating Interactive Tooltip */}
                 {hoveredTrendIndex !== null && trendPoints[hoveredTrendIndex] && (
                   <div
-                    className="absolute pointer-events-none z-30 bg-slate-900/95 dark:bg-slate-900/95 text-white px-3 py-2 rounded-xl shadow-xl border border-slate-700/80 backdrop-blur-md text-xs transition-all duration-75"
+                    className="absolute pointer-events-none z-30 bg-slate-900/95 text-white px-3.5 py-2.5 rounded-xl shadow-xl border border-slate-700/80 backdrop-blur-md text-xs transition-all duration-75"
                     style={{
                       left: `${(trendPoints[hoveredTrendIndex].x / chartW) * 100}%`,
-                      top: "6px",
+                      top: "0px",
                       transform:
-                        trendPoints[hoveredTrendIndex].x > 380
+                        trendPoints[hoveredTrendIndex].x > chartW * 0.65
                           ? "translateX(-105%)"
-                          : trendPoints[hoveredTrendIndex].x < 180
+                          : trendPoints[hoveredTrendIndex].x < chartW * 0.25
                           ? "translateX(5%)"
                           : "translateX(-50%)",
                     }}
@@ -1701,32 +1926,40 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                     </p>
                     <div className="space-y-1">
                       {(trendMetric === "both" || trendMetric === "sales") && (
-                        <div className="flex items-center justify-between gap-4">
-                          <span className="flex items-center gap-1.5 text-indigo-300 font-semibold">
-                            <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" />
-                            ยอดขาย (Sales):
-                          </span>
-                          <span className="font-mono font-black text-indigo-200">
-                            ฿{trendPoints[hoveredTrendIndex].sales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </span>
-                        </div>
+                        <>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="flex items-center gap-1.5 text-indigo-300 font-semibold">
+                              <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" />
+                              ยอดขายรวม (Total):
+                            </span>
+                            <span className="font-mono font-black text-indigo-200">
+                              ฿{trendPoints[hoveredTrendIndex].sales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-4 text-[10.5px] text-slate-300 pl-3.5">
+                            <span>• ซักรีด (Laundry):</span>
+                            <span className="font-mono font-bold">
+                              ฿{trendPoints[hoveredTrendIndex].laundrySales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                          {trendPoints[hoveredTrendIndex].topUpSales > 0 && (
+                            <div className="flex items-center justify-between gap-4 text-[10.5px] text-purple-300 pl-3.5">
+                              <span>• เติมเงิน (Top-Up):</span>
+                              <span className="font-mono font-bold">
+                                ฿{trendPoints[hoveredTrendIndex].topUpSales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({trendPoints[hoveredTrendIndex].topUpVolume})
+                              </span>
+                            </div>
+                          )}
+                        </>
                       )}
                       {(trendMetric === "both" || trendMetric === "volume") && (
                         <div className="flex items-center justify-between gap-4">
                           <span className="flex items-center gap-1.5 text-emerald-300 font-semibold">
                             <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
-                            จำนวนงาน (Volume):
+                            จำนวนรายการ (Volume):
                           </span>
                           <span className="font-mono font-black text-emerald-200">
-                            {trendPoints[hoveredTrendIndex].volume} ออเดอร์
-                          </span>
-                        </div>
-                      )}
-                      {trendPoints[hoveredTrendIndex].volume > 0 && (
-                        <div className="flex items-center justify-between gap-4 pt-1 border-t border-slate-700/50 text-[10px] text-slate-400">
-                          <span>เฉลี่ยต่อบิล:</span>
-                          <span className="font-mono font-semibold text-slate-300">
-                            ฿{(trendPoints[hoveredTrendIndex].sales / trendPoints[hoveredTrendIndex].volume).toFixed(2)}
+                            {trendPoints[hoveredTrendIndex].volume} รายการ
                           </span>
                         </div>
                       )}
@@ -1734,11 +1967,11 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                   </div>
                 )}
 
-                {/* SVG Chart */}
+                {/* Crisp High-Res SVG Chart */}
                 <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full h-auto overflow-visible">
                   <defs>
                     <linearGradient id="salesTrendGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.28" />
+                      <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.25" />
                       <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.0" />
                     </linearGradient>
                   </defs>
@@ -1753,15 +1986,16 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                         y2={tick.y}
                         stroke={idx === yTicks.length - 1 ? "#cbd5e1" : "#f1f5f9"}
                         strokeWidth={idx === yTicks.length - 1 ? "1.5" : "1"}
+                        strokeDasharray={idx === yTicks.length - 1 ? undefined : "4,4"}
                         className={idx === yTicks.length - 1 ? "dark:stroke-slate-700" : "dark:stroke-slate-800"}
                       />
                       {/* Left Y-axis (Sales ฿) */}
                       {(trendMetric === "both" || trendMetric === "sales") && (
                         <text
-                          x={pLeft - 8}
-                          y={tick.y + 3.5}
+                          x={pLeft - 10}
+                          y={tick.y + 4}
                           textAnchor="end"
-                          className="fill-slate-400 dark:fill-slate-500 font-mono text-[9px] font-bold"
+                          className="fill-slate-400 dark:fill-slate-500 font-mono text-[11px] font-bold"
                         >
                           {tick.labelSales}
                         </text>
@@ -1769,10 +2003,10 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                       {/* Right Y-axis (Volume Orders) */}
                       {(trendMetric === "both" || trendMetric === "volume") && (
                         <text
-                          x={pLeft + plotW + 8}
-                          y={tick.y + 3.5}
+                          x={pLeft + plotW + 10}
+                          y={tick.y + 4}
                           textAnchor="start"
-                          className="fill-emerald-600/70 dark:fill-emerald-400/70 font-mono text-[9px] font-bold"
+                          className="fill-emerald-600/80 dark:fill-emerald-400/80 font-mono text-[11px] font-bold"
                         >
                           {tick.labelVolume}
                         </text>
@@ -1780,7 +2014,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                     </g>
                   ))}
 
-                  {/* Volume Bars (rendered in "both" or "volume" modes) */}
+                  {/* Volume Bars */}
                   {(trendMetric === "both" || trendMetric === "volume") &&
                     trendPoints.map((p, i) => {
                       if (p.volume === 0) return null;
@@ -1792,17 +2026,17 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                           y={p.barY}
                           width={barW}
                           height={p.barHeight}
-                          rx={Math.min(3, barW / 2)}
+                          rx={Math.min(4, barW / 2)}
                           className={`transition-all duration-150 ${
                             isHovered
-                              ? "fill-emerald-500 opacity-90"
-                              : "fill-emerald-500/25 dark:fill-emerald-400/25 hover:fill-emerald-500/50"
+                              ? "fill-emerald-500 opacity-95"
+                              : "fill-emerald-500/30 dark:fill-emerald-400/25 hover:fill-emerald-500/50"
                           }`}
                         />
                       );
                     })}
 
-                  {/* Sales Area Gradient & Smooth Line (rendered in "both" or "sales" modes) */}
+                  {/* Sales Area Gradient & Smooth Line */}
                   {(trendMetric === "both" || trendMetric === "sales") && salesAreaPath && (
                     <path d={salesAreaPath} fill="url(#salesTrendGradient)" />
                   )}
@@ -1811,30 +2045,32 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                       d={salesPath}
                       fill="none"
                       stroke="#4f46e5"
-                      strokeWidth="3"
+                      strokeWidth="2.75"
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     />
                   )}
 
-                  {/* Data Points (dots) */}
+                  {/* Data Points */}
                   {(trendMetric === "both" || trendMetric === "sales") &&
-                    trendPoints.length <= 16 &&
-                    trendPoints.map((p, i) => (
-                      <circle
-                        key={`dot-${p.id}`}
-                        cx={p.x}
-                        cy={p.ySales}
-                        r={hoveredTrendIndex === i ? 5 : 3}
-                        className={`transition-all ${
-                          hoveredTrendIndex === i
-                            ? "fill-indigo-600 stroke-white dark:stroke-slate-900 stroke-2"
-                            : "fill-indigo-600 dark:fill-indigo-400"
-                        }`}
-                      />
-                    ))}
+                    trendPoints.map((p, i) => {
+                      if (p.sales === 0 && trendPoints.length > 16 && hoveredTrendIndex !== i) return null;
+                      return (
+                        <circle
+                          key={`dot-${p.id}`}
+                          cx={p.x}
+                          cy={p.ySales}
+                          r={hoveredTrendIndex === i ? 5.5 : 3}
+                          className={`transition-all ${
+                            hoveredTrendIndex === i
+                              ? "fill-indigo-600 stroke-white dark:stroke-slate-900 stroke-2"
+                              : "fill-indigo-600 dark:fill-indigo-400"
+                          }`}
+                        />
+                      );
+                    })}
 
-                  {/* Active Hover Guideline & Point */}
+                  {/* Active Hover Guideline */}
                   {hoveredTrendIndex !== null && trendPoints[hoveredTrendIndex] && (
                     <g className="pointer-events-none">
                       <line
@@ -1847,16 +2083,6 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                         strokeDasharray="3,3"
                         className="opacity-70"
                       />
-                      {(trendMetric === "both" || trendMetric === "sales") && (
-                        <circle
-                          cx={trendPoints[hoveredTrendIndex].x}
-                          cy={trendPoints[hoveredTrendIndex].ySales}
-                          r={6}
-                          fill="#4f46e5"
-                          stroke="#ffffff"
-                          strokeWidth="2.5"
-                        />
-                      )}
                     </g>
                   )}
 
@@ -1865,15 +2091,15 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                     const showLabel =
                       trendPoints.length <= 12 ||
                       (trendPoints.length <= 20 && (i % 2 === 0 || i === trendPoints.length - 1)) ||
-                      (i % 5 === 0 || i === trendPoints.length - 1);
+                      (i % 4 === 0 || i === trendPoints.length - 1);
                     if (!showLabel) return null;
                     return (
                       <text
                         key={`lbl-${p.id}`}
                         x={p.x}
-                        y={baselineY + 16}
+                        y={baselineY + 18}
                         textAnchor="middle"
-                        className="fill-slate-400 dark:fill-slate-500 font-bold text-[9px]"
+                        className="fill-slate-400 dark:fill-slate-500 font-bold text-[10.5px]"
                       >
                         {p.label}
                       </text>
@@ -1899,7 +2125,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                 {/* Empty State Overlay if 0 sales & 0 volume */}
                 {trendChartStats.totalSales === 0 && trendChartStats.totalVolume === 0 && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-6">
-                    <div className="bg-slate-100/90 dark:bg-slate-800/90 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 text-xs font-bold shadow-xs">
+                    <div className="bg-slate-100/90 dark:bg-slate-800/90 px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 text-xs font-bold shadow-xs">
                       {customerSegment === "corporate"
                         ? "ไม่มีข้อมูลออเดอร์ของลูกค้าองค์กรในช่วงเวลาที่เลือก (No corporate orders in this timeframe)"
                         : customerSegment === "retail"
@@ -1911,100 +2137,311 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
               </div>
             </div>
 
-            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-5 shadow-sm">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide">
-                  Payment Channels Share
-                </h3>
-                {overviewStats.channelBreakdown.length > 0 && (
-                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full">
-                    {overviewStats.channelBreakdown.length} ช่องทาง
-                  </span>
-                )}
-              </div>
-              <div className="space-y-4 text-xs font-bold max-h-[380px] overflow-y-auto pr-1">
-                {overviewStats.channelBreakdown.length === 0 ? (
-                  <div className="py-8 text-center text-slate-400 font-medium">
-                    ไม่มีข้อมูลการชำระเงินในช่วงเวลาที่เลือก
+            {/* Right 4 Cols: Payment Channels Share */}
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 lg:col-span-4 shadow-xs flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between pb-3.5 border-b border-slate-100 dark:border-slate-800">
+                  <div>
+                    <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-slate-100 uppercase tracking-tight">
+                      Payment Channels Share
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">
+                      สัดส่วนยอดรับชำระแยกตามช่องทาง (รวมยอดเติมเงิน)
+                    </p>
                   </div>
-                ) : (
-                  overviewStats.channelBreakdown.map((item) => {
-                    const pct = overviewStats.totalRevenue > 0 ? (item.revenue / overviewStats.totalRevenue) * 100 : 0;
-                    const style = getChannelBadgeStyle(item.channel);
-                    return (
-                      <div key={item.channel}>
-                        <div className="flex justify-between items-center text-slate-500 mb-1.5">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <span className="text-slate-850 dark:text-slate-200 font-bold truncate">
-                              {item.channel}
-                            </span>
-                            <span className="text-[10px] text-slate-400 font-normal shrink-0">
-                              ({item.count} ครั้ง)
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <span className="font-mono font-bold text-slate-800 dark:text-slate-200">
-                              ฿{item.revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </span>
-                            <span className="text-[10px] font-bold text-slate-400 w-11 text-right font-mono">
-                              {pct.toFixed(1)}%
-                            </span>
-                          </div>
-                        </div>
-                        <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
-                          <div className={`${style.barColor} h-full rounded-full transition-all duration-300`} style={{ width: `${pct}%` }} />
-                        </div>
-                      </div>
-                    );
-                  })
+                  {overviewStats.channelBreakdown.length > 0 && (
+                    <span className="text-[11px] font-black text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200/60 dark:border-indigo-800/50 px-2.5 py-1 rounded-full shrink-0">
+                      {overviewStats.channelBreakdown.length} ช่องทาง
+                    </span>
+                  )}
+                </div>
+
+                {/* Multi-Color Stacked Distribution Bar */}
+                {overviewStats.channelBreakdown.length > 0 && overviewStats.totalRevenue > 0 && (
+                  <div className="my-3.5">
+                    <div className="w-full h-3 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden flex gap-0.5 p-0.5 border border-slate-200/60 dark:border-slate-700">
+                      {overviewStats.channelBreakdown.map((item) => {
+                        const pct = (item.revenue / overviewStats.totalRevenue) * 100;
+                        if (pct <= 0) return null;
+                        const style = getChannelBadgeStyle(item.channel);
+                        return (
+                          <div
+                            key={`stack-${item.channel}`}
+                            title={`${item.channel}: ฿${item.revenue.toLocaleString()} (${pct.toFixed(1)}%)`}
+                            className={`${style.barColor} h-full first:rounded-l-full last:rounded-r-full transition-all duration-300`}
+                            style={{ width: `${Math.max(pct, 2)}%` }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
+
+                <div className="space-y-2.5 text-xs font-bold max-h-[340px] overflow-y-auto pr-1 mt-2">
+                  {overviewStats.channelBreakdown.length === 0 ? (
+                    <div className="py-12 text-center text-slate-400 font-medium bg-slate-50/60 dark:bg-slate-800/40 rounded-xl border border-dashed border-slate-200 dark:border-slate-700">
+                      ไม่มีข้อมูลการชำระเงินในช่วงเวลาที่เลือก
+                    </div>
+                  ) : (
+                    overviewStats.channelBreakdown.map((item) => {
+                      const pct = overviewStats.totalRevenue > 0 ? (item.revenue / overviewStats.totalRevenue) * 100 : 0;
+                      const style = getChannelBadgeStyle(item.channel);
+                      return (
+                        <div
+                          key={item.channel}
+                          className="p-2.5 rounded-xl bg-slate-50/70 dark:bg-slate-800/40 border border-slate-200/60 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                        >
+                          <div className="flex justify-between items-center mb-1.5 gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className={`w-2.5 h-2.5 rounded-full ${style.barColor} shrink-0`} />
+                              <span className="text-slate-900 dark:text-slate-100 font-extrabold truncate">
+                                {item.channel}
+                              </span>
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-white dark:bg-slate-700 border border-slate-200/70 dark:border-slate-600 text-slate-500 dark:text-slate-300 font-semibold shrink-0">
+                                {item.count} รายการ
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="font-mono font-black text-slate-900 dark:text-white">
+                                ฿{item.revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                              <span className="text-[10px] font-black text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/80 px-1.5 py-0.5 rounded font-mono min-w-[44px] text-right">
+                                {pct.toFixed(1)}%
+                              </span>
+                            </div>
+                          </div>
+                          <div className="w-full bg-slate-200/70 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                            <div className={`${style.barColor} h-full rounded-full transition-all duration-300`} style={{ width: `${pct}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-5 shadow-sm">
-            <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide mb-4">Top-Selling Products</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs font-semibold text-left">
-                <thead>
-                  <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-black">
-                    <th className="pb-3">Product Name</th>
-                    <th className="pb-3 text-center">Units Sold</th>
-                    <th className="pb-3 text-right">Revenue Share</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
-                  {overviewStats.topProducts.length === 0 ? (
-                    <tr>
-                      <td colSpan={3} className="py-8 text-center text-slate-400 font-medium">
-                        {customerSegment === "corporate"
-                          ? "ไม่มีข้อมูลยอดขายสินค้าของลูกค้าองค์กรในช่วงนี้"
-                          : customerSegment === "retail"
-                          ? "ไม่มีข้อมูลยอดขายสินค้าของลูกค้าทั่วไปในช่วงนี้"
-                          : "ไม่มีข้อมูลยอดขายสินค้าในช่วงนี้"}
-                      </td>
+          {/* Bottom 12-Column Section: Top-Selling Products (8 cols) + Payment & Member Top-Up Summary (4 cols) */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            {/* Left 8 Cols: Top-Selling Products & Packages Table */}
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 lg:col-span-8 shadow-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-4 mb-3 border-b border-slate-100 dark:border-slate-800">
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-slate-100 uppercase tracking-tight flex items-center gap-2">
+                    <Crown size={16} className="text-amber-500" />
+                    Top-Selling Products, Services & Member Top-Ups (บริการและแพ็กเกจขายดี)
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">
+                    จัดอันดับรายการซักรีดและแพ็กเกจเติมเงินสมาชิกที่สร้างรายได้สูงสุดในช่วงเวลาที่เลือก
+                  </p>
+                </div>
+                <span className="text-xs font-bold text-slate-500 bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-xl">
+                  Top {overviewStats.topProducts.length} Items
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs font-semibold text-left">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-black">
+                      <th className="pb-3 pl-2 w-12">Rank</th>
+                      <th className="pb-3">Service / Product Name</th>
+                      <th className="pb-3 text-right">Units / Tx</th>
+                      <th className="pb-3 text-right hidden sm:table-cell">Avg. Price</th>
+                      <th className="pb-3 text-right w-44">Share of Sales</th>
+                      <th className="pb-3 text-right pr-2">Total Revenue</th>
                     </tr>
-                  ) : (
-                    overviewStats.topProducts.map((p, idx) => (
-                      <tr key={idx}>
-                        <td className="py-3 flex items-center gap-2">
-                          <span className="w-5 h-5 bg-indigo-500/10 text-indigo-500 rounded-full flex items-center justify-center font-black text-[10px]">#{idx + 1}</span>
-                          {p.name}
-                        </td>
-                        <td className="py-3 text-center font-bold">
-                          {p.count.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-3 text-right text-indigo-600 dark:text-indigo-400 font-black">
-                          ฿{p.revenue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 text-slate-700 dark:text-slate-200">
+                    {overviewStats.topProducts.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-10 text-center text-slate-400 font-medium">
+                          {customerSegment === "corporate"
+                            ? "ไม่มีข้อมูลยอดขายสินค้าของลูกค้าองค์กรในช่วงนี้"
+                            : customerSegment === "retail"
+                            ? "ไม่มีข้อมูลยอดขายสินค้าของลูกค้าทั่วไปในช่วงนี้"
+                            : "ไม่มีข้อมูลยอดขายสินค้าในช่วงนี้"}
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    ) : (
+                      overviewStats.topProducts.map((p: any, idx: number) => {
+                        const sharePct = (overviewStats.totalProductRevenue || overviewStats.totalRevenue) > 0
+                          ? (p.revenue / (overviewStats.totalProductRevenue || overviewStats.totalRevenue)) * 100
+                          : 0;
+                        const avgUnit = p.count > 0 ? p.revenue / p.count : 0;
+                        const rankBadgeClass =
+                          idx === 0
+                            ? "bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950 dark:text-amber-300"
+                            : idx === 1
+                            ? "bg-slate-200 text-slate-800 border-slate-300 dark:bg-slate-700 dark:text-slate-200"
+                            : idx === 2
+                            ? "bg-orange-100 text-orange-800 border-orange-300 dark:bg-orange-950 dark:text-orange-300"
+                            : "bg-indigo-50 text-indigo-600 border-indigo-200/60 dark:bg-indigo-950/60 dark:text-indigo-400";
+
+                        return (
+                          <tr key={idx} className={`transition-colors ${p.isTopUp ? "bg-purple-50/40 dark:bg-purple-950/20 hover:bg-purple-50/70" : "hover:bg-slate-50/80 dark:hover:bg-slate-800/40"}`}>
+                            <td className="py-3 pl-2">
+                              <span className={`w-6 h-6 border rounded-lg flex items-center justify-center font-black text-[10px] ${rankBadgeClass}`}>
+                                #{idx + 1}
+                              </span>
+                            </td>
+                            <td className="py-3 font-extrabold text-slate-900 dark:text-white">
+                              <div className="flex items-center gap-2">
+                                <span>{p.name}</span>
+                                {p.isTopUp && (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-100 dark:bg-purple-900/70 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-700">
+                                    Wallet Package
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-3 text-right font-mono font-bold text-slate-700 dark:text-slate-300">
+                              {p.isTopUp ? `${p.count} รายการ` : p.count.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td className="py-3 text-right font-mono text-slate-500 dark:text-slate-400 hidden sm:table-cell">
+                              ฿{avgUnit.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td className="py-3 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <div className="w-20 bg-slate-100 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden hidden sm:block">
+                                  <div
+                                    className={`${p.isTopUp ? "bg-purple-600" : "bg-indigo-500"} h-full rounded-full`}
+                                    style={{ width: `${Math.min(100, sharePct)}%` }}
+                                  />
+                                </div>
+                                <span className="font-mono text-[11px] font-bold text-slate-500 w-11 text-right">
+                                  {sharePct.toFixed(1)}%
+                                </span>
+                              </div>
+                            </td>
+                            <td className={`py-3 text-right pr-2 font-mono font-black ${p.isTopUp ? "text-purple-600 dark:text-purple-400" : "text-indigo-600 dark:text-indigo-400"}`}>
+                              ฿{p.revenue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Right 4 Cols: Payment Category, Member Top-Up & Order Fulfillment Summary */}
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 lg:col-span-4 shadow-xs flex flex-col justify-between space-y-4">
+              <div>
+                <div className="pb-3 mb-3 border-b border-slate-100 dark:border-slate-800">
+                  <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-slate-100 uppercase tracking-tight flex items-center gap-2">
+                    <CreditCard size={16} className="text-indigo-600 dark:text-indigo-400" />
+                    Payment & Top-Up Summary
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">
+                    สรุปหมวดหมู่การรับชำระเงิน ยอดเติมเงินสมาชิก และสถานะบิล
+                  </p>
+                </div>
+
+                {/* Highlight Banner: Member Top-Up Cash Inflow */}
+                <div className="p-3.5 rounded-xl bg-gradient-to-r from-purple-50 via-indigo-50/70 to-purple-50 dark:from-purple-950/40 dark:via-indigo-950/30 dark:to-purple-950/40 border border-purple-200/80 dark:border-purple-800/60 mb-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-purple-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                        <Wallet size={16} />
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-black uppercase tracking-wider text-purple-700 dark:text-purple-300 block">
+                          Member Top-Up Inflow (ยอดเติมเงินสมาชิก)
+                        </span>
+                        <span className="text-base font-black font-mono text-purple-950 dark:text-white">
+                          ฿{overviewStats.topUpRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-600 text-white font-mono block">
+                        {overviewStats.topUpCount} รายการ
+                      </span>
+                      <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 font-mono mt-0.5 block">
+                        โบนัส +฿{overviewStats.topUpBonus.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2x2 Payment Category Cards */}
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div className="p-3 rounded-xl bg-emerald-50/60 dark:bg-emerald-950/30 border border-emerald-200/60 dark:border-emerald-800/50">
+                    <span className="text-[10px] font-black uppercase text-emerald-700 dark:text-emerald-400 block">
+                      เงินสด (Cash / COD)
+                    </span>
+                    <span className="text-sm sm:text-base font-black font-mono text-emerald-900 dark:text-emerald-200 mt-1 block">
+                      ฿{overviewStats.paymentBreakdown.cash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-200/60 dark:border-indigo-800/50">
+                    <span className="text-[10px] font-black uppercase text-indigo-700 dark:text-indigo-400 block">
+                      โอน/QR (Transfer/QR)
+                    </span>
+                    <span className="text-sm sm:text-base font-black font-mono text-indigo-900 dark:text-indigo-200 mt-1 block">
+                      ฿{overviewStats.paymentBreakdown.transfer.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-sky-50/60 dark:bg-sky-950/30 border border-sky-200/60 dark:border-sky-800/50">
+                    <span className="text-[10px] font-black uppercase text-sky-700 dark:text-sky-400 block">
+                      บัตร/ออนไลน์ (Card/Beam)
+                    </span>
+                    <span className="text-sm sm:text-base font-black font-mono text-sky-900 dark:text-sky-200 mt-1 block">
+                      ฿{overviewStats.paymentBreakdown.card.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-purple-50/60 dark:bg-purple-950/30 border border-purple-200/60 dark:border-purple-800/50">
+                    <span className="text-[10px] font-black uppercase text-purple-700 dark:text-purple-400 block">
+                      ตัดเครดิตสมาชิก (Wallet Used)
+                    </span>
+                    <span className="text-sm sm:text-base font-black font-mono text-purple-900 dark:text-purple-200 mt-1 block">
+                      ฿{overviewStats.paymentBreakdown.credit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Order Status Breakdown */}
+              <div className="pt-3.5 border-t border-slate-100 dark:border-slate-800 space-y-2">
+                <span className="text-[11px] font-black uppercase text-slate-400 tracking-wider block">
+                  Order & Top-Up Activity (สถานะรายการทั้งหมด)
+                </span>
+                <div className="grid grid-cols-4 gap-2 text-center">
+                  <div className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700">
+                    <span className="text-sm font-black font-mono text-emerald-600 dark:text-emerald-400 block">
+                      {overviewStats.completedCount}
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-500">ซักเสร็จ</span>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700">
+                    <span className="text-sm font-black font-mono text-amber-600 dark:text-amber-400 block">
+                      {overviewStats.pendingCount}
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-500">กำลังซัก</span>
+                  </div>
+                  <div className="p-2 rounded-xl bg-purple-50/70 dark:bg-purple-950/30 border border-purple-200/70 dark:border-purple-800/60">
+                    <span className="text-sm font-black font-mono text-purple-600 dark:text-purple-400 block">
+                      {overviewStats.topUpCount}
+                    </span>
+                    <span className="text-[10px] font-bold text-purple-700 dark:text-purple-300">เติมเงิน</span>
+                  </div>
+                  <div className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700">
+                    <span className="text-sm font-black font-mono text-rose-500 block">
+                      {overviewStats.cancelledCount}
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-500">ยกเลิก</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-        </>
+        </div>
       )}
 
       {/* 2. SALES SUMMARY (Loyverse style) */}

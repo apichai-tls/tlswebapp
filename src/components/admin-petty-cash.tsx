@@ -1396,336 +1396,533 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     printWin.document.close();
   };
 
+  // Extended Analytics for Detailed Modern Dashboard
+  const dashboardDetails = useMemo(() => {
+    const totalLimitAll = holderSummaries.reduce(
+      (sum, h) => sum + getHolderLimit(h.holderId, h.isAccounting),
+      0
+    );
+    const totalWalletBalanceAll = Math.round(
+      holderSummaries.reduce((sum, h) => sum + h.currentBalance, 0) * 100
+    ) / 100;
+    const totalShortfallAll = Math.max(
+      0,
+      Math.round((totalLimitAll - totalWalletBalanceAll) * 100) / 100
+    );
+
+    let txWithAttachments = 0;
+    let expenseTxCount = 0;
+    let topupTxCount = 0;
+    let transferTxCount = 0;
+    let approvedExpenseTotal = 0;
+    const categorySpendMap = new Map<string, { category: string; amount: number; count: number }>();
+
+    filteredTransactions.forEach((t) => {
+      if (t.status === "REJECTED" || t.status === "VOID") return;
+      const amt = Number(t.amount) || 0;
+      const hasFiles = (t.receiptUrls?.length || 0) + (t.slipUrls?.length || 0) > 0;
+      if (hasFiles) txWithAttachments += 1;
+
+      if (t.type === "TOPUP") {
+        topupTxCount += 1;
+      } else if (t.type === "TRANSFER_IN" || t.type === "TRANSFER_OUT") {
+        transferTxCount += 1;
+      } else if (t.direction === "DEBIT") {
+        expenseTxCount += 1;
+        if (t.status === "APPROVED") {
+          approvedExpenseTotal = Math.round((approvedExpenseTotal + amt) * 100) / 100;
+        }
+        const catName = t.category || "Uncategorized";
+        const prev = categorySpendMap.get(catName) || { category: catName, amount: 0, count: 0 };
+        prev.amount = Math.round((prev.amount + amt) * 100) / 100;
+        prev.count += 1;
+        categorySpendMap.set(catName, prev);
+      }
+    });
+
+    const activeValidCount = filteredTransactions.filter(
+      (t) => t.status !== "REJECTED" && t.status !== "VOID"
+    ).length;
+    const attachmentCompliancePct =
+      activeValidCount > 0 ? Math.round((txWithAttachments / activeValidCount) * 100) : 100;
+
+    const categoryBreakdown = Array.from(categorySpendMap.values()).sort(
+      (a, b) => b.amount - a.amount
+    );
+
+    return {
+      totalLimitAll,
+      totalWalletBalanceAll,
+      totalShortfallAll,
+      txWithAttachments,
+      activeValidCount,
+      attachmentCompliancePct,
+      expenseTxCount,
+      topupTxCount,
+      transferTxCount,
+      approvedExpenseTotal,
+      categoryBreakdown,
+    };
+  }, [holderSummaries, getHolderLimit, filteredTransactions]);
+
   return (
-    <div className="space-y-5 pb-10">
-      {/* ── HEADER & PRIMARY ACTIONS ──────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
-        <div>
-          <div className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
-              <Wallet size={19} />
+    <div className="space-y-5 pb-12 font-sans">
+      {/* ── 1. EXECUTIVE COMMAND HEADER & PRIMARY ACTIONS ──────────────────────────────── */}
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-4">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+          <div className="flex items-start sm:items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white flex items-center justify-center shadow-md shadow-indigo-500/20 shrink-0">
+              <Wallet size={22} />
             </div>
             <div>
-              <h1 className="text-lg font-black text-slate-900 tracking-tight flex items-center gap-2">
-                Petty Cash Management (ระบบเงินสดย่อย)
-                <Badge className="bg-indigo-50 text-indigo-700 border-indigo-200 text-[10px] font-bold">
-                  Auto-Deduct (ตัดยอดทันที)
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-lg sm:text-xl font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                  Petty Cash Management (ระบบบริหารเงินสดย่อย)
+                </h1>
+                <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200/80 text-[10px] font-black px-2 py-0.5 rounded-full">
+                  ⚡ Auto-Deduct (ตัดยอดทันที)
                 </Badge>
-              </h1>
-              <p className="text-xs text-slate-500">
-                Individual petty cash wallets, expense tracking, receipt & slip attachments (บริหารวงเงินสดย่อยรายบุคคลและแนบใบเสร็จ/สลิป)
+                <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200/80 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                  {holderSummaries.length} Active Wallets
+                </Badge>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-medium">
+                Individual custodian wallets, 2-tier replenishment (Company ➔ Accounting ➔ Store), expense vouchers & receipt audit trail
               </p>
             </div>
           </div>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Date Filter in Header Bar */}
-          <div className="flex flex-wrap items-center gap-1.5 bg-slate-50/90 border border-slate-200/90 rounded-xl px-2 py-1">
-            <Calendar size={14} className="text-indigo-600 ml-0.5 shrink-0" />
-            <div className="flex items-center gap-0.5 bg-slate-200/70 p-0.5 rounded-lg">
-              {(() => {
-                const todayStr = format(new Date(), "yyyy-MM-dd");
-                const now = new Date();
-                const thisMonthStart = format(new Date(now.getFullYear(), now.getMonth(), 1), "yyyy-MM-dd");
-                const thisMonthEnd = format(new Date(now.getFullYear(), now.getMonth() + 1, 0), "yyyy-MM-dd");
-                const lastMonthStart = format(new Date(now.getFullYear(), now.getMonth() - 1, 1), "yyyy-MM-dd");
-                const lastMonthEnd = format(new Date(now.getFullYear(), now.getMonth(), 0), "yyyy-MM-dd");
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Date Filter Pill Strip */}
+            <div className="flex flex-wrap items-center gap-1.5 bg-slate-50 dark:bg-slate-800/90 border border-slate-200/90 dark:border-slate-700 rounded-xl p-1">
+              <Calendar size={14} className="text-indigo-600 ml-2 shrink-0" />
+              <div className="flex items-center gap-0.5 bg-slate-200/70 dark:bg-slate-700 p-0.5 rounded-lg">
+                {(() => {
+                  const todayStr = format(new Date(), "yyyy-MM-dd");
+                  const now = new Date();
+                  const thisMonthStart = format(new Date(now.getFullYear(), now.getMonth(), 1), "yyyy-MM-dd");
+                  const thisMonthEnd = format(new Date(now.getFullYear(), now.getMonth() + 1, 0), "yyyy-MM-dd");
+                  const lastMonthStart = format(new Date(now.getFullYear(), now.getMonth() - 1, 1), "yyyy-MM-dd");
+                  const lastMonthEnd = format(new Date(now.getFullYear(), now.getMonth(), 0), "yyyy-MM-dd");
 
-                const isAll = !dateFrom && !dateTo;
-                const isToday = dateFrom === todayStr && dateTo === todayStr;
-                const isThisMonth = dateFrom === thisMonthStart && dateTo === thisMonthEnd;
-                const isLastMonth = dateFrom === lastMonthStart && dateTo === lastMonthEnd;
+                  const isAll = !dateFrom && !dateTo;
+                  const isToday = dateFrom === todayStr && dateTo === todayStr;
+                  const isThisMonth = dateFrom === thisMonthStart && dateTo === thisMonthEnd;
+                  const isLastMonth = dateFrom === lastMonthStart && dateTo === lastMonthEnd;
 
-                return (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDateFrom("");
-                        setDateTo("");
-                      }}
-                      className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
-                        isAll ? "bg-white text-indigo-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      All
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDateFrom(todayStr);
-                        setDateTo(todayStr);
-                      }}
-                      className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
-                        isToday ? "bg-white text-indigo-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      Today
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDateFrom(thisMonthStart);
-                        setDateTo(thisMonthEnd);
-                      }}
-                      className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
-                        isThisMonth ? "bg-white text-indigo-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      This Month
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDateFrom(lastMonthStart);
-                        setDateTo(lastMonthEnd);
-                      }}
-                      className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
-                        isLastMonth ? "bg-white text-indigo-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      Last Month
-                    </button>
-                  </>
-                );
-              })()}
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDateFrom("");
+                          setDateTo("");
+                        }}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                          isAll ? "bg-white text-indigo-700 shadow-xs font-black" : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        All Time
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDateFrom(todayStr);
+                          setDateTo(todayStr);
+                        }}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                          isToday ? "bg-white text-indigo-700 shadow-xs font-black" : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        Today
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDateFrom(thisMonthStart);
+                          setDateTo(thisMonthEnd);
+                        }}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                          isThisMonth ? "bg-white text-indigo-700 shadow-xs font-black" : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        This Month
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDateFrom(lastMonthStart);
+                          setDateTo(lastMonthEnd);
+                        }}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                          isLastMonth ? "bg-white text-indigo-700 shadow-xs font-black" : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        Last Month
+                      </button>
+                    </>
+                  );
+                })()}
+              </div>
+
+              <div className="flex items-center gap-1 pr-1">
+                <Input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="h-7 w-[122px] text-[11px] font-mono rounded-lg border-slate-200 bg-white px-2"
+                  title="ตั้งแต่วันที่ (From Date)"
+                />
+                <span className="text-slate-400 text-xs font-bold">–</span>
+                <Input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="h-7 w-[122px] text-[11px] font-mono rounded-lg border-slate-200 bg-white px-2"
+                  title="ถึงวันที่ (To Date)"
+                />
+                {(dateFrom || dateTo) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDateFrom("");
+                      setDateTo("");
+                    }}
+                    className="text-[11px] font-bold text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 rounded-md cursor-pointer"
+                    title="ล้างตัวกรองวันที่"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className="flex items-center gap-1">
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className="h-7 w-[124px] text-[11px] rounded-lg border-slate-200 bg-white px-2"
-                title="ตั้งแต่วันที่ (From Date)"
-              />
-              <span className="text-slate-400 text-xs font-bold">-</span>
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                className="h-7 w-[124px] text-[11px] rounded-lg border-slate-200 bg-white px-2"
-                title="ถึงวันที่ (To Date)"
-              />
-              {(dateFrom || dateTo) && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDateFrom("");
-                    setDateTo("");
-                  }}
-                  className="text-[11px] font-bold text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 rounded cursor-pointer"
-                  title="ล้างตัวกรองวันที่"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-          </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={loadData}
+              disabled={isLoading}
+              className="h-9 px-2.5 text-xs font-bold border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer"
+              title="Refresh Data (รีเฟรชข้อมูล)"
+            >
+              <RefreshCw size={14} className={isLoading ? "animate-spin text-indigo-600" : ""} />
+            </Button>
 
-          {canApproveOrTopUp && (
-            <>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setEditableCategories([...categories]);
-                  setNewCategoryInput("");
-                  setCatModalOpen(true);
-                }}
-                className="h-9 text-xs font-bold border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl gap-1.5 cursor-pointer"
-              >
-                <Settings2 size={14} className="text-slate-500" />
-                Categories (หมวดหมู่: {categories.length})
-              </Button>
-
-              <div className="relative" ref={exportMenuRef}>
+            {canApproveOrTopUp && (
+              <>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => setExportMenuOpen((prev) => !prev)}
+                  onClick={() => {
+                    setEditableCategories([...categories]);
+                    setNewCategoryInput("");
+                    setCatModalOpen(true);
+                  }}
                   className="h-9 text-xs font-bold border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl gap-1.5 cursor-pointer"
                 >
-                  <Download size={14} className="text-slate-500" />
-                  Export
-                  <ChevronDown size={14} className={`ml-0.5 text-slate-400 transition-transform ${exportMenuOpen ? "rotate-180" : ""}`} />
+                  <Settings2 size={14} className="text-indigo-500" />
+                  Categories ({categories.length})
                 </Button>
 
-                {exportMenuOpen && (
-                  <div className="absolute right-0 mt-1.5 w-44 rounded-xl bg-white border border-slate-200 shadow-lg py-1.5 z-50 text-xs">
-                    <button
-                      type="button"
-                      onClick={handleExportCsv}
-                      className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-slate-50 text-slate-700 font-medium transition-colors cursor-pointer"
-                    >
-                      <FileText size={14} className="text-emerald-600 shrink-0" />
-                      <span>Export CSV (.csv)</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleExportPdf}
-                      className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-slate-50 text-slate-700 font-medium transition-colors cursor-pointer"
-                    >
-                      <FileText size={14} className="text-rose-600 shrink-0" />
-                      <span>Export PDF (.pdf)</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
+                <div className="relative" ref={exportMenuRef}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setExportMenuOpen((prev) => !prev)}
+                    className="h-9 text-xs font-bold border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl gap-1.5 cursor-pointer"
+                  >
+                    <Download size={14} className="text-emerald-600" />
+                    Export
+                    <ChevronDown size={14} className={`ml-0.5 text-slate-400 transition-transform ${exportMenuOpen ? "rotate-180" : ""}`} />
+                  </Button>
 
-          <div className="relative" ref={expenseMenuRef}>
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => setExpenseMenuOpen((prev) => !prev)}
-              className="h-9 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl gap-1.5 shadow-sm cursor-pointer"
-            >
-              <ArrowUpRight size={14} />
-              - Record Expense (บันทึกเบิกจ่าย)
-              <ChevronDown size={14} className={`ml-0.5 transition-transform ${expenseMenuOpen ? "rotate-180" : ""}`} />
-            </Button>
+                  {exportMenuOpen && (
+                    <div className="absolute right-0 mt-1.5 w-48 rounded-xl bg-white border border-slate-200 shadow-xl py-1.5 z-50 text-xs">
+                      <button
+                        type="button"
+                        onClick={handleExportCsv}
+                        className="w-full px-3.5 py-2.5 flex items-center gap-2.5 hover:bg-slate-50 text-slate-700 font-semibold transition-colors cursor-pointer"
+                      >
+                        <FileText size={14} className="text-emerald-600 shrink-0" />
+                        <span>Export Excel / CSV (.csv)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleExportPdf}
+                        className="w-full px-3.5 py-2.5 flex items-center gap-2.5 hover:bg-slate-50 text-slate-700 font-semibold transition-colors cursor-pointer"
+                      >
+                        <FileText size={14} className="text-rose-600 shrink-0" />
+                        <span>Print / Export PDF (.pdf)</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
 
-            {expenseMenuOpen && (
-              <div className="absolute right-0 mt-1.5 w-64 rounded-xl bg-white border border-slate-200 shadow-lg py-1.5 z-50 text-xs">
-                <button
+                <Button
                   type="button"
-                  onClick={() => handleOpenCreateModal("EXPENSE", undefined, "EXPENSE_DOC")}
-                  className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-medium transition-colors cursor-pointer"
+                  size="sm"
+                  onClick={() =>
+                    handleOpenCreateModal("TOPUP", {
+                      id: currentUser?.id || holderSummaries[0]?.holderId || "",
+                      name: currentUser?.name || holderSummaries[0]?.holderName || "Custodian",
+                      branchId: currentUser?.branchId || holderSummaries[0]?.branchId || "HQ",
+                    })
+                  }
+                  className="h-9 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl gap-1.5 shadow-sm cursor-pointer"
                 >
-                  <span className="flex items-center gap-2.5">
-                    <FileText size={15} className="text-blue-500 shrink-0" />
-                    <span>Expense Document</span>
-                  </span>
-                  <span className="text-[11px] text-slate-400 font-mono">Alt+N</span>
-                </button>
-
-                {canApproveOrTopUp && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => handleOpenCreateModal("EXPENSE", undefined, "DEBT_PAYMENT")}
-                      className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-medium transition-colors cursor-pointer"
-                    >
-                      <span className="flex items-center gap-2.5">
-                        <FileText size={15} className="text-blue-500 shrink-0" />
-                        <span>Debt / Capital Payment</span>
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleOpenCreateModal("EXPENSE", undefined, "PAYMENT_VOUCHER")}
-                      className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-medium transition-colors cursor-pointer"
-                    >
-                      <span className="flex items-center gap-2.5">
-                        <Files size={15} className="text-blue-500 shrink-0" />
-                        <span>Payment Voucher</span>
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleOpenCreateModal("EXPENSE", undefined, "PAYROLL")}
-                      className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-medium transition-colors cursor-pointer"
-                    >
-                      <span className="flex items-center gap-2.5">
-                        <Banknote size={15} className="text-emerald-600 shrink-0" />
-                        <span>Payroll</span>
-                      </span>
-                    </button>
-                  </>
-                )}
-              </div>
+                  <Plus size={14} />
+                  Top-up Wallet (เติมเงิน)
+                </Button>
+              </>
             )}
+
+            <div className="relative" ref={expenseMenuRef}>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => setExpenseMenuOpen((prev) => !prev)}
+                className="h-9 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl gap-1.5 shadow-sm cursor-pointer"
+              >
+                <ArrowUpRight size={14} />
+                - Record Expense (บันทึกเบิกจ่าย)
+                <ChevronDown size={14} className={`ml-0.5 transition-transform ${expenseMenuOpen ? "rotate-180" : ""}`} />
+              </Button>
+
+              {expenseMenuOpen && (
+                <div className="absolute right-0 mt-1.5 w-68 rounded-xl bg-white border border-slate-200 shadow-xl py-1.5 z-50 text-xs">
+                  <div className="px-3.5 py-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                    Select Expense Voucher Type
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenCreateModal("EXPENSE", undefined, "EXPENSE_DOC")}
+                    className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-semibold transition-colors cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <FileText size={15} className="text-indigo-600 shrink-0" />
+                      <span>Expense Document (ใบเบิกค่าใช้จ่าย)</span>
+                    </span>
+                    <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono">Alt+N</span>
+                  </button>
+
+                  {canApproveOrTopUp && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenCreateModal("EXPENSE", undefined, "DEBT_PAYMENT")}
+                        className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-semibold transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2.5">
+                          <FileText size={15} className="text-amber-600 shrink-0" />
+                          <span>Debt / Capital Payment (ชำระหนี้/เงินทุน)</span>
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleOpenCreateModal("EXPENSE", undefined, "PAYMENT_VOUCHER")}
+                        className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-semibold transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2.5">
+                          <Files size={15} className="text-sky-600 shrink-0" />
+                          <span>Payment Voucher (ใบสำคัญจ่าย)</span>
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleOpenCreateModal("EXPENSE", undefined, "PAYROLL")}
+                        className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-semibold transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2.5">
+                          <Banknote size={15} className="text-emerald-600 shrink-0" />
+                          <span>Payroll & Wages (เงินเดือน/ค่าแรง)</span>
+                        </span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* ── KPI CARDS (ACCOUNTING VIEW vs PERSONAL STORE VIEW) ────── */}
+      {/* ── 2. EXECUTIVE KPI CARDS (5-COLUMN DETAILED FINANCIAL METRICS) ────── */}
       {canApproveOrTopUp ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
-            <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Total Balance (คงเหลือรวม)
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+          {/* KPI 1: Total Balance & Quota */}
+          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 border-t-4 border-t-indigo-600 shadow-xs flex flex-col justify-between hover:shadow-md transition-all">
+            <div className="flex items-start justify-between gap-2.5">
+              <div className="space-y-1 min-w-0">
+                <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-400 block">
+                  Total Balance (คงเหลือรวม)
+                </span>
+                <div
+                  className={`text-2xl font-black font-mono tracking-tight ${
+                    (holderFilter === "ALL" ? dashboardDetails.totalWalletBalanceAll : kpiStats.netBalance) < 0
+                      ? "text-rose-600"
+                      : "text-slate-900"
+                  }`}
+                >
+                  ฿{(holderFilter === "ALL" ? dashboardDetails.totalWalletBalanceAll : kpiStats.netBalance).toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
+                </div>
+              </div>
+              <div className="w-10 h-10 rounded-2xl bg-indigo-50 border border-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
+                <Wallet size={20} />
+              </div>
+            </div>
+
+            <div className="mt-3.5 pt-2.5 border-t border-slate-100 space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-slate-500 font-medium">
+                  วงเงินรวม (Total Limit): <strong className="font-mono text-slate-800">฿{dashboardDetails.totalLimitAll.toLocaleString()}</strong>
+                </span>
+                <span className="text-[10px] font-black font-mono text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">
+                  {dashboardDetails.totalLimitAll > 0
+                    ? `${Math.min(100, Math.round((Math.max(0, dashboardDetails.totalWalletBalanceAll) / dashboardDetails.totalLimitAll) * 100))}% Full`
+                    : "0%"}
+                </span>
+              </div>
+              <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-indigo-600 rounded-full transition-all duration-300"
+                  style={{
+                    width: `${
+                      dashboardDetails.totalLimitAll > 0
+                        ? Math.min(100, Math.max(0, (dashboardDetails.totalWalletBalanceAll / dashboardDetails.totalLimitAll) * 100))
+                        : 0
+                    }%`,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* KPI 2: Accounting Pool */}
+          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 border-t-4 border-t-emerald-500 shadow-xs flex flex-col justify-between hover:shadow-md transition-all">
+            <div className="flex items-start justify-between gap-2.5">
+              <div className="space-y-1 min-w-0">
+                <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-400 block">
+                  Accounting Pool (ฝ่ายบัญชี)
+                </span>
+                <div className="text-2xl font-black font-mono text-emerald-600 tracking-tight">
+                  ฿{kpiStats.accountingPoolBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="w-10 h-10 rounded-2xl bg-emerald-50 border border-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
+                <ArrowDownLeft size={20} />
+              </div>
+            </div>
+
+            <div className="mt-3.5 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
+              <span className="text-slate-500 font-medium">
+                รับจากบริษัท: <strong className="font-mono text-emerald-600">+฿{kpiStats.companyTopupTotal.toLocaleString()}</strong>
               </span>
-              <div
-                className={`text-2xl font-black font-mono mt-1 ${
-                  kpiStats.netBalance < 0 ? "text-rose-600" : "text-slate-900"
-                }`}
+              <span className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-bold text-[10px]">
+                {accountingCustodians.length} บัญชี/HQ
+              </span>
+            </div>
+          </div>
+
+          {/* KPI 3: Store Wallets */}
+          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 border-t-4 border-t-sky-500 shadow-xs flex flex-col justify-between hover:shadow-md transition-all">
+            <div className="flex items-start justify-between gap-2.5">
+              <div className="space-y-1 min-w-0">
+                <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-400 block">
+                  Store Wallets (คงเหลือหน้าร้าน)
+                </span>
+                <div className="text-2xl font-black font-mono text-sky-600 tracking-tight">
+                  ฿{kpiStats.storePoolBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="w-10 h-10 rounded-2xl bg-sky-50 border border-sky-100 text-sky-600 flex items-center justify-center shrink-0">
+                <ArrowLeftRight size={20} />
+              </div>
+            </div>
+
+            <div className="mt-3.5 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
+              <span className="text-slate-500 font-medium">
+                โอนให้สาขา: <strong className="font-mono text-sky-700">฿{kpiStats.transferredToStoreTotal.toLocaleString()}</strong>
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 font-bold text-[10px]">
+                {storeCustodians.length} หน้าร้าน
+              </span>
+            </div>
+          </div>
+
+          {/* KPI 4: Total Disbursed Expenses */}
+          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 border-t-4 border-t-rose-500 shadow-xs flex flex-col justify-between hover:shadow-md transition-all">
+            <div className="flex items-start justify-between gap-2.5">
+              <div className="space-y-1 min-w-0">
+                <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-400 block">
+                  Total Expenses (เบิกจ่ายจริง)
+                </span>
+                <div className="text-2xl font-black font-mono text-rose-600 tracking-tight">
+                  -฿{kpiStats.realExpenseTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="w-10 h-10 rounded-2xl bg-rose-50 border border-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                <ArrowUpRight size={20} />
+              </div>
+            </div>
+
+            <div className="mt-3.5 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
+              <span className="text-slate-500 font-medium">
+                อนุมัติแล้ว: <strong className="font-mono text-slate-800">฿{dashboardDetails.approvedExpenseTotal.toLocaleString()}</strong>
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-rose-50 text-rose-700 font-bold text-[10px] font-mono">
+                {dashboardDetails.expenseTxCount} รายการ
+              </span>
+            </div>
+          </div>
+
+          {/* KPI 5: Audit Queue & Receipt Compliance */}
+          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 border-t-4 border-t-amber-500 shadow-xs flex flex-col justify-between hover:shadow-md transition-all">
+            <div className="flex items-start justify-between gap-2.5">
+              <div className="space-y-1 min-w-0">
+                <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-400 block">
+                  Pending Audit (รอตรวจบิล)
+                </span>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-2xl font-black font-mono text-amber-600 tracking-tight">
+                    {kpiStats.pendingCount}
+                  </span>
+                  <span className="text-xs font-bold text-slate-400 font-mono">
+                    (฿{kpiStats.pendingAmount.toLocaleString()})
+                  </span>
+                </div>
+              </div>
+              <div className="w-10 h-10 rounded-2xl bg-amber-50 border border-amber-100 text-amber-600 flex items-center justify-center shrink-0">
+                <Receipt size={20} />
+              </div>
+            </div>
+
+            <div className="mt-3.5 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
+              <span className="text-slate-500 font-medium">
+                แนบใบเสร็จ/สลิป: <strong className="font-mono text-emerald-600">{dashboardDetails.attachmentCompliancePct}%</strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => setStatusFilter(statusFilter === "PENDING" ? "ALL" : "PENDING")}
+                className="px-2 py-0.5 rounded bg-amber-50 hover:bg-amber-100 text-amber-700 font-bold text-[10px] transition-colors cursor-pointer"
               >
-                ฿{kpiStats.netBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-              <span className="text-[11px] text-slate-500">
-                {holderFilter === "ALL" ? "All Wallets (รวมบัญชี + หน้าร้าน)" : "Selected Holder (เฉพาะผู้ถือที่เลือก)"}
-              </span>
-            </div>
-            <div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
-              <Wallet size={22} />
-            </div>
-          </div>
-
-          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
-            <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Accounting Pool (คงเหลือฝ่ายบัญชี)
-              </span>
-              <div className="text-2xl font-black font-mono text-emerald-600 mt-1">
-                ฿{kpiStats.accountingPoolBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-              <span className="text-[11px] text-slate-500">
-                Company Top-up (รับจากบริษัท): +฿{kpiStats.companyTopupTotal.toLocaleString()}
-              </span>
-            </div>
-            <div className="w-11 h-11 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-              <ArrowDownLeft size={22} />
-            </div>
-          </div>
-
-          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
-            <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Store Wallets (คงเหลือหน้าร้าน)
-              </span>
-              <div className="text-2xl font-black font-mono text-indigo-600 mt-1">
-                ฿{kpiStats.storePoolBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-              <span className="text-[11px] text-slate-500">
-                Transferred (โอนให้ร้านสะสม): ฿{kpiStats.transferredToStoreTotal.toLocaleString()}
-              </span>
-            </div>
-            <div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
-              <ArrowLeftRight size={22} />
-            </div>
-          </div>
-
-          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
-            <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Total Expenses (เบิกจ่ายจริง)
-              </span>
-              <div className="text-2xl font-black font-mono text-rose-600 mt-1">
-                -฿{kpiStats.realExpenseTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-              <span className="text-[11px] text-amber-600 font-bold">
-                ⏳ Pending (รอตรวจบิล): {kpiStats.pendingCount} items (฿{kpiStats.pendingAmount.toLocaleString()})
-              </span>
-            </div>
-            <div className="w-11 h-11 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center">
-              <ArrowUpRight size={22} />
+                {statusFilter === "PENDING" ? "แสดงทั้งหมด" : "กรองรอตรวจ"}
+              </button>
             </div>
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-          <div className="bg-white p-4 rounded-2xl border border-indigo-200/90 shadow-xs flex items-center justify-between">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 border-t-4 border-t-indigo-600 shadow-xs flex items-center justify-between">
             <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-600">
+              <span className="text-[11px] font-black uppercase tracking-wider text-indigo-600">
                 My Balance (ยอดคงเหลือของคุณ)
               </span>
               <div
@@ -1744,9 +1941,9 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
             </div>
           </div>
 
-          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
+          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 border-t-4 border-t-emerald-500 shadow-xs flex items-center justify-between">
             <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">
                 Total Received (ยอดรับโอนสะสม)
               </span>
               <div className="text-2xl font-black font-mono text-emerald-600 mt-1">
@@ -1761,9 +1958,9 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
             </div>
           </div>
 
-          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
+          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 border-t-4 border-t-rose-500 shadow-xs flex items-center justify-between">
             <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">
                 My Expenses (เบิกจ่ายสะสม)
               </span>
               <div className="text-2xl font-black font-mono text-rose-600 mt-1">
@@ -1780,89 +1977,215 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         </div>
       )}
 
-      {/* ── CUSTODIAN WALLETS (กระเป๋าเงินสดย่อยรายบุคคล — เฉพาะฝ่ายบัญชี / Admin เท่านั้นที่เห็นทุกคน) ─── */}
+      {/* ── 3. CUSTODIAN WALLETS (กระเป๋าเงินสดย่อยรายบุคคล — DETAILED MODERN CARDS) ─── */}
       {canApproveOrTopUp && holderSummaries.length > 0 && (
-        <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs space-y-3.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <User size={15} className="text-indigo-600" />
-              <h2 className="text-xs font-black uppercase tracking-wider text-slate-700">
-                Custodian Wallets (กระเป๋าเงินสดย่อยรายบุคคล — {holderSummaries.length} คน)
-              </h2>
+        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-100 flex items-center justify-center">
+                <User size={16} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xs sm:text-sm font-black uppercase tracking-wider text-slate-800">
+                    Custodian Wallets (กระเป๋าเงินสดย่อยรายบุคคล — {holderSummaries.length} คน)
+                  </h2>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                    Total Quota: ฿{dashboardDetails.totalLimitAll.toLocaleString()}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  คลิกที่การ์ดผู้ถือเงินสดย่อยเพื่อกรองรายการเดินบัญชีเฉพาะบุคคล หรือกด +Top-up เพื่อเติมเงินให้ครบวงเงิน
+                </p>
+              </div>
             </div>
-            {holderFilter !== "ALL" && (
-              <button
-                type="button"
-                onClick={() => setHolderFilter("ALL")}
-                className="text-xs font-bold text-indigo-600 hover:underline cursor-pointer"
-              >
-                Show All (แสดงทุกคน)
-              </button>
-            )}
+
+            <div className="flex items-center gap-2">
+              {holderFilter !== "ALL" && (
+                <button
+                  type="button"
+                  onClick={() => setHolderFilter("ALL")}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold transition-colors cursor-pointer"
+                >
+                  ✕ Clear Filter (แสดงทุกคน)
+                </button>
+              )}
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div
+            className={`grid grid-cols-1 md:grid-cols-2 ${
+              holderSummaries.length === 3 ? "xl:grid-cols-3" : "xl:grid-cols-4"
+            } gap-4`}
+          >
             {holderSummaries.map((h) => {
               const isSelected = holderFilter === h.holderId;
               const branchName = getBranchDisplayName(h.branchId);
+              const limit = getHolderLimit(h.holderId, h.isAccounting);
+              const shortfall = Math.max(0, Math.round((limit - h.currentBalance) * 100) / 100);
+              const fillPct = limit > 0 ? Math.min(100, Math.max(0, Math.round((h.currentBalance / limit) * 100))) : 0;
+              const initials = (h.holderName || "U")
+                .split(" ")
+                .filter(Boolean)
+                .slice(0, 2)
+                .map((part) => part[0]?.toUpperCase())
+                .join("");
+
+              const statusBadge =
+                h.currentBalance <= 0
+                  ? { label: "Needs Top-up (รอเติมวงเงิน)", cls: "bg-amber-50 text-amber-700 border-amber-200" }
+                  : fillPct < 25
+                    ? { label: "Low Balance (ใกล้หมด)", cls: "bg-rose-50 text-rose-700 border-rose-200" }
+                    : { label: "Active (พร้อมใช้งาน)", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+
               return (
                 <div
                   key={h.holderId}
                   onClick={() => setHolderFilter(isSelected ? "ALL" : h.holderId)}
-                  className={`p-3 rounded-xl border transition-all cursor-pointer ${
+                  className={`p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between relative overflow-hidden group ${
                     isSelected
-                      ? "bg-indigo-50/70 border-indigo-400 ring-2 ring-indigo-500/15"
-                      : "bg-slate-50/60 border-slate-200/80 hover:border-slate-300 hover:bg-white"
+                      ? "bg-indigo-50/40 border-indigo-500 ring-2 ring-indigo-500/15 shadow-sm"
+                      : "bg-gradient-to-b from-white to-slate-50/50 border-slate-200/90 hover:border-indigo-300 hover:shadow-md"
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="font-bold text-slate-900 text-xs truncate flex items-center gap-1.5">
-                        <span className="truncate">{h.holderName}</span>
-                        {h.holderId === currentUser?.id && (
-                          <Badge className="bg-indigo-600 text-white text-[8.5px] px-1.5 py-0">You (คุณ)</Badge>
-                        )}
+                  {/* Top Row: Avatar, Name, Role/Branch & Balance */}
+                  <div>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div
+                          className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-xs shrink-0 shadow-2xs border ${
+                            h.isAccounting
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              : "bg-indigo-50 text-indigo-700 border-indigo-200"
+                          }`}
+                        >
+                          {initials || "PC"}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-black text-slate-900 text-sm truncate flex items-center gap-1.5">
+                            <span className="truncate">{h.holderName}</span>
+                            {h.holderId === currentUser?.id && (
+                              <Badge className="bg-indigo-600 text-white text-[9px] px-1.5 py-0 rounded-md shrink-0">
+                                You (คุณ)
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-0.5 flex-wrap">
+                            <span className="font-semibold text-slate-600">{h.department || h.roleLabel}</span>
+                            <span>•</span>
+                            <span className="inline-flex items-center gap-1 text-slate-500">
+                              <Building2 size={11} className="text-slate-400" />
+                              {branchName}
+                            </span>
+                          </div>
+                        </div>
                       </div>
-                      <div className="text-[10px] text-slate-500 truncate">
-                        {h.department || h.roleLabel} • {branchName}
+
+                      <div className="text-right shrink-0">
+                        <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 block">
+                          Current Balance
+                        </span>
+                        <span
+                          className={`font-mono font-black text-lg leading-tight block ${
+                            h.currentBalance < 0
+                              ? "text-rose-600"
+                              : h.currentBalance === 0
+                                ? "text-slate-600"
+                                : "text-indigo-700"
+                          }`}
+                        >
+                          ฿{h.currentBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
                       </div>
                     </div>
-                    <span
-                      className={`font-mono font-black text-sm shrink-0 ${
-                        h.currentBalance < 0 ? "text-rose-600" : "text-indigo-700"
-                      }`}
-                    >
-                      ฿{h.currentBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </span>
+
+                    {/* Quota Utilization Progress Bar */}
+                    <div className="mt-3.5 bg-white/90 border border-slate-200/70 rounded-xl p-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between text-[10.5px]">
+                        <span className="font-bold text-slate-600 flex items-center gap-1.5">
+                          <span>Quota Limit: <strong className="font-mono text-slate-900">฿{limit.toLocaleString()}</strong></span>
+                          <span className={`px-1.5 py-0.2 rounded border text-[9.5px] font-bold ${statusBadge.cls}`}>
+                            {statusBadge.label}
+                          </span>
+                        </span>
+                        <span className="font-mono font-bold text-slate-500">
+                          {fillPct}%
+                        </span>
+                      </div>
+                      <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-300 ${
+                            fillPct < 25 ? "bg-amber-500" : "bg-emerald-500"
+                          }`}
+                          style={{ width: `${Math.max(fillPct, h.currentBalance > 0 ? 4 : 0)}%` }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 pt-0.5">
+                        <span>
+                          ต้องเติมเพิ่ม (Shortfall): <strong className="font-mono text-indigo-600">฿{shortfall.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                        </span>
+                        <span>{h.txCount} รายการสะสม</span>
+                      </div>
+                    </div>
+
+                    {/* 3-Column Mini Financial Ledger */}
+                    <div className="grid grid-cols-3 gap-2 mt-2.5 text-center">
+                      <div className="bg-emerald-50/50 border border-emerald-100 rounded-lg py-1.5 px-2">
+                        <span className="text-[9.5px] font-bold text-emerald-700 uppercase block">Received (รับ)</span>
+                        <span className="font-mono font-black text-xs text-emerald-700">
+                          +฿{h.totalTopup.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="bg-rose-50/50 border border-rose-100 rounded-lg py-1.5 px-2">
+                        <span className="text-[9.5px] font-bold text-rose-700 uppercase block">Spent (จ่าย)</span>
+                        <span className="font-mono font-black text-xs text-rose-600">
+                          -฿{h.totalExpense.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="bg-amber-50/50 border border-amber-100 rounded-lg py-1.5 px-2">
+                        <span className="text-[9.5px] font-bold text-amber-700 uppercase block">Pending (รอตรวจ)</span>
+                        <span className="font-mono font-black text-xs text-amber-700">
+                          {h.pendingCount} บิล
+                        </span>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="mt-2 pt-2 border-t border-slate-200/70 flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-500">
-                    <span>
-                      Limit: <strong className="text-slate-700">฿{getHolderLimit(h.holderId, h.isAccounting).toLocaleString()}</strong>
-                      {" "}• Received: <strong className="text-emerald-600">+฿{h.totalTopup.toLocaleString()}</strong>
-                      {h.transferOut > 0 && (
-                        <>
-                          {" "}• Transfer: <strong className="text-indigo-700">-฿{h.transferOut.toLocaleString()}</strong>
-                        </>
-                      )}
-                      {" "}• Spent: <strong className="text-rose-600">-฿{h.totalExpense.toLocaleString()}</strong>
+                  {/* Card Footer Actions */}
+                  <div className="mt-3 pt-2.5 border-t border-slate-200/70 flex items-center justify-between gap-2">
+                    <span className="text-[10.5px] font-bold text-slate-400 group-hover:text-indigo-600 transition-colors">
+                      {isSelected ? "✓ กำลังกรองรายการของผู้ถือนี้" : "คลิกเพื่อดูประวัติรายการ"}
                     </span>
+
                     {canApproveOrTopUp && (
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
+                          onClick={() =>
+                            handleOpenCreateModal(
+                              "EXPENSE",
+                              { id: h.holderId, name: h.holderName, branchId: h.branchId },
+                              "EXPENSE_DOC"
+                            )
+                          }
+                          className="px-2.5 py-1 rounded-lg bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 font-bold text-[10.5px] transition-colors cursor-pointer"
+                          title="Record expense for this custodian"
+                        >
+                          - เบิกจ่าย
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
                             handleOpenCreateModal("TOPUP", {
                               id: h.holderId,
                               name: h.holderName,
                               branchId: h.branchId,
-                            });
-                          }}
-                          className="px-2.5 py-0.5 rounded bg-emerald-600 text-white hover:bg-emerald-700 font-bold text-[10px] cursor-pointer"
+                            })
+                          }
+                          className="px-3 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 font-bold text-[10.5px] shadow-2xs transition-colors cursor-pointer flex items-center gap-1"
                           title="Replenish / Top-up Petty Cash"
                         >
-                          + Top-up
+                          <Plus size={11} /> Top-up (เติมเงิน)
                         </button>
                       </div>
                     )}
@@ -1874,123 +2197,249 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         </div>
       )}
 
-      {/* ── FILTERS BAR ───────────────────────────────────────────── */}
-      <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs space-y-2.5">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
-          {/* Search */}
-          <div className="relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search Tx No., description, vendor, invoice... (ค้นหา)"
-              className="h-9 pl-8 text-xs rounded-xl border-slate-200"
-            />
+      {/* ── 4. CATEGORY SPEND BREAKDOWN (WHEN EXPENSES EXIST) ───────────── */}
+      {dashboardDetails.categoryBreakdown.length > 0 && (
+        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Tag size={15} className="text-indigo-600" />
+              <h3 className="text-xs font-black uppercase tracking-wider text-slate-800">
+                Expense Breakdown by Category (สรุปยอดเบิกจ่ายแยกตามหมวดหมู่)
+              </h3>
+            </div>
+            {categoryFilter !== "ALL" && (
+              <button
+                type="button"
+                onClick={() => setCategoryFilter("ALL")}
+                className="text-xs font-bold text-indigo-600 hover:underline cursor-pointer"
+              >
+                Show All Categories
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {dashboardDetails.categoryBreakdown.slice(0, 8).map((item) => {
+              const pct =
+                kpiStats.realExpenseTotal > 0
+                  ? Math.round((item.amount / kpiStats.realExpenseTotal) * 100)
+                  : 0;
+              const isSelectedCat = categoryFilter === item.category;
+              return (
+                <div
+                  key={item.category}
+                  onClick={() => setCategoryFilter(isSelectedCat ? "ALL" : item.category)}
+                  className={`p-3 rounded-xl border transition-all cursor-pointer ${
+                    isSelectedCat
+                      ? "bg-indigo-50/70 border-indigo-400"
+                      : "bg-slate-50/70 border-slate-200/70 hover:bg-white hover:border-slate-300"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="font-bold text-slate-800 truncate">{item.category}</span>
+                    <span className="font-mono font-black text-rose-600 shrink-0">
+                      ฿{item.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="w-full h-1.5 bg-slate-200/80 rounded-full overflow-hidden my-1.5">
+                    <div className="h-full bg-indigo-600 rounded-full" style={{ width: `${Math.max(pct, 4)}%` }} />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-slate-500">
+                    <span>{item.count} รายการ</span>
+                    <span className="font-mono font-bold">{pct}% ของค่าใช้จ่าย</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── 5. UNIFIED LEDGER FILTER BAR & QUICK TABS ───────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        {/* Top Quick-Filter Tabs */}
+        <div className="px-4 pt-3.5 pb-3 border-b border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-slate-50/50">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {[
+              { id: "ALL", label: "ทั้งหมด (All)", count: filteredTransactions.length },
+              { id: "EXPENSE", label: "เบิกจ่าย (Expenses)", count: dashboardDetails.expenseTxCount },
+              { id: "TOPUP", label: "เติมเงิน (Top-ups)", count: dashboardDetails.topupTxCount },
+              { id: "TRANSFER_OUT", label: "โอนวงเงิน (Transfers)", count: dashboardDetails.transferTxCount },
+            ].map((tab) => {
+              const active = typeFilter === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setTypeFilter(tab.id)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    active
+                      ? "bg-indigo-600 text-white shadow-xs"
+                      : "bg-white text-slate-600 border border-slate-200/80 hover:bg-slate-100"
+                  }`}
+                >
+                  <span>{tab.label}</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-md text-[10px] font-mono font-black ${
+                      active ? "bg-indigo-500 text-white" : "bg-slate-100 text-slate-600"
+                    }`}
+                  >
+                    {tab.count}
+                  </span>
+                </button>
+              );
+            })}
+
+            {(holderFilter !== "ALL" ||
+              branchFilter !== "ALL" ||
+              categoryFilter !== "ALL" ||
+              statusFilter !== "ALL" ||
+              typeFilter !== "ALL" ||
+              searchQuery.trim() !== "") && (
+              <button
+                type="button"
+                onClick={() => {
+                  setHolderFilter("ALL");
+                  setBranchFilter("ALL");
+                  setCategoryFilter("ALL");
+                  setStatusFilter("ALL");
+                  setTypeFilter("ALL");
+                  setSearchQuery("");
+                }}
+                className="px-2.5 py-1.5 rounded-xl text-xs font-bold text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+              >
+                ✕ Reset Filters
+              </button>
+            )}
           </div>
 
-          {/* Holder Filter (Locked to self if not Accounting/Admin) */}
-          {canApproveOrTopUp ? (
-            <select
-              value={holderFilter}
-              onChange={(e) => setHolderFilter(e.target.value)}
-              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 outline-none focus:border-indigo-500"
-            >
-              <option value="ALL">👤 All Holders (ผู้ถือทั้งหมด)</option>
-              {holderOptions.map((h) => (
-                <option key={h.id} value={h.id}>
-                  {h.name} ({h.roleLabel})
-                </option>
-              ))}
-            </select>
-          ) : (
-            <div className="h-9 rounded-xl border border-slate-200 bg-slate-100/80 px-2.5 text-xs font-bold text-slate-700 flex items-center justify-between select-none">
-              <span className="truncate">👤 {currentUser?.name || "My Wallet"}</span>
-              <span className="text-[9.5px] font-bold px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-500 shrink-0">
-                Only You (เฉพาะคุณ)
+          <div className="text-xs text-slate-500 font-medium flex items-center gap-2">
+            <span>
+              Showing <strong className="font-mono text-slate-800">{filteredTransactions.length}</strong> transactions
+            </span>
+            {(dateFrom || dateTo) && (
+              <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 font-mono text-[10.5px] font-bold">
+                📅 {dateFrom || "..."} ➔ {dateTo || "..."}
               </span>
-            </div>
-          )}
+            )}
+          </div>
+        </div>
 
-          {/* Branch Filter */}
-          {canApproveOrTopUp ? (
+        {/* 5-Column Search & Filter Controls */}
+        <div className="p-3.5 border-b border-slate-100 bg-white">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+            {/* Search */}
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search Tx No., description, vendor, invoice... (ค้นหา)"
+                className="h-9 pl-8 text-xs rounded-xl border-slate-200"
+              />
+            </div>
+
+            {/* Holder Filter */}
+            {canApproveOrTopUp ? (
+              <select
+                value={holderFilter}
+                onChange={(e) => setHolderFilter(e.target.value)}
+                className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 cursor-pointer"
+              >
+                <option value="ALL">👤 All Holders (ผู้ถือทั้งหมด)</option>
+                {holderOptions.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.name} ({h.roleLabel})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="h-9 rounded-xl border border-slate-200 bg-slate-100/80 px-2.5 text-xs font-bold text-slate-700 flex items-center justify-between select-none">
+                <span className="truncate">👤 {currentUser?.name || "My Wallet"}</span>
+                <span className="text-[9.5px] font-bold px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-500 shrink-0">
+                  Only You (เฉพาะคุณ)
+                </span>
+              </div>
+            )}
+
+            {/* Branch Filter */}
+            {canApproveOrTopUp ? (
+              <select
+                value={branchFilter}
+                onChange={(e) => setBranchFilter(e.target.value)}
+                className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 cursor-pointer"
+              >
+                <option value="ALL">🏢 All Branches (ทุกสาขา)</option>
+                <option value="HQ">Head Quarter (สำนักงานใหญ่)</option>
+                {shops.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="h-9 rounded-xl border border-slate-200 bg-slate-100/80 px-2.5 text-xs font-medium text-slate-600 flex items-center truncate select-none">
+                🏢 {getBranchDisplayName(currentUser?.branchId)}
+              </div>
+            )}
+
+            {/* Category Filter */}
             <select
-              value={branchFilter}
-              onChange={(e) => setBranchFilter(e.target.value)}
-              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 outline-none focus:border-indigo-500"
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 cursor-pointer"
             >
-              <option value="ALL">🏢 All Branches (ทุกสาขา)</option>
-              <option value="HQ">Head Quarter (สำนักงานใหญ่)</option>
-              {shops.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
+              <option value="ALL">🏷️ All Categories (ทุกหมวดหมู่)</option>
+              <option value="Company Top-up (รับเงินโอนจากบริษัท)">Company Top-up (รับเงินบริษัท)</option>
+              <option value="Transfer to Store (โอนวงเงินให้หน้าร้าน)">Transfer to Store (โอนให้หน้าร้าน)</option>
+              {categories.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
                 </option>
               ))}
             </select>
-          ) : (
-            <div className="h-9 rounded-xl border border-slate-200 bg-slate-100/80 px-2.5 text-xs font-medium text-slate-600 flex items-center truncate select-none">
-              🏢 {getBranchDisplayName(currentUser?.branchId)}
-            </div>
-          )}
 
-          {/* Category Filter */}
-          <select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 outline-none focus:border-indigo-500"
-          >
-            <option value="ALL">🏷️ All Categories (ทุกหมวดหมู่)</option>
-            <option value="Company Top-up (รับเงินโอนจากบริษัท)">Company Top-up (รับเงินบริษัท)</option>
-            <option value="Transfer to Store (โอนวงเงินให้หน้าร้าน)">Transfer to Store (โอนให้หน้าร้าน)</option>
-            {categories.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat}
-              </option>
-            ))}
-          </select>
-
-          {/* Status Filter */}
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 outline-none focus:border-indigo-500"
-          >
-            <option value="ALL">📌 All Status (ทุกสถานะ)</option>
-            <option value="PENDING">⏳ Pending (รอตรวจบิล)</option>
-            <option value="APPROVED">✅ Approved (อนุมัติแล้ว)</option>
-            <option value="REJECTED">❌ Rejected (ปฏิเสธ/คืนยอด)</option>
-            <option value="VOID">🚫 Void (ยกเลิก)</option>
-          </select>
+            {/* Status Filter */}
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 cursor-pointer"
+            >
+              <option value="ALL">📌 All Status (ทุกสถานะ)</option>
+              <option value="PENDING">⏳ Pending (รอตรวจบิล)</option>
+              <option value="APPROVED">✅ Approved (อนุมัติแล้ว)</option>
+              <option value="REJECTED">❌ Rejected (ปฏิเสธ/คืนยอด)</option>
+              <option value="VOID">🚫 Void (ยกเลิก)</option>
+            </select>
+          </div>
         </div>
-      </div>
 
-      {/* ── TRANSACTIONS TABLE ────────────────────────────────────── */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        {/* ── 6. TRANSACTIONS LEDGER TABLE ────────────────────────────────────── */}
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50/90 border-b border-slate-200 text-[10.5px] font-black uppercase tracking-wider text-slate-500">
-                <th className="py-3 px-3.5">Date & Tx No. (วัน-เวลา/เลขที่)</th>
-                <th className="py-3 px-3.5">Holder / Branch (ผู้ถือ/สาขา)</th>
-                <th className="py-3 px-3.5">Type / Category (ประเภท/หมวดหมู่)</th>
-                <th className="py-3 px-3.5">Description / Vendor (รายละเอียด)</th>
-                <th className="py-3 px-3.5 text-center">Attachments (ใบเสร็จ/สลิป)</th>
-                <th className="py-3 px-3.5 text-right">Amount (จำนวนเงิน)</th>
-                <th className="py-3 px-3.5 text-right">Balance (คงเหลือ)</th>
-                <th className="py-3 px-3.5 text-center">Status (สถานะ)</th>
-                <th className="py-3 px-3.5 text-right">Actions (จัดการ)</th>
+                <th className="py-3.5 px-4">Date & Tx No. (วัน-เวลา/เลขที่)</th>
+                <th className="py-3.5 px-4">Holder / Branch (ผู้ถือ/สาขา)</th>
+                <th className="py-3.5 px-4">Type / Category (ประเภท/หมวดหมู่)</th>
+                <th className="py-3.5 px-4">Description / Vendor (รายละเอียด)</th>
+                <th className="py-3.5 px-4 text-center">Attachments (ใบเสร็จ/สลิป)</th>
+                <th className="py-3.5 px-4 text-right">Amount (จำนวนเงิน)</th>
+                <th className="py-3.5 px-4 text-right">Balance (คงเหลือ)</th>
+                <th className="py-3.5 px-4 text-center">Status (สถานะ)</th>
+                <th className="py-3.5 px-4 text-right">Actions (จัดการ)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs">
               {isLoading ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
-                    <Loader2 size={22} className="animate-spin mx-auto mb-2 text-indigo-500" />
-                    Loading petty cash transactions... (กำลังโหลดข้อมูล)
+                  <td colSpan={9} className="py-16 text-center text-slate-400">
+                    <Loader2 size={24} className="animate-spin mx-auto mb-2.5 text-indigo-500" />
+                    <span className="font-semibold">Loading petty cash ledger... (กำลังโหลดข้อมูลรายการเงินสดย่อย)</span>
                   </td>
                 </tr>
               ) : filteredTransactions.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
+                  <td colSpan={9} className="py-10 text-center text-slate-400">
                     No petty cash transactions found (ยังไม่มีรายการเงินสดย่อย)
                   </td>
                 </tr>
@@ -2009,26 +2458,26 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                       }`}
                     >
                       {/* Date & Tx Number */}
-                      <td className="py-3 px-3.5 whitespace-nowrap">
+                      <td className="py-3.5 px-4 whitespace-nowrap">
                         <div className="font-bold text-slate-800">
                           {format(new Date(tx.transactionDate), "dd/MM/yyyy HH:mm")}
                         </div>
-                        <div className="text-[10px] font-mono text-slate-400">
+                        <div className="text-[10px] font-mono font-semibold text-indigo-600 bg-indigo-50/80 px-1.5 py-0.2 rounded inline-block mt-0.5">
                           {tx.txNumber || tx.id.slice(0, 8)}
                         </div>
                       </td>
 
                       {/* Holder & Branch */}
-                      <td className="py-3 px-3.5">
+                      <td className="py-3.5 px-4">
                         <div className="font-bold text-slate-900">{tx.holderName}</div>
-                        <div className="text-[10.5px] text-slate-500 flex items-center gap-1">
-                          <Building2 size={10} />
+                        <div className="text-[10.5px] text-slate-500 flex items-center gap-1 mt-0.5">
+                          <Building2 size={10} className="text-slate-400" />
                           <span>{branchName}</span>
                         </div>
                       </td>
 
                       {/* Type & Category */}
-                      <td className="py-3 px-3.5">
+                      <td className="py-3.5 px-4">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <Badge
                             className={`text-[9.5px] font-bold px-1.5 py-0 border ${
@@ -2052,32 +2501,40 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                                     : "Expense (เบิกจ่าย)"}
                           </Badge>
                           {tx.paymentMethod && (
-                            <span className="text-[10px] text-slate-400 font-medium">
-                              • {tx.paymentMethod}
+                            <span className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.2 rounded font-medium">
+                              {tx.paymentMethod}
                             </span>
                           )}
                         </div>
-                        <div className="font-semibold text-slate-700 mt-0.5">{tx.category}</div>
+                        <div className="font-semibold text-slate-700 mt-1">{tx.category}</div>
                       </td>
 
                       {/* Description / Vendor / Invoice */}
-                      <td className="py-3 px-3.5 max-w-[260px]">
+                      <td className="py-3.5 px-4 max-w-[280px]">
                         <div className="font-medium text-slate-900 break-words">{tx.description}</div>
                         {(tx.vendorName || tx.invoiceNo) && (
-                          <div className="text-[10.5px] text-slate-500 mt-0.5 flex flex-wrap gap-2">
-                            {tx.vendorName && <span>🏪 Vendor (ร้านค้า): {tx.vendorName}</span>}
-                            {tx.invoiceNo && <span className="font-mono">🧾 Inv (เลขบิล): #{tx.invoiceNo}</span>}
+                          <div className="text-[10.5px] text-slate-500 mt-1 flex flex-wrap gap-1.5">
+                            {tx.vendorName && (
+                              <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-600 font-medium">
+                                🏪 {tx.vendorName}
+                              </span>
+                            )}
+                            {tx.invoiceNo && (
+                              <span className="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-600">
+                                🧾 #{tx.invoiceNo}
+                              </span>
+                            )}
                           </div>
                         )}
                         {tx.rejectReason && (
-                          <div className="text-[10px] text-rose-600 font-semibold mt-0.5">
+                          <div className="text-[10px] text-rose-600 font-semibold mt-1 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
                             Reason (เหตุผล): {tx.rejectReason}
                           </div>
                         )}
                       </td>
 
                       {/* Attachments (Receipts / Documents / Slips) */}
-                      <td className="py-3 px-3.5 text-center whitespace-nowrap">
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
                         {totalDocs > 0 ? (
                           <button
                             type="button"
@@ -2093,7 +2550,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                           <button
                             type="button"
                             onClick={() => handleOpenEditModal(tx)}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 text-[10px] font-medium cursor-pointer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 text-[10px] font-semibold cursor-pointer"
                           >
                             <Upload size={11} />
                             <span>Attach (แนบไฟล์)</span>
@@ -2102,7 +2559,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                       </td>
 
                       {/* Amount */}
-                      <td className="py-3 px-3.5 text-right whitespace-nowrap">
+                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
                         <span
                           className={`font-mono font-black text-sm ${
                             isRejectedOrVoid
@@ -2121,16 +2578,21 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                       </td>
 
                       {/* Running Balance After */}
-                      <td className="py-3 px-3.5 text-right whitespace-nowrap font-mono font-bold text-slate-800">
-                        ฿
-                        {tx.balanceAfter.toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
+                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                        <div className="font-mono font-bold text-slate-800">
+                          ฿
+                          {tx.balanceAfter.toLocaleString(undefined, {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </div>
+                        <div className="text-[9.5px] font-mono text-slate-400">
+                          จาก ฿{tx.balanceBefore.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        </div>
                       </td>
 
                       {/* Status */}
-                      <td className="py-3 px-3.5 text-center whitespace-nowrap">
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
                         {tx.status === "APPROVED" ? (
                           <div className="inline-flex flex-col items-center">
                             <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300 text-[9.5px] font-bold gap-1">
@@ -2158,7 +2620,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                       </td>
 
                       {/* Actions */}
-                      <td className="py-3 px-3.5 text-right whitespace-nowrap">
+                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1">
                           {canApproveOrTopUp && tx.status === "PENDING" && (
                             <>
@@ -2166,7 +2628,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                                 type="button"
                                 disabled={isReviewing}
                                 onClick={() => handleQuickApprove(tx)}
-                                className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold shadow-2xs cursor-pointer"
+                                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold shadow-2xs cursor-pointer"
                                 title="อนุมัติรายการ"
                               >
                                 Approve
@@ -2180,7 +2642,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                                   setRejectReason("");
                                   setRejectModalOpen(true);
                                 }}
-                                className="px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-bold cursor-pointer"
+                                className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-bold cursor-pointer"
                                 title="ปฏิเสธและคืนยอดเงิน"
                               >
                                 Reject

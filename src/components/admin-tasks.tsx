@@ -1202,6 +1202,23 @@ function TaskCard({
 
   const completedChecklistCount = checklist.filter((i) => i.completed).length;
 
+  const priorityBorderColor =
+    task.priority === "urgent"
+      ? "border-l-4 border-l-rose-500"
+      : task.priority === "high"
+      ? "border-l-4 border-l-orange-500"
+      : task.priority === "medium"
+      ? "border-l-4 border-l-amber-400"
+      : "border-l-4 border-l-slate-300";
+
+  const assigneeList = useMemo(() => {
+    if (!task.assignedToName) return [];
+    return task.assignedToName
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }, [task.assignedToName]);
+
   return (
     <motion.div
       layout
@@ -1219,12 +1236,12 @@ function TaskCard({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: isDragging ? 0.35 : 1, y: 0, scale: isDragging ? 0.96 : 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className={`bg-white rounded-xl border shadow-xs p-3.5 group hover:shadow-md transition-all select-none ${
+      className={`bg-white rounded-xl border shadow-2xs p-3.5 group hover:shadow-md transition-all select-none ${priorityBorderColor} ${
         isDragging
           ? "border-dashed border-indigo-400 opacity-40 shadow-none ring-2 ring-indigo-300"
           : task.isArchived
           ? "border-slate-200/80 bg-slate-50/50 opacity-80 hover:opacity-100 cursor-pointer"
-          : "border-slate-200 hover:border-slate-300 cursor-grab active:cursor-grabbing"
+          : "border-slate-200/90 hover:border-indigo-300 cursor-grab active:cursor-grabbing"
       }`}
       onClick={(e) => {
         const target = e.target as HTMLElement;
@@ -1232,37 +1249,37 @@ function TaskCard({
         onEdit(task);
       }}
     >
-      {/* Priority + Duration + Archive status + Actions */}
-      <div className="flex items-start justify-between gap-1.5 mb-2">
+      {/* Top Meta Row: ID + Priority + Elapsed Time + Quick Actions */}
+      <div className="flex items-center justify-between gap-1.5 mb-2">
         <div className="flex items-center gap-1.5 flex-wrap min-w-0">
-          <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200 shrink-0">
+          <span className="font-mono text-[10px] font-black bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded-md border border-slate-200/80 shrink-0">
             #{task.id.startsWith("20") ? task.id : task.id.slice(-6).toUpperCase()}
           </span>
-          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wide shrink-0 ${priority.color}`}>
+          <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md border uppercase tracking-wide shrink-0 ${priority.color}`}>
             {priority.icon} {priority.label}
           </span>
 
-          {/* Duration Badge: Open elapsed time for active / Total completion time for Done */}
+          {/* Duration Badge */}
           {task.status === "done" ? (
             <span
-              className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200/90 shadow-2xs shrink-0"
+              className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200/90 shrink-0"
               title={`Total completion duration: ${formatDurationString(
                 new Date(task.completedAt || task.updatedAt).getTime() - new Date(task.createdAt).getTime()
-              )} (Created: ${format(new Date(task.createdAt), "d MMM HH:mm")} → Done: ${format(new Date(task.completedAt || task.updatedAt), "d MMM HH:mm")})`}
+              )}`}
             >
               <CheckCircle2 size={10} className="text-emerald-600 shrink-0" />
               <span>{formatDurationString(new Date(task.completedAt || task.updatedAt).getTime() - new Date(task.createdAt).getTime())}</span>
             </span>
           ) : (
             <span
-              className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border shadow-2xs shrink-0 ${
+              className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md border shrink-0 ${
                 task.status === "stuck"
                   ? "bg-amber-50 text-amber-800 border-amber-200/90"
                   : overdue
-                  ? "bg-rose-50 text-rose-800 border-rose-200/90"
-                  : "bg-slate-100/80 text-slate-600 border-slate-200/70"
+                  ? "bg-rose-50 text-rose-700 border-rose-200/90"
+                  : "bg-slate-50 text-slate-600 border-slate-200/70"
               }`}
-              title={`Open elapsed duration: ${formatDurationString(Date.now() - new Date(task.createdAt).getTime())} (Created: ${format(new Date(task.createdAt), "d MMM yyyy HH:mm")})`}
+              title={`Open elapsed duration: ${formatDurationString(Date.now() - new Date(task.createdAt).getTime())}`}
             >
               <Clock size={10} className={task.status === "stuck" ? "text-amber-600 shrink-0" : overdue ? "text-rose-600 shrink-0" : "text-slate-400 shrink-0"} />
               <span>{formatDurationString(Date.now() - new Date(task.createdAt).getTime())}</span>
@@ -1270,19 +1287,19 @@ function TaskCard({
           )}
 
           {task.isArchived && (
-            <span className="text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0">
+            <span className="text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded-md flex items-center gap-1 shrink-0">
               <Archive size={9} /> Archived
             </span>
           )}
         </div>
 
-        {/* Top-Right: Action buttons on hover */}
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-auto">
+        {/* Top-Right Hover Actions */}
+        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-auto bg-white/90 backdrop-blur-xs rounded-lg px-0.5">
           {task.isArchived ? (
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); onUnarchive?.(task.id); }}
-              className="p-1 rounded hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
+              className="p-1 rounded-md hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
               title="Unarchive / Restore Task"
             >
               <ArchiveRestore size={12} />
@@ -1292,8 +1309,8 @@ function TaskCard({
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); onArchive?.(task.id); }}
-                className="p-1 rounded hover:bg-amber-50 text-slate-400 hover:text-amber-600 transition-colors cursor-pointer"
-                title="Archive Task (Move completed task to archive)"
+                className="p-1 rounded-md hover:bg-amber-50 text-slate-400 hover:text-amber-600 transition-colors cursor-pointer"
+                title="Archive Task"
               >
                 <Archive size={12} />
               </button>
@@ -1303,7 +1320,7 @@ function TaskCard({
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onEdit(task); }}
-            className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+            className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
             title="Edit Task / View Details"
           >
             <Edit2 size={12} />
@@ -1311,7 +1328,7 @@ function TaskCard({
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onDelete(task.id); }}
-            className="p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+            className="p-1 rounded-md hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
             title="Delete Task"
           >
             <Trash2 size={12} />
@@ -1319,23 +1336,26 @@ function TaskCard({
         </div>
       </div>
 
-      {/* Title */}
-      <p className="text-sm font-semibold text-slate-800 leading-snug mb-2">{task.title}</p>
+      {/* Task Title & Description */}
+      <h4 className="text-[13.5px] font-bold text-slate-900 leading-snug mb-1.5 group-hover:text-indigo-950 transition-colors">
+        {task.title}
+      </h4>
 
-      {/* Description */}
       {task.description && (
-        <p className="text-xs text-slate-500 leading-relaxed mb-2 line-clamp-2">{task.description}</p>
+        <p className="text-xs text-slate-500 leading-relaxed mb-2.5 line-clamp-2">
+          {task.description}
+        </p>
       )}
 
-      {/* Checklist Mini Progress Bar on Card */}
+      {/* Checklist Progress Bar */}
       {checklist.length > 0 && (
-        <div className="mb-2.5 bg-slate-50/80 border border-slate-200/80 rounded-lg p-2 space-y-1.5">
-          <div className="flex items-center justify-between text-[10px] font-semibold">
+        <div className="mb-2.5 bg-slate-50/90 border border-slate-200/70 rounded-lg p-2 space-y-1">
+          <div className="flex items-center justify-between text-[10px] font-bold">
             <span className="flex items-center gap-1 text-slate-600">
               <CheckSquare size={11} className={completedChecklistCount === checklist.length ? "text-emerald-600" : "text-indigo-600"} />
               Checklist ({completedChecklistCount}/{checklist.length})
             </span>
-            <span className={completedChecklistCount === checklist.length ? "text-emerald-600" : "text-slate-500"}>
+            <span className={completedChecklistCount === checklist.length ? "text-emerald-600 font-mono" : "text-slate-500 font-mono"}>
               {Math.round((completedChecklistCount / checklist.length) * 100)}%
             </span>
           </div>
@@ -1350,7 +1370,7 @@ function TaskCard({
         </div>
       )}
 
-      {/* Task Image Attachments Large Visual Strip on Card */}
+      {/* Compact Image Attachments Strip */}
       {imageAttachments.length > 0 && (
         imageAttachments.length === 1 ? (
           <div
@@ -1372,8 +1392,8 @@ function TaskCard({
               e.stopPropagation();
               onPreviewImage?.(imageAttachments[0].url);
             }}
-            className="relative w-full h-32 rounded-xl overflow-hidden mb-2.5 border border-slate-200 hover:border-indigo-400 group/cardimg bg-slate-100 cursor-grab active:cursor-grabbing shadow-2xs hover:shadow-md transition-all select-none"
-            title={`Click to zoom: ${imageAttachments[0].name} (Drag to Mac Desktop to save)`}
+            className="relative w-full h-24 rounded-lg overflow-hidden mb-2.5 border border-slate-200/90 hover:border-indigo-400 group/cardimg bg-slate-100 cursor-pointer shadow-2xs transition-all select-none"
+            title={`Click to zoom: ${imageAttachments[0].name}`}
           >
             <img
               src={imageAttachments[0].url}
@@ -1381,10 +1401,8 @@ function TaskCard({
               className="w-full h-full object-cover group-hover/cardimg:scale-105 transition-transform duration-200 pointer-events-none"
             />
             <div className="absolute inset-0 bg-black/0 group-hover/cardimg:bg-black/20 transition-colors flex items-center justify-center pointer-events-none">
-              <ZoomIn size={22} className="text-white opacity-0 group-hover/cardimg:opacity-100 drop-shadow-md transition-opacity" />
+              <ZoomIn size={18} className="text-white opacity-0 group-hover/cardimg:opacity-100 drop-shadow-md transition-opacity" />
             </div>
-
-            {/* Top-Right Download Button */}
             <button
               type="button"
               onClick={(e) => {
@@ -1394,11 +1412,10 @@ function TaskCard({
               className="absolute top-1.5 right-1.5 p-1 rounded-full bg-black/60 hover:bg-indigo-600 text-white transition-colors cursor-pointer shadow-sm z-10 opacity-0 group-hover/cardimg:opacity-100"
               title={`Download ${imageAttachments[0].name}`}
             >
-              <Download size={12} />
+              <Download size={11} />
             </button>
-
-            <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-1.5 pt-3 pointer-events-none">
-              <span className="text-[10px] text-white font-medium block truncate">
+            <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent px-2 py-1 pointer-events-none">
+              <span className="text-[9.5px] text-white font-medium block truncate">
                 {imageAttachments[0].name}
               </span>
             </div>
@@ -1425,19 +1442,17 @@ function TaskCard({
                   e.stopPropagation();
                   onPreviewImage?.(img.url);
                 }}
-                className="relative h-20 rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-400 group/cardimg bg-slate-100 cursor-grab active:cursor-grabbing shadow-2xs hover:shadow-md transition-all select-none"
-                title={`Click to zoom: ${img.name} (Drag to Mac Desktop to save)`}
+                className="relative h-16 rounded-lg overflow-hidden border border-slate-200/90 hover:border-indigo-400 group/cardimg bg-slate-100 cursor-pointer shadow-2xs transition-all select-none"
+                title={`Click to zoom: ${img.name}`}
               >
                 <img
                   src={img.url}
                   alt={img.name}
-                  className="w-full h-full object-cover group-hover/cardimg:scale-110 transition-transform duration-200 pointer-events-none"
+                  className="w-full h-full object-cover group-hover/cardimg:scale-105 transition-transform duration-200 pointer-events-none"
                 />
                 <div className="absolute inset-0 bg-black/0 group-hover/cardimg:bg-black/20 transition-colors flex items-center justify-center pointer-events-none">
                   <ZoomIn size={14} className="text-white opacity-0 group-hover/cardimg:opacity-100 drop-shadow transition-opacity" />
                 </div>
-
-                {/* Top-Right Download Button */}
                 <button
                   type="button"
                   onClick={(e) => {
@@ -1449,7 +1464,6 @@ function TaskCard({
                 >
                   <Download size={10} />
                 </button>
-
                 {idx === 3 && imageAttachments.length > 4 && (
                   <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-white text-xs font-bold pointer-events-none">
                     +{imageAttachments.length - 3}
@@ -1461,7 +1475,7 @@ function TaskCard({
         )
       )}
 
-      {/* Non-Image Document Attachments on Card */}
+      {/* Non-Image Document Attachments */}
       {docAttachments.length > 0 && (
         <div className="flex flex-wrap gap-1 mb-2.5">
           {docAttachments.map((att) => (
@@ -1474,78 +1488,59 @@ function TaskCard({
         </div>
       )}
 
-      {/* Meta tags */}
-      <div className="flex flex-wrap gap-1.5 mb-2.5">
+      {/* Assignees, Due Date & Linked Job Pills */}
+      <div className="flex flex-wrap items-center gap-1.5 mb-2">
         {task.jobId && (
-          <span className="flex items-center gap-1 text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-100 px-1.5 py-0.5 rounded font-mono font-medium">
+          <span className="inline-flex items-center gap-1 text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200/80 px-1.5 py-0.5 rounded-md font-mono font-bold">
             <Hash size={9} /> {task.jobId}
           </span>
         )}
-        {task.assignedToName && (
+        {assigneeList.length > 0 && (
           <span
-            className="flex items-center gap-1 text-[10px] bg-slate-50 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded max-w-[180px] truncate"
-            title={task.assignedToName}
+            className="inline-flex items-center gap-1.5 text-[10.5px] bg-slate-50 text-slate-700 border border-slate-200/90 px-2 py-0.5 rounded-md max-w-[200px] font-medium"
+            title={task.assignedToName || ""}
           >
-            {task.assignedToName.includes(",") ? (
-              <>
-                <Users size={10} className="text-indigo-600 shrink-0" />
-                <span className="truncate">{task.assignedToName}</span>
-              </>
-            ) : (
-              <>
-                <User size={9} className="shrink-0" />
-                <span className="truncate">{task.assignedToName}</span>
-              </>
-            )}
+            <span className="w-4 h-4 rounded-full bg-indigo-100 text-indigo-700 font-black text-[9px] flex items-center justify-center shrink-0">
+              {assigneeList[0]?.charAt(0).toUpperCase() || "U"}
+            </span>
+            <span className="truncate">
+              {assigneeList.length === 1
+                ? assigneeList[0]
+                : `${assigneeList[0]} +${assigneeList.length - 1}`}
+            </span>
           </span>
         )}
         {task.dueDate && (
-          <span className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border ${overdue ? "bg-red-50 text-red-600 border-red-200 font-semibold" : "bg-slate-50 text-slate-500 border-slate-200"}`}>
+          <span
+            className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md border font-semibold ${
+              overdue
+                ? "bg-rose-50 text-rose-700 border-rose-200"
+                : "bg-slate-50 text-slate-600 border-slate-200/80"
+            }`}
+          >
             <Calendar size={9} />
             {overdue && <AlertTriangle size={9} />}
             {format(new Date(task.dueDate), "d MMM")}
           </span>
         )}
-        {checklist.length > 0 && (
-          <span className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-medium ${
-            completedChecklistCount === checklist.length
-              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-              : "bg-slate-50 text-slate-600 border-slate-200"
-          }`}>
-            <CheckSquare size={9} /> {completedChecklistCount}/{checklist.length}
-          </span>
-        )}
         {attachments.length > 0 && (
-          <span className="flex items-center gap-1 text-[10px] bg-slate-50 text-slate-500 border border-slate-200 px-1.5 py-0.5 rounded">
+          <span className="inline-flex items-center gap-1 text-[10px] bg-slate-50 text-slate-500 border border-slate-200/80 px-1.5 py-0.5 rounded-md font-mono">
             <Paperclip size={9} /> {attachments.length}
           </span>
         )}
       </div>
 
-      {/* Notes quick toggle on card */}
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); setNotesOpen((o) => !o); }}
-        className="mt-2.5 flex items-center gap-1.5 text-[10px] text-slate-500 hover:text-indigo-600 transition-colors w-full cursor-pointer"
-      >
-        <MessageSquare size={11} className={noteCount > 0 ? "text-indigo-600" : "text-slate-400"} />
-        <span className="font-medium">
-          {noteCount > 0 ? `${noteCount} note${noteCount > 1 ? "s" : ""}` : "Add note"}
-        </span>
-        <span className="ml-auto">{notesOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}</span>
-      </button>
-
-      {/* Latest Note Snippet Preview under note header (when notes panel is closed) */}
+      {/* Latest Note Snippet Preview (when notes panel is closed) */}
       {!notesOpen && latestNote && (
         <div
           onClick={(e) => {
             e.stopPropagation();
             setNotesOpen(true);
           }}
-          className="mt-1.5 p-2 bg-slate-50 hover:bg-indigo-50/50 border border-slate-200/80 hover:border-indigo-200 rounded-lg text-slate-700 transition-colors cursor-pointer group/note"
+          className="mt-2 p-2 bg-slate-50/90 hover:bg-indigo-50/40 border border-slate-200/70 hover:border-indigo-200 rounded-lg text-slate-700 transition-colors cursor-pointer group/note"
           title={`Click to view discussion thread (${noteCount} notes)`}
         >
-          <div className="flex items-center justify-between gap-1.5 mb-1 text-[10px]">
+          <div className="flex items-center justify-between gap-1.5 mb-0.5 text-[10px]">
             <span className="font-bold text-slate-800 flex items-center gap-1 truncate group-hover/note:text-indigo-600 transition-colors">
               <span className="w-3.5 h-3.5 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-[8px] font-extrabold shrink-0">
                 {latestNote.userName?.charAt(0).toUpperCase() || "U"}
@@ -1561,43 +1556,26 @@ function TaskCard({
               {renderMessageText(latestNote.text)}
             </div>
           )}
-          {/* Note images preview in Latest Note box */}
           {latestNote.attachments && latestNote.attachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mt-2 pl-4">
+            <div className="flex flex-wrap gap-1.5 mt-1.5 pl-4">
               {latestNote.attachments.map((att) => {
                 const isImg = isImageFile(att.type, att.name);
                 if (isImg) {
                   return (
                     <div
                       key={att.id}
-                      draggable
-                      onDragStart={(e) => {
-                        e.stopPropagation();
-                        const mime = att.type || "image/jpeg";
-                        const name = att.name || "image.jpg";
-                        const url = att.url;
-                        try {
-                          e.dataTransfer.setData("DownloadURL", `${mime}:${name}:${url}`);
-                          e.dataTransfer.setData("text/uri-list", url);
-                          e.dataTransfer.setData("text/plain", url);
-                          e.dataTransfer.effectAllowed = "copy";
-                        } catch (err) {}
-                      }}
                       onClick={(e) => {
                         e.stopPropagation();
                         onPreviewImage?.(att.url);
                       }}
-                      className="relative w-14 h-14 rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-400 group/noteimg bg-slate-100 cursor-grab active:cursor-grabbing shadow-2xs hover:shadow-md transition-all shrink-0 select-none"
-                      title={`Click to zoom: ${att.name} (Drag to Mac Desktop to save)`}
+                      className="relative w-11 h-11 rounded-md overflow-hidden border border-slate-200 hover:border-indigo-400 group/noteimg bg-slate-100 cursor-pointer shrink-0 select-none"
+                      title={`Click to zoom: ${att.name}`}
                     >
                       <img
                         src={att.url}
                         alt={att.name}
-                        className="w-full h-full object-cover group-hover/noteimg:scale-110 transition-transform duration-150 pointer-events-none"
+                        className="w-full h-full object-cover pointer-events-none"
                       />
-                      <div className="absolute inset-0 bg-black/0 group-hover/noteimg:bg-black/20 transition-colors flex items-center justify-center pointer-events-none">
-                        <ZoomIn size={12} className="text-white opacity-0 group-hover/noteimg:opacity-100 drop-shadow transition-opacity" />
-                      </div>
                     </div>
                   );
                 }
@@ -1637,13 +1615,28 @@ function TaskCard({
         )}
       </AnimatePresence>
 
-      {/* Creator / Archived info */}
-      <p className="text-[9px] text-slate-400 mt-2">
-        {task.isArchived
-          ? `Archived by ${task.archivedByName || "User"} · ${task.archivedAt ? format(new Date(task.archivedAt), "d MMM HH:mm") : ""}`
-          : `by ${task.createdByName} · ${format(new Date(task.createdAt), "d MMM HH:mm")}`
-        }
-      </p>
+      {/* Card Footer: Creator Info + Notes Toggle Pill */}
+      <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+        <span className="text-[9.5px] text-slate-400 truncate">
+          {task.isArchived
+            ? `Archived · ${task.archivedAt ? format(new Date(task.archivedAt), "d MMM HH:mm") : ""}`
+            : `by ${task.createdByName} · ${format(new Date(task.createdAt), "d MMM HH:mm")}`}
+        </span>
+
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setNotesOpen((o) => !o); }}
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold transition-colors cursor-pointer shrink-0 ${
+            noteCount > 0
+              ? "bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+              : "text-slate-400 hover:text-indigo-600 hover:bg-slate-50"
+          }`}
+        >
+          <MessageSquare size={10} />
+          <span>{noteCount > 0 ? `${noteCount} note${noteCount > 1 ? "s" : ""}` : "Add note"}</span>
+          {notesOpen ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+        </button>
+      </div>
     </motion.div>
   );
 }
@@ -5004,103 +4997,159 @@ export function AdminTasks() {
     );
   }
 
+  const todoCount = tasks.filter((t) => !t.isArchived && t.status === "todo").length;
+  const inProgressCount = tasks.filter((t) => !t.isArchived && t.status === "in_progress").length;
+  const stuckCount = tasks.filter((t) => !t.isArchived && t.status === "stuck").length;
+
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-slate-50/50">
-      {/* Header */}
-      <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3.5 sm:py-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 shrink-0">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold shrink-0">
-              <ClipboardCheck size={18} />
+    <div className="flex-1 flex flex-col min-h-0 bg-slate-50/70">
+      {/* ── EXECUTIVE TASK COMMAND HEADER ──────────────────────────────── */}
+      <div className="bg-white border-b border-slate-200/90 px-4 sm:px-6 py-3.5 shrink-0 space-y-3 shadow-2xs">
+        {/* Top Row: Title, Live Status Metrics & View Mode / New Task Actions */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white flex items-center justify-center font-bold shadow-sm shadow-indigo-500/20 shrink-0">
+              <ClipboardCheck size={20} />
             </div>
             <div>
-              <h2 className="text-sm sm:text-base font-bold text-slate-900">
-                {filterStatus === "archived"
-                  ? "Archived Tasks"
-                  : filterStatus === "overdue"
-                  ? "Overdue Tasks"
-                  : filterStatus === "due_today"
-                  ? "Due Today"
-                  : "Task Board"}
-              </h2>
-              <p className="text-[11px] sm:text-xs text-slate-500">
-                {filterStatus === "archived"
-                  ? `${archivedCount} archived task${archivedCount !== 1 ? "s" : ""}`
-                  : filterStatus === "overdue"
-                  ? `${overdueCount} task${overdueCount !== 1 ? "s" : ""} past due date`
-                  : filterStatus === "due_today"
-                  ? `${dueTodayCount} task${dueTodayCount !== 1 ? "s" : ""} due today`
-                  : `${pendingCount} task${pendingCount !== 1 ? "s" : ""} pending`
-                }
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
+                  {filterStatus === "archived"
+                    ? "Archived Tasks"
+                    : filterStatus === "overdue"
+                    ? "Overdue Tasks"
+                    : filterStatus === "due_today"
+                    ? "Due Today"
+                    : "Task Board"}
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-[10.5px] font-black bg-indigo-50 text-indigo-700 border border-indigo-200/70">
+                  {filterStatus === "archived"
+                    ? `${archivedCount} archived`
+                    : `${pendingCount} active pending`}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 font-medium hidden sm:block">
+                Team workflow board, SLA tracking, job issue resolution & staff discussion threads
               </p>
+            </div>
+
+            {/* Quick Inline Status Summary Pills (Desktop) */}
+            <div className="hidden xl:flex items-center gap-1.5 pl-3 ml-1 border-l border-slate-200 text-xs">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 font-bold text-[11px]">
+                <span className="w-2 h-2 rounded-full bg-slate-400" />
+                To Do: <strong className="font-mono">{todoCount}</strong>
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 font-bold text-[11px]">
+                <span className="w-2 h-2 rounded-full bg-blue-500" />
+                In Progress: <strong className="font-mono">{inProgressCount}</strong>
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 text-amber-800 font-bold text-[11px]">
+                <span className="w-2 h-2 rounded-full bg-amber-500" />
+                Stuck: <strong className="font-mono">{stuckCount}</strong>
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-bold text-[11px]">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                Done: <strong className="font-mono">{doneUnarchivedCount}</strong>
+              </span>
             </div>
           </div>
 
-          {/* New Task button on mobile header */}
-          {filterStatus !== "archived" && (
-            <Button size="sm" onClick={openCreate} className="md:hidden bg-indigo-600 hover:bg-indigo-700 text-white h-8 px-2.5 text-xs gap-1 cursor-pointer shrink-0">
-              <Plus size={13} /> New
-            </Button>
-          )}
-        </div>
-
-        <div className="flex flex-wrap lg:flex-nowrap items-center justify-between md:justify-end gap-2.5 flex-1 min-w-0">
-          {/* 🔍 Super Search Input */}
-          <div className="relative flex-1 min-w-[180px] max-w-full sm:max-w-[280px]">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={14} />
-            <Input
-              ref={searchInputRef}
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Super Search (ID, Job#, Note, Name...)"
-              className="h-8 pl-8 pr-7 text-xs bg-slate-50 hover:bg-white focus:bg-white border-slate-200 focus-visible:ring-indigo-500 transition-all rounded-lg"
-            />
-            {searchQuery && (
+          <div className="flex items-center gap-2 shrink-0">
+            {/* View Mode Switcher: Dashboard / Board / List */}
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200/70">
               <button
                 type="button"
-                onClick={() => { setSearchQuery(""); searchInputRef.current?.focus(); }}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full hover:bg-slate-100 cursor-pointer"
-                title="Clear search"
+                onClick={() => setViewMode("dashboard")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  viewMode === "dashboard"
+                    ? "bg-white text-indigo-700 shadow-2xs font-black"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+                title={user?.role === "admin" ? "Management Dashboard & Staff Ratings" : "My Personal Task Hub"}
               >
-                <X size={12} />
+                <BarChart2 size={13} className={viewMode === "dashboard" ? "text-indigo-600" : "text-slate-400"} />
+                <span>Dashboard</span>
               </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("board")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  viewMode === "board"
+                    ? "bg-white text-indigo-700 shadow-2xs font-black"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+                title="Kanban Board"
+              >
+                <LayoutGrid size={13} className={viewMode === "board" ? "text-indigo-600" : "text-slate-400"} />
+                <span>Board</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("list")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  viewMode === "list"
+                    ? "bg-white text-indigo-700 shadow-2xs font-black"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+                title="Table List View"
+              >
+                <List size={13} className={viewMode === "list" ? "text-indigo-600" : "text-slate-400"} />
+                <span>List</span>
+              </button>
+            </div>
+
+            {filterStatus !== "archived" && (
+              <Button
+                size="sm"
+                onClick={openCreate}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white h-9 px-3.5 rounded-xl font-bold text-xs gap-1.5 cursor-pointer shadow-xs"
+              >
+                <Plus size={14} /> New Task
+              </Button>
             )}
           </div>
+        </div>
 
-          {/* Filter Bar */}
-          <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-0.5 overflow-x-auto scrollbar-hide py-1 max-w-full">
+        {/* Bottom Row: Filter Tabs + Super Search + Department Selector */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5 pt-2.5 border-t border-slate-100">
+          {/* Status Filter Tabs */}
+          <div className="flex items-center gap-1 bg-slate-100/90 rounded-xl p-1 overflow-x-auto scrollbar-hide max-w-full border border-slate-200/60">
             <button
               type="button"
               onClick={() => setFilterStatus("all")}
-              className={`px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${filterStatus === "all" ? "bg-white text-slate-800 shadow-2xs font-bold" : "text-slate-500 hover:text-slate-700"}`}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                filterStatus === "all" ? "bg-white text-slate-900 shadow-2xs font-black" : "text-slate-500 hover:text-slate-800"
+              }`}
             >
               All Active
             </button>
             <button
               type="button"
               onClick={() => setFilterStatus("mine")}
-              className={`px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${filterStatus === "mine" ? "bg-white text-slate-800 shadow-2xs font-bold" : "text-slate-500 hover:text-slate-700"}`}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                filterStatus === "mine" ? "bg-white text-slate-900 shadow-2xs font-black" : "text-slate-500 hover:text-slate-800"
+              }`}
             >
               My Tasks
             </button>
             <button
               type="button"
               onClick={() => setFilterStatus("open")}
-              className={`px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${filterStatus === "open" ? "bg-white text-slate-800 shadow-2xs font-bold" : "text-slate-500 hover:text-slate-700"}`}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                filterStatus === "open" ? "bg-white text-slate-900 shadow-2xs font-black" : "text-slate-500 hover:text-slate-800"
+              }`}
             >
               Open
             </button>
 
-            {/* Overdue Quick Tab */}
             {overdueCount > 0 && (
               <button
                 type="button"
                 onClick={() => setFilterStatus("overdue")}
-                className={`px-2 sm:px-2.5 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
                   filterStatus === "overdue"
-                    ? "bg-red-500 text-white shadow-2xs"
-                    : "text-red-600 hover:bg-red-50"
+                    ? "bg-rose-600 text-white shadow-2xs"
+                    : "text-rose-600 hover:bg-rose-50"
                 }`}
               >
                 <AlertTriangle size={12} />
@@ -5108,12 +5157,11 @@ export function AdminTasks() {
               </button>
             )}
 
-            {/* Due Today Quick Tab */}
             {dueTodayCount > 0 && (
               <button
                 type="button"
                 onClick={() => setFilterStatus("due_today")}
-                className={`px-2 sm:px-2.5 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
                   filterStatus === "due_today"
                     ? "bg-amber-500 text-white shadow-2xs"
                     : "text-amber-700 hover:bg-amber-50"
@@ -5127,107 +5175,81 @@ export function AdminTasks() {
             <button
               type="button"
               onClick={() => setFilterStatus("archived")}
-              className={`px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${filterStatus === "archived" ? "bg-white text-indigo-700 shadow-2xs font-bold" : "text-slate-500 hover:text-slate-700"}`}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                filterStatus === "archived" ? "bg-white text-indigo-700 shadow-2xs font-black" : "text-slate-500 hover:text-slate-800"
+              }`}
             >
               <Archive size={12} />
               <span>Archived</span>
               {archivedCount > 0 && (
-                <span className="ml-1 px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
+                <span className="px-1.5 py-0.2 bg-slate-200/80 text-slate-700 rounded-full text-[10px] font-mono">
                   {archivedCount}
                 </span>
               )}
             </button>
           </div>
 
-          {/* Department Filter Dropdown */}
-          <div className="relative shrink-0">
-            <select
-              value={filterDepartment}
-              onChange={(e) => setFilterDepartment(e.target.value)}
-              className={`h-8 text-xs font-bold rounded-lg px-2.5 pr-7 border transition-all cursor-pointer appearance-none bg-no-repeat bg-right ${
-                filterDepartment !== "all"
-                  ? "bg-indigo-50 text-indigo-800 border-indigo-300 ring-2 ring-indigo-100"
-                  : "bg-slate-50 hover:bg-white text-slate-700 border-slate-200"
-              }`}
-              style={{
-                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`,
-                backgroundPosition: "calc(100% - 8px) center",
-              }}
-            >
-              <option value="all">🏢 All Departments</option>
-              {departments.length > 0
-                ? departments.map((d) => (
-                    <option key={d.key} value={d.key}>
-                      {d.icon} {d.name} {d.nameTh ? `(${d.nameTh})` : ""}
-                    </option>
-                  ))
-                : Object.entries(DEPARTMENT_CONFIG).map(([k, v]) => (
-                    <option key={k} value={k}>
-                      {v.icon} {v.label} ({v.labelTh})
-                    </option>
-                  ))}
-            </select>
-          </div>
-
-          <div className="flex items-center gap-1.5 shrink-0">
-            {/* View Mode Switcher: Dashboard / Board / List */}
-            <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-0.5">
-              <button
-                type="button"
-                onClick={() => setViewMode("dashboard")}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-                  viewMode === "dashboard"
-                    ? "bg-white text-indigo-700 shadow-2xs font-bold"
-                    : "text-slate-500 hover:text-slate-700"
-                }`}
-                title={user?.role === "admin" ? "Management Dashboard & Staff Ratings" : "My Personal Task Hub"}
-              >
-                <BarChart2 size={13} className={viewMode === "dashboard" ? "text-indigo-600" : "text-slate-400"} />
-                <span>Dashboard</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode("board")}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-                  viewMode === "board"
-                    ? "bg-white text-indigo-700 shadow-2xs font-bold"
-                    : "text-slate-500 hover:text-slate-700"
-                }`}
-                title="Kanban Board"
-              >
-                <LayoutGrid size={13} className={viewMode === "board" ? "text-indigo-600" : "text-slate-400"} />
-                <span>Board</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode("list")}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-                  viewMode === "list"
-                    ? "bg-white text-indigo-700 shadow-2xs font-bold"
-                    : "text-slate-500 hover:text-slate-700"
-                }`}
-                title="Table List View"
-              >
-                <List size={13} className={viewMode === "list" ? "text-indigo-600" : "text-slate-400"} />
-                <span>List</span>
-              </button>
+          {/* Right Controls: Super Search + Department Filter */}
+          <div className="flex items-center gap-2 flex-1 sm:flex-initial justify-end min-w-[240px]">
+            <div className="relative flex-1 sm:w-72">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={14} />
+              <Input
+                ref={searchInputRef}
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Super Search (ID, Job#, Note, Name...)"
+                className="h-9 pl-8 pr-7 text-xs bg-slate-50 hover:bg-white focus:bg-white border-slate-200 focus-visible:ring-indigo-500 transition-all rounded-xl"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => { setSearchQuery(""); searchInputRef.current?.focus(); }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full hover:bg-slate-100 cursor-pointer"
+                  title="Clear search"
+                >
+                  <X size={12} />
+                </button>
+              )}
             </div>
 
-            {/* Desktop New Task Button */}
-            {filterStatus !== "archived" && (
-              <Button size="sm" onClick={openCreate} className="hidden md:flex bg-indigo-600 hover:bg-indigo-700 text-white h-8 px-3 gap-1.5 cursor-pointer shadow-2xs">
-                <Plus size={14} /> New Task
-              </Button>
-            )}
+            <div className="relative shrink-0">
+              <select
+                value={filterDepartment}
+                onChange={(e) => setFilterDepartment(e.target.value)}
+                className={`h-9 text-xs font-bold rounded-xl px-3 pr-8 border transition-all cursor-pointer appearance-none bg-no-repeat bg-right ${
+                  filterDepartment !== "all"
+                    ? "bg-indigo-50 text-indigo-800 border-indigo-300 ring-2 ring-indigo-100"
+                    : "bg-slate-50 hover:bg-white text-slate-700 border-slate-200"
+                }`}
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`,
+                  backgroundPosition: "calc(100% - 10px) center",
+                }}
+              >
+                <option value="all">🏢 All Departments</option>
+                {departments.length > 0
+                  ? departments.map((d) => (
+                      <option key={d.key} value={d.key}>
+                        {d.icon} {d.name} {d.nameTh ? `(${d.nameTh})` : ""}
+                      </option>
+                    ))
+                  : Object.entries(DEPARTMENT_CONFIG).map(([k, v]) => (
+                      <option key={k} value={k}>
+                        {v.icon} {v.label} ({v.labelTh})
+                      </option>
+                    ))}
+              </select>
+            </div>
           </div>
         </div>
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-3.5 sm:p-6 min-h-0">
+      <div className="flex-1 overflow-y-auto p-3.5 sm:p-5 min-h-0">
         {/* Active Super Search Results Feedback Badge */}
         {searchQuery.trim() && (
-          <div className="mb-3 px-3 py-1.5 bg-indigo-50/90 border border-indigo-150 rounded-xl flex items-center justify-between text-xs">
+          <div className="mb-3 px-3.5 py-2 bg-indigo-50/90 border border-indigo-200 rounded-xl flex items-center justify-between text-xs">
             <div className="flex items-center gap-2 text-indigo-900 font-medium truncate">
               <Sparkles size={13} className="text-indigo-600 shrink-0" />
               <span>
@@ -5240,7 +5262,7 @@ export function AdminTasks() {
             <button
               type="button"
               onClick={() => setSearchQuery("")}
-              className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:underline shrink-0 ml-2 cursor-pointer"
+              className="text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline shrink-0 ml-2 cursor-pointer"
             >
               Clear
             </button>
@@ -5276,7 +5298,7 @@ export function AdminTasks() {
             // ── KANBAN BOARD ─────────────────────────────────────────────────
             <div className="flex flex-col gap-3 min-h-0">
               {/* Mobile Column Switcher (< md) */}
-              <div className="flex md:hidden items-center gap-1 p-1 bg-slate-100/90 rounded-lg shrink-0 border border-slate-200/60">
+              <div className="flex md:hidden items-center gap-1 p-1 bg-slate-100/90 rounded-xl shrink-0 border border-slate-200/60">
                 {KANBAN_COLS.map((col) => {
                   const count = filteredTasks.filter((t) => t.status === col.key).length;
                   const isActive = mobileKanbanCol === col.key;
@@ -5285,7 +5307,7 @@ export function AdminTasks() {
                       key={col.key}
                       type="button"
                       onClick={() => setMobileKanbanCol(col.key)}
-                      className={`flex-1 py-1.5 px-2 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      className={`flex-1 py-1.5 px-2 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                         isActive ? "bg-white text-indigo-700 shadow-2xs font-bold" : "text-slate-500 hover:text-slate-800"
                       }`}
                     >
@@ -5299,19 +5321,37 @@ export function AdminTasks() {
                 })}
               </div>
 
-              {/* Grid of Columns */}
+              {/* 4-Column Kanban Grid with Sticky Column Headers & Independent Scroll */}
               <motion.div
                 key="board"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 min-h-0"
+                className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-start"
               >
                 {KANBAN_COLS.map((col) => {
                   const colTasks = filteredTasks.filter((t) => t.status === col.key);
                   const cfg = STATUS_CONFIG[col.key];
                   const isVisibleOnMobile = mobileKanbanCol === col.key;
                   const isHovered = dragOverCol === col.key;
+
+                  const colTopAccent =
+                    col.key === "todo"
+                      ? "border-t-4 border-t-slate-500"
+                      : col.key === "in_progress"
+                      ? "border-t-4 border-t-blue-500"
+                      : col.key === "stuck"
+                      ? "border-t-4 border-t-amber-500"
+                      : "border-t-4 border-t-emerald-500";
+
+                  const colCountBadge =
+                    col.key === "todo"
+                      ? "bg-slate-200/80 text-slate-800"
+                      : col.key === "in_progress"
+                      ? "bg-blue-100 text-blue-800"
+                      : col.key === "stuck"
+                      ? "bg-amber-100 text-amber-800"
+                      : "bg-emerald-100 text-emerald-800";
 
                   return (
                     <div
@@ -5335,35 +5375,42 @@ export function AdminTasks() {
                           handleStatusChange(taskId, col.key);
                         }
                       }}
-                      className={`flex-col gap-3 min-h-0 rounded-2xl p-2 sm:p-2.5 transition-all ${
+                      className={`flex-col rounded-2xl border border-slate-200/90 transition-all overflow-hidden ${colTopAccent} ${
                         isVisibleOnMobile ? "flex" : "hidden md:flex"
                       } ${
                         isHovered
-                          ? "bg-indigo-50/80 ring-2 ring-indigo-400 ring-dashed shadow-sm"
-                          : "bg-slate-100/40"
+                          ? "bg-indigo-50/70 ring-2 ring-indigo-400 ring-dashed shadow-md"
+                          : "bg-slate-100/75"
                       }`}
                     >
-                      <div className="flex items-center justify-between px-1">
+                      {/* Column Header Bar */}
+                      <div className="bg-white/95 backdrop-blur-xs px-3.5 py-2.5 border-b border-slate-200/80 flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                          <span className={`w-2 h-2 rounded-full ${cfg.dot}`} />
-                          <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">{col.label}</span>
-                          <span className="text-xs text-slate-400 font-semibold bg-white border border-slate-200 px-1.5 py-0.5 rounded-full">{colTasks.length}</span>
+                          <span className={`w-2.5 h-2.5 rounded-full ${cfg.dot}`} />
+                          <span className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                            {col.label}
+                          </span>
+                          <span className={`text-[11px] font-mono font-black px-2 py-0.2 rounded-full ${colCountBadge}`}>
+                            {colTasks.length}
+                          </span>
                         </div>
 
-                        {/* Batch Archive button in Done column header */}
-                        {col.key === "done" && colTasks.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={handleArchiveAllDone}
-                            className="text-[11px] font-semibold text-slate-500 hover:text-indigo-600 flex items-center gap-1 hover:bg-white px-2 py-0.5 rounded transition-all cursor-pointer"
-                            title="Archive all completed tasks"
-                          >
-                            <Archive size={11} /> Archive all
-                          </button>
-                        )}
+                        <div className="flex items-center gap-1">
+                          {col.key === "done" && colTasks.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={handleArchiveAllDone}
+                              className="text-[11px] font-bold text-slate-500 hover:text-indigo-600 flex items-center gap-1 hover:bg-slate-100 px-2 py-1 rounded-lg transition-all cursor-pointer"
+                              title="Archive all completed tasks"
+                            >
+                              <Archive size={11} /> Archive all
+                            </button>
+                          )}
+                        </div>
                       </div>
 
-                      <div className="flex flex-col gap-2.5 min-h-[140px]">
+                      {/* Scrollable Column Cards Area */}
+                      <div className="flex flex-col gap-2.5 p-2.5 min-h-[160px] max-h-[calc(100vh-14.5rem)] overflow-y-auto">
                         <AnimatePresence>
                           {colTasks.map((task) => (
                             <TaskCard
@@ -5386,7 +5433,6 @@ export function AdminTasks() {
                           ))}
                         </AnimatePresence>
 
-                        {/* Drop Zone Placeholder when dragging over column */}
                         {isHovered && (
                           <div className="border-2 border-dashed border-indigo-400 bg-indigo-100/60 rounded-xl p-3.5 text-center text-xs font-bold text-indigo-700 animate-pulse flex items-center justify-center gap-1.5 shadow-2xs">
                             <span>📥 Drop here to move to {col.label}</span>
@@ -5394,9 +5440,9 @@ export function AdminTasks() {
                         )}
 
                         {colTasks.length === 0 && !isHovered && (
-                          <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 flex flex-col items-center justify-center text-center">
-                            <p className="text-xs text-slate-400 font-medium">No tasks in {col.label}</p>
-                            <p className="text-[10px] text-slate-300 mt-0.5">Drag card here to change status</p>
+                          <div className="border border-dashed border-slate-200 bg-white/50 rounded-xl p-6 flex flex-col items-center justify-center text-center">
+                            <p className="text-xs text-slate-400 font-semibold">No tasks in {col.label}</p>
+                            <p className="text-[10px] text-slate-300 mt-0.5">Drag a task card here</p>
                           </div>
                         )}
                       </div>

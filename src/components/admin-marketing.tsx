@@ -703,29 +703,95 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
   };
 
   return (
-    <div className="flex-1 p-6 space-y-6 overflow-y-auto max-h-[calc(100vh-4rem)] bg-slate-50 dark:bg-slate-900 font-sans">
+    <div className="flex-1 p-4 sm:p-5 space-y-4 overflow-y-auto max-h-[calc(100vh-4rem)] bg-slate-50 dark:bg-slate-900 font-sans">
       
-      {/* Upper Title Block */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-black text-slate-800 dark:text-slate-100 tracking-tight flex items-center gap-2.5">
-            <Megaphone className="text-indigo-600" size={24} />
-            Marketing & Analytics
-          </h1>
-          <p className="text-xs text-slate-500 font-semibold mt-1">
-            {subTab === "calendar"
-              ? "Marketing Planning Board (ปฏิทินวางแผนการตลาด แคมเปญโปรโมชั่น และกิจกรรม)"
-              : subTab === "links"
-              ? "Link & QR Code Tracker (สร้างลิงก์ย่อ ป้ายคิวอาร์โค้ด และวัดผลสถิติจำนวนคนเข้าชม)"
-              : "Promo Code Performance Report (รายงานและสถิติประสิทธิภาพโค้ดโปรโมชั่น)"}
-          </p>
+      {/* Unified Header & Segmented Navigation Bar */}
+      <div className="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-4 shadow-2xs space-y-3.5">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3.5">
+          {/* Brand Icon & Title */}
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white flex items-center justify-center shadow-sm shrink-0">
+              <Megaphone size={20} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg sm:text-xl font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                  Marketing & Analytics
+                </h1>
+                <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800">
+                  Growth Hub
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 font-medium mt-0.5">
+                {subTab === "calendar"
+                  ? "Marketing Planning Board • ปฏิทินวางแผนการตลาด แคมเปญโปรโมชั่น และกิจกรรม"
+                  : subTab === "links"
+                  ? "Link & QR Code Tracker • สร้างลิงก์ย่อ ป้ายคิวอาร์โค้ด และวัดผลสถิติจำนวนคนเข้าชม"
+                  : subTab === "coupons"
+                  ? "Customer Vouchers & Templates • จัดการวอยเชอร์ส่วนลดลูกค้าและเทมเพลตแคมเปญ"
+                  : "Promo Code Performance Report • รายงานและสถิติประสิทธิภาพโค้ดโปรโมชั่น"}
+              </p>
+            </div>
+          </div>
+
+          {/* Sleek Segmented Sub-Tab Navigation */}
+          <div className="flex items-center bg-slate-100/90 dark:bg-slate-900 p-1 rounded-xl border border-slate-200/80 dark:border-slate-800 overflow-x-auto scrollbar-hide shrink-0">
+            <button
+              onClick={() => setSubTab("calendar")}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                subTab === "calendar"
+                  ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+              }`}
+            >
+              <CalendarDays size={14} />
+              <span>Marketing Board</span>
+              <span className="text-[10px] opacity-75 font-medium hidden sm:inline">(ปฏิทิน)</span>
+            </button>
+            <button
+              onClick={() => setSubTab("links")}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                subTab === "links"
+                  ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+              }`}
+            >
+              <QrCode size={14} />
+              <span>Link & QR Tracker</span>
+              <span className="text-[10px] opacity-75 font-medium hidden sm:inline">(ลิงก์/QR)</span>
+            </button>
+            <button
+              onClick={() => setSubTab("promo")}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                subTab === "promo"
+                  ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+              }`}
+            >
+              <Tag size={14} />
+              <span>Promo Report</span>
+              <span className="text-[10px] opacity-75 font-medium hidden sm:inline">(รายงานโค้ด)</span>
+            </button>
+            <button
+              onClick={() => setSubTab("coupons")}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                subTab === "coupons"
+                  ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+              }`}
+            >
+              <Ticket size={14} />
+              <span>Customer Vouchers</span>
+              <span className="text-[10px] opacity-75 font-medium hidden sm:inline">(วอยเชอร์)</span>
+            </button>
+          </div>
         </div>
 
-        {/* Filter Toolbar Controls */}
+        {/* Optional Promo Report Filter Toolbar */}
         {subTab === "promo" && selectedCampaign !== "voucher_campaigns" && (
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
             {/* Branch Select */}
-            <div className="flex items-center gap-1.5 bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 shadow-sm">
+            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5">
               <Store size={14} className="text-slate-400" />
               <select
                 value={selectedBranch}
@@ -740,7 +806,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
             </div>
 
             {/* Timeframe selector */}
-            <div className="flex items-center bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl p-1 shadow-sm">
+            <div className="flex items-center bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-1">
               {(["today", "7days", "30days", "month", "custom"] as const).map(range => (
                 <button
                   key={range}
@@ -761,7 +827,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
 
             {/* Custom Date Range Picker */}
             {dateRange === "custom" && (
-              <div className="flex items-center gap-2 bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl px-2 py-1 shadow-sm animate-in fade-in duration-200">
+              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-2 py-1 animate-in fade-in duration-200">
                 <input
                   type="date"
                   value={customStartDate}
@@ -781,11 +847,11 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
             {/* Export to Excel */}
             <button
               onClick={handleExportExcel}
-              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl px-3 py-2 shadow-sm cursor-pointer transition-colors"
+              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl px-3 py-2 shadow-sm cursor-pointer transition-colors ml-auto"
               title="Export CSV (ส่งออกไฟล์ CSV)"
             >
               <Download size={14} />
-              Export CSV (ส่งออก CSV)
+              Export CSV
             </button>
 
             {/* Print Button */}
@@ -799,58 +865,10 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
               className="flex items-center gap-1.5 bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-750 text-xs font-bold text-slate-700 dark:text-slate-200 rounded-xl px-3 py-2 shadow-sm cursor-pointer transition-colors"
             >
               <Printer size={14} className="text-slate-400" />
-              Print Report (พิมพ์รายงาน)
+              Print Report
             </button>
           </div>
         )}
-      </div>
-
-      {/* Sub-tab navigation bar */}
-      <div className="flex gap-2 border-b border-slate-200 dark:border-slate-800 pb-px overflow-x-auto scrollbar-hide shrink-0">
-        <button
-          onClick={() => setSubTab("calendar")}
-          className={`flex items-center gap-1.5 pb-2.5 px-3 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "calendar"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <CalendarDays size={14} />
-          Marketing Board (ปฏิทินการตลาด)
-        </button>
-        <button
-          onClick={() => setSubTab("links")}
-          className={`flex items-center gap-1.5 pb-2.5 px-3 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "links"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <QrCode size={14} />
-          Link & QR Tracker (ตัวย่อลิงก์ & วัดผลสถิติ)
-        </button>
-        <button
-          onClick={() => setSubTab("promo")}
-          className={`flex items-center gap-1.5 pb-2.5 px-3 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "promo"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <Tag size={14} />
-          Promo Report (รายงานโค้ดส่วนลด)
-        </button>
-        <button
-          onClick={() => setSubTab("coupons")}
-          className={`flex items-center gap-1.5 pb-2.5 px-3 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "coupons"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <Ticket size={14} />
-          Customer Vouchers (วอยเชอร์ลูกค้า & เทมเพลต)
-        </button>
       </div>
 
       {/* MARKETING CALENDAR BOARD CONTENT */}

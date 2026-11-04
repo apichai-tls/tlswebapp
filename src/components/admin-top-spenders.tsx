@@ -38,7 +38,7 @@ interface AdminTopSpendersProps {
   onViewJob?: (job: Job) => void;
 }
 
-type SegmentTab = "members" | "vip" | "corporate" | "all";
+type SegmentTab = "members" | "vip" | "corporate" | "non_members" | "all";
 type DateRangePreset = "30days" | "90days" | "180days" | "year" | "all" | "custom";
 type MemberSortBy = "topup_amount" | "service_orders" | "service_spend" | "wallet_balance";
 type StandardSortBy = "service_spend" | "service_orders" | "aov";
@@ -483,7 +483,6 @@ export function AdminTopSpenders({ onViewJob }: AdminTopSpendersProps) {
     // Build final rows (only keeping customers belonging to Member, VIP, or Corporate segments who have activity or balance)
     const finalRows: CustomerAnalyticsRow[] = [];
     for (const entry of rowMap.values()) {
-      if (!entry.isMember && !entry.isVIP && !entry.isCorporate) continue;
       if (entry.topUpAmount <= 0 && entry.serviceOrderCount <= 0 && entry.creditBalance <= 0) continue;
 
       const serviceBreakdown = Array.from(entry.serviceMap.values()).sort(
@@ -603,6 +602,38 @@ export function AdminTopSpenders({ onViewJob }: AdminTopSpendersProps) {
       });
   }, [customerRows, searchQuery, standardSortBy]);
 
+  const isConsumerNonMember = (r: CustomerAnalyticsRow) => {
+    if (r.isMember || r.isCorporate) return false;
+    if (r.companyName && r.companyName.trim().length > 0) return false;
+    if (/\b(hotel|concierge|resort|restaurant|hot\s*pot|haidilao|emsphere|colorama|padel|company|co\.,?\s*ltd|corp|corporate|embassy|clinic|spa)\b/i.test(r.name || "")) {
+      return false;
+    }
+    return true;
+  };
+
+  const nonMemberRows = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return customerRows
+      .filter((r) => {
+        if (!isConsumerNonMember(r)) return false;
+        if (!q) return true;
+        return (
+          r.name.toLowerCase().includes(q) ||
+          r.phone.includes(q) ||
+          r.address.toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => {
+        if (standardSortBy === "service_orders") {
+          return b.serviceOrderCount - a.serviceOrderCount || b.serviceTotalSpend - a.serviceTotalSpend;
+        }
+        if (standardSortBy === "aov") {
+          return b.avgOrderValue - a.avgOrderValue || b.serviceTotalSpend - a.serviceTotalSpend;
+        }
+        return b.serviceTotalSpend - a.serviceTotalSpend || b.serviceOrderCount - a.serviceOrderCount;
+      });
+  }, [customerRows, searchQuery, standardSortBy]);
+
   // Top leaderboards
   const topMembersByTopUp = useMemo(
     () =>
@@ -652,11 +683,28 @@ export function AdminTopSpenders({ onViewJob }: AdminTopSpendersProps) {
     [customerRows]
   );
 
+  const topNonMembersBySpend = useMemo(
+    () =>
+      [...customerRows]
+        .filter((r) => isConsumerNonMember(r) && r.serviceTotalSpend > 0)
+        .sort((a, b) => b.serviceTotalSpend - a.serviceTotalSpend || b.serviceOrderCount - a.serviceOrderCount),
+    [customerRows]
+  );
+
+  const topNonMembersByFrequency = useMemo(
+    () =>
+      [...customerRows]
+        .filter((r) => isConsumerNonMember(r) && r.serviceOrderCount > 0)
+        .sort((a, b) => b.serviceOrderCount - a.serviceOrderCount || b.serviceTotalSpend - a.serviceTotalSpend),
+    [customerRows]
+  );
+
   // Summary KPIs
   const kpis = useMemo(() => {
     const members = customerRows.filter((r) => r.isMember);
     const vips = customerRows.filter((r) => r.isVIP);
     const corps = customerRows.filter((r) => r.isCorporate);
+    const nonMembers = customerRows.filter((r) => isConsumerNonMember(r) && r.serviceTotalSpend > 0);
 
     const totalMemberTopUp = members.reduce((s, r) => s + r.topUpAmount, 0);
     const totalMemberOrders = members.reduce((s, r) => s + r.serviceOrderCount, 0);
@@ -664,6 +712,8 @@ export function AdminTopSpenders({ onViewJob }: AdminTopSpendersProps) {
     const totalVipOrders = vips.reduce((s, r) => s + r.serviceOrderCount, 0);
     const totalCorpSpend = corps.reduce((s, r) => s + r.serviceTotalSpend, 0);
     const totalCorpOrders = corps.reduce((s, r) => s + r.serviceOrderCount, 0);
+    const totalNonMemberSpend = nonMembers.reduce((s, r) => s + r.serviceTotalSpend, 0);
+    const totalNonMemberOrders = nonMembers.reduce((s, r) => s + r.serviceOrderCount, 0);
 
     return {
       memberCount: members.length,
@@ -675,6 +725,9 @@ export function AdminTopSpenders({ onViewJob }: AdminTopSpendersProps) {
       corpCount: corps.length,
       totalCorpSpend: Math.round(totalCorpSpend),
       totalCorpOrders,
+      nonMemberCount: nonMembers.length,
+      totalNonMemberSpend: Math.round(totalNonMemberSpend),
+      totalNonMemberOrders,
     };
   }, [customerRows]);
 
@@ -691,7 +744,9 @@ export function AdminTopSpenders({ onViewJob }: AdminTopSpendersProps) {
           ? vipRows
           : activeSegment === "corporate"
             ? corporateRows
-            : customerRows;
+            : activeSegment === "non_members"
+              ? nonMemberRows
+              : customerRows;
 
     if (targetList.length === 0) {
       toast.error("No records to export");
@@ -807,7 +862,7 @@ export function AdminTopSpenders({ onViewJob }: AdminTopSpendersProps) {
       </div>
 
       {/* 3 Segment Hero Summary Cards (Click to switch segment) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {/* Card 1: Members */}
         <div
           onClick={() => setActiveSegment("members")}
@@ -912,6 +967,40 @@ export function AdminTopSpenders({ onViewJob }: AdminTopSpendersProps) {
             </div>
           </div>
         </div>
+        {/* Card 4: Non-Members / Regular Customers */}
+        <div
+          onClick={() => setActiveSegment("non_members")}
+          className={`p-4 rounded-2xl border transition-all cursor-pointer ${
+            activeSegment === "non_members"
+              ? "bg-gradient-to-br from-emerald-50/90 to-teal-50/50 border-emerald-400 ring-2 ring-emerald-500/15 shadow-xs"
+              : "bg-white border-slate-200/90 hover:border-emerald-300 shadow-2xs"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="inline-flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-emerald-800">
+              <Users size={15} className="text-emerald-600" /> Non-Members ({kpis.nonMemberCount})
+            </span>
+            <Badge className="bg-emerald-100 text-emerald-900 border-emerald-300 text-[10px] font-extrabold">
+              Conversion Target
+            </Badge>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mt-3 pt-3 border-t border-emerald-100/80">
+            <div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase">Total Spent (฿)</div>
+              <div className="text-lg font-black text-emerald-700">฿{kpis.totalNonMemberSpend.toLocaleString()}</div>
+              <div className="text-[10px] text-slate-500 font-medium truncate">
+                #1: {topNonMembersBySpend[0]?.name || "—"}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase">Service Orders</div>
+              <div className="text-lg font-black text-slate-900">{kpis.totalNonMemberOrders.toLocaleString()} orders</div>
+              <div className="text-[10px] text-slate-500 font-medium truncate">
+                Most Often: {topNonMembersByFrequency[0]?.name || "—"}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Segment Switcher, Date Presets & Search Bar */}
@@ -923,6 +1012,7 @@ export function AdminTopSpenders({ onViewJob }: AdminTopSpendersProps) {
               { id: "members", label: `💳 Members (${kpis.memberCount})` },
               { id: "vip", label: `👑 VIP Customers (${kpis.vipCount})` },
               { id: "corporate", label: `💼 Corporate (${kpis.corpCount})` },
+              { id: "non_members", label: `🌟 Non-Members (${kpis.nonMemberCount})` },
               { id: "all", label: "All Segments Overview" },
             ].map((tab) => (
               <button
@@ -1648,6 +1738,215 @@ export function AdminTopSpenders({ onViewJob }: AdminTopSpendersProps) {
                             size="sm"
                             variant="outline"
                             className="h-7 px-2.5 text-[11px] font-bold border-indigo-200 text-indigo-700 bg-indigo-50/60 hover:bg-indigo-100 rounded-lg cursor-pointer"
+                          >
+                            View <ChevronRight size={12} className="ml-0.5" />
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+
+      {/* ===================================================================== */}
+      {/* VIEW 4: NON-MEMBERS (High Spenders & Frequent Users to Convert)       */}
+      {/* ===================================================================== */}
+      {(activeSegment === "non_members" || activeSegment === "all") && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Left Leaderboard: Non-Members Who Spend the Most (฿) */}
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
+              <div className="px-4 py-3 bg-gradient-to-r from-emerald-600 to-teal-700 text-white flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <TrendingUp size={16} />
+                  <h3 className="text-xs font-black uppercase tracking-wider">
+                    Non-Members Who Spend the Most (฿) — Prime Member Candidates
+                  </h3>
+                </div>
+                <span className="text-[11px] font-bold text-emerald-100">Top 10 by Baht Spent</span>
+              </div>
+              <div className="divide-y divide-slate-100 p-2">
+                {topNonMembersBySpend.slice(0, 10).map((nm, idx) => (
+                  <div
+                    key={`nm-spend-${nm.key}`}
+                    onClick={() => setSelectedCustomerKey(nm.key)}
+                    className="flex items-center justify-between gap-3 p-2.5 rounded-xl hover:bg-emerald-50/50 transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <span
+                        className={`w-6 h-6 rounded-lg text-xs font-black flex items-center justify-center shrink-0 ${
+                          idx === 0
+                            ? "bg-amber-400 text-amber-950"
+                            : idx === 1
+                              ? "bg-slate-200 text-slate-800"
+                              : idx === 2
+                                ? "bg-amber-100 text-amber-900"
+                                : "bg-slate-100 text-slate-500"
+                        }`}
+                      >
+                        {idx + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-extrabold text-slate-900 truncate">
+                            {nm.companyName || nm.name}
+                          </span>
+                          <Badge className="text-[8.5px] px-1.5 py-0 h-3.5 bg-slate-100 text-slate-700 border-slate-200">
+                            NON-MEMBER
+                          </Badge>
+                          {nm.isCorporate && (
+                            <Badge className="text-[8.5px] px-1.5 py-0 h-3.5 bg-indigo-100 text-indigo-800 border-indigo-200">
+                              CORP
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="text-[10.5px] text-slate-500 font-medium truncate">
+                          {nm.phone} • {nm.serviceOrderCount} orders • Avg ฿{nm.avgOrderValue.toLocaleString()}/order
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-xs font-black text-emerald-700">฿{nm.serviceTotalSpend.toLocaleString()}</div>
+                      <div className="text-[10px] font-semibold text-slate-500">{nm.topServiceName}</div>
+                    </div>
+                  </div>
+                ))}
+                {topNonMembersBySpend.length === 0 && (
+                  <div className="py-8 text-center text-xs text-slate-400">No non-member customer orders found.</div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Leaderboard: Non-Members Who Use Service Most Often */}
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
+              <div className="px-4 py-3 bg-gradient-to-r from-teal-600 to-cyan-700 text-white flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShoppingBag size={16} />
+                  <h3 className="text-xs font-black uppercase tracking-wider">
+                    Non-Members Using Service Most Often — Loyal Regulars
+                  </h3>
+                </div>
+                <span className="text-[11px] font-bold text-teal-100">Top 10 by Service Orders</span>
+              </div>
+              <div className="divide-y divide-slate-100 p-2">
+                {topNonMembersByFrequency.slice(0, 10).map((nm, idx) => (
+                  <div
+                    key={`nm-freq-${nm.key}`}
+                    onClick={() => setSelectedCustomerKey(nm.key)}
+                    className="flex items-center justify-between gap-3 p-2.5 rounded-xl hover:bg-teal-50/50 transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <span
+                        className={`w-6 h-6 rounded-lg text-xs font-black flex items-center justify-center shrink-0 ${
+                          idx === 0
+                            ? "bg-amber-400 text-amber-950"
+                            : idx === 1
+                              ? "bg-slate-200 text-slate-800"
+                              : idx === 2
+                                ? "bg-amber-100 text-amber-900"
+                                : "bg-slate-100 text-slate-500"
+                        }`}
+                      >
+                        {idx + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <span className="text-xs font-extrabold text-slate-900 truncate block">
+                          {nm.companyName || nm.name}
+                        </span>
+                        <div className="text-[10.5px] text-slate-500 font-medium truncate">
+                          {nm.phone} • Top Service: <span className="font-bold text-slate-700">{nm.topServiceName}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-xs font-black text-teal-700">{nm.serviceOrderCount} orders</div>
+                      <div className="text-[10.5px] font-bold text-slate-600">
+                        ฿{nm.serviceTotalSpend.toLocaleString()} spent
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {topNonMembersByFrequency.length === 0 && (
+                  <div className="py-8 text-center text-xs text-slate-400">No non-member customer orders found.</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {activeSegment === "non_members" && (
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-black text-slate-900">
+                    Complete Non-Members Top Spenders & Regulars Directory ({nonMemberRows.length})
+                  </h2>
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    These customers regularly spend and use our services without a membership package. Click any customer to inspect order history or invite them to become a Member.
+                  </p>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50/90 border-b border-slate-200/80 text-[10.5px] font-extrabold uppercase tracking-wider text-slate-500">
+                      <th className="py-3 px-4 w-12">#</th>
+                      <th className="py-3 px-4">Customer Name & Contact</th>
+                      <th className="py-3 px-4 text-right">Total Spend (฿)</th>
+                      <th className="py-3 px-4 text-right">Service Used (Orders)</th>
+                      <th className="py-3 px-4 text-right">Avg Order (AOV)</th>
+                      <th className="py-3 px-4">Favorite Service</th>
+                      <th className="py-3 px-4 text-right">Last Order</th>
+                      <th className="py-3 px-4 text-right">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {nonMemberRows.slice(0, 150).map((nm, idx) => (
+                      <tr
+                        key={nm.key}
+                        onClick={() => setSelectedCustomerKey(nm.key)}
+                        className="hover:bg-emerald-50/35 transition-colors cursor-pointer"
+                      >
+                        <td className="py-3 px-4 font-black text-slate-500">{idx + 1}</td>
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-extrabold text-slate-900">{nm.companyName || nm.name}</span>
+                            <Badge className="text-[9px] px-1.5 py-0 h-4 bg-slate-100 text-slate-700 border-slate-200">
+                              NON-MEMBER
+                            </Badge>
+                            {nm.isCorporate && (
+                              <Badge className="text-[9px] px-1.5 py-0 h-4 bg-indigo-100 text-indigo-800 border-indigo-200">
+                                CORP
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="text-[10.5px] text-slate-500 mt-0.5">
+                            {nm.phone} {nm.address !== "-" ? `• ${nm.address}` : ""}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-right text-sm font-black text-emerald-700">
+                          ฿{nm.serviceTotalSpend.toLocaleString()}
+                        </td>
+                        <td className="py-3 px-4 text-right text-sm font-black text-slate-900">
+                          {nm.serviceOrderCount} orders
+                        </td>
+                        <td className="py-3 px-4 text-right font-bold text-slate-700">
+                          ฿{nm.avgOrderValue.toLocaleString()}
+                        </td>
+                        <td className="py-3 px-4 font-bold text-slate-700">{nm.topServiceName}</td>
+                        <td className="py-3 px-4 text-right text-slate-500">
+                          {nm.lastServiceOrderDate ? format(nm.lastServiceOrderDate, "dd MMM yyyy") : "—"}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2.5 text-[11px] font-bold border-emerald-200 text-emerald-800 bg-emerald-50/60 hover:bg-emerald-100 rounded-lg cursor-pointer"
                           >
                             View <ChevronRight size={12} className="ml-0.5" />
                           </Button>

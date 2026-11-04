@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   User,
+  Users,
   ShieldCheck,
   Plus,
   Trash2,
@@ -15,6 +16,15 @@ import {
   Tag,
   Lock,
   Loader2,
+  Search,
+  LayoutGrid,
+  List,
+  Layers,
+  Crown,
+  Mail,
+  KeyRound,
+  CheckCircle2,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,19 +69,98 @@ interface AdminUser {
   isActive?: boolean;
 }
 
-export const COLOR_CONFIG: Record<string, { label: string; badgeClass: string; dotClass: string }> = {
-  indigo: { label: "Indigo", badgeClass: "bg-indigo-100 text-indigo-800 border-indigo-200", dotClass: "bg-indigo-500" },
-  sky: { label: "Sky Blue", badgeClass: "bg-sky-100 text-sky-800 border-sky-200", dotClass: "bg-sky-500" },
-  emerald: { label: "Emerald", badgeClass: "bg-emerald-100 text-emerald-800 border-emerald-200", dotClass: "bg-emerald-500" },
-  amber: { label: "Amber", badgeClass: "bg-amber-100 text-amber-800 border-amber-200", dotClass: "bg-amber-500" },
-  rose: { label: "Rose", badgeClass: "bg-rose-100 text-rose-800 border-rose-200", dotClass: "bg-rose-500" },
-  purple: { label: "Purple", badgeClass: "bg-purple-100 text-purple-800 border-purple-200", dotClass: "bg-purple-500" },
-  teal: { label: "Teal", badgeClass: "bg-teal-100 text-teal-800 border-teal-200", dotClass: "bg-teal-500" },
-  slate: { label: "Slate", badgeClass: "bg-slate-150 text-slate-700 border-slate-300", dotClass: "bg-slate-500" },
+export const COLOR_CONFIG: Record<
+  string,
+  {
+    label: string;
+    badgeClass: string;
+    dotClass: string;
+    topBorderClass: string;
+    avatarClass: string;
+    softBgClass: string;
+  }
+> = {
+  indigo: {
+    label: "Indigo",
+    badgeClass: "bg-indigo-100 text-indigo-800 border-indigo-200",
+    dotClass: "bg-indigo-500",
+    topBorderClass: "border-t-indigo-500",
+    avatarClass: "bg-gradient-to-br from-indigo-500 to-indigo-700 text-white shadow-indigo-200",
+    softBgClass: "bg-indigo-50/60 border-indigo-100",
+  },
+  sky: {
+    label: "Sky Blue",
+    badgeClass: "bg-sky-100 text-sky-800 border-sky-200",
+    dotClass: "bg-sky-500",
+    topBorderClass: "border-t-sky-500",
+    avatarClass: "bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-sky-200",
+    softBgClass: "bg-sky-50/60 border-sky-100",
+  },
+  emerald: {
+    label: "Emerald",
+    badgeClass: "bg-emerald-100 text-emerald-800 border-emerald-200",
+    dotClass: "bg-emerald-500",
+    topBorderClass: "border-t-emerald-500",
+    avatarClass: "bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-emerald-200",
+    softBgClass: "bg-emerald-50/60 border-emerald-100",
+  },
+  amber: {
+    label: "Amber",
+    badgeClass: "bg-amber-100 text-amber-800 border-amber-200",
+    dotClass: "bg-amber-500",
+    topBorderClass: "border-t-amber-500",
+    avatarClass: "bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-amber-200",
+    softBgClass: "bg-amber-50/60 border-amber-100",
+  },
+  rose: {
+    label: "Rose",
+    badgeClass: "bg-rose-100 text-rose-800 border-rose-200",
+    dotClass: "bg-rose-500",
+    topBorderClass: "border-t-rose-500",
+    avatarClass: "bg-gradient-to-br from-rose-500 to-pink-600 text-white shadow-rose-200",
+    softBgClass: "bg-rose-50/60 border-rose-100",
+  },
+  purple: {
+    label: "Purple",
+    badgeClass: "bg-purple-100 text-purple-800 border-purple-200",
+    dotClass: "bg-purple-500",
+    topBorderClass: "border-t-purple-500",
+    avatarClass: "bg-gradient-to-br from-purple-500 to-violet-600 text-white shadow-purple-200",
+    softBgClass: "bg-purple-50/60 border-purple-100",
+  },
+  teal: {
+    label: "Teal",
+    badgeClass: "bg-teal-100 text-teal-800 border-teal-200",
+    dotClass: "bg-teal-500",
+    topBorderClass: "border-t-teal-500",
+    avatarClass: "bg-gradient-to-br from-teal-500 to-cyan-600 text-white shadow-teal-200",
+    softBgClass: "bg-teal-50/60 border-teal-100",
+  },
+  slate: {
+    label: "Slate",
+    badgeClass: "bg-slate-100 text-slate-700 border-slate-300",
+    dotClass: "bg-slate-500",
+    topBorderClass: "border-t-slate-400",
+    avatarClass: "bg-gradient-to-br from-slate-600 to-slate-800 text-white shadow-slate-200",
+    softBgClass: "bg-slate-50/80 border-slate-200",
+  },
 };
 
 export function getBadgeClass(color?: string) {
   return COLOR_CONFIG[color || "slate"]?.badgeClass || COLOR_CONFIG.slate.badgeClass;
+}
+
+export function getColorConfig(color?: string) {
+  return COLOR_CONFIG[color || "slate"] || COLOR_CONFIG.slate;
+}
+
+function getInitials(name?: string) {
+  if (!name) return "U";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) {
+    return `${parts[0][0] || ""}${parts[1][0] || ""}`.toUpperCase();
+  }
+  return name.slice(0, 2).toUpperCase();
 }
 
 const MENU_PERMISSIONS = [
@@ -97,30 +186,45 @@ export const ACTION_PERMISSIONS = [
   {
     id: "adjust-wallet",
     label: "Adjust Wallet Balance",
+    shortLabel: "Adjust Wallet",
+    icon: "⚡",
+    badgeClass: "text-amber-800 bg-amber-100/90 border-amber-300",
     labelTh: "ปรับยอดเงินใน Wallet ลูกค้า",
     description: "สิทธิ์ในการเพิ่มหรือหักลดเงิน Wallet ลูกค้าแบบ Manual (สำหรับแก้ไขเคสหรือชดเชย)",
   },
   {
     id: "approve-wallet",
     label: "Approve Wallet Transactions",
+    shortLabel: "Approve Wallet",
+    icon: "✅",
+    badgeClass: "text-emerald-800 bg-emerald-100/90 border-emerald-300",
     labelTh: "อนุมัติรายการ Wallet",
     description: "สิทธิ์ในการ Approve / Reject รายการ Wallet ของลูกค้า Member",
   },
   {
     id: "refund-job",
     label: "Refund & Correct Jobs",
+    shortLabel: "Refund Job",
+    icon: "↩️",
+    badgeClass: "text-rose-800 bg-rose-100/90 border-rose-300",
     labelTh: "Refund & แก้ไขยอด Job",
     description: "สิทธิ์ในการ Refund และแก้ไขยอดชำระเงินของ Job ที่ชำระแล้ว",
   },
   {
     id: "cso",
     label: "CSO",
+    shortLabel: "CSO",
+    icon: "💼",
+    badgeClass: "text-blue-800 bg-blue-100/90 border-blue-300",
     labelTh: "CSO",
     description: "สิทธิ์การทำงาน CSO (กรอก/แก้ไขเลขบิล Bill No., ขอใบกำกับภาษี Req Tax Inv, Stuck, จัดการสถานะชำระเงินและออเดอร์)",
   },
   {
     id: "approve-petty-cash",
     label: "Approve & Top-up Petty Cash",
+    shortLabel: "Petty Cash Admin",
+    icon: "💰",
+    badgeClass: "text-violet-800 bg-violet-100/90 border-violet-300",
     labelTh: "อนุมัติและโอนเติมเงินสดย่อย (Petty Cash)",
     description: "สิทธิ์ฝ่ายบัญชีในการโอนเติมวงเงินสดย่อยรายบุคคล อนุมัติ/ปฏิเสธรายการเบิกจ่าย และจัดการหมวดหมู่",
   },
@@ -213,20 +317,27 @@ export function sortUsersByDeptAndHead(userList: AdminUser[], deptsList: Departm
       return rankA - rankB;
     }
 
-    // 2. Department Head First within the same department
+    // 2. Same rank but different specific department key (e.g. BKK vs PTY Branch Ops)
+    const deptA = a.department || "";
+    const deptB = b.department || "";
+    if (deptA !== deptB) {
+      return deptA.localeCompare(deptB);
+    }
+
+    // 3. Department Head First within the same department
     const isHeadA = a.isDepartmentHead ? 1 : 0;
     const isHeadB = b.isDepartmentHead ? 1 : 0;
     if (isHeadA !== isHeadB) {
       return isHeadB - isHeadA; // 1 (Head) comes before 0 (Staff)
     }
 
-    // 3. Alphabetical order by Name
+    // 4. Alphabetical order by Name
     return (a.name || "").localeCompare(b.name || "", ["th", "en"]);
   });
 }
 
 export function AdminUsers() {
-  const { user } = useAuth();
+  const { user: currentUser } = useAuth();
   const shopLocations = useSyncExternalStore(
     shopStore.subscribe,
     shopStore.getSnapshot,
@@ -238,6 +349,11 @@ export function AdminUsers() {
   const [isLoading, setIsLoading] = useState(true);
   const [viewMode, setViewMode] = useState<"active" | "departments" | "roles" | "resigned">("active");
 
+  // Search, Filter & Layout State
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedDeptFilter, setSelectedDeptFilter] = useState<string>("ALL");
+  const [userLayout, setUserLayout] = useState<"grouped" | "grid" | "table">("grouped");
+
   const activeUsers = useMemo(
     () => sortUsersByDeptAndHead(users.filter((u) => u.isActive !== false), departments),
     [users, departments]
@@ -246,7 +362,119 @@ export function AdminUsers() {
     () => sortUsersByDeptAndHead(users.filter((u) => u.isActive === false), departments),
     [users, departments]
   );
-  const displayedUsers = viewMode === "active" ? activeUsers : resignedUsers;
+  const baseDisplayedUsers = viewMode === "active" ? activeUsers : resignedUsers;
+
+  // Filtered Users by Search & Department Pill
+  const displayedUsers = useMemo(() => {
+    return baseDisplayedUsers.filter((u) => {
+      if (selectedDeptFilter !== "ALL") {
+        const effectiveDept =
+          u.department ||
+          (u.role === "admin"
+            ? "management"
+            : u.role === "cso"
+            ? "accounting_cso"
+            : u.role === "rider"
+            ? "logistics"
+            : "branch_ops");
+        if (effectiveDept !== selectedDeptFilter) return false;
+      }
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const deptObj = departments.find((d) => d.key === u.department);
+        const roleObj = roles.find((r) => r.key === u.role);
+        let perms: string[] = [];
+        try {
+          perms = JSON.parse(u.permissions);
+        } catch {}
+        const permLabels = perms
+          .map(
+            (p) =>
+              MENU_PERMISSIONS.find((mp) => mp.id === p)?.label ||
+              ACTION_PERMISSIONS.find((ap) => ap.id === p)?.label ||
+              p
+          )
+          .join(" ")
+          .toLowerCase();
+
+        const haystack = `${u.name} ${u.email} ${u.role} ${deptObj?.name || ""} ${deptObj?.nameTh || ""} ${roleObj?.name || ""} ${roleObj?.nameTh || ""} ${permLabels}`.toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+
+      return true;
+    });
+  }, [baseDisplayedUsers, selectedDeptFilter, searchQuery, departments, roles]);
+
+  // Group displayed users by Department for the "grouped" card view
+  const groupedUsersByDept = useMemo(() => {
+    const groups: {
+      key: string;
+      dept: DepartmentItem | undefined;
+      title: string;
+      titleTh?: string | null;
+      icon: string;
+      color: string;
+      members: AdminUser[];
+    }[] = [];
+
+    const map = new Map<string, AdminUser[]>();
+    for (const u of displayedUsers) {
+      const effectiveKey =
+        u.department ||
+        (u.role === "admin"
+          ? "management"
+          : u.role === "cso"
+          ? "accounting_cso"
+          : u.role === "rider"
+          ? "logistics"
+          : "branch_ops");
+      if (!map.has(effectiveKey)) {
+        map.set(effectiveKey, []);
+      }
+      map.get(effectiveKey)!.push(u);
+    }
+
+    for (const [key, members] of map.entries()) {
+      const deptObj = departments.find((d) => d.key === key);
+      groups.push({
+        key,
+        dept: deptObj,
+        title: deptObj?.name || key.replace(/_/g, " ").toUpperCase(),
+        titleTh: deptObj?.nameTh,
+        icon: deptObj?.icon || "🏢",
+        color: deptObj?.color || "slate",
+        members,
+      });
+    }
+
+    return groups;
+  }, [displayedUsers, departments]);
+
+  // KPI Metrics
+  const kpiStats = useMemo(() => {
+    const headsCount = activeUsers.filter((u) => u.isDepartmentHead).length;
+    const ridersCount = activeUsers.filter(
+      (u) => u.role === "rider" || (u.department || "").toLowerCase().includes("logistics")
+    ).length;
+    const privilegedCount = activeUsers.filter((u) => {
+      if (u.role === "admin") return true;
+      try {
+        const p: string[] = JSON.parse(u.permissions);
+        return ACTION_PERMISSIONS.some((ap) => p.includes(ap.id));
+      } catch {
+        return false;
+      }
+    }).length;
+    return {
+      activeCount: activeUsers.length,
+      officeAndBranchCount: Math.max(0, activeUsers.length - ridersCount),
+      ridersCount,
+      headsCount,
+      privilegedCount,
+      resignedCount: resignedUsers.length,
+    };
+  }, [activeUsers, resignedUsers]);
 
   // User Form State
   const [isEditing, setIsEditing] = useState(false);
@@ -335,29 +563,29 @@ export function AdminUsers() {
     setIsEditing(false);
   };
 
-  const handleEdit = (user: AdminUser) => {
-    setEmail(user.email);
+  const handleEdit = (u: AdminUser) => {
+    setEmail(u.email);
     setPassword("");
-    setName(user.name);
-    setRole(user.role || "staff");
+    setName(u.name);
+    setRole(u.role || "staff");
     setDepartment(
-      user.department ||
-        (user.role === "admin"
+      u.department ||
+        (u.role === "admin"
           ? "management"
-          : user.role === "cso"
+          : u.role === "cso"
           ? "accounting_cso"
-          : user.role === "rider"
+          : u.role === "rider"
           ? "logistics"
           : "branch_ops")
     );
-    setIsDepartmentHead(user.isDepartmentHead ?? false);
-    setSelectedBranchIds(getUserAssignedBranchIds(user, shopLocations));
+    setIsDepartmentHead(u.isDepartmentHead ?? false);
+    setSelectedBranchIds(getUserAssignedBranchIds(u, shopLocations));
     try {
-      setSelectedPerms(JSON.parse(user.permissions));
+      setSelectedPerms(JSON.parse(u.permissions));
     } catch (e) {
       setSelectedPerms([]);
     }
-    setEditingId(user.id);
+    setEditingId(u.id);
     setIsEditing(true);
   };
 
@@ -406,7 +634,7 @@ export function AdminUsers() {
         if (!res?.success) throw new Error(res?.error || "Failed to update user");
 
         // If updating self, sync localStorage immediately
-        if (typeof window !== "undefined" && user?.id === editingId) {
+        if (typeof window !== "undefined" && currentUser?.id === editingId) {
           try {
             const raw = localStorage.getItem("authUser");
             if (raw) {
@@ -448,7 +676,7 @@ export function AdminUsers() {
   const handleDelete = async (id: string) => {
     if (!confirm("Are you sure you want to delete this user?")) return;
     try {
-      const res = await deleteUser(id, user?.email || "");
+      const res = await deleteUser(id, currentUser?.email || "");
       if (!res?.success) throw new Error(res?.error || "Failed to delete user");
 
       toast.success("User deleted successfully");
@@ -639,40 +867,416 @@ export function AdminUsers() {
     }
   };
 
+  // Helper to render an individual Staff Card
+  const renderStaffCard = (u: AdminUser) => {
+    let perms: string[] = [];
+    try {
+      perms = JSON.parse(u.permissions);
+    } catch {}
+
+    const deptObj = departments.find((d) => d.key === u.department);
+    const roleObj = roles.find((r) => r.key === u.role);
+    const colorCfg = getColorConfig(deptObj?.color || (u.role === "admin" ? "indigo" : "slate"));
+    const isSelf = currentUser?.id === u.id;
+    const isResigned = u.isActive === false;
+    const isRider =
+      u.role === "rider" ||
+      (u.department || "").toLowerCase().includes("logistics") ||
+      (roleObj?.name || "").toLowerCase().includes("driver");
+
+    const menuPerms = perms.filter((p) => !ACTION_PERMISSIONS.some((ap) => ap.id === p));
+    const actionPerms = ACTION_PERMISSIONS.filter((ap) => perms.includes(ap.id));
+
+    return (
+      <div
+        key={u.id}
+        className={`group relative bg-white rounded-2xl border border-slate-200/90 border-t-4 ${colorCfg.topBorderClass} shadow-2xs hover:shadow-md hover:border-slate-300 transition-all flex flex-col justify-between overflow-hidden ${
+          isResigned ? "opacity-75 bg-slate-50/50" : ""
+        }`}
+      >
+        <div>
+          {/* Top Identity Row */}
+          <div className="p-4 pb-3 flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3 min-w-0">
+              {/* Avatar Initials Circle */}
+              <div className="relative shrink-0">
+                <div
+                  className={`w-11 h-11 rounded-2xl flex items-center justify-center font-black text-sm tracking-tight shadow-xs ${colorCfg.avatarClass}`}
+                >
+                  {getInitials(u.name)}
+                </div>
+                <span
+                  className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white ${
+                    isResigned ? "bg-slate-400" : "bg-emerald-500"
+                  }`}
+                  title={isResigned ? "Resigned" : "Active Account"}
+                />
+              </div>
+
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <h4 className="font-extrabold text-slate-900 text-sm truncate max-w-[180px]" title={u.name}>
+                    {u.name}
+                  </h4>
+                  {u.isDepartmentHead && (
+                    <span className="px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider rounded-md bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-0.5 shadow-2xs shrink-0">
+                      <span>👑</span>
+                      <span>HEAD</span>
+                    </span>
+                  )}
+                  {isSelf && (
+                    <span className="px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider rounded-md bg-indigo-600 text-white shrink-0">
+                      YOU
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1 text-xs text-slate-500 font-medium mt-0.5 truncate" title={u.email}>
+                  <Mail size={11} className="text-slate-400 shrink-0" />
+                  <span className="truncate">{u.email}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Action Buttons */}
+            <div className="flex items-center gap-0.5 shrink-0 bg-slate-50 border border-slate-200/70 rounded-xl p-0.5">
+              <button
+                type="button"
+                onClick={() => handleEdit(u)}
+                className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-white rounded-lg transition-all cursor-pointer"
+                title="Edit User & Permissions"
+              >
+                <Edit size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleToggleResign(u)}
+                className="p-1.5 text-slate-500 hover:text-amber-600 hover:bg-white rounded-lg transition-all cursor-pointer"
+                title={u.isActive !== false ? "Resign Staff" : "Reactivate Staff"}
+              >
+                {u.isActive !== false ? <UserX size={14} /> : <UserCheck size={14} />}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDelete(u.id)}
+                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-white rounded-lg transition-all cursor-pointer"
+                title="Delete User"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+
+          {/* Role, Department & Branch Strip */}
+          <div className="px-4 pb-3">
+            <div className="p-2.5 rounded-xl bg-slate-50/90 border border-slate-100 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {deptObj ? (
+                  <span
+                    className={`px-2 py-0.5 text-[10px] font-bold rounded-md border flex items-center gap-1 ${getBadgeClass(
+                      deptObj.color
+                    )}`}
+                  >
+                    <span>{deptObj.icon}</span>
+                    <span>{deptObj.name}</span>
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 text-[10px] font-bold rounded-md border bg-slate-100 text-slate-600 border-slate-200">
+                    Unassigned Dept
+                  </span>
+                )}
+                <span
+                  className={`px-2 py-0.5 text-[9px] font-black uppercase tracking-wider rounded-md border ${getBadgeClass(
+                    roleObj?.color || (u.role === "admin" ? "indigo" : "slate")
+                  )}`}
+                >
+                  {roleObj?.name || u.role}
+                </span>
+              </div>
+
+              <div className="shrink-0">
+                <UserBranchBadge user={u} branches={shopLocations} />
+              </div>
+            </div>
+          </div>
+
+          {/* Special Action Permissions (if any) */}
+          {actionPerms.length > 0 && (
+            <div className="px-4 pb-2.5">
+              <div className="text-[9px] font-black uppercase tracking-wider text-amber-700/90 mb-1.5 flex items-center gap-1">
+                <Sparkles size={10} />
+                <span>Special Action Privileges ({actionPerms.length})</span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {actionPerms.map((ap) => (
+                  <span
+                    key={ap.id}
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-md border shadow-2xs flex items-center gap-1 ${ap.badgeClass}`}
+                    title={ap.description}
+                  >
+                    <span>{ap.icon}</span>
+                    <span>{ap.shortLabel}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Menu Access Permissions */}
+          <div className="px-4 pb-3">
+            {u.role === "admin" ? (
+              <div className="p-2.5 rounded-xl bg-gradient-to-r from-indigo-50/90 to-violet-50/90 border border-indigo-200/80 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck size={15} className="text-indigo-600 shrink-0" />
+                  <div>
+                    <div className="text-[11px] font-extrabold text-indigo-950">Full System Administrator</div>
+                    <div className="text-[10px] font-medium text-indigo-700">
+                      Unrestricted access to all {MENU_PERMISSIONS.length} modules & settings
+                    </div>
+                  </div>
+                </div>
+                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-600 text-white shrink-0">
+                  All Access
+                </span>
+              </div>
+            ) : menuPerms.length > 0 ? (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-slate-400">
+                    Menu Access ({menuPerms.length}/{MENU_PERMISSIONS.length})
+                  </span>
+                  <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-indigo-500 rounded-full"
+                      style={{
+                        width: `${Math.min(100, Math.round((menuPerms.length / MENU_PERMISSIONS.length) * 100))}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {menuPerms.map((p) => {
+                    const label = MENU_PERMISSIONS.find((mp) => mp.id === p)?.label || p;
+                    return (
+                      <span
+                        key={p}
+                        className="text-[10px] font-bold text-slate-700 bg-slate-100/90 hover:bg-slate-200/70 px-2 py-0.5 rounded-md border border-slate-200/90 transition-colors"
+                      >
+                        {label}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : isRider ? (
+              <div className="p-2.5 rounded-xl bg-amber-50/70 border border-amber-200/70 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm">🛵</span>
+                  <div>
+                    <div className="text-[11px] font-bold text-amber-950">Logistics & Rider Portal</div>
+                    <div className="text-[10px] text-amber-800/90">
+                      Assigned to Pickup & Delivery dispatch routes (No Admin Console menus)
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="p-2.5 rounded-xl bg-rose-50/60 border border-rose-200/60 flex items-center justify-between">
+                <span className="text-[11px] font-bold text-rose-700">No Admin Console Menu Access</span>
+                <button
+                  type="button"
+                  onClick={() => handleEdit(u)}
+                  className="text-[10px] font-bold text-indigo-600 hover:underline cursor-pointer"
+                >
+                  + Grant Access
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Card Footer */}
+        <div className="px-4 py-2.5 bg-slate-50/70 border-t border-slate-100 flex items-center justify-between text-[11px]">
+          <div className="flex items-center gap-1.5 text-slate-400 font-medium">
+            <KeyRound size={11} />
+            <span className="font-mono tracking-widest text-[10px]">••••••••</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleEdit(u)}
+            className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1 cursor-pointer"
+          >
+            <span>Configure Access</span>
+            <span>→</span>
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div className="flex flex-col h-full bg-slate-50 p-4 sm:p-6 overflow-auto">
-      {/* Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 sm:mb-8">
-        <div className="flex items-center gap-3">
-          <div className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl shrink-0 shadow-2xs">
-            <ShieldCheck size={28} />
+    <div className="flex flex-col h-full bg-slate-50/70 p-4 sm:p-6 overflow-auto space-y-5">
+      {/* ─── Executive Command Header ───────────────────────────────────────── */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/90 shadow-2xs">
+        <div className="flex items-center gap-3.5">
+          <div className="w-12 h-12 bg-gradient-to-br from-indigo-600 to-violet-600 text-white rounded-2xl flex items-center justify-center shrink-0 shadow-sm shadow-indigo-200">
+            <ShieldCheck size={24} />
           </div>
           <div>
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
-              Manage Users & Organization
-            </h1>
-            <p className="text-xs sm:text-sm font-medium text-slate-500">
-              Staff accounts, dynamic departments, custom role labels, and menu access permissions
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">
+                Manage Users & Organization
+              </h1>
+              <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                RBAC & Directory
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 font-medium mt-0.5">
+              Staff accounts, dynamic departments, custom role labels, and granular menu & financial permissions
             </p>
           </div>
         </div>
 
-        {/* Action Button */}
-        <div>
-          {viewMode === "departments" ? (
-            <Button onClick={openCreateDeptModal} className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs cursor-pointer">
-              <Plus size={16} className="mr-1.5" /> Add Department
-            </Button>
-          ) : viewMode === "roles" ? (
-            <Button onClick={openCreateRoleModal} className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs cursor-pointer">
-              <Plus size={16} className="mr-1.5" /> Add Role
-            </Button>
-          ) : (
-            <Button onClick={() => { resetForm(); setIsEditing(true); }} className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs cursor-pointer">
-              <Plus size={16} className="mr-1.5" /> Add User
-            </Button>
-          )}
+        {/* Quick Create Buttons */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={openCreateDeptModal}
+            className="h-9 text-xs font-bold border-slate-200 text-slate-700 hover:bg-slate-50 cursor-pointer rounded-xl"
+          >
+            <Building2 size={14} className="mr-1.5 text-indigo-600" />
+            + Department
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={openCreateRoleModal}
+            className="h-9 text-xs font-bold border-slate-200 text-slate-700 hover:bg-slate-50 cursor-pointer rounded-xl"
+          >
+            <Tag size={14} className="mr-1.5 text-indigo-600" />
+            + Role Label
+          </Button>
+          <Button
+            type="button"
+            onClick={() => {
+              resetForm();
+              setIsEditing(true);
+            }}
+            className="h-9 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-xs cursor-pointer rounded-xl px-4"
+          >
+            <Plus size={15} className="mr-1.5" />
+            Add Staff Account
+          </Button>
         </div>
+      </div>
+
+      {/* ─── Organization KPI Strip ─────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <button
+          type="button"
+          onClick={() => {
+            setViewMode("active");
+            setSelectedDeptFilter("ALL");
+          }}
+          className={`text-left bg-white p-3.5 rounded-2xl border transition-all cursor-pointer ${
+            viewMode === "active" && selectedDeptFilter === "ALL"
+              ? "border-indigo-500 ring-2 ring-indigo-500/15 shadow-xs"
+              : "border-slate-200/90 hover:border-slate-300 shadow-2xs"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Active Staff</span>
+            <div className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+              <Users size={14} />
+            </div>
+          </div>
+          <div className="text-2xl font-black text-slate-900 mt-1">{kpiStats.activeCount}</div>
+          <div className="text-[11px] font-semibold text-slate-500 mt-0.5 flex items-center gap-1.5">
+            <span>🏢 {kpiStats.officeAndBranchCount} Office/Branch</span>
+            <span>•</span>
+            <span>🛵 {kpiStats.ridersCount} Riders</span>
+          </div>
+        </button>
+
+        <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Department Heads</span>
+            <div className="w-7 h-7 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
+              <Crown size={14} />
+            </div>
+          </div>
+          <div className="text-2xl font-black text-slate-900 mt-1">{kpiStats.headsCount}</div>
+          <div className="text-[11px] font-semibold text-amber-700 mt-0.5">
+            👑 Team supervisors & leads
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setViewMode("departments")}
+          className={`text-left bg-white p-3.5 rounded-2xl border transition-all cursor-pointer ${
+            viewMode === "departments"
+              ? "border-indigo-500 ring-2 ring-indigo-500/15 shadow-xs"
+              : "border-slate-200/90 hover:border-slate-300 shadow-2xs"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Departments</span>
+            <div className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <Building2 size={14} />
+            </div>
+          </div>
+          <div className="text-2xl font-black text-slate-900 mt-1">{departments.length}</div>
+          <div className="text-[11px] font-semibold text-emerald-700 mt-0.5">
+            Click to manage org units →
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setViewMode("roles")}
+          className={`text-left bg-white p-3.5 rounded-2xl border transition-all cursor-pointer ${
+            viewMode === "roles"
+              ? "border-indigo-500 ring-2 ring-indigo-500/15 shadow-xs"
+              : "border-slate-200/90 hover:border-slate-300 shadow-2xs"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Roles & Privileges</span>
+            <div className="w-7 h-7 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center">
+              <Tag size={14} />
+            </div>
+          </div>
+          <div className="text-2xl font-black text-slate-900 mt-1">{roles.length}</div>
+          <div className="text-[11px] font-semibold text-purple-700 mt-0.5">
+            ⚡ {kpiStats.privilegedCount} staff with special actions
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setViewMode("resigned");
+            setSelectedDeptFilter("ALL");
+          }}
+          className={`text-left bg-white p-3.5 rounded-2xl border transition-all cursor-pointer col-span-2 lg:col-span-1 ${
+            viewMode === "resigned"
+              ? "border-rose-500 ring-2 ring-rose-500/15 shadow-xs"
+              : "border-slate-200/90 hover:border-slate-300 shadow-2xs"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Resigned / Inactive</span>
+            <div className="w-7 h-7 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center">
+              <UserX size={14} />
+            </div>
+          </div>
+          <div className="text-2xl font-black text-slate-900 mt-1">{kpiStats.resignedCount}</div>
+          <div className="text-[11px] font-semibold text-slate-500 mt-0.5">
+            Archived staff accounts
+          </div>
+        </button>
       </div>
 
       {/* ─── User Create / Edit Popup Modal ─────────────────────────────────── */}
@@ -887,220 +1491,482 @@ export function AdminUsers() {
         </DialogContent>
       </Dialog>
 
-      {/* Main Tabs Container */}
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex-1 flex flex-col">
-        {/* Navigation Tabs */}
-        <div className="flex border-b border-slate-200 bg-slate-50 px-6 pt-4 gap-6 shrink-0 overflow-x-auto">
-          <button
-            className={`pb-3 font-bold text-sm transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
-              viewMode === "active"
-                ? "text-indigo-600 border-b-2 border-indigo-600"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-            onClick={() => setViewMode("active")}
-          >
-            <User size={15} />
-            <span>Active Users ({activeUsers.length})</span>
-          </button>
-          <button
-            className={`pb-3 font-bold text-sm transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
-              viewMode === "departments"
-                ? "text-indigo-600 border-b-2 border-indigo-600"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-            onClick={() => setViewMode("departments")}
-          >
-            <Building2 size={15} />
-            <span>Departments ({departments.length})</span>
-          </button>
-          <button
-            className={`pb-3 font-bold text-sm transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
-              viewMode === "roles"
-                ? "text-indigo-600 border-b-2 border-indigo-600"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-            onClick={() => setViewMode("roles")}
-          >
-            <Tag size={15} />
-            <span>Roles ({roles.length})</span>
-          </button>
-          <button
-            className={`pb-3 font-bold text-sm transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
-              viewMode === "resigned"
-                ? "text-indigo-600 border-b-2 border-indigo-600"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-            onClick={() => setViewMode("resigned")}
-          >
-            <UserX size={15} />
-            <span>Resigned ({resignedUsers.length})</span>
-          </button>
+      {/* ─── Main Directory & Organization Container ────────────────────────── */}
+      <div className="bg-white rounded-3xl border border-slate-200/90 shadow-2xs flex-1 flex flex-col overflow-hidden">
+        {/* Top Navigation Bar & Controls */}
+        <div className="border-b border-slate-200/80 bg-slate-50/60 px-4 sm:px-6 pt-3.5 pb-3 flex flex-col gap-3 shrink-0">
+          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+            {/* Primary View Mode Pills */}
+            <div className="flex items-center gap-1.5 bg-slate-200/60 p-1 rounded-2xl w-fit max-w-full overflow-x-auto">
+              <button
+                type="button"
+                onClick={() => setViewMode("active")}
+                className={`px-3.5 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  viewMode === "active"
+                    ? "bg-white text-indigo-600 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <User size={14} />
+                <span>Active Staff</span>
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                    viewMode === "active" ? "bg-indigo-100 text-indigo-700" : "bg-slate-200 text-slate-600"
+                  }`}
+                >
+                  {activeUsers.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setViewMode("departments")}
+                className={`px-3.5 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  viewMode === "departments"
+                    ? "bg-white text-indigo-600 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Building2 size={14} />
+                <span>Departments</span>
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                    viewMode === "departments" ? "bg-indigo-100 text-indigo-700" : "bg-slate-200 text-slate-600"
+                  }`}
+                >
+                  {departments.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setViewMode("roles")}
+                className={`px-3.5 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  viewMode === "roles"
+                    ? "bg-white text-indigo-600 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Tag size={14} />
+                <span>Roles</span>
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                    viewMode === "roles" ? "bg-indigo-100 text-indigo-700" : "bg-slate-200 text-slate-600"
+                  }`}
+                >
+                  {roles.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setViewMode("resigned")}
+                className={`px-3.5 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  viewMode === "resigned"
+                    ? "bg-white text-rose-600 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <UserX size={14} />
+                <span>Resigned</span>
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                    viewMode === "resigned" ? "bg-rose-100 text-rose-700" : "bg-slate-200 text-slate-600"
+                  }`}
+                >
+                  {resignedUsers.length}
+                </span>
+              </button>
+            </div>
+
+            {/* Search Input & Layout Switcher (Only for Active / Resigned tabs) */}
+            {(viewMode === "active" || viewMode === "resigned") && (
+              <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
+                <div className="relative flex-1 sm:w-72">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search name, email, role, permission..."
+                    className="w-full h-9 pl-8 pr-8 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery("")}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+
+                {/* Layout Toggle */}
+                <div className="flex items-center bg-slate-200/70 p-0.5 rounded-xl border border-slate-200 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setUserLayout("grouped")}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                      userLayout === "grouped"
+                        ? "bg-white text-indigo-600 shadow-2xs"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                    title="Group Cards by Department"
+                  >
+                    <Layers size={13} />
+                    <span className="hidden sm:inline">By Dept</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUserLayout("grid")}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                      userLayout === "grid"
+                        ? "bg-white text-indigo-600 shadow-2xs"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                    title="Flat Card Grid"
+                  >
+                    <LayoutGrid size={13} />
+                    <span className="hidden sm:inline">Cards</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUserLayout("table")}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                      userLayout === "table"
+                        ? "bg-white text-indigo-600 shadow-2xs"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                    title="Compact Table View"
+                  >
+                    <List size={13} />
+                    <span className="hidden sm:inline">Table</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Department Quick-Filter Pills (For Active / Resigned tabs) */}
+          {(viewMode === "active" || viewMode === "resigned") && departments.length > 0 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+              <button
+                type="button"
+                onClick={() => setSelectedDeptFilter("ALL")}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  selectedDeptFilter === "ALL"
+                    ? "bg-slate-900 text-white border-slate-900 shadow-2xs"
+                    : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                }`}
+              >
+                <span>All Departments</span>
+                <span
+                  className={`px-1.5 py-0.1 rounded-full text-[9px] font-black ${
+                    selectedDeptFilter === "ALL" ? "bg-white/20 text-white" : "bg-slate-100 text-slate-600"
+                  }`}
+                >
+                  {baseDisplayedUsers.length}
+                </span>
+              </button>
+
+              {departments.map((d) => {
+                const count = baseDisplayedUsers.filter((u) => {
+                  const effectiveKey =
+                    u.department ||
+                    (u.role === "admin"
+                      ? "management"
+                      : u.role === "cso"
+                      ? "accounting_cso"
+                      : u.role === "rider"
+                      ? "logistics"
+                      : "branch_ops");
+                  return effectiveKey === d.key;
+                }).length;
+                if (count === 0 && viewMode === "resigned") return null;
+                const isSelected = selectedDeptFilter === d.key;
+
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => setSelectedDeptFilter(isSelected ? "ALL" : d.key)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                      isSelected
+                        ? "bg-indigo-600 text-white border-indigo-600 shadow-2xs"
+                        : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                    }`}
+                  >
+                    <span>{d.icon}</span>
+                    <span>{d.name}</span>
+                    <span
+                      className={`px-1.5 py-0.1 rounded-full text-[9px] font-black ${
+                        isSelected ? "bg-white/20 text-white" : "bg-slate-100 text-slate-600"
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
-        {/* ─── TAB 1 & 4: USERS LIST ────────────────────────────────────────── */}
+        {/* ─── TAB 1 & 4: USERS DIRECTORY (GROUPED CARDS / FLAT CARDS / TABLE) ─ */}
         {viewMode === "active" || viewMode === "resigned" ? (
-          <div className="overflow-x-auto flex-1">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase text-[10px] font-black tracking-wider">
-                <tr>
-                  <th className="px-6 py-4">User</th>
-                  <th className="px-6 py-4">Department & Role</th>
-                  <th className="px-6 py-4 hidden md:table-cell">Permissions</th>
-                  <th className="px-6 py-4">Password</th>
-                  <th className="px-6 py-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {isLoading ? (
-                  <tr>
-                    <td colSpan={5} className="px-6 py-8 text-center text-slate-500 font-medium">
-                      Loading users...
-                    </td>
-                  </tr>
-                ) : displayedUsers.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="px-6 py-8 text-center text-slate-500 font-medium">
-                      No users found
-                    </td>
-                  </tr>
-                ) : (
-                  displayedUsers.map((user) => {
-                    let perms: string[] = [];
-                    try {
-                      perms = JSON.parse(user.permissions);
-                    } catch (e) {}
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+            {isLoading ? (
+              <div className="py-16 flex flex-col items-center justify-center text-slate-400 gap-2">
+                <Loader2 size={28} className="animate-spin text-indigo-600" />
+                <span className="text-xs font-bold text-slate-500">Loading staff directory...</span>
+              </div>
+            ) : displayedUsers.length === 0 ? (
+              <div className="py-16 text-center">
+                <div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
+                  <Users size={22} />
+                </div>
+                <p className="text-sm font-bold text-slate-700">No staff accounts match your filter</p>
+                <p className="text-xs text-slate-400 mt-1">
+                  Try clearing your search query or switching the department filter.
+                </p>
+                {(searchQuery || selectedDeptFilter !== "ALL") && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setSearchQuery("");
+                      setSelectedDeptFilter("ALL");
+                    }}
+                    className="mt-3 text-xs font-bold"
+                  >
+                    Reset Filters
+                  </Button>
+                )}
+              </div>
+            ) : userLayout === "grouped" ? (
+              /* ── GROUPED BY DEPARTMENT CARD LAYOUT ── */
+              <div className="space-y-7">
+                {groupedUsersByDept.map((group) => {
+                  const colorCfg = getColorConfig(group.color);
+                  const headsCount = group.members.filter((m) => m.isDepartmentHead).length;
 
-                    const deptObj = departments.find((d) => d.key === user.department);
-                    const roleObj = roles.find((r) => r.key === user.role);
-
-                    return (
-                      <tr key={user.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-slate-900">{user.name}</span>
-                            {user.isDepartmentHead && (
-                              <span className="px-1.5 py-0.2 text-[9px] font-black uppercase rounded-md bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-0.5 shadow-2xs">
-                                👑 Head
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-xs text-slate-500">{user.email}</div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-col items-start gap-1">
-                            {deptObj ? (
+                  return (
+                    <div key={group.key} className="space-y-3">
+                      {/* Department Group Header Bar */}
+                      <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200/80">
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-lg p-1.5 rounded-xl bg-slate-100 border border-slate-200/80 shadow-2xs">
+                            {group.icon}
+                          </span>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-sm font-black text-slate-900 tracking-tight">
+                                {group.title}
+                              </h3>
+                              {group.titleTh && (
+                                <span className="text-xs font-semibold text-slate-400">
+                                  ({group.titleTh})
+                                </span>
+                              )}
                               <span
-                                className={`px-2 py-0.5 text-[10px] font-bold rounded-md border flex items-center gap-1 ${getBadgeClass(
-                                  deptObj.color
-                                )}`}
+                                className={`px-2 py-0.5 text-[10px] font-black rounded-full border ${colorCfg.badgeClass}`}
                               >
-                                <span>{deptObj.icon}</span>
-                                <span>{deptObj.name}</span>
+                                {group.members.length} {group.members.length === 1 ? "Member" : "Members"}
                               </span>
-                            ) : (
-                              <span className="px-2 py-0.5 text-[10px] font-bold rounded-md border bg-slate-100 text-slate-600 border-slate-200">
-                                -
-                              </span>
-                            )}
-                            <div className="flex items-center gap-1">
-                              <span
-                                className={`px-2 py-0.5 text-[9px] font-black uppercase tracking-wider rounded-full border ${getBadgeClass(
-                                  roleObj?.color || (user.role === "admin" ? "indigo" : "slate")
-                                )}`}
-                              >
-                                {roleObj?.name || user.role}
-                              </span>
-                              <UserBranchBadge user={user} branches={shopLocations} />
+                              {headsCount > 0 && (
+                                <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-amber-50 text-amber-800 border border-amber-200 hidden sm:inline-flex items-center gap-1">
+                                  👑 {headsCount} {headsCount === 1 ? "Head" : "Heads"}
+                                </span>
+                              )}
                             </div>
                           </div>
-                        </td>
-                        <td className="px-6 py-4 hidden md:table-cell">
-                          <div className="flex flex-wrap gap-1 items-center">
-                            {user.role === "admin" ? (
-                              <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
-                                All Access
-                              </span>
-                            ) : (
-                              perms.filter((p) => !ACTION_PERMISSIONS.some((ap) => ap.id === p)).map((p) => {
-                                const label = MENU_PERMISSIONS.find((mp) => mp.id === p)?.label || p;
-                                return (
-                                  <span
-                                    key={p}
-                                    className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200"
-                                  >
-                                    {label}
-                                  </span>
-                                );
-                              })
-                            )}
-                            {perms.includes("adjust-wallet") && (
-                              <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-300 shadow-2xs flex items-center gap-0.5">
-                                <span>⚡</span> Adjust Wallet
-                              </span>
-                            )}
-                            {perms.includes("approve-wallet") && (
-                              <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-300 shadow-2xs flex items-center gap-0.5">
-                                <span>✅</span> Approve Wallet
-                              </span>
-                            )}
-                            {perms.includes("refund-job") && (
-                              <span className="text-[10px] font-bold text-rose-800 bg-rose-100 px-2 py-0.5 rounded-full border border-rose-300 shadow-2xs flex items-center gap-0.5">
-                                <span>↩️</span> Refund Job
-                              </span>
-                            )}
-                            {perms.includes("cso") && (
-                              <span className="text-[10px] font-bold text-blue-800 bg-blue-100 px-2 py-0.5 rounded-full border border-blue-300 shadow-2xs flex items-center gap-0.5">
-                                <span>💼</span> CSO
-                              </span>
-                            )}
-                            {user.role !== "admin" && perms.length === 0 && (
-                              <span className="text-[10px] font-bold text-red-500">No Access</span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="text-xs font-mono bg-slate-100 px-2.5 py-1 rounded-md text-slate-500 inline-block tracking-widest font-bold">
-                            ••••••••
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            <button
-                              onClick={() => handleEdit(user)}
-                              className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
-                              title="Edit User"
-                            >
-                              <Edit size={16} />
-                            </button>
-                            <button
-                              onClick={() => handleToggleResign(user)}
-                              title={user.isActive !== false ? "Resign User" : "Reactivate User"}
-                              className="p-2 text-orange-600 hover:bg-orange-50 rounded-lg transition-colors cursor-pointer"
-                            >
-                              {user.isActive !== false ? <UserX size={16} /> : <UserCheck size={16} />}
-                            </button>
-                            <button
-                              onClick={() => handleDelete(user.id)}
-                              className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                              title="Delete User"
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+                        </div>
+
+                        {group.dept && (
+                          <button
+                            type="button"
+                            onClick={() => openEditDeptModal(group.dept!)}
+                            className="text-[11px] font-bold text-slate-400 hover:text-indigo-600 flex items-center gap-1 cursor-pointer"
+                          >
+                            <Edit size={12} />
+                            <span className="hidden sm:inline">Edit Dept</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Department Cards Grid */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        {group.members.map((u) => renderStaffCard(u))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : userLayout === "grid" ? (
+              /* ── FLAT CARD GRID LAYOUT ── */
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {displayedUsers.map((u) => renderStaffCard(u))}
+              </div>
+            ) : (
+              /* ── COMPACT TABLE VIEW ── */
+              <div className="overflow-x-auto -mx-4 sm:-mx-6">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-slate-500 border-y border-slate-200 uppercase text-[10px] font-black tracking-wider">
+                    <tr>
+                      <th className="px-6 py-3.5">Staff Member</th>
+                      <th className="px-6 py-3.5">Department & Role</th>
+                      <th className="px-6 py-3.5 hidden md:table-cell">Permissions & Privileges</th>
+                      <th className="px-6 py-3.5 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {displayedUsers.map((u) => {
+                      let perms: string[] = [];
+                      try {
+                        perms = JSON.parse(u.permissions);
+                      } catch {}
+
+                      const deptObj = departments.find((d) => d.key === u.department);
+                      const roleObj = roles.find((r) => r.key === u.role);
+                      const colorCfg = getColorConfig(deptObj?.color);
+                      const menuPerms = perms.filter((p) => !ACTION_PERMISSIONS.some((ap) => ap.id === p));
+                      const actionPerms = ACTION_PERMISSIONS.filter((ap) => perms.includes(ap.id));
+                      const isRider =
+                        u.role === "rider" ||
+                        (u.department || "").toLowerCase().includes("logistics");
+
+                      return (
+                        <tr key={u.id} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="px-6 py-3.5">
+                            <div className="flex items-center gap-3">
+                              <div
+                                className={`w-9 h-9 rounded-xl flex items-center justify-center font-black text-xs shrink-0 ${colorCfg.avatarClass}`}
+                              >
+                                {getInitials(u.name)}
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-bold text-slate-900">{u.name}</span>
+                                  {u.isDepartmentHead && (
+                                    <span className="px-1.5 py-0.2 text-[9px] font-black uppercase rounded-md bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-0.5">
+                                      👑 Head
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-slate-500">{u.email}</div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-3.5">
+                            <div className="flex flex-col items-start gap-1">
+                              {deptObj ? (
+                                <span
+                                  className={`px-2 py-0.5 text-[10px] font-bold rounded-md border flex items-center gap-1 ${getBadgeClass(
+                                    deptObj.color
+                                  )}`}
+                                >
+                                  <span>{deptObj.icon}</span>
+                                  <span>{deptObj.name}</span>
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 text-[10px] font-bold rounded-md border bg-slate-100 text-slate-600 border-slate-200">
+                                  -
+                                </span>
+                              )}
+                              <div className="flex items-center gap-1">
+                                <span
+                                  className={`px-2 py-0.5 text-[9px] font-black uppercase tracking-wider rounded-full border ${getBadgeClass(
+                                    roleObj?.color || (u.role === "admin" ? "indigo" : "slate")
+                                  )}`}
+                                >
+                                  {roleObj?.name || u.role}
+                                </span>
+                                <UserBranchBadge user={u} branches={shopLocations} />
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-3.5 hidden md:table-cell">
+                            <div className="flex flex-wrap gap-1 items-center">
+                              {u.role === "admin" ? (
+                                <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2.5 py-0.5 rounded-full">
+                                  🛡️ Full System Admin (All Access)
+                                </span>
+                              ) : (
+                                menuPerms.map((p) => {
+                                  const label = MENU_PERMISSIONS.find((mp) => mp.id === p)?.label || p;
+                                  return (
+                                    <span
+                                      key={p}
+                                      className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200"
+                                    >
+                                      {label}
+                                    </span>
+                                  );
+                                })
+                              )}
+                              {actionPerms.map((ap) => (
+                                <span
+                                  key={ap.id}
+                                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shadow-2xs flex items-center gap-0.5 ${ap.badgeClass}`}
+                                >
+                                  <span>{ap.icon}</span>
+                                  <span>{ap.shortLabel}</span>
+                                </span>
+                              ))}
+                              {u.role !== "admin" && perms.length === 0 && (
+                                <span
+                                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                                    isRider
+                                      ? "bg-amber-50 text-amber-800 border-amber-200"
+                                      : "bg-rose-50 text-rose-600 border-rose-200"
+                                  }`}
+                                >
+                                  {isRider ? "🛵 Rider App Access" : "No Menu Access"}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-6 py-3.5 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                onClick={() => handleEdit(u)}
+                                className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
+                                title="Edit User"
+                              >
+                                <Edit size={15} />
+                              </button>
+                              <button
+                                onClick={() => handleToggleResign(u)}
+                                title={u.isActive !== false ? "Resign User" : "Reactivate User"}
+                                className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
+                              >
+                                {u.isActive !== false ? <UserX size={15} /> : <UserCheck size={15} />}
+                              </button>
+                              <button
+                                onClick={() => handleDelete(u.id)}
+                                className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                                title="Delete User"
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         ) : viewMode === "departments" ? (
           // ─── TAB 2: DEPARTMENTS MANAGEMENT ─────────────────────────────────
           <div className="overflow-x-auto flex-1 p-4 sm:p-6">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-5">
               <div>
-                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
                   <Building2 size={16} className="text-indigo-600" />
                   <span>Company Departments ({departments.length})</span>
                 </h3>
@@ -1108,27 +1974,28 @@ export function AdminUsers() {
                   Manage department names, icons, color themes, and view member distribution.
                 </p>
               </div>
-              <Button onClick={openCreateDeptModal} size="sm" className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs">
+              <Button onClick={openCreateDeptModal} size="sm" className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs cursor-pointer rounded-xl">
                 <Plus size={14} className="mr-1" /> Add Department
               </Button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {departments.map((dept) => {
-                const badgeClass = getBadgeClass(dept.color);
-                const deptHeads = activeUsers.filter((u) => u.department === dept.key && u.isDepartmentHead);
+                const colorCfg = getColorConfig(dept.color);
+                const deptMembers = activeUsers.filter((u) => u.department === dept.key);
+                const deptHeads = deptMembers.filter((u) => u.isDepartmentHead);
 
                 return (
                   <div
                     key={dept.id}
-                    className="bg-white border border-slate-200 rounded-2xl p-4 shadow-2xs hover:shadow-md transition-all flex flex-col justify-between group"
+                    className={`bg-white border border-slate-200/90 border-t-4 ${colorCfg.topBorderClass} rounded-2xl p-4 shadow-2xs hover:shadow-md transition-all flex flex-col justify-between group`}
                   >
                     <div>
                       <div className="flex items-start justify-between gap-2 mb-3">
-                        <span className="text-2xl p-2 bg-slate-50 border border-slate-100 rounded-xl shadow-2xs">
+                        <span className="text-2xl p-2.5 bg-slate-50 border border-slate-100 rounded-2xl shadow-2xs">
                           {dept.icon}
                         </span>
-                        <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center gap-1">
                           <button
                             type="button"
                             onClick={() => openEditDeptModal(dept)}
@@ -1140,7 +2007,7 @@ export function AdminUsers() {
                           <button
                             type="button"
                             onClick={() => handleDeleteDepartment(dept)}
-                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                             title="Delete Department"
                           >
                             <Trash2 size={14} />
@@ -1154,7 +2021,7 @@ export function AdminUsers() {
 
                       {/* Department Heads Display */}
                       <div className="mt-3 pt-2.5 border-t border-slate-100/80">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
                           👑 Department Head(s)
                         </span>
                         {deptHeads.length > 0 ? (
@@ -1173,15 +2040,46 @@ export function AdminUsers() {
                           <span className="text-[11px] text-slate-400 italic">No head assigned</span>
                         )}
                       </div>
+
+                      {/* Member Avatars Preview */}
+                      {deptMembers.length > 0 && (
+                        <div className="mt-3 pt-2.5 border-t border-slate-100/80">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
+                            Active Team ({deptMembers.length})
+                          </span>
+                          <div className="flex flex-wrap gap-1">
+                            {deptMembers.slice(0, 6).map((m) => (
+                              <span
+                                key={m.id}
+                                className="text-[10px] font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/80"
+                              >
+                                {m.name.split(" ")[0]}
+                              </span>
+                            ))}
+                            {deptMembers.length > 6 && (
+                              <span className="text-[10px] font-bold text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded-md border border-slate-200">
+                                +{deptMembers.length - 6} more
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
-                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded-md border ${badgeClass}`}>
-                        {COLOR_CONFIG[dept.color]?.label || dept.color}
+                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded-md border ${colorCfg.badgeClass}`}>
+                        {colorCfg.label}
                       </span>
-                      <span className="font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-full text-[11px]">
-                        👥 {dept.userCount || 0} Members
-                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedDeptFilter(dept.key);
+                          setViewMode("active");
+                        }}
+                        className="font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-0.5 rounded-full text-[11px] transition-colors cursor-pointer"
+                      >
+                        👥 View {dept.userCount || 0} Staff →
+                      </button>
                     </div>
                   </div>
                 );
@@ -1191,9 +2089,9 @@ export function AdminUsers() {
         ) : (
           // ─── TAB 3: ROLES MANAGEMENT ───────────────────────────────────────
           <div className="overflow-x-auto flex-1 p-4 sm:p-6">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-5">
               <div>
-                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
                   <Tag size={16} className="text-indigo-600" />
                   <span>Custom Role Labels ({roles.length})</span>
                 </h3>
@@ -1201,25 +2099,27 @@ export function AdminUsers() {
                   Customize job title labels, color tags, and configure staff positions.
                 </p>
               </div>
-              <Button onClick={openCreateRoleModal} size="sm" className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs">
+              <Button onClick={openCreateRoleModal} size="sm" className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs cursor-pointer rounded-xl">
                 <Plus size={14} className="mr-1" /> Add Role
               </Button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {roles.map((r) => {
-                const badgeClass = getBadgeClass(r.color);
+                const colorCfg = getColorConfig(r.color);
+                const roleMembers = activeUsers.filter((u) => u.role === r.key);
+
                 return (
                   <div
                     key={r.id}
-                    className="bg-white border border-slate-200 rounded-2xl p-4 shadow-2xs hover:shadow-md transition-all flex flex-col justify-between group"
+                    className={`bg-white border border-slate-200/90 border-t-4 ${colorCfg.topBorderClass} rounded-2xl p-4 shadow-2xs hover:shadow-md transition-all flex flex-col justify-between group`}
                   >
                     <div>
                       <div className="flex items-start justify-between gap-2 mb-3">
-                        <span className={`px-2.5 py-1 text-xs font-black uppercase tracking-wider rounded-lg border ${badgeClass}`}>
+                        <span className={`px-2.5 py-1 text-xs font-black uppercase tracking-wider rounded-lg border ${colorCfg.badgeClass}`}>
                           {r.name}
                         </span>
-                        <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center gap-1">
                           <button
                             type="button"
                             onClick={() => openEditRoleModal(r)}
@@ -1232,7 +2132,7 @@ export function AdminUsers() {
                             <button
                               type="button"
                               onClick={() => handleDeleteRole(r)}
-                              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                               title="Delete Role"
                             >
                               <Trash2 size={14} />
@@ -1251,11 +2151,32 @@ export function AdminUsers() {
                           </span>
                         )}
                       </div>
+
+                      {roleMembers.length > 0 && (
+                        <div className="mt-3 pt-2.5 border-t border-slate-100">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                            Assigned Staff
+                          </span>
+                          <div className="flex flex-wrap gap-1">
+                            {roleMembers.slice(0, 5).map((m) => (
+                              <span
+                                key={m.id}
+                                className="text-[10px] font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/80"
+                              >
+                                {m.name.split(" ")[0]}
+                              </span>
+                            ))}
+                            {roleMembers.length > 5 && (
+                              <span className="text-[10px] font-bold text-slate-500">+{roleMembers.length - 5}</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
-                      <span className="text-slate-400 text-[10px]">Order: #{r.order}</span>
-                      <span className="font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-full text-[11px]">
+                      <span className="text-slate-400 text-[10px] font-semibold">Order: #{r.order}</span>
+                      <span className="font-bold text-slate-700 bg-slate-100 px-2.5 py-0.5 rounded-full text-[11px]">
                         👥 {r.userCount || 0} Staff
                       </span>
                     </div>
