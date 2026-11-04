@@ -2814,6 +2814,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               {(() => {
                                 const rawPhone = job.customerPhone && job.customerPhone !== "-" ? job.customerPhone : "";
                                 const displayContact = rawPhone || (matchedCustomer?.whatsappId ? `WA: ${matchedCustomer.whatsappId}` : (matchedCustomer?.lineId ? `LINE: ${matchedCustomer.lineId}` : "No Phone"));
+                                const bMeta = getJobBillingMeta(job);
                                 const chInfo = getCustomerContactChannels(job, matchedCustomer, bMeta);
                                 return (
                                   <>
@@ -4430,12 +4431,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
             const photos = bMeta.deliveryPhotoUrls;
             const riderObj = riders.find(r => r.id === (deliveryPhotoPreviewJob.deliveryRiderId || deliveryPhotoPreviewJob.riderId));
             const riderName = riderObj?.nickname || riderObj?.name || deliveryPhotoPreviewJob.deliveryRiderId || deliveryPhotoPreviewJob.riderId || "Rider";
-            const matchedCustomer = findMatchingCustomer(
-              customers,
-              deliveryPhotoPreviewJob.customerId,
-              deliveryPhotoPreviewJob.customerPhone,
-              deliveryPhotoPreviewJob.customerName
-            );
+            const matchedCustomer = findMatchingCustomer(customers, {
+              customerId: deliveryPhotoPreviewJob.customerId,
+              customerPhone: deliveryPhotoPreviewJob.customerPhone,
+              customerName: deliveryPhotoPreviewJob.customerName,
+            });
             const customerLineId = bMeta.customerLineId || matchedCustomer?.lineId || "";
             const isLinkedLineUserId = /^U[0-9a-f]{32}$/i.test(customerLineId.trim());
             const autoMatchedLineContact = !isLinkedLineUserId

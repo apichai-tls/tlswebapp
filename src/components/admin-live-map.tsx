@@ -22,9 +22,11 @@ import {
   X,
   ChevronRight,
   Package,
+  Zap,
 } from "lucide-react";
 import { useRiders } from "@/lib/use-riders";
 import { shopStore, riderStore, jobStore, type Rider } from "@/lib/store";
+import { optimizeRiderRoute } from "@/lib/route-optimizer";
 import { useAuth } from "@/providers/auth-provider";
 import { authFetch } from "@/lib/api";
 import { getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
@@ -402,6 +404,45 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
     () => ridersWithLocations.find((r) => r.id === selectedRiderId) || null,
     [ridersWithLocations, selectedRiderId]
   );
+
+  const selectedRiderOptimizedRoute = useMemo(() => {
+    if (!selectedRider) return null;
+    const riderTasks: Array<{
+      job: (typeof jobs)[number];
+      legType: "pickup" | "delivery";
+      customerName?: string | null;
+      targetLocation: string;
+      targetCoords: { lat: number; lng: number } | null | undefined;
+    }> = [];
+
+    for (const j of jobs) {
+      if (j.status === "pickup" && (j.pickupRiderId === selectedRider.id || (!j.pickupRiderId && j.riderId === selectedRider.id))) {
+        if (j.pickupCoords?.lat && j.pickupCoords?.lng) {
+          riderTasks.push({
+            job: j,
+            legType: "pickup",
+            customerName: j.customerName,
+            targetLocation: j.pickupLocation || "",
+            targetCoords: j.pickupCoords,
+          });
+        }
+      } else if (j.status === "delivery" && (j.deliveryRiderId === selectedRider.id || (!j.deliveryRiderId && j.riderId === selectedRider.id))) {
+        if (j.dropoffCoords?.lat && j.dropoffCoords?.lng) {
+          riderTasks.push({
+            job: j,
+            legType: "delivery",
+            customerName: j.customerName,
+            targetLocation: j.dropoffLocation || "",
+            targetCoords: j.dropoffCoords,
+          });
+        }
+      }
+    }
+
+    if (riderTasks.length === 0) return null;
+    const origin = selectedRider.effectiveLocation || { lat: 13.736717, lng: 100.523186 };
+    return optimizeRiderRoute(origin, riderTasks);
+  }, [selectedRider, jobs]);
 
   const handleFocusRider = (rider: (typeof ridersWithLocations)[number]) => {
     setSelectedRiderId(rider.id);

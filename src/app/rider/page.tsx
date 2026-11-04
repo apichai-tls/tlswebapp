@@ -2059,7 +2059,7 @@ export default function RiderPage() {
                           <div className="flex items-center gap-1.5 truncate">
                             <span className="text-indigo-400">📍</span>
                             <span className="truncate">
-                              {displayActiveJobs.map((it, idx) => `#${it.stopNumber || idx + 1} ${(it.targetLocation?.split("(")[0]?.replace("⭐ ", "") || it.job.customerName).slice(0, 10)}`).join(" ➔ ")}
+                              {displayActiveJobs.map((it, idx) => `#${it.stopNumber || idx + 1} ${(it.targetLocation?.split("(")[0]?.replace("⭐ ", "") || it.job.customerName || "Stop").slice(0, 10)}`).join(" ➔ ")}
                             </span>
                           </div>
                           <span className="text-[10px] text-indigo-300 font-extrabold shrink-0 ml-2">
