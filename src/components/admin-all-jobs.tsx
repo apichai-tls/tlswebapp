@@ -4461,29 +4461,35 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                 (matchedCustomer && c.linkedCustomerId === matchedCustomer.id)
             );
 
+            const copyPhotoBlobToClipboard = async (photoUrl: string): Promise<boolean> => {
+              if (!photoUrl) return false;
+              const img = new Image();
+              img.crossOrigin = "anonymous";
+              await new Promise<void>((resolve, reject) => {
+                img.onload = () => resolve();
+                img.onerror = () => reject(new Error("Failed to load image"));
+                img.src = photoUrl;
+              });
+              const canvas = document.createElement("canvas");
+              canvas.width = img.naturalWidth || img.width;
+              canvas.height = img.naturalHeight || img.height;
+              const ctx = canvas.getContext("2d");
+              if (!ctx) throw new Error("Canvas unavailable");
+              ctx.drawImage(img, 0, 0);
+              const blob = await new Promise<Blob | null>((resolve) =>
+                canvas.toBlob((b) => resolve(b), "image/png")
+              );
+              if (!blob) throw new Error("Failed to convert image");
+              await navigator.clipboard.write([
+                new ClipboardItem({ "image/png": blob }),
+              ]);
+              return true;
+            };
+
             const handleCopyPhotoToClipboard = async (photoUrl: string) => {
               setIsCopyingPhoto(true);
               try {
-                const img = new Image();
-                img.crossOrigin = "anonymous";
-                await new Promise<void>((resolve, reject) => {
-                  img.onload = () => resolve();
-                  img.onerror = () => reject(new Error("Failed to load image"));
-                  img.src = photoUrl;
-                });
-                const canvas = document.createElement("canvas");
-                canvas.width = img.naturalWidth || img.width;
-                canvas.height = img.naturalHeight || img.height;
-                const ctx = canvas.getContext("2d");
-                if (!ctx) throw new Error("Canvas unavailable");
-                ctx.drawImage(img, 0, 0);
-                const blob = await new Promise<Blob | null>((resolve) =>
-                  canvas.toBlob((b) => resolve(b), "image/png")
-                );
-                if (!blob) throw new Error("Failed to convert image");
-                await navigator.clipboard.write([
-                  new ClipboardItem({ "image/png": blob }),
-                ]);
+                await copyPhotoBlobToClipboard(photoUrl);
                 toast.success("Copied delivery photo to clipboard! Press Ctrl+V in LINE or WhatsApp chat.");
               } catch {
                 const fullUrl = photoUrl.startsWith("http")
@@ -4496,24 +4502,72 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
               }
             };
 
-            const handleSendViaWhatsApp = (photoUrl?: string) => {
-              const rawPhone = (deliveryPhotoPreviewJob.customerPhone || matchedCustomer?.phone || "").replace(/\D/g, "");
-              const formattedPhone = rawPhone.startsWith("0")
-                ? "66" + rawPhone.slice(1)
-                : rawPhone;
-              const firstPhoto = photoUrl || photos[0] || "";
-              const fullPhotoUrl = firstPhoto
-                ? firstPhoto.startsWith("http")
-                  ? firstPhoto
-                  : `${window.location.origin}${firstPhoto}`
-                : "";
+            const handleSendViaWhatsApp = async (photoUrl?: string) => {
+              const targetPhoto = photoUrl || photos[0] || "";
+              const rawCandidate = (
+                bMeta.customerWhatsappId ||
+                matchedCustomer?.whatsappId ||
+                deliveryPhotoPreviewJob.customerPhone ||
+                matchedCustomer?.phone ||
+                ""
+              ).trim();
+              const digits = rawCandidate.replace(/\D/g, "");
+              let formattedPhone = "";
+              if (digits.startsWith("00") && digits.length > 4) {
+                formattedPhone = digits.slice(2);
+              } else if (digits.startsWith("0") && digits.length === 10) {
+                formattedPhone = "66" + digits.slice(1);
+              } else if (digits.length >= 8) {
+                formattedPhone = digits;
+              }
+
               const msg = `✨ Hello ${deliveryPhotoPreviewJob.customerName || "Valued Customer"},\nYour laundry order #${formatJobDisplayId(deliveryPhotoPreviewJob.id)} has been delivered! 🧺🚚${
                 deliveryPhotoPreviewJob.dropoffLocation ? `\n📍 Location: ${deliveryPhotoPreviewJob.dropoffLocation}` : ""
-              }${fullPhotoUrl ? `\n\n📸 Delivery Proof Photo:\n${fullPhotoUrl}` : ""}\n\nThank you for choosing That Laundry Shop! 💚`;
+              }\n\nThank you for choosing That Laundry Shop! 💚`;
               const waUrl = formattedPhone
                 ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}`
                 : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+
+              // Open WhatsApp window synchronously first so browser popup blocker never blocks it
               window.open(waUrl, "_blank", "noopener,noreferrer");
+
+              // Copy actual PNG image into clipboard so admin can immediately press Ctrl+V in WhatsApp
+              if (targetPhoto) {
+                setIsCopyingPhoto(true);
+                try {
+                  await copyPhotoBlobToClipboard(targetPhoto);
+                  toast.success(
+                    "📸 Copied actual photo to clipboard & opened WhatsApp! Just press Ctrl+V and Enter in WhatsApp chat.",
+                    { duration: 6000 }
+                  );
+                } catch {
+                  toast.info("Opened WhatsApp chat! (Click 'Copy Photo' if you need to copy the image again)");
+                } finally {
+                  setIsCopyingPhoto(false);
+                }
+              }
+
+              // Also mark order contact channel as WhatsApp & mark Delivery Photo Sent if user has permission
+              if (canManageJobs && !isPhotoSent) {
+                const staffName = (user as any)?.name || user?.email || "Staff";
+                const nowIso = new Date().toISOString();
+                const updatedAdminNotesJson = buildUpdatedAdminNotesJson(
+                  deliveryPhotoPreviewJob,
+                  {
+                    contactChannel: bMeta.contactChannel || "whatsapp",
+                    isDeliveryPhotoSent: true,
+                    deliveryPhotoSentAt: nowIso,
+                    deliveryPhotoSentBy: `${staffName} (WhatsApp)`,
+                  },
+                  `Delivery photo sent to customer via WhatsApp by ${staffName}`
+                );
+                const actorDetails = user ? { actorId: user.id, actorName: staffName, actorRole: user.role } : undefined;
+                jobStore.updateJobDetails(
+                  deliveryPhotoPreviewJob.id,
+                  { adminNotesJson: updatedAdminNotesJson },
+                  actorDetails
+                ).catch(() => {});
+              }
             };
 
             const handleSendViaLineOa = async () => {
@@ -4628,9 +4682,19 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               className="w-full max-h-[380px] object-contain bg-slate-900/5"
                             />
                           </a>
-                          <div className="flex items-center justify-between px-3 py-2 bg-white border-t border-slate-100 text-xs">
+                           <div className="flex items-center justify-between px-3 py-2 bg-white border-t border-slate-100 text-xs">
                             <span className="font-bold text-slate-600">Photo #{idx + 1}</span>
                             <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => handleSendViaWhatsApp(url)}
+                                disabled={isCopyingPhoto}
+                                className="inline-flex items-center gap-1 font-bold text-teal-700 hover:text-teal-800 cursor-pointer"
+                                title="Auto-copy this photo & open WhatsApp chat"
+                              >
+                                <MessageCircle size={12} />
+                                <span>WhatsApp (Copy + Open)</span>
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => handleCopyPhotoToClipboard(url)}
@@ -4695,11 +4759,13 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             type="button"
                             size="sm"
                             variant="outline"
+                            disabled={isCopyingPhoto}
                             onClick={() => handleSendViaWhatsApp(photos[0])}
                             className="h-8 text-xs font-bold border-emerald-300 bg-emerald-50/60 text-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                            title="Copies actual photo to clipboard & opens customer's WhatsApp chat"
                           >
                             <MessageCircle size={13} className="mr-1.5 text-emerald-600" />
-                            <span>WhatsApp</span>
+                            <span>WhatsApp (Copy Photo + Open)</span>
                           </Button>
 
                           <Button

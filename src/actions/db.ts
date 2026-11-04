@@ -5,7 +5,7 @@ import { listFilesForJob } from '@/lib/gcs';
 import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone, findDuplicateCustomerByPhone, computeMembershipExpiryDate } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
-import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel } from '@/lib/promotions';
+import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel, isItemMatchingInstantCampaign } from '@/lib/promotions';
 import { invalidateDbCache, sanitizeCustomerRecord } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
 import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, canAccessCustomerRecords, canAccessCustomerOrLinkedJob, isAdminOrSuperadmin } from '@/lib/server-auth';
@@ -8352,8 +8352,27 @@ export async function getPromotionCampaignsAction(): Promise<{ success: boolean;
       });
       return { success: true, campaigns: DEFAULT_PROMOTION_CAMPAIGNS };
     }
-    const campaigns: PromotionCampaign[] = JSON.parse(setting.value);
-    return { success: true, campaigns: Array.isArray(campaigns) ? campaigns : DEFAULT_PROMOTION_CAMPAIGNS };
+    let campaigns: PromotionCampaign[] = JSON.parse(setting.value);
+    if (!Array.isArray(campaigns)) {
+      campaigns = DEFAULT_PROMOTION_CAMPAIGNS;
+    } else {
+      // Ensure any new default campaigns (e.g. 11.11 Wash Iron Fold 120฿/Kg) are seeded if not present yet
+      let didAddDefault = false;
+      for (const defCamp of DEFAULT_PROMOTION_CAMPAIGNS) {
+        if (!campaigns.some((c) => c.id === defCamp.id)) {
+          campaigns.unshift(defCamp);
+          didAddDefault = true;
+        }
+      }
+      if (didAddDefault) {
+        await prisma.setting.upsert({
+          where: { key: "promotion_campaigns" },
+          update: { value: JSON.stringify(campaigns) },
+          create: { key: "promotion_campaigns", value: JSON.stringify(campaigns) },
+        }).catch(() => {});
+      }
+    }
+    return { success: true, campaigns };
   } catch (err: any) {
     console.error("[getPromotionCampaignsAction] Error:", err);
     return { success: false, campaigns: DEFAULT_PROMOTION_CAMPAIGNS, error: err?.message };
@@ -8562,7 +8581,7 @@ export async function evaluateAndIssuePromotionCouponsAction(data: {
     }
 
     const { campaigns } = await getPromotionCampaignsAction();
-    const activeCampaigns = campaigns.filter(c => c.enabled);
+    const activeCampaigns = campaigns.filter(c => c.enabled && c.campaignMode !== "INSTANT_DISCOUNT");
     if (activeCampaigns.length === 0) {
       return { success: true, qualified: false, couponsIssued: [], reasons: ["ไม่มีแคมเปญโปรโมชั่นที่เปิดใช้งาน"] };
     }
@@ -8883,7 +8902,119 @@ export async function getPromotionReportAction(filters?: {
     if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
       filters = { ...(filters || {}), branchId: authUser.branchId };
     }
-    const campaignId = filters?.campaignId || "promo_shoe100_oct26";
+    const campaignId = filters?.campaignId || "promo_wif120_nov26";
+    const { campaigns: allCampaigns } = await getPromotionCampaignsAction();
+    const targetCampaign = allCampaigns.find((c) => c.id === campaignId);
+
+    // Handle INSTANT_DISCOUNT campaigns (e.g. 11.11 Wash Iron Fold 120 THB/Kg) directly from Jobs
+    if (targetCampaign && targetCampaign.campaignMode === "INSTANT_DISCOUNT") {
+      const promoCode = (targetCampaign.instantRule?.promoCode || targetCampaign.reward?.codePrefix || "PROMO").trim().toUpperCase();
+      const promoJobs = await prisma.job.findMany({
+        where: {
+          status: { not: "cancel" },
+          ...(filters?.branchId && filters.branchId !== "all" ? { branchId: filters.branchId } : {}),
+          remark: {
+            contains: `Promo: ${promoCode}`,
+            mode: "insensitive",
+          },
+        },
+        include: {
+          customer: {
+            select: { id: true, name: true, phone: true, isCorporate: true, isMember: true, brand: true },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      const distinctCustomerKeys = new Set<string>();
+      let totalDiscountGiven = 0;
+      let totalSalesGenerated = 0;
+      let totalPromoQuantity = 0;
+
+      const redeemedList = promoJobs.map((j) => {
+        const custKey = j.customerId || (j.customerPhone || "").replace(/\D/g, "") || j.id;
+        distinctCustomerKeys.add(custKey);
+
+        const match = j.remark?.match(new RegExp(`Promo:\\s*${promoCode}\\s*(?:\\((?:[^:)]+):([\\d.]+)\\))?`, "i"));
+        const explicitDiscount = match && match[1] ? parseFloat(match[1]) : (Number(j.discount) || 0);
+        const discountUsed = Math.round(explicitDiscount * 100) / 100;
+        totalDiscountGiven += discountUsed;
+        totalSalesGenerated += Number(j.totalAmount) || 0;
+
+        let itemsSummary = "";
+        let jobQty = 0;
+        if (j.itemsJson) {
+          try {
+            const parsedItems = JSON.parse(j.itemsJson);
+            if (Array.isArray(parsedItems)) {
+              const matched = parsedItems.filter((it: any) => isItemMatchingInstantCampaign(it, targetCampaign));
+              jobQty = matched.reduce((sum: number, it: any) => sum + (Number(it.quantity) || 0), 0);
+              itemsSummary = matched.map((it: any) => `${it.name} (${it.quantity} ${it.unit || "Kg"})`).join(", ");
+            }
+          } catch {}
+        }
+        totalPromoQuantity += jobQty;
+
+        return {
+          id: j.id,
+          code: promoCode,
+          customerId: j.customerId || null,
+          customerName: j.customerName || j.customer?.name || "ไม่ระบุชื่อ",
+          customerPhone: j.customerPhone || j.customer?.phone || "-",
+          discountAmountUsed: discountUsed,
+          usedAt: j.createdAt,
+          usedJobId: j.id,
+          usedBillNo: j.billNo || j.id,
+          usedJobTotal: j.totalAmount,
+          usedBranchId: j.branchId,
+          paymentChannel: j.paymentChannel || j.paymentMethod || "-",
+          isShopPaid: Boolean(j.isShopPaid),
+          promoQuantity: jobQty,
+          cashier: j.createdBy || "-",
+          shoeItemsSummary: itemsSummary || `${targetCampaign.instantRule?.targetServiceName || "WASH/IRON"}`,
+          itemsSummary: itemsSummary || `${targetCampaign.instantRule?.targetServiceName || "WASH/IRON"}`,
+        };
+      });
+
+      const issuedList = redeemedList.map((r) => ({
+        id: r.id,
+        code: r.code,
+        name: targetCampaign.name,
+        customerId: r.customerId,
+        customerName: r.customerName,
+        customerPhone: r.customerPhone,
+        status: r.isShopPaid ? "USED" : "ACTIVE",
+        discountValue: r.discountAmountUsed,
+        discountAmountUsed: r.discountAmountUsed,
+        issuedAt: r.usedAt,
+        expiryDate: targetCampaign.endDate || r.usedAt,
+        sourceJobId: r.usedJobId,
+        sourceBillNo: r.usedBillNo,
+        sourceJobAmount: r.usedJobTotal,
+        sourceBranchId: r.usedBranchId,
+        usedAt: r.usedAt,
+        usedJobId: r.usedJobId,
+        usedBillNo: r.usedBillNo,
+        usedJobAmount: r.usedJobTotal,
+        usedBranchId: r.usedBranchId,
+      }));
+
+      return {
+        success: true,
+        stats: {
+          totalIssued: redeemedList.length,
+          totalCustomers: distinctCustomerKeys.size,
+          totalRedeemed: redeemedList.length,
+          redemptionRate: redeemedList.length > 0 ? 100 : 0,
+          activeRemaining: Math.round(totalPromoQuantity * 10) / 10, // Stores total promo Kg for INSTANT_DISCOUNT
+          expiredOrVoid: 0,
+          totalDiscountGiven: Math.round(totalDiscountGiven * 100) / 100,
+          totalSalesGenerated: Math.round(totalSalesGenerated * 100) / 100,
+        },
+        issuedList,
+        redeemedList,
+      };
+    }
 
     // Query all coupons belonging to this campaign
     const coupons = await prisma.customerVoucher.findMany({

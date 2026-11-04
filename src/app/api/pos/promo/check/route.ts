@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveRequestUser } from "@/lib/server-auth";
 import { verifyCustomerToken, verifyServiceApiKey } from "@/lib/external-api-auth";
+import { DEFAULT_PROMOTION_CAMPAIGNS, calculateInstantCampaignDiscount, type PromotionCampaign } from "@/lib/promotions";
 
 const PROMO_BASE = process.env.TLS_PROMO_API_BASE || "https://thatlaundryshop.com";
 const PROMO_KEY  = process.env.TLS_PROMO_API_KEY || "";
@@ -240,6 +241,110 @@ export async function POST(req: NextRequest) {
           error: `ลูกค้ารายนี้เคยใช้โค้ด ${promoCode} ไปแล้ว (บิล #${refNo}) ไม่สามารถใช้ซ้ำได้`,
         }, { status: 200 });
       }
+    }
+
+    // 2.5 Check Local Instant Discount Campaigns (e.g. WIF120 - 11.11 Wash Iron Fold 120 THB/Kg)
+    const campaignSetting = await prisma.setting.findUnique({ where: { key: "promotion_campaigns" } });
+    let allCampaigns: PromotionCampaign[] = DEFAULT_PROMOTION_CAMPAIGNS;
+    if (campaignSetting?.value) {
+      try {
+        const parsed = JSON.parse(campaignSetting.value);
+        if (Array.isArray(parsed)) {
+          allCampaigns = [...parsed];
+          for (const defCamp of DEFAULT_PROMOTION_CAMPAIGNS) {
+            if (!allCampaigns.some((c) => c.id === defCamp.id)) {
+              allCampaigns.unshift(defCamp);
+            }
+          }
+        }
+      } catch {}
+    }
+
+    const matchedInstantCampaign = allCampaigns.find(
+      (c) =>
+        c.campaignMode === "INSTANT_DISCOUNT" &&
+        (c.instantRule?.promoCode || c.reward?.codePrefix || "").trim().toUpperCase() === promoCode
+    );
+
+    if (matchedInstantCampaign) {
+      if (!matchedInstantCampaign.enabled) {
+        return NextResponse.json({
+          valid: false,
+          error: `แคมเปญโปรโมชั่น ${promoCode} ปิดใช้งานอยู่ในขณะนี้`,
+        }, { status: 200 });
+      }
+
+      // Check Customer Eligibility
+      if (customerId) {
+        const cust = await prisma.customer.findUnique({ where: { id: customerId } });
+        if (cust) {
+          const isCorp = Boolean(cust.isCorporate || (cust as any).priceType === "corporate");
+          const isVIP = Boolean(cust.isVIP);
+          const isMember = Boolean(cust.isMember || cust.memberId);
+          const isGeneral = !isCorp && !isVIP && !isMember;
+
+          const allowCorp = matchedInstantCampaign.conditions.allowCorporate ?? !matchedInstantCampaign.conditions.excludeCorporate;
+          const allowVIP = matchedInstantCampaign.conditions.allowVIP ?? !matchedInstantCampaign.conditions.excludeVIP;
+          const allowMember = matchedInstantCampaign.conditions.allowMember ?? !matchedInstantCampaign.conditions.excludeMember;
+          const allowGeneral = matchedInstantCampaign.conditions.allowGeneral ?? true;
+
+          if (isCorp && !allowCorp) {
+            return NextResponse.json({ valid: false, error: `ลูกค้านิติบุคคล (Corporate) ไม่ร่วมโปรโมชั่น ${promoCode}` }, { status: 200 });
+          }
+          if (isVIP && !allowVIP) {
+            return NextResponse.json({ valid: false, error: `ลูกค้า VIP ไม่ร่วมโปรโมชั่น ${promoCode}` }, { status: 200 });
+          }
+          if (isMember && !isVIP && !allowMember) {
+            return NextResponse.json({ valid: false, error: `ลูกค้าสมาชิก (Member) ไม่ร่วมโปรโมชั่น ${promoCode}` }, { status: 200 });
+          }
+          if (isGeneral && !allowGeneral) {
+            return NextResponse.json({ valid: false, error: `ลูกค้าทั่วไปไม่ร่วมโปรโมชั่น ${promoCode}` }, { status: 200 });
+          }
+        }
+      }
+
+      // Check Cart Item & Min Quantity (e.g. >= 4 Kg of WASH/IRON)
+      const cartItems = Array.isArray(items) ? items : [];
+      const evalRes = calculateInstantCampaignDiscount(cartItems, matchedInstantCampaign);
+      const serviceLabel = matchedInstantCampaign.instantRule?.targetServiceName || "บริการที่ร่วมรายการ";
+      const minQty = Number(matchedInstantCampaign.instantRule?.minQuantity) || 1;
+
+      if (!evalRes.meetsMinQuantity) {
+        return NextResponse.json({
+          valid: false,
+          error: `โค้ด ${promoCode} ต้องมีรายการ "${serviceLabel}" ขั้นต่ำ ${minQty} Kg/ชิ้น ขึ้นไป (ปัจจุบัน ${evalRes.matchedQuantity} Kg/ชิ้น)`,
+        }, { status: 200 });
+      }
+
+      if (evalRes.discountAmount <= 0) {
+        return NextResponse.json({
+          valid: false,
+          error: `ไม่มียอดส่วนลดสำหรับรายการ "${serviceLabel}" ในบิลนี้`,
+        }, { status: 200 });
+      }
+
+      const disallowMemberWallet = Boolean(
+        matchedInstantCampaign.instantRule?.disallowMemberWallet ??
+        matchedInstantCampaign.conditions?.disallowMemberWallet
+      );
+
+      return NextResponse.json({
+        valid: true,
+        isInstantCampaign: true,
+        campaignId: matchedInstantCampaign.id,
+        code: promoCode,
+        name: matchedInstantCampaign.name,
+        description: matchedInstantCampaign.description || matchedInstantCampaign.name,
+        discountType: "FIXED",
+        discountTarget: matchedInstantCampaign.instantRule?.targetCategory || "KILO",
+        applicableCategory: matchedInstantCampaign.instantRule?.targetCategory || "KILO",
+        discountValue: evalRes.discountAmount,
+        discountAmount: evalRes.discountAmount,
+        maxDiscount: null,
+        minOrderAmount: matchedInstantCampaign.conditions.minOrderSubtotal || null,
+        disallowMemberWallet,
+        instantRule: matchedInstantCampaign.instantRule,
+      });
     }
 
     // 3. Forward to upstream promo server for validity & discount calculation

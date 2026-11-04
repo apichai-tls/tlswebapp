@@ -29,7 +29,16 @@ import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } 
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { WisePaymentDialog } from "@/components/wise-payment-dialog";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
-import { isItemMatchingCategory, getCategoryLabel, getCategoryIcon, resolveEffectiveCategory } from "@/lib/promotions";
+import {
+  isItemMatchingCategory,
+  getCategoryLabel,
+  getCategoryIcon,
+  resolveEffectiveCategory,
+  DEFAULT_PROMOTION_CAMPAIGNS,
+  calculateInstantCampaignDiscount,
+  type PromotionCampaign,
+  type InstantRuleConfig,
+} from "@/lib/promotions";
 
 
 import { Input } from "@/components/ui/input";
@@ -66,7 +75,7 @@ import AdminFeeCalculator from "@/components/admin-fee-calculator";
 import AdminPoiManager from "@/components/admin-poi-manager";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
-import { addJobLogAction, unlockPaidJobAction, getCustomerCouponsAction, getCustomerJobsAction, splitJobDeliveryAction } from "@/actions/db";
+import { addJobLogAction, unlockPaidJobAction, getCustomerCouponsAction, getCustomerJobsAction, splitJobDeliveryAction, getPromotionCampaignsAction } from "@/actions/db";
 import { createTaxInvoiceTaskForJobAction } from "@/actions/tasks";
 import { useRiders } from "@/lib/use-riders";
 import {
@@ -1591,7 +1600,8 @@ function AdminPageContent() {
   const [unlockPaidReason, setUnlockPaidReason] = useState("");
   const [isUnlockingPaid, setIsUnlockingPaid] = useState(false);
 
-  // Promo Code states
+  // Promo Code & Campaign states
+  const [promoCampaigns, setPromoCampaigns] = useState<PromotionCampaign[]>(DEFAULT_PROMOTION_CAMPAIGNS);
   const [promoCodeInput, setPromoCodeInput] = useState<string>("");
   const [appliedPromo, setAppliedPromo] = useState<{
     code: string;
@@ -1603,12 +1613,37 @@ function AdminPageContent() {
     netPayable: number;
     maxDiscount: number | null;
     description?: string;
+    isInstantCampaign?: boolean;
+    disallowMemberWallet?: boolean;
+    instantRule?: InstantRuleConfig | null;
   } | null>(null);
   const [promoLoading, setPromoLoading] = useState<boolean>(false);
   const [promoError, setPromoError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (dialogOpen) {
+      getPromotionCampaignsAction()
+        .then((res) => {
+          if (res.success && Array.isArray(res.campaigns) && res.campaigns.length > 0) {
+            setPromoCampaigns(res.campaigns);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [dialogOpen]);
+
+  const isMemberWalletDisallowedByPromo = useMemo(() => {
+    if (!appliedPromo) return false;
+    if (appliedPromo.disallowMemberWallet) return true;
+    const matched = promoCampaigns.find(
+      (c) => (c.instantRule?.promoCode || c.reward?.codePrefix || "").toUpperCase() === appliedPromo.code.toUpperCase()
+    );
+    return Boolean(matched?.conditions?.disallowMemberWallet || matched?.instantRule?.disallowMemberWallet);
+  }, [appliedPromo, promoCampaigns]);
+
   const forceMemberPaymentDialog = useMemo(() => {
     if (isRewashJob) return false;
+    if (isMemberWalletDisallowedByPromo) return false;
     if (!selectedProfileCustomer?.isMember) return false;
     return dialogCart.some(item => 
       item.category !== "PACKAGE" && 
@@ -1616,7 +1651,18 @@ function AdminPageContent() {
       item.id !== "delivery-pickup-service-item" && 
       item.id !== "delivery-only-service-item"
     );
-  }, [selectedProfileCustomer, dialogCart, isRewashJob]);
+  }, [selectedProfileCustomer, dialogCart, isRewashJob, isMemberWalletDisallowedByPromo]);
+
+  useEffect(() => {
+    if (isMemberWalletDisallowedByPromo && !isPaidJob) {
+      if (paymentChannel === "Deduct Member") {
+        setPaymentChannel("");
+      }
+      if (splitPayments.some((sp) => sp.channel === "Deduct Member")) {
+        setSplitPayments((prev) => prev.filter((sp) => sp.channel !== "Deduct Member"));
+      }
+    }
+  }, [isMemberWalletDisallowedByPromo, isPaidJob, paymentChannel, splitPayments]);
 
   const currentLaundryPrice = useMemo(() => {
     if (isRewashJob) return 0;
@@ -1634,9 +1680,23 @@ function AdminPageContent() {
     return (currentLaundryPrice + surcharge) * (dialogDiscountPercent / 100);
   }, [currentLaundryPrice, dialogDiscountPercent, serviceSpeed]);
 
-  // Dynamic promo discount calculation: supports DELIVERY, category-specific (SHOES, LINENS, etc.), and ALL
+  // Dynamic promo discount calculation: supports Instant Service Campaigns, DELIVERY, category-specific (SHOES, LINENS, etc.), and ALL
   const promoDiscountAmount = useMemo(() => {
     if (!appliedPromo) return 0;
+
+    // Instant Service Campaign dynamic calculation (e.g., WIF120 -> 120 THB/Kg for WASH/IRON >= 4 Kg)
+    const matchedInstantRule = appliedPromo.instantRule || promoCampaigns.find(
+      (c) => (c.campaignMode === "INSTANT_DISCOUNT" || c.instantRule) &&
+        (c.instantRule?.promoCode || "").toUpperCase() === appliedPromo.code.toUpperCase()
+    )?.instantRule;
+
+    if (matchedInstantRule && dialogCart.length > 0 && !isPaidJob) {
+      const calc = calculateInstantCampaignDiscount(dialogCart, {
+        instantRule: matchedInstantRule,
+      } as any);
+      return calc.meetsMinQuantity ? calc.discountAmount : 0;
+    }
+
     if (appliedPromo.discountTarget === "DELIVERY" || appliedPromo.discountType === "FREE_DELIVERY") {
       let d = 0;
       if (appliedPromo.discountType === "PERCENTAGE") {
@@ -1671,7 +1731,7 @@ function AdminPageContent() {
       return Math.max(0, Math.min(val, base));
     }
     return Math.max(0, Math.min(appliedPromo.discountValue, base));
-  }, [appliedPromo, fee, dialogCart, currentLaundryPrice, serviceSpeed]);
+  }, [appliedPromo, fee, dialogCart, currentLaundryPrice, serviceSpeed, promoCampaigns, isPaidJob]);
 
   const dialogVatAmount = useMemo(() => {
     if (dialogVatType === "none" || dialogVatRate <= 0) return 0;
@@ -1699,8 +1759,12 @@ function AdminPageContent() {
 
 
   const activePaymentChannels = useMemo(() => {
-    return getActivePaymentChannels(systemSettings, !!selectedProfileCustomer?.isMember);
-  }, [systemSettings, selectedProfileCustomer?.isMember]);
+    const channels = getActivePaymentChannels(systemSettings, !!selectedProfileCustomer?.isMember);
+    if (isMemberWalletDisallowedByPromo) {
+      return channels.filter((c) => c.name !== "Deduct Member");
+    }
+    return channels;
+  }, [systemSettings, selectedProfileCustomer?.isMember, isMemberWalletDisallowedByPromo]);
 
   const splitMemberDeductAmt = useMemo(() => {
     if (paymentChannel !== "Split Payment" || splitPayments.length < 2) return 0;
@@ -2674,6 +2738,9 @@ function AdminPageContent() {
           netPayable: Math.max(0, grandTotalBeforePromo - calcDiscount),
           maxDiscount: data.maxDiscount ?? null,
           description: data.description,
+          isInstantCampaign: Boolean(data.isInstantCampaign),
+          disallowMemberWallet: Boolean(data.disallowMemberWallet),
+          instantRule: data.instantRule || null,
         });
       } else {
         setPromoError(data.error || "โค้ดไม่ถูกต้อง");
@@ -2707,6 +2774,90 @@ function AdminPageContent() {
   useEffect(() => {
     setUserDismissedPromo(false);
   }, [selectedProfileCustomer?.id, dialogOpen]);
+
+  // Auto-clear Instant Service Campaign promo if cart quantity drops below minQuantity
+  useEffect(() => {
+    if (!dialogOpen || isPaidJob || !appliedPromo) return;
+    const rule = appliedPromo.instantRule || promoCampaigns.find(
+      (c) => (c.campaignMode === "INSTANT_DISCOUNT" || c.instantRule) &&
+        (c.instantRule?.promoCode || "").toUpperCase() === appliedPromo.code.toUpperCase()
+    )?.instantRule;
+    if (!rule) return;
+    const calc = calculateInstantCampaignDiscount(dialogCart, { instantRule: rule } as any);
+    if (!calc.meetsMinQuantity) {
+      setAppliedPromo(null);
+      setPromoCodeInput("");
+    }
+  }, [dialogOpen, isPaidJob, appliedPromo, dialogCart, promoCampaigns]);
+
+  // Auto-apply Instant Service Promo Campaign (e.g., 11.11 WIF120 when WASH/IRON >= 4 Kg)
+  useEffect(() => {
+    if (!dialogOpen || isPaidJob || isRewashJob) return;
+    if (appliedPromo || promoLoading || userDismissedPromo) return;
+    if (dialogCart.length === 0) return;
+
+    const custId = selectedProfileCustomer?.id;
+    const custPhone = customerPhone?.trim();
+    const custName = customerName?.trim();
+    if (!custId && !custPhone && !custName) return;
+
+    const nowBkkStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+    const pickupDateStr = pickupScheduledTime ? pickupScheduledTime.slice(0, 10) : nowBkkStr;
+
+    for (const c of promoCampaigns) {
+      if (!c.enabled) continue;
+      if (c.campaignMode !== "INSTANT_DISCOUNT" && !c.instantRule) continue;
+      const rule = c.instantRule;
+      if (!rule || !rule.autoApply || !rule.promoCode) continue;
+
+      const startStr = (c.startDate || "").slice(0, 10);
+      const endStr = (c.endDate || "").slice(0, 10);
+      const isDateActive =
+        (startStr && endStr && nowBkkStr >= startStr && nowBkkStr <= endStr) ||
+        (startStr && endStr && pickupDateStr >= startStr && pickupDateStr <= endStr);
+      if (!isDateActive) continue;
+
+      // Customer eligibility check
+      const isCorp = Boolean(selectedProfileCustomer?.isCorporate || selectedProfileCustomer?.priceListId);
+      const isVIP = Boolean(selectedProfileCustomer?.isVIP);
+      const isMember = Boolean(selectedProfileCustomer?.isMember);
+      if (isCorp && c.conditions?.excludeCorporate && !c.conditions?.allowCorporate) continue;
+      if (isVIP && (c.conditions?.excludeVIP || c.conditions?.allowVIP === false)) continue;
+      if (isMember && !isVIP && (c.conditions?.excludeMember || c.conditions?.allowMember === false)) continue;
+      if (!isCorp && !isVIP && !isMember && c.conditions?.allowGeneral === false) continue;
+
+      const calc = calculateInstantCampaignDiscount(dialogCart, c);
+      if (!calc.meetsMinQuantity || calc.discountAmount <= 0) continue;
+
+      // Check local customer past jobs to avoid spamming /api/pos/promo/check if customer already used it
+      const codeUpper = rule.promoCode.trim().toUpperCase();
+      const alreadyUsedInLocalJobs = customerPastJobs.some((pj: any) => {
+        if (!pj || pj.status === "cancel" || pj.status === "cancelled") return false;
+        if (editingJobId && pj.id === editingJobId) return false;
+        const rem = String(pj.remark || "").toUpperCase();
+        return rem.includes(`PROMO: ${codeUpper}`);
+      });
+      if (alreadyUsedInLocalJobs && (c.conditions?.limitPerCustomer ?? 1) > 0) continue;
+
+      handleApplyPromo(codeUpper);
+      break;
+    }
+  }, [
+    dialogOpen,
+    isPaidJob,
+    isRewashJob,
+    appliedPromo,
+    promoLoading,
+    userDismissedPromo,
+    dialogCart,
+    selectedProfileCustomer,
+    customerPhone,
+    customerName,
+    pickupScheduledTime,
+    promoCampaigns,
+    customerPastJobs,
+    editingJobId,
+  ]);
 
   useEffect(() => {
     const isAutoApply = systemSettings?.posAutoApplyVoucher === "true";
@@ -2801,6 +2952,10 @@ function AdminPageContent() {
     if (promoMatch && promoMatch[1]) {
       const pCode = promoMatch[1].trim().toUpperCase();
       setPromoCodeInput(pCode);
+      const matchedInstantCampaign = promoCampaigns.find(
+        (c) => (c.campaignMode === "INSTANT_DISCOUNT" || c.instantRule) &&
+          (c.instantRule?.promoCode || "").toUpperCase() === pCode
+      );
       if (hasValidPromo) {
         const pTarget = (promoMatch[2] || "ALL").trim().toUpperCase();
         const isCatSpecific = pTarget !== "ALL" && pTarget !== "DELIVERY";
@@ -2814,6 +2969,9 @@ function AdminPageContent() {
           discountAmount: pAmount,
           netPayable: Math.max(0, (job.totalAmount || 0)),
           maxDiscount: null,
+          isInstantCampaign: Boolean(matchedInstantCampaign),
+          disallowMemberWallet: Boolean(matchedInstantCampaign?.conditions?.disallowMemberWallet || matchedInstantCampaign?.instantRule?.disallowMemberWallet),
+          instantRule: matchedInstantCampaign?.instantRule || null,
         });
       } else {
         setAppliedPromo(null);
@@ -3569,6 +3727,11 @@ function AdminPageContent() {
 
     if (!isAlreadyPaidJob && (paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0) && !selectedProfileCustomer?.isMember) {
       abortSubmit("Customer is not a member. Cannot use Deduct Member payment channel.");
+      return;
+    }
+
+    if (!isAlreadyPaidJob && (paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0) && isMemberWalletDisallowedByPromo) {
+      abortSubmit(`โปรโมชั่น ${appliedPromo?.code || ""} ไม่สามารถชำระด้วยเครดิตสมาชิก (Deduct Member) ได้ กรุณาเลือกชำระด้วยเงินสด โอนเงิน หรือบัตรเครดิต`);
       return;
     }
 
@@ -9795,7 +9958,7 @@ function AdminPageContent() {
                                     {(appliedPromo || !!promoCodeInput.trim()) && (
                                       <button
                                         type="button"
-                                        onClick={() => { setAppliedPromo(null); setPromoCodeInput(""); setPromoError(null); }}
+                                        onClick={() => { setUserDismissedPromo(true); setAppliedPromo(null); setPromoCodeInput(""); setPromoError(null); }}
                                         className="h-6 w-6 flex items-center justify-center rounded-md bg-slate-700 hover:bg-rose-900 text-slate-400 hover:text-rose-400 transition-colors text-xs font-black cursor-pointer shrink-0"
                                         title="ลบโค้ด"
                                       >✕</button>
@@ -9984,6 +10147,11 @@ function AdminPageContent() {
                                     <span className={`font-bold ${(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400 font-extrabold" : (selectedProfileCustomer.creditBalance || 0) >= dialogTotal ? "text-emerald-400" : "text-amber-400"}`}>
                                       {formatBaht(selectedProfileCustomer.creditBalance || 0)}
                                     </span>
+                                  </div>
+                                )}
+                                {selectedProfileCustomer?.isMember && isMemberWalletDisallowedByPromo && !isPaidJob && (
+                                  <div className="mt-0.5 px-1.5 py-0.5 rounded-lg bg-amber-950/80 border border-amber-600/60 text-[8.5px] text-amber-300 font-bold leading-tight">
+                                    🚫 โปรฯ {appliedPromo?.code}: สมาชิกต้องชำระเงินสด/โอน/บัตร (ไม่หักเครดิต Member)
                                   </div>
                                 )}
                               </div>

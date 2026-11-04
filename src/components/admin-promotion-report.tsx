@@ -50,7 +50,7 @@ export function AdminPromotionReport() {
 
   // Filter States
   const [campaigns, setCampaigns] = useState<any[]>([]);
-  const [selectedCampaignId, setSelectedCampaignId] = useState<string>("promo_shoe100_oct26");
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string>("promo_wif120_nov26");
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [activeTab, setActiveTab] = useState<"redeemed" | "issued">("redeemed");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -324,22 +324,33 @@ export function AdminPromotionReport() {
             </button>
 
             <span className="font-bold text-foreground">
-              Min Spend: ฿{activeCampaign.conditions?.minOrderSubtotal?.toLocaleString()} {activeCampaign.conditions?.excludeDeliveryFee !== false ? "(Excl. delivery / ไม่รวมค่าส่ง)" : "(Incl. delivery / รวมค่าส่ง)"}
+              {activeCampaign.campaignMode === "INSTANT_DISCOUNT" && activeCampaign.instantRule
+                ? `🎯 ${activeCampaign.instantRule.targetServiceName || "Service"} ≥ ${activeCampaign.instantRule.minQuantity} Kg ➔ ฿${activeCampaign.instantRule.promoUnitPrice ?? activeCampaign.instantRule.discountValue}/Kg (Code: ${activeCampaign.instantRule.promoCode})`
+                : `Min Spend: ฿${activeCampaign.conditions?.minOrderSubtotal?.toLocaleString()} ${activeCampaign.conditions?.excludeDeliveryFee !== false ? "(Excl. delivery / ไม่รวมค่าส่ง)" : "(Incl. delivery / รวมค่าส่ง)"}`}
             </span>
             <span>•</span>
             <span>
-              Period: {activeCampaign.startDate?.slice(0, 10)} to <strong className="text-amber-600 dark:text-amber-400 font-bold">{activeCampaign.endDate?.slice(0, 10)}</strong> <span className="text-[10px] text-muted-foreground">(ระยะเวลาแจก)</span>
+              Period: {activeCampaign.startDate?.slice(0, 10)} to <strong className="text-amber-600 dark:text-amber-400 font-bold">{activeCampaign.endDate?.slice(0, 10)}</strong> <span className="text-[10px] text-muted-foreground">(ระยะเวลาโปรโมชั่น)</span>
             </span>
-            <span>•</span>
-            <span>
-              Expiry: <strong className="text-emerald-600 dark:text-emerald-400 font-bold">{activeCampaign.rewardCouponExpiryDate?.slice(0, 10)}</strong> <span className="text-[10px] text-muted-foreground">(หมดอายุ)</span>
-            </span>
+            {activeCampaign.campaignMode !== "INSTANT_DISCOUNT" && activeCampaign.rewardCouponExpiryDate && (
+              <>
+                <span>•</span>
+                <span>
+                  Expiry: <strong className="text-emerald-600 dark:text-emerald-400 font-bold">{activeCampaign.rewardCouponExpiryDate?.slice(0, 10)}</strong> <span className="text-[10px] text-muted-foreground">(หมดอายุ)</span>
+                </span>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="secondary" className="font-bold text-[10px]">
-              {activeCampaign.conditions?.limitPerCustomer ? `Limit ${activeCampaign.conditions.limitPerCustomer} / Cust (จำกัด 1 สิทธิ์)` : "No Limit (ไม่จำกัด)"}
+              {activeCampaign.conditions?.limitPerCustomer ? `Limit ${activeCampaign.conditions.limitPerCustomer} / Cust (จำกัด ${activeCampaign.conditions.limitPerCustomer} สิทธิ์)` : "No Limit (ไม่จำกัด)"}
             </Badge>
+            {(activeCampaign.conditions?.disallowMemberWallet || activeCampaign.instantRule?.disallowMemberWallet) && (
+              <Badge variant="outline" className="font-bold text-[10px] text-rose-600 border-rose-300 bg-rose-50/70">
+                🚫 No Deduct Member (ไม่หักเครดิตสมาชิก)
+              </Badge>
+            )}
 
             <Badge variant="outline" className="font-bold text-[10px] text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-950/30">
               {getCategoryIcon(activeCampaign.reward?.applicableCategory)} {getCategoryLabel(activeCampaign.reward?.applicableCategory, "en")} <span className="opacity-75 ml-1">({getCategoryLabel(activeCampaign.reward?.applicableCategory, "th")})</span>
@@ -421,21 +432,29 @@ export function AdminPromotionReport() {
           </p>
         </div>
 
-        {/* Active Remaining */}
+        {/* Active Remaining / Promo Weight */}
         <div className="bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50 rounded-2xl p-3.5 shadow-2xs space-y-1">
           <div className="flex items-center justify-between text-amber-700 dark:text-amber-400">
             <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider block">Outstanding</span>
-              <span className="text-[9px] text-amber-600/80 font-normal">คงเหลือยังไม่ใช้</span>
+              <span className="text-[11px] font-bold uppercase tracking-wider block">
+                {activeCampaign?.campaignMode === "INSTANT_DISCOUNT" ? "Total Promo Weight" : "Outstanding"}
+              </span>
+              <span className="text-[9px] text-amber-600/80 font-normal">
+                {activeCampaign?.campaignMode === "INSTANT_DISCOUNT" ? "น้ำหนักโปรฯ รวม" : "คงเหลือยังไม่ใช้"}
+              </span>
             </div>
             <Clock size={16} className="text-amber-500" />
           </div>
           <div className="text-2xl font-black text-amber-700 dark:text-amber-400 pt-0.5">
             {reportData.stats.activeRemaining}
-            <span className="text-xs font-medium text-amber-600/70 ml-1">Vouchers (ใบ)</span>
+            <span className="text-xs font-medium text-amber-600/70 ml-1">
+              {activeCampaign?.campaignMode === "INSTANT_DISCOUNT" ? "Kg (กิโลกรัม)" : "Vouchers (ใบ)"}
+            </span>
           </div>
           <p className="text-[10px] text-amber-600/80">
-            Valid until {activeCampaign?.rewardCouponExpiryDate ? activeCampaign.rewardCouponExpiryDate.slice(0, 10) : "31 Dec 2026"} (ใช้ได้ถึง)
+            {activeCampaign?.campaignMode === "INSTANT_DISCOUNT"
+              ? `Promo Period: ${activeCampaign?.startDate?.slice(0, 10)} - ${activeCampaign?.endDate?.slice(0, 10)}`
+              : `Valid until ${activeCampaign?.rewardCouponExpiryDate ? activeCampaign.rewardCouponExpiryDate.slice(0, 10) : "31 Dec 2026"} (ใช้ได้ถึง)`}
           </p>
         </div>
 
