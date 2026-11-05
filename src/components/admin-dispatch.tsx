@@ -13,29 +13,26 @@ import {
   Truck,
   MapPin,
   User,
-  X,
   Copy,
-  Eye,
-  EyeOff,
-  ChevronLeft,
-  ChevronRight,
   Calendar as CalendarIcon,
   LayoutGrid,
+  Navigation,
   Clock,
-  AlertCircle,
+  Package,
+  Zap,
+  Eye,
+  EyeOff,
   Search,
+  X,
+  ArrowRightLeft,
   Sparkles,
   Route,
-  Navigation,
-  Zap,
-  Package,
-  ArrowRightLeft,
   ExternalLink,
 } from "lucide-react";
-import { optimizeRiderRoute, calculateEstimatedDistanceKm } from "@/lib/route-optimizer";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AdminTaskTracker } from "@/components/admin-task-tracker";
+import { optimizeRiderRoute, calculateEstimatedDistanceKm } from "@/lib/route-optimizer";
 
 import { Calendar, dateFnsLocalizer } from 'react-big-calendar';
 import withDragAndDrop from 'react-big-calendar/lib/addons/dragAndDrop';
@@ -63,13 +60,13 @@ interface CalendarEvent {
   jobId: string;
   type: 'pickup' | 'delivery';
   title: string;
+  tooltip?: string;
   customerName?: string;
   location?: string;
   coords?: LatLng;
   start: Date;
   end: Date;
   riderId?: string;
-  resourceId?: string;
   jobStatus: string;
 }
 
@@ -182,10 +179,8 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
   const effectiveArea = isAreaRestricted && userArea ? userArea : filterArea;
   const [selectedRiderIds, setSelectedRiderIds] = useState<Set<string>>(new Set());
   const [showCompleted, setShowCompleted] = useState(false);
-  const [taskTypeFilter, setTaskTypeFilter] = useState<"all" | "pickup" | "delivery" | "unassigned">("all");
-  const [searchQuery, setSearchQuery] = useState<string>("");
 
-  // Tab Switcher: "calendar" (Schedule Calendar on Left) | "board" (Rider Route Board on Right)
+  // Default to "calendar" (Schedule Calendar on Left, Rider Route Board on Right)
   const [dispatchTab, setDispatchTab] = useState<"calendar" | "board">("calendar");
   const [showOfflineRiders, setShowOfflineRiders] = useState(false);
   const [boardSortMode, setBoardSortMode] = useState<"optimized" | "time">("optimized");
@@ -206,7 +201,6 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<any>('day');
-  const [dayViewMode] = useState<"time" | "rider">("time");
 
   useEffect(() => {
     let start: Date;
@@ -379,13 +373,9 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     [getRiderOriginCoords, boardSortMode]
   );
 
-  // Build all active tasks for Rider Route Board (both today and overdue)
-  const { activeBoardTasks, todayTaskCount, allActiveTaskCount } = useMemo(() => {
-    let jobs = allJobs.filter(j => !["cancel", "completed", "delivered"].includes(j.status));
-
-    if (user?.role === 'manager') {
-      jobs = jobs.filter(j => j.status !== 'tba');
-    }
+  // Build all active tasks (both today and overdue) so we can show counts and filter cleanly
+  const { activeBoardTasks, reportBoardTasks, todayTaskCount, allActiveTaskCount } = useMemo(() => {
+    let jobs = allJobs.filter(j => !["cancel", "completed", "delivered", "tba"].includes(j.status));
 
     if (effectiveArea !== "ALL") {
       jobs = jobs.filter(j => {
@@ -405,44 +395,52 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
 
     jobs.forEach(j => {
       const expressInfo = getJobExpressInfo(j);
-      const validPickupCoords = isValidLatLng(j.pickupCoords)
-        ? j.pickupCoords
-        : isValidLatLng(j.dropoffCoords)
-          ? j.dropoffCoords
-          : null;
-      const validDropoffCoords = isValidLatLng(j.dropoffCoords)
-        ? j.dropoffCoords
-        : isValidLatLng(j.pickupCoords)
-          ? j.pickupCoords
-          : null;
+      const rawPLat = Number((j as any).pickupLat ?? j.pickupCoords?.lat ?? (j as any).customer?.lat ?? 0);
+      const rawPLng = Number((j as any).pickupLng ?? j.pickupCoords?.lng ?? (j as any).customer?.lng ?? 0);
+      const rawDLat = Number((j as any).dropoffLat ?? j.dropoffCoords?.lat ?? (j as any).customer?.lat ?? 0);
+      const rawDLng = Number((j as any).dropoffLng ?? j.dropoffCoords?.lng ?? (j as any).customer?.lng ?? 0);
 
-      // 1. Check active Pickup leg
+      const resolvedPickupCoords: LatLng | null =
+        rawPLat !== 0 && rawPLng !== 0
+          ? { lat: rawPLat, lng: rawPLng }
+          : isValidLatLng(j.pickupCoords)
+            ? j.pickupCoords
+            : null;
+      const resolvedDropoffCoords: LatLng | null =
+        rawDLat !== 0 && rawDLng !== 0
+          ? { lat: rawDLat, lng: rawDLng }
+          : isValidLatLng(j.dropoffCoords)
+            ? j.dropoffCoords
+            : null;
+
+      const validPickupCoords = resolvedPickupCoords || resolvedDropoffCoords;
+      const validDropoffCoords = resolvedDropoffCoords || resolvedPickupCoords;
+
+      // 1. Check active Pickup leg (only if pickup has NOT been completed yet)
       if (j.type === "pickup" || j.type === "full_service") {
         const isPickupActive = ["pending", "accepted", "pickup"].includes(j.status);
         const isPickupDone = ["picked_up", "billing", "active", "ready_to_wash", "washed", "delivery", "completed", "cancel"].includes(j.status);
         if (isPickupActive && !isPickupDone) {
           const sched = j.pickupScheduledAt ? new Date(j.pickupScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date(j.createdAt));
-          if (sched <= todayEnd || expressInfo?.isExpress) {
+          if (sched <= todayEnd) {
             const assignedRiderId = j.pickupRiderId || j.riderId || null;
-            if (selectedRiderIds.size === 0 || !assignedRiderId || selectedRiderIds.has(assignedRiderId)) {
-              allCandidateTasks.push({
-                taskId: `${j.id}-pickup`,
-                job: j,
-                legType: "pickup",
-                riderId: assignedRiderId,
-                scheduledAt: sched,
-                targetLocation: j.pickupLocation || j.dropoffLocation || "-",
-                targetCoords: validPickupCoords,
-                expressInfo,
-                isToday: isSameDay(sched, now) || Boolean(expressInfo?.isExpress),
-              });
-            }
+            allCandidateTasks.push({
+              taskId: `${j.id}-pickup`,
+              job: j,
+              legType: "pickup",
+              riderId: assignedRiderId,
+              scheduledAt: sched,
+              targetLocation: j.pickupLocation || j.dropoffLocation || "-",
+              targetCoords: validPickupCoords,
+              expressInfo,
+              isToday: isSameDay(sched, now) || Boolean(assignedRiderId),
+            });
           }
         }
       }
 
-      // 2. Check active Delivery leg
-      if (j.type === "delivery" || j.type === "full_service") {
+      // 2. Check active Delivery leg (only if delivery has NOT been completed yet and scheduled <= todayEnd)
+      if (j.type === "delivery" || j.type === "full_service" || Boolean(j.deliveryRiderId)) {
         let isDeliveredStage = false;
         if (j.status === "delivery" && j.adminNotesJson) {
           try {
@@ -450,43 +448,49 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
             if (parsed?.kanbanStage === "delivered") isDeliveredStage = true;
           } catch {}
         }
-        const isDeliveryDone = ["delivered", "completed", "cancel"].includes(j.status) || isDeliveredStage || j.legs?.deliveryOutbound?.status === "completed";
-        const isExpressInProcess = Boolean(
-          expressInfo?.isExpress &&
-          ["picked_up", "billing", "active", "ready_to_wash"].includes(j.status)
-        );
+        const isDeliveryDone =
+          ["delivered", "completed", "cancel"].includes(j.status) ||
+          isDeliveredStage ||
+          j.legs?.deliveryOutbound?.status === "completed";
+        const isPickupCompletedForFullService = ["picked_up", "billing", "active", "ready_to_wash", "washed", "delivery"].includes(j.status);
+        const isSameDayPreAssignedOrExpress =
+          ["pending", "accepted", "pickup"].includes(j.status) &&
+          (Boolean(j.deliveryRiderId) || Boolean(expressInfo?.isExpress));
         const isDeliveryActive =
           (j.type === "delivery"
             ? ["pending", "accepted", "picked_up", "billing", "active", "ready_to_wash", "washed", "delivery"].includes(j.status)
-            : ["washed", "delivery"].includes(j.status) || isExpressInProcess) && !j.isStuck;
+            : isPickupCompletedForFullService || isSameDayPreAssignedOrExpress) && !j.isStuck;
 
         if (isDeliveryActive && !isDeliveryDone) {
           const sched = j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date(j.createdAt));
-          if (sched <= todayEnd || expressInfo?.isExpress) {
+          if (sched <= todayEnd) {
             const assignedRiderId = j.deliveryRiderId || null;
-            if (selectedRiderIds.size === 0 || !assignedRiderId || selectedRiderIds.has(assignedRiderId)) {
-              allCandidateTasks.push({
-                taskId: `${j.id}-delivery`,
-                job: j,
-                legType: "delivery",
-                riderId: assignedRiderId,
-                scheduledAt: sched,
-                targetLocation: j.dropoffLocation || j.pickupLocation || "-",
-                targetCoords: validDropoffCoords,
-                expressInfo,
-                isToday: isSameDay(sched, now) || Boolean(expressInfo?.isExpress),
-              });
-            }
+            allCandidateTasks.push({
+              taskId: `${j.id}-delivery`,
+              job: j,
+              legType: "delivery",
+              riderId: assignedRiderId,
+              scheduledAt: sched,
+              targetLocation: j.dropoffLocation || j.pickupLocation || "-",
+              targetCoords: validDropoffCoords,
+              expressInfo,
+              isToday: isSameDay(sched, now) || Boolean(assignedRiderId),
+            });
           }
         }
       }
     });
 
-    const tCount = allCandidateTasks.filter(t => t.isToday).length;
-    const aCount = allCandidateTasks.length;
+    const scopedTasks = allCandidateTasks.filter(t => (boardDateScope === "today" ? t.isToday : true));
+    const riderFilteredTasks = allCandidateTasks.filter(
+      t => selectedRiderIds.size === 0 || !t.riderId || selectedRiderIds.has(t.riderId)
+    );
+
+    const tCount = riderFilteredTasks.filter(t => t.isToday).length;
+    const aCount = riderFilteredTasks.length;
 
     const searchLower = boardSearch.trim().toLowerCase();
-    const filtered = allCandidateTasks
+    const filtered = riderFilteredTasks
       .filter(t => (boardDateScope === "today" ? t.isToday : true))
       .filter(t => (boardLegFilter === "all" ? true : t.legType === boardLegFilter))
       .filter(t => {
@@ -502,10 +506,11 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
 
     return {
       activeBoardTasks: filtered,
+      reportBoardTasks: scopedTasks,
       todayTaskCount: tCount,
       allActiveTaskCount: aCount,
     };
-  }, [allJobs, effectiveArea, shopLocations, user, isAreaRestricted, allowedBranchIds, selectedRiderIds, boardDateScope, boardLegFilter, boardSearch]);
+  }, [allJobs, effectiveArea, shopLocations, isAreaRestricted, allowedBranchIds, selectedRiderIds, boardDateScope, boardLegFilter, boardSearch]);
 
   // Group tasks by riderId + compute Auto Route & Live Drag Preview Deltas per rider
   const boardColumnsData = useMemo(() => {
@@ -704,13 +709,9 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     }
   };
 
-  // Filter & Map Jobs to Calendar Events
-  const allBaseEvents = useMemo(() => {
-    let jobs = allJobs.filter(j => j.status !== "pending" && j.status !== "cancel");
-
-    if (user?.role === 'manager') {
-      jobs = jobs.filter(j => j.status !== 'tba');
-    }
+  // Filter & Map Jobs to Events
+  const events = useMemo(() => {
+    let jobs = allJobs.filter(j => j.status !== "pending" && j.status !== "cancel" && j.status !== "tba");
     
     if (effectiveArea !== "ALL") {
       jobs = jobs.filter(j => {
@@ -739,6 +740,10 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     const calendarEvents: CalendarEvent[] = [];
 
     jobs.forEach(job => {
+      const custName = job.customerName || (job as any).customer?.name || 'Guest';
+      const pickupLoc = job.pickupLocation || (job as any).customer?.address || '-';
+      const dropoffLoc = job.dropoffLocation || job.pickupLocation || (job as any).customer?.address || '-';
+
       const pLat = Number((job as any).pickupLat ?? job.pickupCoords?.lat ?? (job as any).customer?.lat ?? 0);
       const pLng = Number((job as any).pickupLng ?? job.pickupCoords?.lng ?? (job as any).customer?.lng ?? 0);
       const pCoords: LatLng | undefined = (pLat !== 0 && pLng !== 0) 
@@ -759,14 +764,14 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
             id: `${job.id}-pickup`,
             jobId: job.id,
             type: 'pickup',
-            title: `[รับผ้า] ${job.customerName || 'Guest'} (${job.pickupLocation || 'No Address'})`,
-            customerName: job.customerName || (job as any).customer?.name || 'Guest',
-            location: job.pickupLocation || (job as any).customer?.address || '',
+            title: `[รับผ้า] ${custName} (${pickupLoc})`,
+            tooltip: `🚚 [รับผ้า Pickup] ${custName} - ${pickupLoc} (${format(pStart, 'HH:mm')} - ${format(pEnd, 'HH:mm')})`,
+            customerName: custName,
+            location: pickupLoc,
             coords: pCoords,
             start: pStart,
             end: pEnd,
             riderId: job.pickupRiderId,
-            resourceId: job.pickupRiderId || 'unassigned',
             jobStatus: job.status,
           });
         }
@@ -782,74 +787,58 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
               id: `${job.id}-delivery`,
               jobId: job.id,
               type: 'delivery',
-              title: `[ส่งผ้า] ${job.customerName || 'Guest'} (${job.dropoffLocation || 'No Address'})`,
-              customerName: job.customerName || (job as any).customer?.name || 'Guest',
-              location: job.dropoffLocation || (job as any).customer?.address || '',
+              title: `[ส่งผ้า] ${custName} (${dropoffLoc})`,
+              tooltip: `📦 [ส่งผ้า Delivery] ${custName} - ${dropoffLoc} (${format(dStart, 'HH:mm')} - ${format(dEnd, 'HH:mm')})`,
+              customerName: custName,
+              location: dropoffLoc,
               coords: dCoords,
               start: dStart,
               end: dEnd,
               riderId: job.deliveryRiderId,
-              resourceId: job.deliveryRiderId || 'unassigned',
               jobStatus: job.status,
             });
           }
         }
       }
     });
+
     return calendarEvents;
   }, [allJobs, selectedRiderIds, showCompleted, effectiveArea, shopLocations, user, isAreaRestricted, allowedBranchIds]);
 
-  // Apply taskTypeFilter & searchQuery to calendar events
-  const events = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return allBaseEvents.filter(e => {
-      if (taskTypeFilter === "pickup" && e.type !== "pickup") return false;
-      if (taskTypeFilter === "delivery" && e.type !== "delivery") return false;
-      if (taskTypeFilter === "unassigned" && e.riderId) return false;
-      if (q) {
-        const matchCustomer = (e.customerName || "").toLowerCase().includes(q);
-        const matchLocation = (e.location || "").toLowerCase().includes(q);
-        const matchJobId = (e.jobId || "").toLowerCase().includes(q);
-        if (!matchCustomer && !matchLocation && !matchJobId) return false;
-      }
-      return true;
-    });
-  }, [allBaseEvents, taskTypeFilter, searchQuery]);
-
-  // Route Optimization calculation for each active rider based on current schedule/calendar events
+  // Route Optimization calculation for each active rider (strictly using active uncompleted tasks for Today / selected scope)
   const riderRouteReports = useMemo(() => {
     return filteredRiders.map(rider => {
       const riderBranch = shopLocations.find(s => s.id === rider.branchId);
-      const origin: LatLng = (rider.currentLocation && typeof rider.currentLocation.lat === 'number')
-        ? rider.currentLocation
-        : (riderBranch?.coords || (riderBranch?.area === 'PTY' ? { lat: 12.9276, lng: 100.8771 } : { lat: 13.736717, lng: 100.523186 }));
+      const origin: LatLng = getRiderOriginCoords(rider);
 
-      const riderTasks = events
-        .filter(e => e.riderId === rider.id)
-        .map(e => ({
-          id: e.id,
-          jobId: e.jobId,
-          legType: e.type,
-          job: { id: e.jobId },
-          targetCoords: (e.coords && typeof e.coords.lat === 'number' && e.coords.lat !== 0) ? e.coords : origin,
-          title: e.title,
-          customerName: e.customerName || 'Customer',
-          location: e.location || '',
-          scheduledTime: e.start,
-          originalEvent: e,
-        }));
+      const riderTasks = reportBoardTasks
+        .filter(t => t.riderId === rider.id)
+        .map(t => {
+          const custName = t.job.customerName || (t.job as any).customer?.name || 'Customer';
+          const loc = t.targetLocation || '-';
+          return {
+            id: t.taskId,
+            jobId: t.job.id,
+            legType: t.legType,
+            job: { id: t.job.id },
+            targetCoords: isValidLatLng(t.targetCoords) ? t.targetCoords : origin,
+            title: `[${t.legType === 'pickup' ? 'รับผ้า' : 'ส่งผ้า'}] ${custName} (${loc})`,
+            customerName: custName,
+            location: loc,
+            scheduledTime: t.scheduledAt,
+          };
+        });
 
       const sortedChrono = [...riderTasks].sort((a, b) => a.scheduledTime.getTime() - b.scheduledTime.getTime());
       let chronologicalKm = 0;
       let prevChrono = origin;
       sortedChrono.forEach(t => {
         const dist = calculateEstimatedDistanceKm(prevChrono, t.targetCoords);
-        chronologicalKm += dist;
+        chronologicalKm = Math.round((chronologicalKm + dist) * 10) / 10;
         prevChrono = t.targetCoords;
       });
-      chronologicalKm = Math.round(chronologicalKm * 10) / 10;
 
-      const optResult = optimizeRiderRoute(origin, riderTasks);
+      const optResult = optimizeRiderRoute(origin, sortedChrono, origin);
       const optimizedKm = optResult.totalDistanceKm;
 
       const savedKm = Math.max(0, Math.round((chronologicalKm - optimizedKm) * 10) / 10);
@@ -860,7 +849,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
         rider,
         branch: riderBranch,
         origin,
-        hasLiveGps: Boolean(rider.currentLocation && typeof rider.currentLocation.lat === 'number'),
+        hasLiveGps: isValidLatLng(rider.currentLocation),
         tasksCount: riderTasks.length,
         chronologicalKm,
         optimizedKm,
@@ -882,9 +871,8 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
         })),
       };
     });
-  }, [filteredRiders, events, shopLocations]);
+  }, [filteredRiders, reportBoardTasks, shopLocations, getRiderOriginCoords]);
 
-  // Aggregate Route Optimization stats across all active riders
   const teamOptimizationTotals = useMemo(() => {
     let totalStops = 0;
     let totalChronoKm = 0;
@@ -908,6 +896,15 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
       totalSavedMins,
     };
   }, [riderRouteReports]);
+
+  const activeRiderReport = useMemo(() => {
+    if (!riderRouteReports.length) return null;
+    if (activeReportRiderId) {
+      const found = riderRouteReports.find(r => r.rider.id === activeReportRiderId);
+      if (found) return found;
+    }
+    return riderRouteReports[0];
+  }, [riderRouteReports, activeReportRiderId]);
 
   const onEventDrop = async ({ event, start, end }: any) => {
     const e = event as CalendarEvent;
@@ -1010,6 +1007,37 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     return rider?.color || '#3b82f6';
   };
 
+  const eventStyleGetter = (event: any) => {
+    let isEventCompleted = false;
+    
+    if (event.type === 'pickup') {
+      isEventCompleted = !['pending', 'pickup'].includes(event.jobStatus);
+    } else if (event.type === 'delivery') {
+      isEventCompleted = event.jobStatus === 'completed';
+    }
+
+    let backgroundColor = getRiderColor(event.riderId);
+    if (isEventCompleted) {
+      backgroundColor = '#475569';
+    }
+
+    const opacity = isEventCompleted ? 0.7 : 0.95;
+    
+    return {
+      style: {
+        backgroundColor,
+        borderRadius: '4px',
+        opacity,
+        color: 'white',
+        border: '1px solid rgba(255,255,255,0.7)',
+        display: 'block',
+        fontSize: '10px',
+        fontWeight: 500,
+        boxShadow: 'none',
+      }
+    };
+  };
+
   const openJobDetail = (job: Job) => {
     if (onEditJob) {
       onEditJob(job);
@@ -1023,348 +1051,59 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     [boardColumnsData.unassignedTasks]
   );
 
-  // Resources for Day View by Rider Columns
-  const riderResources = useMemo(() => {
-    const unassignedCount = events.filter(e => !e.riderId).length;
-    const list = [
-      { id: 'unassigned', title: `⚠️ Unassigned (${unassignedCount})` }
-    ];
-    filteredRiders.forEach(r => {
-      const count = events.filter(e => e.riderId === r.id).length;
-      list.push({ id: r.id, title: `🏍️ ${r.nickname || r.name.split(' ')[0]} (${count})` });
-    });
-    return list;
-  }, [filteredRiders, events]);
-
-  // Task Stats for quick pills (computed from allBaseEvents so pill counts stay accurate)
-  const stats = useMemo(() => {
-    let pickups = 0;
-    let deliveries = 0;
-    let unassigned = 0;
-    let completed = 0;
-
-    allBaseEvents.forEach(e => {
-      if (e.type === 'pickup') pickups++;
-      if (e.type === 'delivery') deliveries++;
-      if (!e.riderId) unassigned++;
-      const isEventCompleted = e.type === 'pickup' 
-        ? !['pending', 'pickup'].includes(e.jobStatus)
-        : e.jobStatus === 'completed';
-      if (isEventCompleted) completed++;
-    });
-
-    return { total: allBaseEvents.length, pickups, deliveries, unassigned, completed };
-  }, [allBaseEvents]);
-
-  // Custom Event Styling for react-big-calendar
-  const eventStyleGetter = () => {
-    return {
-      style: {
-        backgroundColor: 'transparent',
-        borderRadius: '10px',
-        color: 'inherit',
-        border: 'none',
-        display: 'block',
-        fontSize: '11px',
-        padding: '1px',
-        boxShadow: 'none',
-        overflow: 'visible',
-      },
-    };
-  };
-
-  // Custom Event Element: Modern card with clean white/tinted background & sharp typography
-  const CustomEvent = ({ event }: any) => {
-    const isPickup = event.type === 'pickup';
-    const rider = allRiders.find(r => r.id === event.riderId);
-    const isEventCompleted = isPickup 
-      ? !['pending', 'pickup'].includes(event.jobStatus)
-      : event.jobStatus === 'completed';
-
-    return (
-      <div
-        className={`h-full w-full rounded-xl p-2 leading-tight flex flex-col justify-between overflow-hidden transition-all shadow-xs hover:shadow-md border ${
-          isEventCompleted
-            ? 'bg-slate-100/90 text-slate-500 border-slate-300 border-l-[4px] border-l-slate-400'
-            : isPickup
-              ? 'bg-amber-50/95 hover:bg-amber-50 text-slate-800 border-amber-200/90 border-l-[4.5px] border-l-amber-500'
-              : 'bg-indigo-50/95 hover:bg-indigo-50 text-slate-800 border-indigo-200/90 border-l-[4.5px] border-l-indigo-600'
-        }`}
-        title={`${isPickup ? '🚚 [รับผ้า Pickup]' : '📦 [ส่งผ้า Delivery]'} ${event.customerName} - ${event.location} (${format(event.start, 'HH:mm')} - ${format(event.end, 'HH:mm')})`}
-      >
-        <div className="flex items-center justify-between gap-1">
-          <span className={`inline-flex items-center gap-1 font-black text-[10px] shrink-0 tracking-tight ${
-            isPickup ? 'text-amber-800' : 'text-indigo-800'
-          }`}>
-            {isPickup ? <Truck size={12} className="text-amber-600" /> : <MapPin size={12} className="text-indigo-600" />}
-            <span>{isPickup ? 'รับผ้า' : 'ส่งผ้า'}</span>
-            <span className="font-mono text-[9.5px] font-bold text-slate-500 bg-white/90 px-1 py-0.2 rounded border border-slate-200/70 ml-0.5">
-              {format(event.start, 'HH:mm')}
-            </span>
-          </span>
-
-          {rider ? (
-            <span 
-              className="text-[9px] px-1.5 py-0.5 rounded-md font-bold truncate max-w-[85px] text-white bg-slate-800 shrink-0 shadow-2xs"
-            >
-              {rider.nickname || rider.name.split(' ')[0]}
-            </span>
-          ) : (
-            <span className="text-[8.5px] px-1.5 py-0.5 rounded-md bg-rose-100 text-rose-700 border border-rose-300 font-black shrink-0 animate-pulse">
-              Unassigned
-            </span>
-          )}
-        </div>
-
-        <div className="font-black text-xs text-slate-900 truncate mt-0.5">
-          {event.customerName}
-        </div>
-
-        <div className="text-[10px] text-slate-500 truncate font-medium">
-          {event.location}
-        </div>
-      </div>
-    );
-  };
-
-  // Custom Toolbar Component
-  const CustomToolbar = (toolbar: any) => {
-    const goToBack = () => toolbar.onNavigate('PREV');
-    const goToNext = () => toolbar.onNavigate('NEXT');
-    const goToCurrent = () => toolbar.onNavigate('TODAY');
-
-    let titleText = '';
-    if (toolbar.view === 'day') {
-      titleText = format(toolbar.date, 'EEEE, d MMMM yyyy');
-    } else if (toolbar.view === 'week') {
-      titleText = `${format(startOfWeek(toolbar.date), 'd MMM')} – ${format(endOfWeek(toolbar.date), 'd MMM yyyy')}`;
-    } else if (toolbar.view === 'month') {
-      titleText = format(toolbar.date, 'MMMM yyyy');
-    } else {
-      titleText = `Agenda Schedule • ${format(toolbar.date, 'MMMM yyyy')}`;
-    }
-
-    return (
-      <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 bg-white dark:bg-slate-850 border-b border-slate-200/90 dark:border-slate-800">
-        {/* Navigation & Date */}
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200/80 dark:border-slate-750">
-            <button
-              type="button"
-              onClick={goToBack}
-              className="p-1.5 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700 rounded-lg transition-colors cursor-pointer"
-              title="Previous"
-            >
-              <ChevronLeft size={16} />
-            </button>
-            <button
-              type="button"
-              onClick={goToCurrent}
-              className="px-2.5 py-1 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700 rounded-lg transition-colors cursor-pointer"
-            >
-              Today
-            </button>
-            <button
-              type="button"
-              onClick={goToNext}
-              className="p-1.5 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700 rounded-lg transition-colors cursor-pointer"
-              title="Next"
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <h3 className="text-base font-black text-slate-900 dark:text-white tracking-tight">
-              {titleText}
-            </h3>
-            <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700">
-              {events.length} tasks
-            </span>
-          </div>
-        </div>
-
-        {/* View Switcher: Day, Week, Month, Agenda */}
-        <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200/80 dark:border-slate-750">
-          {(['day', 'week', 'month', 'agenda'] as const).map((v) => (
-            <button
-              key={v}
-              type="button"
-              onClick={() => toolbar.onView(v)}
-              className={`px-3.5 py-1.5 text-xs font-bold rounded-lg capitalize transition-all cursor-pointer ${
-                toolbar.view === v
-                  ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-white shadow-2xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-              }`}
-            >
-              {v}
-            </button>
-          ))}
-        </div>
-      </div>
-    );
-  };
-
-  const activeRiderReport = useMemo(() => {
-    if (!riderRouteReports.length) return null;
-    if (activeReportRiderId) {
-      const found = riderRouteReports.find(r => r.rider.id === activeReportRiderId);
-      if (found) return found;
-    }
-    return riderRouteReports[0];
-  }, [riderRouteReports, activeReportRiderId]);
-
   return (
-    <div className="flex-1 flex flex-col overflow-hidden h-full bg-slate-50/50">
+    <div className="h-[calc(100vh-4rem)] flex flex-col overflow-hidden bg-slate-50/50">
       <style dangerouslySetInnerHTML={{__html: `
-        .rbc-time-view, .rbc-month-view, .rbc-agenda-view { border: none !important; }
-        .rbc-time-header { border-bottom: 1px solid #e2e8f0; }
-        .rbc-header { padding: 10px 0; font-weight: 800; text-transform: uppercase; font-size: 11px; color: #64748b; letter-spacing: 0.05em; }
-        .rbc-today { background-color: rgba(99, 102, 241, 0.04) !important; }
-        .rbc-time-gutter { font-size: 11px; font-weight: 700; color: #64748b; font-family: monospace; }
-        .rbc-timeslot-group { min-height: 52px; border-bottom: 1px solid #f1f5f9 !important; }
-        .rbc-time-content { border-top: none; }
-        .rbc-day-slot .rbc-time-slot { border-top: 1px dashed #f1f5f9; }
-        .rbc-event { 
-          overflow: visible !important; 
-          border: none !important;
-          background: transparent !important;
-          min-width: 120px !important;
-          transition: transform 0.15s ease, z-index 0.15s ease, box-shadow 0.15s ease;
-        }
-        .rbc-event:hover {
-          z-index: 100 !important;
-          transform: scale(1.04);
-          box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.25) !important;
-          min-width: 200px !important;
-        }
+        .rbc-toolbar button { font-family: inherit; font-weight: 500; border-radius: 6px; }
+        .rbc-toolbar button.rbc-active { background-color: #312e81; color: white; border-color: #312e81; }
+        .rbc-header { padding: 8px 0; font-weight: 600; text-transform: uppercase; font-size: 11px; color: #64748b; }
+        .rbc-today { background-color: #f8fafc; }
+        .rbc-event { overflow: hidden; }
         .rbc-event-label { display: none !important; }
-        .rbc-event-content { padding: 0 !important; height: 100%; }
-        .rbc-agenda-view table.rbc-agenda-table { border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }
-        .rbc-agenda-view table.rbc-agenda-table thead > tr > th { background-color: #f8fafc; padding: 10px 14px; font-size: 11px; font-weight: 800; text-transform: uppercase; color: #64748b; }
-        .rbc-agenda-view table.rbc-agenda-table tbody > tr > td { padding: 10px 14px; font-size: 12px; border-top: 1px solid #f1f5f9; }
+        .rbc-event-content { padding: 1px 3px; white-space: normal; line-height: 1.2; word-break: break-word; text-overflow: ellipsis; }
       `}} />
 
-      <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden">
-        {/* Modern Top Filter & Control Header */}
-        <div className="p-4 border-b border-slate-200/90 bg-white flex flex-col gap-3 shrink-0 shadow-2xs z-20">
-          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
-            {/* Left: Tab Switcher + Title & Quick Stats Pills */}
-            <div className="flex flex-wrap items-center gap-3">
-              {/* Tab Switcher: Schedule Calendar | Rider Route */}
-              <div className="inline-flex bg-slate-100 p-1 rounded-xl border border-slate-200/80 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setDispatchTab("calendar")}
-                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
-                    dispatchTab === "calendar"
-                      ? "bg-slate-900 text-white shadow-xs"
-                      : "text-slate-600 hover:text-slate-900"
-                  }`}
-                >
-                  <CalendarIcon size={14} className={dispatchTab === "calendar" ? "text-indigo-400" : "text-slate-400"} />
-                  <span>Schedule Calendar</span>
-                </button>
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        {/* Top Header Bar (Always Pinned/Sticky at Top) */}
+        <div className="sticky top-0 px-4 py-2.5 border-b border-slate-200 bg-white flex flex-col gap-2 shrink-0 z-20 shadow-2xs">
+          {/* Row 1: Tab Switcher on Left, Area & Show Completed on Right */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="inline-flex bg-slate-100 p-1 rounded-xl border border-slate-200/80 shrink-0">
+              <button
+                type="button"
+                onClick={() => setDispatchTab("calendar")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  dispatchTab === "calendar"
+                    ? "bg-slate-900 text-white shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <CalendarIcon size={14} className={dispatchTab === "calendar" ? "text-indigo-400" : "text-slate-400"} />
+                <span>Schedule Calendar</span>
+              </button>
 
-                <button
-                  type="button"
-                  onClick={() => setDispatchTab("board")}
-                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
-                    dispatchTab === "board"
-                      ? "bg-slate-900 text-white shadow-xs"
-                      : "text-slate-600 hover:text-slate-900"
-                  }`}
-                >
-                  <LayoutGrid size={14} className={dispatchTab === "board" ? "text-amber-400" : "text-slate-400"} />
-                  <span>Rider Route</span>
-                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
-                    dispatchTab === "board" ? "bg-amber-400 text-slate-950" : "bg-slate-200 text-slate-700"
-                  }`}>
-                    {todayTaskCount}
-                  </span>
-                </button>
-              </div>
-
-              {dispatchTab === "calendar" && (
-                /* Task Type Filter Pills for Calendar */
-                <div className="flex items-center gap-1.5 bg-slate-100/90 p-1 rounded-xl border border-slate-200/80">
-                  <button
-                    type="button"
-                    onClick={() => setTaskTypeFilter("all")}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      taskTypeFilter === "all"
-                        ? "bg-white text-slate-900 shadow-2xs"
-                        : "text-slate-600 hover:text-slate-900"
-                    }`}
-                  >
-                    All ({stats.total})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTaskTypeFilter("pickup")}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      taskTypeFilter === "pickup"
-                        ? "bg-amber-500 text-white shadow-2xs"
-                        : "text-amber-800 hover:bg-amber-50"
-                    }`}
-                  >
-                    <Truck size={12} />
-                    <span>Pickups ({stats.pickups})</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTaskTypeFilter("delivery")}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      taskTypeFilter === "delivery"
-                        ? "bg-indigo-600 text-white shadow-2xs"
-                        : "text-indigo-800 hover:bg-indigo-50"
-                    }`}
-                  >
-                    <MapPin size={12} />
-                    <span>Deliveries ({stats.deliveries})</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTaskTypeFilter("unassigned")}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      taskTypeFilter === "unassigned"
-                        ? "bg-rose-600 text-white shadow-2xs"
-                        : "text-rose-700 hover:bg-rose-50"
-                    }`}
-                  >
-                    <AlertCircle size={12} />
-                    <span>Unassigned ({stats.unassigned})</span>
-                  </button>
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() => setDispatchTab("board")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  dispatchTab === "board"
+                    ? "bg-slate-900 text-white shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <LayoutGrid size={14} className={dispatchTab === "board" ? "text-amber-400" : "text-slate-400"} />
+                <span>Rider Route</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                  dispatchTab === "board" ? "bg-amber-400 text-slate-950" : "bg-slate-200 text-slate-700"
+                }`}>
+                  {todayTaskCount}
+                </span>
+              </button>
             </div>
 
-            {/* Right: Area Select + Search Box + Show Completed (or Board Filters) */}
-            <div className="flex flex-wrap items-center gap-2.5">
-              {dispatchTab === "calendar" && (
-                <div className="relative w-48 sm:w-56">
-                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search customer, room..."
-                    className="w-full pl-8 pr-7 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                  {searchQuery && (
-                    <button
-                      onClick={() => setSearchQuery("")}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {/* Area Select */}
+            <div className="flex items-center gap-2.5">
               <select
-                className="text-xs border border-slate-200 rounded-xl px-3 py-1.5 bg-slate-50 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700 disabled:opacity-75 disabled:cursor-not-allowed"
+                className="text-xs border border-slate-200 rounded-xl px-3 py-1.5 bg-slate-50 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700 disabled:opacity-75 shrink-0"
                 value={effectiveArea}
                 disabled={isAreaRestricted}
                 onChange={(e) => {
@@ -1387,278 +1126,269 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                 <Label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-100 transition-colors shrink-0">
                   <input 
                     type="checkbox"
-                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4 cursor-pointer"
+                    className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4 cursor-pointer"
                     checked={showCompleted} 
                     onChange={(e) => setShowCompleted(e.target.checked)}
                   />
-                  <span className="text-xs font-bold text-slate-700">Completed ({stats.completed})</span>
+                  <span className="text-xs font-bold text-slate-700">Show Completed</span>
                 </Label>
               )}
             </div>
           </div>
 
-          {/* Rider Filter Strip & Route Optimization Summary */}
-          <div className="flex flex-col gap-2.5 pt-2.5 border-t border-slate-100">
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar py-0.5 flex-1">
-                <span className="text-xs font-black uppercase tracking-wider text-slate-500 shrink-0 mr-1 flex items-center gap-1.5">
-                  <Truck size={15} className="text-indigo-600" />
-                  Riders:
-                </span>
-                <Button 
-                  variant={selectedRiderIds.size === 0 ? "default" : "outline"} 
-                  size="sm" 
-                  onClick={toggleAllRiders} 
-                  className="h-8 text-xs font-black rounded-xl px-3.5 bg-indigo-600 hover:bg-indigo-700 text-white shrink-0 cursor-pointer shadow-2xs"
-                >
-                  All Riders ({filteredRiders.length})
-                </Button>
-
-                {filteredRiders.map(rider => {
-                  const isSelected = selectedRiderIds.has(rider.id);
-                  const riderActiveTasks = events.filter(e => e.riderId === rider.id).length;
-                  const riderReport = riderRouteReports.find(r => r.rider.id === rider.id);
-                  return (
-                    <div 
-                      key={rider.id}
-                      onClick={() => toggleRider(rider.id)}
-                      className={`inline-flex items-center gap-2 pl-2.5 pr-2 py-1 rounded-2xl border transition-all shrink-0 cursor-pointer shadow-2xs ${
-                        isSelected 
-                          ? 'bg-indigo-50 border-indigo-400 text-indigo-950 font-bold ring-2 ring-indigo-400/25' 
-                          : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-slate-50 font-medium'
-                      }`}
-                    >
-                      <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-2xs" style={{ backgroundColor: getRiderColor(rider.id) }} />
-                      <img
-                        src={rider.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(rider.name)}&background=4f46e5&color=fff`}
-                        alt=""
-                        className="w-5 h-5 rounded-full object-cover shrink-0 bg-slate-100 border border-slate-200"
-                      />
-                      
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-black text-slate-900">{rider.nickname || rider.name.split(' ')[0]}</span>
-                        <span className="text-[11px] px-1.5 py-0.2 rounded-md bg-slate-100 text-slate-700 font-mono font-black border border-slate-200/60">
-                          {riderActiveTasks}
-                        </span>
-                      </div>
-
-                      {riderReport && riderReport.tasksCount > 0 ? (
-                        <div
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveReportRiderId(rider.id);
-                            setShowRouteReportModal(true);
-                          }}
-                          title={`${rider.name}: Optimized ${riderReport.optimizedKm} km (Scheduled ${riderReport.chronologicalKm} km) - Saved ${riderReport.savedKm} km (~${riderReport.savedMinutes}m). Click for stop sequence.`}
-                          className={`inline-flex items-center gap-1 text-[11px] font-black px-2 py-0.5 rounded-xl border transition-all hover:scale-105 cursor-pointer ${
-                            riderReport.savedKm > 0
-                              ? 'bg-emerald-50 text-emerald-900 border-emerald-300 shadow-2xs'
-                              : 'bg-indigo-50 text-indigo-800 border-indigo-200'
-                          }`}
-                        >
-                          <Route size={12} className={riderReport.savedKm > 0 ? "text-emerald-600" : "text-indigo-600"} />
-                          <span>{riderReport.optimizedKm} km</span>
-                          {riderReport.savedKm > 0 ? (
-                            <span className="text-[10px] text-emerald-700 font-black bg-emerald-100 px-1 py-0.1 rounded border border-emerald-200">
-                              -{riderReport.savedKm}km
-                            </span>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Route Optimization Efficiency Report Trigger */}
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveReportRiderId(filteredRiders[0]?.id || null);
-                  setShowRouteReportModal(true);
-                }}
-                className="h-8 px-3.5 text-xs rounded-2xl font-black bg-gradient-to-r from-emerald-500/15 via-teal-500/10 to-indigo-500/15 hover:from-emerald-500/25 hover:to-indigo-500/25 border border-emerald-300 text-emerald-950 flex items-center gap-2 cursor-pointer shadow-2xs transition-all shrink-0"
+          {/* Row 2: Rider Filter Strip & Route Optimization Summary */}
+          <div className="flex items-center justify-between gap-3 flex-wrap pt-2 border-t border-slate-100">
+            <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar py-0.5 flex-1">
+              <span className="text-xs font-black uppercase tracking-wider text-slate-500 shrink-0 mr-1 flex items-center gap-1.5">
+                <Truck size={15} className="text-indigo-600" />
+                Riders:
+              </span>
+              <Button 
+                variant={selectedRiderIds.size === 0 ? "default" : "outline"} 
+                size="sm" 
+                onClick={toggleAllRiders} 
+                className="h-8 text-xs font-black rounded-xl px-3.5 bg-indigo-600 hover:bg-indigo-700 text-white shrink-0 cursor-pointer shadow-2xs"
               >
-                <Sparkles size={14} className="text-emerald-600 animate-pulse" />
-                <span>Rider Route Report</span>
-                <span className="bg-emerald-600 text-white text-[11px] font-black px-2 py-0.5 rounded-lg shadow-2xs">
-                  {teamOptimizationTotals.totalSavedKm > 0 
-                    ? `Saved ${teamOptimizationTotals.totalSavedKm} km (~${teamOptimizationTotals.totalSavedMins}m)` 
-                    : `${teamOptimizationTotals.totalOptKm} km total`}
-                </span>
-              </button>
-            </div>
+                All Riders ({filteredRiders.length})
+              </Button>
 
-            {/* Sub-Toolbar when on Rider Route Board Tab */}
-            {dispatchTab === "board" && (
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* Date Scope: Today vs All Pending */}
-                  <div className="inline-flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-                    <button
-                      type="button"
-                      onClick={() => setBoardDateScope("today")}
-                      className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                        boardDateScope === "today"
-                          ? "bg-white text-slate-900 shadow-2xs"
-                          : "text-slate-500 hover:text-slate-800"
-                      }`}
-                    >
-                      Today ({todayTaskCount})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setBoardDateScope("all_active")}
-                      className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                        boardDateScope === "all_active"
-                          ? "bg-white text-slate-900 shadow-2xs"
-                          : "text-slate-500 hover:text-slate-800"
-                      }`}
-                    >
-                      All Pending ({allActiveTaskCount})
-                    </button>
-                  </div>
-
-                  {/* Leg Type Filter: All / Pickup / Delivery */}
-                  <div className="inline-flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-                    <button
-                      type="button"
-                      onClick={() => setBoardLegFilter("all")}
-                      className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                        boardLegFilter === "all"
-                          ? "bg-white text-slate-900 shadow-2xs"
-                          : "text-slate-500 hover:text-slate-800"
-                      }`}
-                    >
-                      All Legs
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setBoardLegFilter("pickup")}
-                      className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                        boardLegFilter === "pickup"
-                          ? "bg-amber-500 text-white shadow-2xs"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                      Pickup
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setBoardLegFilter("delivery")}
-                      className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                        boardLegFilter === "delivery"
-                          ? "bg-indigo-600 text-white shadow-2xs"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
-                      Delivery
-                    </button>
-                  </div>
-
-                  {/* Quick Search */}
-                  <div className="relative w-52 sm:w-64">
-                    <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input
-                      type="text"
-                      value={boardSearch}
-                      onChange={(e) => setBoardSearch(e.target.value)}
-                      placeholder="Search customer, building, #ID..."
-                      className="w-full h-7.5 pl-8 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-indigo-400"
-                    />
-                    {boardSearch && (
-                      <button
-                        type="button"
-                        onClick={() => setBoardSearch("")}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                      >
-                        <X size={12} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Right Side: Auto Route vs Time + Show Offline Riders */}
-                <div className="flex items-center gap-2">
-                  <div className="inline-flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-                    <button
-                      type="button"
-                      onClick={() => setBoardSortMode("optimized")}
-                      className={`px-2.5 py-1 rounded-md text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1 ${
-                        boardSortMode === "optimized"
-                          ? "bg-indigo-600 text-white shadow-2xs"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      <Zap size={12} className={boardSortMode === "optimized" ? "text-amber-300" : "text-slate-400"} />
-                      <span>Auto Route</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setBoardSortMode("time")}
-                      className={`px-2.5 py-1 rounded-md text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1 ${
-                        boardSortMode === "time"
-                          ? "bg-indigo-600 text-white shadow-2xs"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      <Clock size={12} />
-                      <span>By Time</span>
-                    </button>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setShowOfflineRiders(v => !v)}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
-                      showOfflineRiders
-                        ? "bg-slate-800 text-white border-slate-800"
-                        : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+              {filteredRiders.map(rider => {
+                const isSelected = selectedRiderIds.has(rider.id);
+                const riderReport = riderRouteReports.find(r => r.rider.id === rider.id);
+                const riderActiveTasks = riderReport?.tasksCount || 0;
+                return (
+                  <div 
+                    key={rider.id}
+                    onClick={() => toggleRider(rider.id)}
+                    className={`inline-flex items-center gap-2 pl-2.5 pr-2 py-1 rounded-2xl border transition-all shrink-0 cursor-pointer shadow-2xs ${
+                      isSelected 
+                        ? 'bg-indigo-50 border-indigo-400 text-indigo-950 font-bold ring-2 ring-indigo-400/25' 
+                        : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-slate-50 font-medium'
                     }`}
                   >
-                    {showOfflineRiders ? <Eye size={13} /> : <EyeOff size={13} />}
-                    <span>Offline Riders</span>
-                    {!showOfflineRiders && boardColumnsData.hiddenOfflineCount > 0 && (
-                      <span className="px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-700 text-[10px] font-black">
-                        +{boardColumnsData.hiddenOfflineCount}
+                    <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-2xs" style={{ backgroundColor: getRiderColor(rider.id) }} />
+                    <img
+                      src={rider.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(rider.name)}&background=4f46e5&color=fff`}
+                      alt=""
+                      className="w-5 h-5 rounded-full object-cover shrink-0 bg-slate-100 border border-slate-200"
+                    />
+                    
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-black text-slate-900">{rider.nickname || rider.name.split(' ')[0]}</span>
+                      <span className="text-[11px] px-1.5 py-0.2 rounded-md bg-slate-100 text-slate-700 font-mono font-black border border-slate-200/60">
+                        {riderActiveTasks}
                       </span>
-                    )}
+                    </div>
+
+                    {riderReport && riderReport.tasksCount > 0 ? (
+                      <div
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveReportRiderId(rider.id);
+                          setShowRouteReportModal(true);
+                        }}
+                        title={`${rider.name}: Optimized ${riderReport.optimizedKm} km (Scheduled ${riderReport.chronologicalKm} km) - Saved ${riderReport.savedKm} km (~${riderReport.savedMinutes}m). Click for stop sequence.`}
+                        className={`inline-flex items-center gap-1 text-[11px] font-black px-2 py-0.5 rounded-xl border transition-all hover:scale-105 cursor-pointer ${
+                          riderReport.savedKm > 0
+                            ? 'bg-emerald-50 text-emerald-900 border-emerald-300 shadow-2xs'
+                            : 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                        }`}
+                      >
+                        <Route size={12} className={riderReport.savedKm > 0 ? "text-emerald-600" : "text-indigo-600"} />
+                        <span>{riderReport.optimizedKm} km</span>
+                        {riderReport.savedKm > 0 ? (
+                          <span className="text-[10px] text-emerald-700 font-black bg-emerald-100 px-1 py-0.1 rounded border border-emerald-200">
+                            -{riderReport.savedKm}km
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveReportRiderId(filteredRiders[0]?.id || null);
+                setShowRouteReportModal(true);
+              }}
+              className="h-8 px-3.5 text-xs rounded-2xl font-black bg-gradient-to-r from-emerald-500/15 via-teal-500/10 to-indigo-500/15 hover:from-emerald-500/25 hover:to-indigo-500/25 border border-emerald-300 text-emerald-950 flex items-center gap-2 cursor-pointer shadow-2xs transition-all shrink-0"
+            >
+              <Sparkles size={14} className="text-emerald-600 animate-pulse" />
+              <span>Rider Route Report</span>
+              <span className="bg-emerald-600 text-white text-[11px] font-black px-2 py-0.5 rounded-lg shadow-2xs">
+                {teamOptimizationTotals.totalSavedKm > 0 
+                  ? `Saved ${teamOptimizationTotals.totalSavedKm} km (~${teamOptimizationTotals.totalSavedMins}m)` 
+                  : `${teamOptimizationTotals.totalOptKm} km total`}
+              </span>
+            </button>
+          </div>
+
+          {/* Row 3: Sub-Toolbar for Rider Route Board: Easy Filters & Search */}
+          {dispatchTab === "board" && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Date Scope: Today vs All Active (including past uncompleted) */}
+                <div className="inline-flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setBoardDateScope("today")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
+                      boardDateScope === "today"
+                        ? "bg-white text-slate-900 shadow-2xs"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    Today ({todayTaskCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBoardDateScope("all_active")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
+                      boardDateScope === "all_active"
+                        ? "bg-white text-slate-900 shadow-2xs"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    All Pending ({allActiveTaskCount})
                   </button>
                 </div>
+
+                {/* Leg Type Filter: All / Pickup / Delivery */}
+                <div className="inline-flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setBoardLegFilter("all")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
+                      boardLegFilter === "all"
+                        ? "bg-white text-slate-900 shadow-2xs"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    All Legs
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBoardLegFilter("pickup")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                      boardLegFilter === "pickup"
+                        ? "bg-amber-500 text-white shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    Pickup
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBoardLegFilter("delivery")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                      boardLegFilter === "delivery"
+                        ? "bg-indigo-600 text-white shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+                    Delivery
+                  </button>
+                </div>
+
+                {/* Quick Search */}
+                <div className="relative w-52 sm:w-64">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={boardSearch}
+                    onChange={(e) => setBoardSearch(e.target.value)}
+                    placeholder="Search customer, building, #ID..."
+                    className="w-full h-7.5 pl-8 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-indigo-400"
+                  />
+                  {boardSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setBoardSearch("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
               </div>
-            )}
-          </div>
+
+              {/* Right Side: Auto Route vs Time + Show Offline Riders */}
+              <div className="flex items-center gap-2">
+                <div className="inline-flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setBoardSortMode("optimized")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1 ${
+                      boardSortMode === "optimized"
+                        ? "bg-indigo-600 text-white shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <Zap size={12} className={boardSortMode === "optimized" ? "text-amber-300" : "text-slate-400"} />
+                    <span>Auto Route</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBoardSortMode("time")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1 ${
+                      boardSortMode === "time"
+                        ? "bg-indigo-600 text-white shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <Clock size={12} />
+                    <span>By Time</span>
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowOfflineRiders(v => !v)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                    showOfflineRiders
+                      ? "bg-slate-800 text-white border-slate-800"
+                      : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                  }`}
+                >
+                  {showOfflineRiders ? <Eye size={13} /> : <EyeOff size={13} />}
+                  <span>Offline Riders</span>
+                  {!showOfflineRiders && boardColumnsData.hiddenOfflineCount > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-700 text-[10px] font-black">
+                      +{boardColumnsData.hiddenOfflineCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ===================================================================== */}
-        {/* TAB 1: SCHEDULE CALENDAR (Modern Redesigned View)                     */}
+        {/* TAB 1 (DEFAULT): SCHEDULE CALENDAR                                    */}
         {/* ===================================================================== */}
         {dispatchTab === "calendar" ? (
-          <div className="flex-1 min-h-0 p-3 sm:p-4 bg-white m-3 sm:m-4 rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden flex flex-col">
+          <div className="flex-1 min-h-0 p-4 bg-white m-4 rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
             <DnDCalendar
               localizer={localizer}
               events={events}
               startAccessor="start"
               endAccessor="end"
+              tooltipAccessor={(event: any) => event.tooltip || event.title}
               date={currentDate}
               onNavigate={(date: Date) => setCurrentDate(date)}
               view={currentView}
               onView={(view: any) => setCurrentView(view)}
               views={['day', 'week', 'month', 'agenda']}
-              resources={currentView === 'day' && dayViewMode === 'rider' ? riderResources : undefined}
-              resourceIdAccessor={(r: any) => r.id}
-              resourceTitleAccessor={(r: any) => r.title}
               onEventDrop={onEventDrop}
               onEventResize={onEventResize}
               onSelectEvent={onSelectEvent}
               eventPropGetter={eventStyleGetter}
-              dayLayoutAlgorithm="overlap"
-              components={{
-                toolbar: CustomToolbar,
-                event: CustomEvent,
-              }}
+              dayLayoutAlgorithm="no-overlap"
               resizable={true}
               step={30}
               timeslots={2}
@@ -1677,7 +1407,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
           </div>
         ) : (
           /* ===================================================================== */
-          /* TAB 2: RIDER ROUTE BOARD (KANBAN) WITH PINNED HEADERS & LIVE DELTAS   */
+          /* TAB 2: RIDER ROUTE BOARD (KANBAN) WITH STICKY/PINNED HEADERS          */
           /* ===================================================================== */
           <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden p-3.5">
             <div className="flex items-stretch gap-3.5 h-full min-h-0 min-w-max">
@@ -1715,8 +1445,8 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                     : "border-slate-200/90"
                 }`}
               >
-                {/* Pinned Unassigned Header */}
-                <div className="px-3.5 py-3 bg-white rounded-t-2xl border-b border-slate-200/80 flex items-center justify-between shrink-0 z-10 shadow-2xs">
+                {/* Pinned/Sticky Unassigned Header */}
+                <div className="sticky top-0 px-3.5 py-3 bg-white rounded-t-2xl border-b border-slate-200/80 flex items-center justify-between shrink-0 z-10 shadow-2xs">
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
                     <div>
@@ -1939,8 +1669,8 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                           : "border-slate-200/90"
                       }`}
                     >
-                      {/* PINNED RIDER COLUMN HEADER */}
-                      <div className="p-3 bg-white rounded-t-2xl border-b border-slate-200/80 space-y-2 shrink-0 z-10 shadow-2xs">
+                      {/* PINNED/STICKY RIDER COLUMN HEADER */}
+                      <div className="sticky top-0 p-3 bg-white rounded-t-2xl border-b border-slate-200/80 space-y-2 shrink-0 z-10 shadow-2xs">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2 min-w-0">
                             <div className="relative shrink-0">
@@ -1973,6 +1703,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                             </div>
                           </div>
 
+                          {/* Pickup / Delivery Mini Counters */}
                           <div className="flex items-center gap-1 shrink-0">
                             {pickupCount > 0 && (
                               <span className="px-1.5 py-0.5 rounded text-[10px] font-extrabold bg-amber-50 text-amber-800 border border-amber-200/80">
@@ -1992,6 +1723,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                           </div>
                         </div>
 
+                        {/* Sleek Route Summary Bar: Stops • Distance • Est. Time + Map */}
                         {displayTasks.length > 0 && (
                           <div className="flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-900 text-white">
                             <div className="flex items-center gap-1.5 text-[10.5px] font-bold min-w-0">
@@ -2021,6 +1753,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                           </div>
                         )}
 
+                        {/* Instant Live Calculation Banner when hovering a task over a rider box */}
                         {activeDelta && (
                           <div
                             className={`rounded-xl p-2 border transition-all ${
