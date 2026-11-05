@@ -2422,13 +2422,22 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       const rule = c.instantRule;
       if (!rule || !rule.autoApply || !rule.promoCode) continue;
 
-      const isCorp = Boolean(selectedCustomer.isCorporate || selectedCustomer.priceListId);
+      const isCorp = Boolean(selectedCustomer.isCorporate || activeCorpPriceList || (selectedCustomer as any).customerType === "corporate" || (selectedCustomer as any).priceType === "corporate" || (selectedCustomer as any).tier === "corporate");
       const isVIP = Boolean(selectedCustomer.isVIP);
       const isMember = Boolean(selectedCustomer.isMember);
       if (isCorp && c.conditions?.excludeCorporate && !c.conditions?.allowCorporate) continue;
       if (isVIP && (c.conditions?.excludeVIP || c.conditions?.allowVIP === false)) continue;
       if (isMember && !isVIP && (c.conditions?.excludeMember || c.conditions?.allowMember === false)) continue;
       if (!isCorp && !isVIP && !isMember && c.conditions?.allowGeneral === false) continue;
+
+      const disallowWallet = Boolean(c.conditions?.disallowMemberWallet || rule.disallowMemberWallet);
+      if (isMember && disallowWallet) {
+        const isUsingMemberWallet =
+          !posPaymentChannel ||
+          posPaymentChannel === "Deduct Member" ||
+          paymentMethod === "credit";
+        if (isUsingMemberWallet) continue;
+      }
 
       const calc = calculateInstantCampaignDiscount(cart, c);
       if (!calc.meetsMinQuantity || calc.discountAmount <= 0) continue;
@@ -2457,6 +2466,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     selectedCustomer,
     cart,
     activePromoCampaigns,
+    posPaymentChannel,
+    paymentMethod,
+    activeCorpPriceList,
     jobs,
     loadedJobId,
   ]);
@@ -2549,7 +2561,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const activePaymentChannels = useMemo(() => {
     const ch = getActivePaymentChannels(settings, Boolean(selectedCustomer?.isMember));
     if (isMemberWalletDisallowedByPromo) {
-      return ch.filter((c) => c.type !== "wallet" && !c.requiresMember && c.name !== "Deduct Member");
+      return ch;
     }
     return ch;
   }, [settings, selectedCustomer?.isMember, isMemberWalletDisallowedByPromo]);
@@ -2559,7 +2571,33 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     return walletCh?.name || "Deduct Member";
   }, [activePaymentChannels]);
 
+  const hasPosNonPackageItems = useMemo(() => {
+    if (!selectedCustomer?.isMember) return false;
+    return cart.some(item =>
+      item.category !== "PACKAGE" &&
+      item.id !== "topup-member-item" &&
+      item.id !== "delivery-pickup-service-item" &&
+      item.id !== "delivery-only-service-item"
+    );
+  }, [selectedCustomer, cart]);
+
+  const hasEligibleMemberInstantPromo = useMemo(() => {
+    if (isPaidJob) return false;
+    if (!selectedCustomer?.isMember) return false;
+    if (cart.length === 0) return false;
+    for (const c of activePromoCampaigns) {
+      if (c.campaignMode !== "INSTANT_DISCOUNT" && !c.instantRule) continue;
+      const rule = c.instantRule;
+      if (!rule || !rule.promoCode) continue;
+      if (c.conditions?.excludeMember || c.conditions?.allowMember === false) continue;
+      const calc = calculateInstantCampaignDiscount(cart, c);
+      if (calc.meetsMinQuantity && calc.discountAmount > 0) return true;
+    }
+    return false;
+  }, [isPaidJob, selectedCustomer?.isMember, cart, activePromoCampaigns]);
+
   const forceMemberPayment = useMemo(() => {
+    if (hasEligibleMemberInstantPromo) return false;
     if (isMemberWalletDisallowedByPromo) return false;
     if (!selectedCustomer?.isMember) return false;
     return cart.some(item => 
@@ -2568,7 +2606,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       item.id !== "delivery-pickup-service-item" && 
       item.id !== "delivery-only-service-item"
     );
-  }, [selectedCustomer, cart, isMemberWalletDisallowedByPromo]);
+  }, [selectedCustomer, cart, isMemberWalletDisallowedByPromo, hasEligibleMemberInstantPromo]);
 
   useEffect(() => {
     if (isMemberWalletDisallowedByPromo && !isPaidJob) {
@@ -2583,7 +2621,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   // Force member payment method (credit) for member customers adding non-package items
   useEffect(() => {
-    if (forceMemberPayment) {
+    if (forceMemberPayment || (hasPosNonPackageItems && !appliedPromo && !posPaymentChannel)) {
       const isExpired = isWalletExpired(selectedCustomer);
       const hasSufficient = !isExpired && (selectedCustomer?.creditBalance || 0) >= total;
       if (hasSufficient) {
@@ -2595,7 +2633,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         setPosPaymentChannel("");
       }
     }
-  }, [forceMemberPayment, total, selectedCustomer?.creditBalance, selectedCustomer?.memberExpiryDate, memberWalletChannelName]);
+  }, [forceMemberPayment, hasPosNonPackageItems, appliedPromo, posPaymentChannel, total, selectedCustomer?.creditBalance, selectedCustomer?.memberExpiryDate, memberWalletChannelName]);
 
 
 
@@ -5310,6 +5348,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
                     onChange={(e) => {
                       const ch = e.target.value;
+      if ((ch === "Deduct Member" || ch === memberWalletChannelName) && isMemberWalletDisallowedByPromo) {
+        setAppliedPromo(null);
+        setPromoCodeInput("");
+        setPromoError(null);
+      }
                       setPosPaymentChannel(ch);
                       if (!ch) {
                         setIsPaid(false);

@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useCustomerAuth } from "@/providers/customer-auth-provider";
 import { toast } from "sonner";
 import {
-  Sparkles,
   Phone,
   Lock,
   ArrowRight,
@@ -21,6 +20,8 @@ import {
   KeyRound,
   RefreshCw,
   Smartphone,
+  Mail,
+  Send,
 } from "lucide-react";
 
 type AuthMode =
@@ -30,6 +31,7 @@ type AuthMode =
   | "reset_password"
   | "register";
 type ActiveTab = "account" | "quick_track";
+type OtpChannel = "sms" | "whatsapp" | "email";
 
 export default function PortalLoginPage() {
   const router = useRouter();
@@ -44,8 +46,15 @@ export default function PortalLoginPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [maskedName, setMaskedName] = useState("");
+  const [maskedEmail, setMaskedEmail] = useState<string | null>(null);
+  const [hasEmailOnFile, setHasEmailOnFile] = useState(false);
 
   // OTP states
+  const [otpChannel, setOtpChannel] = useState<OtpChannel>("sms");
+  const [otpEmailInput, setOtpEmailInput] = useState("");
+  const [needsEmailForOtp, setNeedsEmailForOtp] = useState(false);
+  const [deliveredTo, setDeliveredTo] = useState("");
+  const [providerRoute, setProviderRoute] = useState("");
   const [otpCode, setOtpCode] = useState("");
   const [otpToken, setOtpToken] = useState("");
   const [otpRefCode, setOtpRefCode] = useState("");
@@ -55,6 +64,7 @@ export default function PortalLoginPage() {
 
   // Registration fields
   const [fullName, setFullName] = useState("");
+  const [registerPhone, setRegisterPhone] = useState("");
   const [email, setEmail] = useState("");
   const [condoName, setCondoName] = useState("");
   const [roomNo, setRoomNo] = useState("");
@@ -76,14 +86,41 @@ export default function PortalLoginPage() {
     if (data.otpToken) setOtpToken(data.otpToken);
     if (data.refCode) setOtpRefCode(data.refCode);
     if (data.demoOtpCode) setDemoOtpCode(data.demoOtpCode);
+    if (data.deliveryChannel) setOtpChannel(data.deliveryChannel);
+    if (data.deliveredTo) setDeliveredTo(data.deliveredTo);
+    if (data.providerRoute) setProviderRoute(data.providerRoute);
+    if (typeof data.hasEmail === "boolean") setHasEmailOnFile(data.hasEmail);
+    if (data.maskedEmail !== undefined) setMaskedEmail(data.maskedEmail);
+    setNeedsEmailForOtp(false);
     setOtpCode("");
     setResendCooldown(60);
   };
 
   const handleRequestOtp = async (
-    purpose: "first_setup" | "register" | "reset_password"
+    purpose: "first_setup" | "register" | "reset_password",
+    requestedChannel?: OtpChannel,
+    customEmail?: string
   ) => {
-    if (!identifier.trim()) return;
+    if (!identifier.trim()) return false;
+    const targetChannel = requestedChannel || otpChannel;
+    const targetEmailToUse =
+      customEmail !== undefined
+        ? customEmail.trim()
+        : otpEmailInput.trim() || email.trim();
+
+    // If user switches to Email channel but has no email on file and hasn't typed one yet,
+    // prompt the inline email input first before firing the API request.
+    if (
+      targetChannel === "email" &&
+      !identifier.includes("@") &&
+      !hasEmailOnFile &&
+      !targetEmailToUse
+    ) {
+      setOtpChannel("email");
+      setNeedsEmailForOtp(true);
+      return false;
+    }
+
     setResendingOtp(true);
     try {
       const res = await fetch("/api/portal/auth", {
@@ -93,18 +130,33 @@ export default function PortalLoginPage() {
           action: "request_otp",
           identifier: identifier.trim(),
           purpose,
+          channel: targetChannel,
+          targetEmail: targetEmailToUse || undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
+        if (data.needsEmailInput) {
+          setOtpChannel("email");
+          setNeedsEmailForOtp(true);
+        }
         toast.error(data.error || "Could not send OTP");
         return false;
       }
       applyOtpChallengeData(data);
+      if (targetEmailToUse && !email) {
+        setEmail(targetEmailToUse);
+      }
+      const chLabel =
+        targetChannel === "email"
+          ? "Email"
+          : targetChannel === "whatsapp"
+          ? "WhatsApp"
+          : "SMS";
       toast.success(
         lang === "en"
-          ? `OTP code sent! (Ref: ${data.refCode})`
-          : `ส่งรหัส OTP แล้ว (Ref: ${data.refCode})`
+          ? `OTP sent via ${chLabel}! (Ref: ${data.refCode})`
+          : `ส่งรหัส OTP ทาง ${chLabel} แล้ว (Ref: ${data.refCode})`
       );
       return true;
     } catch {
@@ -113,6 +165,26 @@ export default function PortalLoginPage() {
     } finally {
       setResendingOtp(false);
     }
+  };
+
+  const handleSwitchOtpChannel = async (
+    newChannel: OtpChannel,
+    purpose: "first_setup" | "register" | "reset_password"
+  ) => {
+    if (resendingOtp) return;
+    setOtpChannel(newChannel);
+    if (
+      newChannel === "email" &&
+      !identifier.includes("@") &&
+      !hasEmailOnFile &&
+      !otpEmailInput.trim() &&
+      !email.trim()
+    ) {
+      setNeedsEmailForOtp(true);
+      return;
+    }
+    setNeedsEmailForOtp(false);
+    await handleRequestOtp(purpose, newChannel);
   };
 
   const handleCheckAccount = async (e: React.FormEvent) => {
@@ -142,6 +214,9 @@ export default function PortalLoginPage() {
         return;
       }
 
+      setHasEmailOnFile(Boolean(data.hasEmail));
+      setMaskedEmail(data.maskedEmail || null);
+
       if (data.exists) {
         setMaskedName(data.maskedName || "");
         if (data.needsPasswordSetup) {
@@ -151,6 +226,11 @@ export default function PortalLoginPage() {
           setMode("password");
         }
       } else {
+        if (identifier.includes("@")) {
+          setEmail(identifier.trim());
+        } else {
+          setRegisterPhone(identifier.trim());
+        }
         applyOtpChallengeData(data);
         setMode("register");
       }
@@ -164,7 +244,8 @@ export default function PortalLoginPage() {
   const handleStartForgotPassword = async () => {
     setPassword("");
     setConfirmPassword("");
-    const ok = await handleRequestOtp("reset_password");
+    const defaultCh: OtpChannel = identifier.includes("@") ? "email" : "sms";
+    const ok = await handleRequestOtp("reset_password", defaultCh);
     if (ok) {
       setMode("reset_password");
     }
@@ -241,6 +322,8 @@ export default function PortalLoginPage() {
           otpToken,
           otpCode: otpCode.trim(),
           password,
+          deliveryChannel: otpChannel,
+          otpEmail: otpEmailInput.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -299,6 +382,8 @@ export default function PortalLoginPage() {
           otpToken,
           otpCode: otpCode.trim(),
           password,
+          deliveryChannel: otpChannel,
+          otpEmail: otpEmailInput.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -335,6 +420,17 @@ export default function PortalLoginPage() {
       toast.error(lang === "en" ? "Please enter your full name" : "กรุณากรอกชื่อ-นามสกุล");
       return;
     }
+    const finalPhone = identifier.includes("@")
+      ? registerPhone.trim()
+      : identifier.trim();
+    if (!finalPhone) {
+      toast.error(
+        lang === "en"
+          ? "Please enter your Phone / WhatsApp number"
+          : "กรุณากรอกเบอร์โทรศัพท์ / WhatsApp"
+      );
+      return;
+    }
     if (password.length < 4) {
       toast.error(
         lang === "en"
@@ -346,19 +442,25 @@ export default function PortalLoginPage() {
 
     setLoading(true);
     try {
+      const finalEmail = identifier.includes("@")
+        ? identifier.trim()
+        : otpEmailInput.trim() || email.trim() || null;
+
       const res = await fetch("/api/portal/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "register",
+          identifier: identifier.trim(),
           name: fullName.trim(),
-          phone: identifier.trim(),
-          email: email.trim() || null,
+          phone: finalPhone,
+          email: finalEmail,
           condoName: condoName.trim() || null,
           roomNo: roomNo.trim() || null,
           otpToken,
           otpCode: otpCode.trim(),
           password,
+          deliveryChannel: otpChannel,
         }),
       });
       const data = await res.json();
@@ -421,79 +523,194 @@ export default function PortalLoginPage() {
     }
   };
 
-  const renderOtpSection = (purpose: "first_setup" | "register" | "reset_password") => (
-    <div className="space-y-3 p-3.5 rounded-2xl bg-slate-50 border border-slate-200/90">
-      {/* Demo / Sandbox SMS Notification Preview */}
-      {demoOtpCode && (
-        <div className="p-3 rounded-xl bg-slate-900 text-white flex items-center justify-between gap-2 shadow-sm">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-lg bg-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
-              <Smartphone className="w-4 h-4" />
-            </div>
-            <div className="min-w-0">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-sky-400">
-                {lang === "en" ? "Demo SMS / WhatsApp OTP" : "จำลองข้อความ OTP (โหมดทดสอบ)"}
+  const renderOtpSection = (purpose: "first_setup" | "register" | "reset_password") => {
+    const isIdEmail = identifier.includes("@");
+    return (
+      <div className="space-y-3 p-3.5 rounded-2xl bg-slate-50 border border-slate-200/90">
+        {/* Multi-Channel OTP Selector (SMS / WhatsApp / Email) */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+              {lang === "en" ? "Receive OTP Via:" : "เลือกรับรหัส OTP ทาง:"}
+            </span>
+            {deliveredTo && (
+              <span className="text-[11px] font-medium text-slate-500 truncate max-w-[180px]">
+                {lang === "en" ? "Sent to " : "ส่งไปที่ "}
+                <strong className="text-slate-700">{deliveredTo}</strong>
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-200/70 rounded-xl">
+            <button
+              type="button"
+              disabled={resendingOtp || isIdEmail}
+              onClick={() => handleSwitchOtpChannel("sms", purpose)}
+              className={`flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-xs font-bold transition-all ${
+                otpChannel === "sms"
+                  ? "bg-white text-sky-700 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              } ${isIdEmail ? "opacity-40 cursor-not-allowed" : ""}`}
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>SMS</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={resendingOtp || isIdEmail}
+              onClick={() => handleSwitchOtpChannel("whatsapp", purpose)}
+              className={`flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-xs font-bold transition-all ${
+                otpChannel === "whatsapp"
+                  ? "bg-white text-emerald-700 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              } ${isIdEmail ? "opacity-40 cursor-not-allowed" : ""}`}
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
+              <span>WhatsApp</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={resendingOtp}
+              onClick={() => handleSwitchOtpChannel("email", purpose)}
+              className={`flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-xs font-bold transition-all ${
+                otpChannel === "email"
+                  ? "bg-white text-indigo-700 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <Mail className="w-3.5 h-3.5" />
+              <span>Email</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Inline Email Input when user chooses Email OTP and doesn't have an email on file yet */}
+        {otpChannel === "email" && !isIdEmail && (needsEmailForOtp || !hasEmailOnFile) && (
+          <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-200/80 space-y-2">
+            <label className="block text-[11px] font-bold text-indigo-900">
+              {lang === "en"
+                ? "Enter your email address to receive the 6-digit OTP:"
+                : "กรอกอีเมลของคุณเพื่อรับรหัส OTP 6 หลัก:"}
+            </label>
+            <div className="flex gap-1.5">
+              <div className="relative flex-1">
+                <Mail className="w-3.5 h-3.5 text-indigo-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="email"
+                  value={otpEmailInput}
+                  onChange={(e) => setOtpEmailInput(e.target.value)}
+                  placeholder="name@example.com"
+                  className="w-full pl-8 pr-3 py-2 rounded-lg border border-indigo-200 bg-white text-xs font-medium text-slate-900 focus:border-indigo-500 outline-none"
+                />
               </div>
-              <div className="text-xs font-mono font-bold truncate">
-                OTP: <span className="text-emerald-400 text-sm">{demoOtpCode}</span>{" "}
-                <span className="text-slate-400">(Ref: {otpRefCode})</span>
-              </div>
+              <button
+                type="button"
+                disabled={resendingOtp || !otpEmailInput.includes("@")}
+                onClick={() => handleRequestOtp(purpose, "email", otpEmailInput)}
+                className="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center gap-1 disabled:opacity-50 shrink-0"
+              >
+                {resendingOtp ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Send className="w-3.5 h-3.5" />
+                )}
+                <span>{lang === "en" ? "Send OTP" : "ส่งรหัส"}</span>
+              </button>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => setOtpCode(demoOtpCode)}
-            className="px-2.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-bold shrink-0"
-          >
-            {lang === "en" ? "Auto-fill" : "กรอกอัตโนมัติ"}
-          </button>
-        </div>
-      )}
+        )}
 
-      <div>
-        <div className="flex items-center justify-between mb-1.5">
-          <label className="text-xs font-bold uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
-            <KeyRound className="w-3.5 h-3.5 text-sky-600" />
-            <span>
-              {lang === "en" ? "6-Digit OTP Code" : "รหัสยืนยัน OTP 6 หลัก"}
-            </span>
-          </label>
-          {otpRefCode && (
-            <span className="text-[11px] font-mono font-semibold text-slate-400">
-              Ref: {otpRefCode}
-            </span>
-          )}
-        </div>
+        {/* Demo / Sandbox OTP Notification Preview (Kept for local testing) */}
+        {demoOtpCode && (
+          <div className="p-3 rounded-xl bg-slate-900 text-white flex items-center justify-between gap-2 shadow-sm">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div
+                className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                  otpChannel === "email"
+                    ? "bg-indigo-500/20 text-indigo-300"
+                    : otpChannel === "whatsapp"
+                    ? "bg-emerald-500/20 text-emerald-400"
+                    : "bg-sky-500/20 text-sky-400"
+                }`}
+              >
+                {otpChannel === "email" ? (
+                  <Mail className="w-4 h-4" />
+                ) : otpChannel === "whatsapp" ? (
+                  <MessageCircle className="w-4 h-4" />
+                ) : (
+                  <Smartphone className="w-4 h-4" />
+                )}
+              </div>
+              <div className="min-w-0">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-sky-400 truncate">
+                  {providerRoute ||
+                    (lang === "en"
+                      ? `Simulate ${otpChannel.toUpperCase()} OTP`
+                      : `จำลองข้อความ ${otpChannel.toUpperCase()} OTP`)}
+                </div>
+                <div className="text-xs font-mono font-bold truncate">
+                  OTP: <span className="text-emerald-400 text-sm">{demoOtpCode}</span>{" "}
+                  <span className="text-slate-400">(Ref: {otpRefCode})</span>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setOtpCode(demoOtpCode)}
+              className="px-2.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-bold shrink-0"
+            >
+              {lang === "en" ? "Auto-fill" : "กรอกอัตโนมัติ"}
+            </button>
+          </div>
+        )}
 
-        <div className="flex gap-2">
-          <input
-            type="text"
-            inputMode="numeric"
-            maxLength={6}
-            value={otpCode}
-            onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            placeholder="000000"
-            className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 bg-white focus:border-sky-500 outline-none text-center font-mono text-base font-extrabold tracking-[0.3em] text-slate-900"
-          />
-          <button
-            type="button"
-            disabled={resendCooldown > 0 || resendingOtp}
-            onClick={() => handleRequestOtp(purpose)}
-            className="px-3 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-xs font-bold text-slate-700 disabled:opacity-50 inline-flex items-center gap-1.5 shrink-0"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${resendingOtp ? "animate-spin" : ""}`} />
-            <span>
-              {resendCooldown > 0
-                ? `${resendCooldown}s`
-                : lang === "en"
-                ? "Resend"
-                : "ส่งอีกครั้ง"}
-            </span>
-          </button>
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
+              <KeyRound className="w-3.5 h-3.5 text-sky-600" />
+              <span>
+                {lang === "en" ? "6-Digit OTP Code" : "รหัสยืนยัน OTP 6 หลัก"}
+              </span>
+            </label>
+            {otpRefCode && (
+              <span className="text-[11px] font-mono font-semibold text-slate-400">
+                Ref: {otpRefCode}
+              </span>
+            )}
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              value={otpCode}
+              onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="000000"
+              className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 bg-white focus:border-sky-500 outline-none text-center font-mono text-base font-extrabold tracking-[0.3em] text-slate-900"
+            />
+            <button
+              type="button"
+              disabled={resendCooldown > 0 || resendingOtp}
+              onClick={() => handleRequestOtp(purpose, otpChannel)}
+              className="px-3 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-xs font-bold text-slate-700 disabled:opacity-50 inline-flex items-center gap-1.5 shrink-0"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${resendingOtp ? "animate-spin" : ""}`} />
+              <span>
+                {resendCooldown > 0
+                  ? `${resendCooldown}s`
+                  : lang === "en"
+                  ? "Resend"
+                  : "ส่งอีกครั้ง"}
+              </span>
+            </button>
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-sky-50/70 via-white to-slate-50 flex flex-col justify-between p-4 sm:p-6">
@@ -554,7 +771,7 @@ export default function PortalLoginPage() {
             }`}
           >
             <Phone className="w-3.5 h-3.5 text-sky-600" />
-            <span>{lang === "en" ? "Member Sign In" : "เข้าสู่ระบบด้วยเบอร์โทร"}</span>
+            <span>{lang === "en" ? "Member Sign In" : "เข้าสู่ระบบสมาชิก"}</span>
           </button>
 
           <button
@@ -584,15 +801,19 @@ export default function PortalLoginPage() {
                         : "เบอร์โทรศัพท์ / WhatsApp หรืออีเมล"}
                     </label>
                     <div className="relative">
-                      <Phone className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      {identifier.includes("@") ? (
+                        <Mail className="w-4 h-4 text-indigo-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      ) : (
+                        <Phone className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      )}
                       <input
                         type="text"
                         value={identifier}
                         onChange={(e) => setIdentifier(e.target.value)}
                         placeholder={
                           lang === "en"
-                            ? "e.g. 0812345678 or +66812345678"
-                            : "เช่น 0812345678"
+                            ? "e.g. 0812345678, +447700900077 or email"
+                            : "เช่น 0812345678 หรือ name@email.com"
                         }
                         className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:border-sky-500 focus:ring-3 focus:ring-sky-500/15 outline-none text-sm font-medium text-slate-900 transition-all"
                         autoFocus
@@ -600,8 +821,8 @@ export default function PortalLoginPage() {
                     </div>
                     <p className="text-[11px] text-slate-400 mt-2">
                       {lang === "en"
-                        ? "First-time visitors will receive a 6-digit OTP to set up their PIN. Returning members sign in directly with their PIN."
-                        : "เข้าใช้งานครั้งแรกจะได้รับรหัส OTP เพื่อตั้ง PIN ส่วนครั้งถัดไปใช้ PIN เข้าได้ทันที"}
+                        ? "First-time visitors receive a 6-digit OTP via SMS, WhatsApp, or Email to set up their PIN. Returning members sign in directly with their PIN."
+                        : "เข้าใช้งานครั้งแรกเลือกรับรหัส OTP ได้ทั้ง SMS, WhatsApp หรือ Email เพื่อตั้ง PIN ส่วนครั้งถัดไปใช้ PIN เข้าได้ทันที"}
                     </p>
                   </div>
 
@@ -643,7 +864,7 @@ export default function PortalLoginPage() {
                       }}
                       className="text-xs font-semibold text-sky-700 hover:underline"
                     >
-                      {lang === "en" ? "Change" : "เปลี่ยนเบอร์"}
+                      {lang === "en" ? "Change" : "เปลี่ยนบัญชี"}
                     </button>
                   </div>
 
@@ -705,8 +926,8 @@ export default function PortalLoginPage() {
                         </div>
                         <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
                           {lang === "en"
-                            ? `Enter the 6-digit OTP sent to ${identifier} and create a PIN for future visits.`
-                            : `กรอกรหัส OTP 6 หลักที่ส่งไปยัง ${identifier} และตั้งรหัส PIN สำหรับเข้าใช้งานครั้งถัดไป`}
+                            ? `Verify the 6-digit OTP via SMS, WhatsApp, or Email and create a PIN for future visits.`
+                            : `เลือกรับและกรอกรหัส OTP 6 หลัก (ผ่าน SMS, WhatsApp หรือ Email) เพื่อตั้งรหัส PIN สำหรับครั้งถัดไป`}
                         </p>
                       </div>
                     </div>
@@ -789,8 +1010,8 @@ export default function PortalLoginPage() {
                     </div>
                     <p className="text-xs text-slate-600 mt-0.5">
                       {lang === "en"
-                        ? "Verify the 6-digit OTP code below to set a new PIN or password."
-                        : "กรอกรหัส OTP 6 หลักด้านล่างเพื่อตั้งรหัสผ่านใหม่"}
+                        ? "You can receive your 6-digit OTP via SMS, WhatsApp, or Email below."
+                        : "สามารถเลือกรับรหัส OTP 6 หลักได้ทั้งทาง SMS, WhatsApp หรือ Email ด้านล่าง"}
                     </p>
                   </div>
 
@@ -873,7 +1094,7 @@ export default function PortalLoginPage() {
                       onClick={() => setMode("identifier")}
                       className="text-xs font-semibold text-sky-600 hover:underline"
                     >
-                      {lang === "en" ? "Change Phone" : "เปลี่ยนเบอร์"}
+                      {lang === "en" ? "Change" : "เปลี่ยนเบอร์/อีเมล"}
                     </button>
                   </div>
 
@@ -892,6 +1113,42 @@ export default function PortalLoginPage() {
                       required
                     />
                   </div>
+
+                  {identifier.includes("@") ? (
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1">
+                        {lang === "en"
+                          ? "Phone / WhatsApp Number *"
+                          : "เบอร์โทรศัพท์ / WhatsApp *"}
+                      </label>
+                      <input
+                        type="text"
+                        value={registerPhone}
+                        onChange={(e) => setRegisterPhone(e.target.value)}
+                        placeholder={
+                          lang === "en" ? "e.g. 0812345678 or +44..." : "เช่น 0812345678"
+                        }
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm"
+                        required
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1">
+                        {lang === "en" ? "Email Address (Optional)" : "อีเมล (ถ้ามี)"}
+                      </label>
+                      <input
+                        type="email"
+                        value={otpEmailInput || email}
+                        onChange={(e) => {
+                          setEmail(e.target.value);
+                          setOtpEmailInput(e.target.value);
+                        }}
+                        placeholder="customer@example.com"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm"
+                      />
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-3 gap-2.5">
                     <div className="col-span-2">

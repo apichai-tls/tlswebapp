@@ -36,11 +36,25 @@ const CreateJobMap = dynamic(
   { ssr: false, loading: () => <div className="h-full w-full bg-slate-100 animate-pulse rounded-2xl" /> }
 );
 
-interface AdminFeeCalculatorProps {
-  onNavigateToPois?: () => void;
+export interface CalculatorOrderPayload {
+  branchId?: string;
+  isPickup: boolean;
+  isDelivery: boolean;
+  isVip: boolean;
+  pickupLoc: { name: string; address: string; coords: LatLng; placeId?: string } | null;
+  deliveryLoc: { name: string; address: string; coords: LatLng; placeId?: string } | null;
+  isDeliveryDirty: boolean;
+  pickupDist: number;
+  deliveryDist: number;
+  lockedFee: number;
 }
 
-export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalculatorProps = {}) {
+interface AdminFeeCalculatorProps {
+  onNavigateToPois?: () => void;
+  onCreateOrder?: (payload: CalculatorOrderPayload) => void;
+}
+
+export default function AdminFeeCalculator({ onNavigateToPois, onCreateOrder }: AdminFeeCalculatorProps = {}) {
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
@@ -203,6 +217,26 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
     setTimeout(() => setCopiedQuote(false), 2000);
   };
 
+  const handleCreateOrder = () => {
+    if (!onCreateOrder) return;
+    if ((isPickup && !pickupLoc) && (isDelivery && !deliveryLoc)) {
+      toast.error("กรุณาเลือกสถานที่รับ-ส่งก่อนกดเปิดบิล (Please select a pickup or delivery location first)");
+      return;
+    }
+    onCreateOrder({
+      branchId: activeShop?.id,
+      isPickup,
+      isDelivery,
+      isVip,
+      pickupLoc: isPickup ? (pickupLoc || deliveryLoc) : null,
+      deliveryLoc: isDelivery ? (deliveryLoc || pickupLoc) : null,
+      isDeliveryDirty: Boolean(isDeliveryDirty && pickupLoc && deliveryLoc && pickupLoc.name !== deliveryLoc.name),
+      pickupDist: isPickup ? pickupDist : 0,
+      deliveryDist: isDelivery ? deliveryDist : 0,
+      lockedFee: fee,
+    });
+  };
+
   if (!mounted) {
     return (
       <div className="flex-1 bg-slate-50/80 p-4 lg:p-6 flex flex-col h-full overflow-hidden">
@@ -265,6 +299,18 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
             {copiedQuote ? <Check size={13.5} className="mr-1.5 text-emerald-600" /> : <Copy size={13.5} className="mr-1.5" />}
             {copiedQuote ? "Quote Copied!" : "Copy Fee Quote"}
           </Button>
+          {onCreateOrder && (
+            <Button
+              type="button"
+              onClick={handleCreateOrder}
+              disabled={!(pickupLoc || deliveryLoc)}
+              className="h-9 px-4 text-xs font-extrabold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl shadow-sm shadow-emerald-600/20 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              title={pickupLoc || deliveryLoc ? `เปิด Job พร้อมล็อกค่ารับ-ส่งที่ ฿${fee}` : "เลือกสถานที่ก่อนกดเปิดบิล"}
+            >
+              <Plus size={14} className="mr-1" />
+              Create Order {pickupLoc || deliveryLoc ? `(฿${fee.toLocaleString()})` : ""}
+            </Button>
+          )}
           {onNavigateToPois ? (
             <Button
               onClick={onNavigateToPois}
@@ -809,19 +855,32 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
                     : `Base Min ฿30 • ฿${ratePerKm}/km`}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={handleCopyQuote}
-                className="p-2.5 rounded-xl bg-white/15 hover:bg-white/25 text-white transition-colors shrink-0 cursor-pointer"
-                title="Copy delivery fee quote"
-              >
-                {copiedQuote ? <Check size={17} /> : <Copy size={17} />}
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {onCreateOrder && (pickupLoc || deliveryLoc) && (
+                  <button
+                    type="button"
+                    onClick={handleCreateOrder}
+                    className="px-3 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-white text-xs font-black shadow-sm transition-colors flex items-center gap-1 cursor-pointer"
+                    title={`เปิด Job ทันทีพร้อมล็อกค่ารับ-ส่ง ฿${fee}`}
+                  >
+                    <Plus size={14} />
+                    <span>Create Order</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleCopyQuote}
+                  className="p-2.5 rounded-xl bg-white/15 hover:bg-white/25 text-white transition-colors shrink-0 cursor-pointer"
+                  title="Copy delivery fee quote"
+                >
+                  {copiedQuote ? <Check size={17} /> : <Copy size={17} />}
+                </button>
+              </div>
             </div>
           </div>
 
           {/* Interactive Live Map Container (Always Rendered!) */}
-          <div className="flex-1 min-h-[420px] lg:min-h-0 bg-white rounded-2xl shadow-2xs border border-slate-200/90 overflow-hidden relative">
+          <div className="flex-1 min-h-[420px] lg:min-h-0 bg-white rounded-2xl shadow-2xs border border-slate-200/90 overflow-hidden relative isolate z-0">
             <CreateJobMap
               branchCoords={activeShop?.coords || { lat: 13.7367, lng: 100.5231 }}
               pickupCoords={pickupLoc?.coords || null}
@@ -856,7 +915,7 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
             />
 
             {/* Floating Map Legend (Top Right) */}
-            <div className="absolute top-3.5 right-3.5 z-[400] bg-white/95 backdrop-blur-md px-3 py-2 rounded-xl shadow-md border border-slate-200/80 flex items-center gap-3 text-[10.5px] font-bold text-slate-700">
+            <div className="absolute top-3.5 right-3.5 z-10 bg-white/95 backdrop-blur-md px-3 py-2 rounded-xl shadow-md border border-slate-200/80 flex items-center gap-3 text-[10.5px] font-bold text-slate-700">
               <span className="inline-flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-emerald-200" />
                 Pickup Route
@@ -872,7 +931,7 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
 
             {/* Floating Guidance Pill when no destination is selected yet */}
             {!(pickupLoc || deliveryLoc) && (
-              <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-[400] bg-slate-900/85 backdrop-blur-md text-white px-4 py-2.5 rounded-2xl shadow-lg border border-white/10 flex items-center gap-2.5 max-w-md w-[92%] sm:w-auto pointer-events-none">
+              <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-10 bg-slate-900/85 backdrop-blur-md text-white px-4 py-2.5 rounded-2xl shadow-lg border border-white/10 flex items-center gap-2.5 max-w-md w-[92%] sm:w-auto pointer-events-none">
                 <div className="w-7 h-7 rounded-xl bg-indigo-500/30 border border-indigo-400/40 flex items-center justify-center shrink-0">
                   <Navigation size={14} className="text-indigo-200" />
                 </div>
@@ -887,7 +946,7 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
 
             {/* Floating Selected Locations Overlay (Top Left) */}
             {(pickupLoc || deliveryLoc) && (
-              <div className="absolute top-3.5 left-3.5 z-[400] bg-white/95 backdrop-blur-md p-3.5 rounded-2xl shadow-lg border border-slate-200/90 max-w-xs w-[88%] sm:w-80 space-y-2.5">
+              <div className="absolute top-3.5 left-3.5 z-10 bg-white/95 backdrop-blur-md p-3.5 rounded-2xl shadow-lg border border-slate-200/90 max-w-xs w-[88%] sm:w-80 space-y-2.5">
                 {pickupLoc && (
                   <div className="flex items-start gap-2.5">
                     <div className="mt-0.5 p-1.5 bg-emerald-100 text-emerald-700 rounded-lg shrink-0">

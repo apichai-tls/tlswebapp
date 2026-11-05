@@ -1391,8 +1391,6 @@ export const api = {
 
   async updateCustomer(id: string, updates: Partial<Customer> & Record<string, any>): Promise<Customer> {
     const db = initDb();
-    const currentCustomer = db.customers.find(c => c.id === id);
-    if (!currentCustomer) throw new Error("Customer not found");
 
     const res = await withActionTimeout(dbActions.updateCustomerAction(id, updates), 25000);
     if (res && typeof res === 'object' && 'success' in res) {
@@ -1455,6 +1453,18 @@ export const api = {
       }
       return c;
     });
+    if (!updatedCustomer && savedCustomer) {
+      const createdInCache: Customer = {
+        ...updates,
+        ...savedCustomer,
+        defaultCoords:
+          savedCustomer?.defaultLat != null && savedCustomer?.defaultLng != null
+            ? { lat: savedCustomer.defaultLat, lng: savedCustomer.defaultLng }
+            : updates.defaultCoords,
+      } as Customer;
+      db.customers = [createdInCache, ...db.customers];
+      updatedCustomer = createdInCache;
+    }
     if (!updatedCustomer) throw new Error("Customer not found");
     return updatedCustomer;
   },
@@ -1680,28 +1690,68 @@ export const api = {
       if (parsed?.role) (cleanUpdates as any).actorRole = parsed.role;
     }
 
-    if (jobIndex === -1) {
-      pendingJobSaves.set(id, (pendingJobSaves.get(id) || 0) + 1);
-      setJobSaveState(id, 'saving');
+    const invokeUpdateJobWithFallback = async (jobId: string, payload: Record<string, any>) => {
       try {
-        const savedInDb = await withActionTimeout(dbActions.updateJobAction(id, { ...cleanUpdates, __returnErrorObject: true }), 25000);
+        return await withActionTimeout(
+          dbActions.updateJobAction(jobId, { ...payload, __returnErrorObject: true }),
+          25000
+        );
+      } catch (actionErr: any) {
+        if (typeof window !== 'undefined') {
+          try {
+            const resp = await authFetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            const data = await resp.json().catch(() => null);
+            if (data) return data;
+          } catch {}
+        }
+        throw actionErr;
+      }
+    };
+
+    const isEarlySilentMediaUpdate = Boolean(
+      (cleanUpdates as any).__silentBackground ||
+      (cleanUpdates as any).isAutoReceiptWorker ||
+      Object.keys(cleanUpdates).every((k) =>
+        ['billImageUrl', 'actorId', 'actorName', 'actorRole', '__silentBackground', 'suppressThrow', 'isAutoReceiptWorker', 'systemActorName'].includes(k)
+      )
+    );
+
+    if (jobIndex === -1) {
+      delete (cleanUpdates as any).__silentBackground;
+      delete (cleanUpdates as any).suppressThrow;
+      if (!isEarlySilentMediaUpdate) {
+        pendingJobSaves.set(id, (pendingJobSaves.get(id) || 0) + 1);
+        setJobSaveState(id, 'saving');
+      }
+      try {
+        const savedInDb = await invokeUpdateJobWithFallback(id, cleanUpdates);
         if ((savedInDb as any)?.__actionError) {
           const actionErr: any = new Error((savedInDb as any).error || 'Save failed');
           actionErr.isConflict = Boolean((savedInDb as any).isConflict);
           throw actionErr;
         }
-        pendingJobSaves.set(id, Math.max(0, (pendingJobSaves.get(id) || 1) - 1));
+        if (!isEarlySilentMediaUpdate) {
+          pendingJobSaves.set(id, Math.max(0, (pendingJobSaves.get(id) || 1) - 1));
+        }
         const normalized = normalizeServerJob(savedInDb, { id, ...cleanUpdates } as Job);
         const rev = normalized.updatedAt ? new Date(normalized.updatedAt).getTime() : Date.now();
         lastSeenJobRevision.set(id, rev);
-        setJobSaveState(id, 'saved');
+        if (!isEarlySilentMediaUpdate) {
+          setJobSaveState(id, 'saved');
+        }
         return normalized;
       } catch (err: any) {
-        pendingJobSaves.set(id, Math.max(0, (pendingJobSaves.get(id) || 1) - 1));
-        const isConflict =
-          String(err?.message || '').includes('409') ||
-          String(err?.message || '').toLowerCase().includes('conflict');
-        setJobSaveState(id, isConflict ? 'conflict' : 'failed', err?.message || 'Save failed');
+        if (!isEarlySilentMediaUpdate) {
+          pendingJobSaves.set(id, Math.max(0, (pendingJobSaves.get(id) || 1) - 1));
+          const isConflict =
+            String(err?.message || '').includes('409') ||
+            String(err?.message || '').toLowerCase().includes('conflict');
+          setJobSaveState(id, isConflict ? 'conflict' : 'failed', err?.message || 'Save failed');
+        }
         throw err;
       }
     }
@@ -1819,10 +1869,7 @@ export const api = {
     }
 
     try {
-      const savedInDb = await withActionTimeout(
-        dbActions.updateJobAction(id, { ...cleanUpdates, __returnErrorObject: true }),
-        25000
-      );
+      const savedInDb = await invokeUpdateJobWithFallback(id, cleanUpdates);
       if ((savedInDb as any)?.__actionError) {
         const actionErr: any = new Error((savedInDb as any).error || 'Save failed');
         actionErr.isConflict = Boolean((savedInDb as any).isConflict);

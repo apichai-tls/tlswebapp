@@ -2796,11 +2796,17 @@ async function updateJobActionInternal(id: string, updates: any) {
     }
 
     // Re-validate branch & rider permissions against the locked freshJob row
-    if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
-      if (existingJob.branchId && existingJob.branchId !== authUser.branchId) {
+    if (!isAdminOrSuperadmin(authUser) && authUser?.role !== 'rider') {
+      if (!canUserAccessJob(authUser, existingJob)) {
         throw new Error('403 Forbidden: Cross-branch access denied');
       }
-      if (updates.branchId && updates.branchId !== authUser.branchId) {
+      if (
+        updates.branchId &&
+        updates.branchId !== existingJob.branchId &&
+        authUser.allowedBranchIds !== 'ALL' &&
+        Array.isArray(authUser.allowedBranchIds) &&
+        !authUser.allowedBranchIds.includes(updates.branchId)
+      ) {
         throw new Error('403 Forbidden: Cannot reassign job to another branch');
       }
     }
@@ -3309,6 +3315,9 @@ async function updateJobActionInternal(id: string, updates: any) {
         } else {
           const interveningFields = new Set<string>();
           for (const log of recentLogs) {
+            if (!updates.checkConflict && updates.actorId && log.userId && String(log.userId) === String(updates.actorId)) {
+              continue;
+            }
             if (!log.details) continue;
             try {
               const parsed = JSON.parse(log.details);
