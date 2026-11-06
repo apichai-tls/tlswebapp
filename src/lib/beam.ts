@@ -28,6 +28,60 @@ export interface BeamApiResult<T = any> {
   error?: string;
 }
 
+/**
+ * Checks whether a payment channel string represents a Beam payment
+ */
+export function isBeamPaymentChannel(channel?: string | null): boolean {
+  if (!channel) return false;
+  return String(channel).toLowerCase().includes('beam');
+}
+
+/**
+ * Resolves the effective accounting / settlement timestamp for Beam payments.
+ * Rule: Any Beam payment occurring at or after 19:00 (7:00 PM) Thailand time (UTC+7)
+ * is rolled over to the next calendar day at 09:00 (9:00 AM) Thailand time.
+ */
+export function resolveBeamSettlementDate(
+  actualDate: Date = new Date(),
+  channel?: string | null
+): {
+  effectiveDate: Date;
+  actualDate: Date;
+  isRolledOver: boolean;
+} {
+  // If a channel is explicitly provided and is NOT a Beam channel, return actualDate as-is
+  if (channel !== undefined && channel !== null && !isBeamPaymentChannel(channel)) {
+    return {
+      effectiveDate: actualDate,
+      actualDate,
+      isRolledOver: false,
+    };
+  }
+
+  const BKK_OFFSET_MS = 7 * 60 * 60 * 1000;
+  const bkkTime = new Date(actualDate.getTime() + BKK_OFFSET_MS);
+  const bkkYear = bkkTime.getUTCFullYear();
+  const bkkMonth = bkkTime.getUTCMonth();
+  const bkkDay = bkkTime.getUTCDate();
+  const bkkHour = bkkTime.getUTCHours();
+
+  // Cut-off at 19:00 (7:00 PM) Thailand time -> roll over to next day 09:00 AM Thailand time (02:00 UTC)
+  if (bkkHour >= 19) {
+    const nextDayNineAmBkkUtc = new Date(Date.UTC(bkkYear, bkkMonth, bkkDay + 1, 9 - 7, 0, 0, 0));
+    return {
+      effectiveDate: nextDayNineAmBkkUtc,
+      actualDate,
+      isRolledOver: true,
+    };
+  }
+
+  return {
+    effectiveDate: actualDate,
+    actualDate,
+    isRolledOver: false,
+  };
+}
+
 function getBeamConfig() {
   const merchantId = process.env.BEAM_MERCHANT_ID || 'thatlaundryshop-0yf371';
   const apiKey = process.env.BEAM_API_KEY || 'PwPOMzqGWp+v66fpLu0meKrj+Xiz6PWKIgVNo7qtxzc=';
@@ -193,4 +247,3 @@ export async function disableBeamPaymentLink(paymentLinkId: string): Promise<boo
     return false;
   }
 }
-

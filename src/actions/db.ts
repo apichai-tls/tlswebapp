@@ -9,7 +9,7 @@ import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode
 import { invalidateDbCache, sanitizeCustomerRecord } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
 import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, canAccessCustomerRecords, canAccessCustomerOrLinkedJob, isAdminOrSuperadmin } from '@/lib/server-auth';
-import { ensureDailyRiderOfflineReset, recordRiderGpsTimestamp } from '@/lib/rider-presence';
+import { ensureDailyRiderOfflineReset, recordRiderGpsTimestamp } from '@/lib/rider-presence'; import { resolveBeamSettlementDate } from '@/lib/beam';
 
 // CUSTOMERS
 function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string; baseStartingNum: number } {
@@ -1795,8 +1795,8 @@ export async function addJobAction(data: any) {
           paymentChannel: data.paymentChannel,
           isPaid: data.isPaid || false,
           isShopPaid: data.isShopPaid || false,
-          csoPaidAt: data.isPaid ? new Date() : null,
-          shopPaidAt: data.isShopPaid ? new Date() : null,
+          csoPaidAt: data.isPaid ? resolveBeamSettlementDate(new Date(), data.paymentChannel).effectiveDate : null,
+          shopPaidAt: data.isShopPaid ? resolveBeamSettlementDate(new Date(), data.paymentChannel).effectiveDate : null,
           discount: Math.max(0, Number.isFinite(Number(data.discount)) ? Number(data.discount) : 0),
           discountPercent: Math.min(100, Math.max(0, Number.isFinite(Number(data.discountPercent)) ? Number(data.discountPercent) : 0)),
           pickupDistance: data.pickupDistance !== undefined && data.pickupDistance !== null ? Math.max(0, Number.isFinite(Number(data.pickupDistance)) ? Number(data.pickupDistance) : 0) : null,
@@ -2928,7 +2928,7 @@ async function updateJobActionInternal(id: string, updates: any) {
   if (updates.isShopPaid !== undefined) {
     data.isShopPaid = updates.isShopPaid;
     if (updates.isShopPaid === true && existingJob?.isShopPaid !== true) {
-      data.shopPaidAt = new Date();
+      data.shopPaidAt = resolveBeamSettlementDate(new Date(), updates.paymentChannel !== undefined ? updates.paymentChannel : existingJob?.paymentChannel).effectiveDate;
     } else if (updates.isShopPaid === false) {
       data.shopPaidAt = null;
     }
@@ -3043,7 +3043,7 @@ async function updateJobActionInternal(id: string, updates: any) {
     }
     data.isPaid = updates.isPaid;
     if (updates.isPaid === true && existingJob?.isPaid !== true) {
-      data.csoPaidAt = new Date();
+      data.csoPaidAt = resolveBeamSettlementDate(new Date(), updates.paymentChannel !== undefined ? updates.paymentChannel : existingJob?.paymentChannel).effectiveDate;
     } else if (updates.isPaid === false) {
       data.csoPaidAt = null;
     }
@@ -3054,7 +3054,7 @@ async function updateJobActionInternal(id: string, updates: any) {
     }
     data.isShopPaid = updates.isShopPaid;
     if (updates.isShopPaid === true && existingJob?.isShopPaid !== true) {
-      data.shopPaidAt = new Date();
+      data.shopPaidAt = resolveBeamSettlementDate(new Date(), updates.paymentChannel !== undefined ? updates.paymentChannel : existingJob?.paymentChannel).effectiveDate;
     } else if (updates.isShopPaid === false) {
       data.shopPaidAt = null;
       if (existingJob?.isShopPaid === true) {
@@ -5423,7 +5423,7 @@ export async function processTopUpAction(data: {
       }
     }
 
-    const balAfter = Math.round((balBefore + totalCred) * 100) / 100;
+    const balAfter = Math.round((balBefore + totalCred) * 100) / 100; const { effectiveDate: topUpSettledDate, actualDate: topUpActualDate, isRolledOver: isTopUpBeamRolled } = resolveBeamSettlementDate(new Date(), data.paymentChannel);
     const now = new Date();
     const expiry = calculateWalletExpiryDate(now);
 
@@ -5466,7 +5466,7 @@ export async function processTopUpAction(data: {
       balanceAfter: balAfter,
       createdBy: data.actorName || "Staff",
       branchId: effectiveBranchId,
-      receiptData: rdata,
+      receiptData: rdata, ...(isTopUpBeamRolled ? { actualPaidAt: topUpActualDate.toISOString(), effectivePaidAt: topUpSettledDate.toISOString(), cutoffRolledOver: true } : {}),
     });
 
     // 4, 5, 6. Create Transaction, ActivityLog, and WalletTransaction concurrently
@@ -5477,7 +5477,7 @@ export async function processTopUpAction(data: {
         memberId: data.customerId,
         amount: paidAmt,
         type: 'TOPUP',
-        description: txDescription,
+        description: txDescription, createdAt: topUpSettledDate,
         status: 'COMPLETED',
         updatedAt: now,
       }
@@ -5515,7 +5515,7 @@ export async function processTopUpAction(data: {
         balanceBefore: balBefore,
         balanceAfter: balAfter,
         referenceId: cleanReceiptNumber,
-        referenceType: 'topup_receipt',
+        referenceType: 'topup_receipt', createdAt: topUpSettledDate,
         packageName: data.packageName || 'TOPUP',
         bonusAmount: bonusAmt,
         paymentChannel: data.paymentChannel,
@@ -7395,10 +7395,10 @@ export async function recordJobPaymentAction(data: {
         paidBy: data.actorName || "Staff",
         slipUrl: data.slipUrl || null,
         note: data.note || null,
-        ...(effReceived !== undefined ? { received: effReceived, change: effChange } : {}),
+        ...(effReceived !== undefined ? { received: effReceived, change: effChange } : {}), ...(resolveBeamSettlementDate(new Date(), data.channel).isRolledOver ? { actualPaidAt: new Date().toISOString() } : {}),
       };
 
-      const updatedPayments = [...existingPayments, paymentEntry];
+      paymentEntry.timestamp = resolveBeamSettlementDate(new Date(), data.channel).effectiveDate.toISOString(); const updatedPayments = [...existingPayments, paymentEntry];
       const newTotalPaid = updatedPayments.reduce((s: number, p: any) => s + (Number(p.amount) || 0), 0);
       const isFullyPaid = (totalAmount > 0 && newTotalPaid >= totalAmount - 0.01);
 
@@ -7445,9 +7445,9 @@ export async function recordJobPaymentAction(data: {
         data: {
           isPaid: isFullyPaid ? true : job.isPaid,
           isShopPaid: isFullyPaid ? true : job.isShopPaid,
-          csoPaidAt: isFullyPaid ? (job.csoPaidAt || new Date()) : job.csoPaidAt,
+          csoPaidAt: isFullyPaid ? (job.csoPaidAt || resolveBeamSettlementDate(new Date(), finalChannel).effectiveDate) : job.csoPaidAt,
           walletBalanceAfter: newBalance !== undefined ? newBalance : (isFullyPaid && job.customerId ? ((await tx.customer.findUnique({ where: { id: job.customerId }, select: { isMember: true, creditBalance: true } }))?.isMember ? ((await tx.customer.findUnique({ where: { id: job.customerId }, select: { creditBalance: true } }))?.creditBalance ?? 0) : null) : job.walletBalanceAfter),
-          shopPaidAt: isFullyPaid ? (job.shopPaidAt || new Date()) : job.shopPaidAt,
+          shopPaidAt: isFullyPaid ? (job.shopPaidAt || resolveBeamSettlementDate(new Date(), finalChannel).effectiveDate) : job.shopPaidAt,
           paymentChannel: finalChannel,
 
           billImageUrl: updatedBillImageUrl,
@@ -9256,6 +9256,7 @@ async function ensurePettyCashTableExists() {
     await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "relatedTxId" TEXT;`);
     await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "counterpartyId" TEXT;`);
     await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "counterpartyName" TEXT;`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "vehiclePlate" TEXT;`);
     pettyCashTableReady = true;
   } catch (e) {
     console.warn("[ensurePettyCashTableExists]", e);
@@ -9385,19 +9386,22 @@ export async function getPettyCashDataAction(): Promise<{
   transactions: any[];
   categories: string[];
   holderLimits?: Record<string, number>;
+  vehiclePlates?: string[];
 }> {
   try {
     await assertServerActionAuthorized({ forbidRoles: ["rider"] });
     await ensurePettyCashTableExists();
     await ensureSequentialPettyCashTxNumbers();
 
-    const [rows, catSetting, limitSetting] = await Promise.all([
+    const [rows, catSetting, limitSetting, plateSetting, ridersList] = await Promise.all([
       prisma.$queryRaw<any[]>`
         SELECT * FROM "PettyCashTransaction"
         ORDER BY "transactionDate" DESC, "createdAt" DESC
       `,
       prisma.setting.findUnique({ where: { key: "pettyCashCategories" } }),
       prisma.setting.findUnique({ where: { key: "pettyCashHolderLimits" } }),
+      prisma.setting.findUnique({ where: { key: "pettyCashVehiclePlates" } }),
+      prisma.rider.findMany({ where: { isActive: true }, select: { name: true, nickname: true, vehiclePlate: true } }),
     ]);
 
     let categories = DEFAULT_PETTY_CASH_CATEGORIES;
@@ -9435,11 +9439,30 @@ export async function getPettyCashDataAction(): Promise<{
       };
     });
 
+    const plateSet = new Set<string>();
+    (ridersList || []).forEach((r: any) => {
+      if (r.vehiclePlate && String(r.vehiclePlate).trim()) {
+        plateSet.add(String(r.vehiclePlate).trim());
+      }
+    });
+    if (plateSetting?.value) {
+      try {
+        const parsedPlates = JSON.parse(plateSetting.value);
+        if (Array.isArray(parsedPlates)) {
+          parsedPlates.forEach((p: any) => {
+            if (p && String(p).trim()) plateSet.add(String(p).trim());
+          });
+        }
+      } catch {}
+    }
+    const vehiclePlates = Array.from(plateSet);
+
     return {
       success: true,
       transactions,
       categories,
       holderLimits,
+      vehiclePlates,
     };
   } catch (err: any) {
     console.error("[getPettyCashDataAction] Error:", err);
@@ -9463,6 +9486,7 @@ export async function createPettyCashTransactionAction(data: {
   description: string;
   vendorName?: string | null;
   invoiceNo?: string | null;
+  vehiclePlate?: string | null;
   paymentMethod?: string | null;
   receiptUrls?: string[];
   slipUrls?: string[];
@@ -9507,13 +9531,13 @@ export async function createPettyCashTransactionAction(data: {
       INSERT INTO "PettyCashTransaction" (
         "id", "txNumber", "type", "direction", "amount", "balanceBefore", "balanceAfter",
         "holderId", "holderName", "branchId", "category", "description", "vendorName",
-        "invoiceNo", "paymentMethod", "receiptUrls", "slipUrls", "status", "transactionDate",
+        "invoiceNo", "vehiclePlate", "paymentMethod", "receiptUrls", "slipUrls", "status", "transactionDate",
         "createdById", "createdByName", "approvedById", "approvedByName", "approvedAt",
         "createdAt", "updatedAt"
       ) VALUES (
         ${id}, ${txNumber}, ${data.type}, ${direction}, ${amt}, 0, 0,
         ${data.holderId}, ${data.holderName}, ${data.branchId || null}, ${data.category.trim()}, ${data.description.trim()}, ${data.vendorName?.trim() || null},
-        ${data.invoiceNo?.trim() || null}, ${data.paymentMethod || (isCredit ? "Transfer" : "Cash")}, ${receiptJson}, ${slipJson}, ${initialStatus}, ${txDate},
+        ${data.invoiceNo?.trim() || null}, ${data.vehiclePlate?.trim() || null}, ${data.paymentMethod || (isCredit ? "Transfer" : "Cash")}, ${receiptJson}, ${slipJson}, ${initialStatus}, ${txDate},
         ${authUser.id}, ${actorName}, ${isCredit ? authUser.id : null}, ${isCredit ? actorName : null}, ${isCredit ? now : null},
         ${now}, ${now}
       )
@@ -9550,6 +9574,7 @@ export async function updatePettyCashTransactionAction(
     description?: string;
     vendorName?: string | null;
     invoiceNo?: string | null;
+    vehiclePlate?: string | null;
     paymentMethod?: string | null;
     receiptUrls?: string[];
     slipUrls?: string[];
@@ -9576,6 +9601,7 @@ export async function updatePettyCashTransactionAction(
     const nextDesc = data.description !== undefined ? data.description.trim() : existing.description;
     const nextVendor = data.vendorName !== undefined ? (data.vendorName?.trim() || null) : existing.vendorName;
     const nextInvoice = data.invoiceNo !== undefined ? (data.invoiceNo?.trim() || null) : existing.invoiceNo;
+    const nextPlate = data.vehiclePlate !== undefined ? (data.vehiclePlate?.trim() || null) : (existing.vehiclePlate || null);
     const nextMethod = data.paymentMethod !== undefined ? data.paymentMethod : existing.paymentMethod;
     const nextReceipts = data.receiptUrls !== undefined ? JSON.stringify(data.receiptUrls) : existing.receiptUrls;
     const nextSlips = data.slipUrls !== undefined ? JSON.stringify(data.slipUrls) : existing.slipUrls;
@@ -9593,6 +9619,7 @@ export async function updatePettyCashTransactionAction(
         "description" = ${nextDesc},
         "vendorName" = ${nextVendor},
         "invoiceNo" = ${nextInvoice},
+        "vehiclePlate" = ${nextPlate},
         "paymentMethod" = ${nextMethod},
         "receiptUrls" = ${nextReceipts},
         "slipUrls" = ${nextSlips},
@@ -9838,6 +9865,26 @@ export async function savePettyCashCategoriesAction(categories: string[]): Promi
   } catch (err: any) {
     console.error("[savePettyCashCategoriesAction] Error:", err);
     return { success: false, error: err?.message || "Failed to save categories" };
+  }
+}
+
+export async function savePettyCashVehiclePlatesAction(plates: string[]): Promise<{
+  success: boolean;
+  error?: string;
+  vehiclePlates?: string[];
+}> {
+  try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const cleaned = Array.from(new Set((plates || []).map((p) => String(p).trim()).filter(Boolean)));
+    await prisma.setting.upsert({
+      where: { key: "pettyCashVehiclePlates" },
+      update: { value: JSON.stringify(cleaned) },
+      create: { key: "pettyCashVehiclePlates", value: JSON.stringify(cleaned) },
+    });
+    return { success: true, vehiclePlates: cleaned };
+  } catch (err: any) {
+    console.error("[savePettyCashVehiclePlatesAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to save vehicle plates" };
   }
 }
 

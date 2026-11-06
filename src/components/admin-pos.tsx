@@ -1092,6 +1092,9 @@ function CartItemPriceInput({
 
 export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPreselected }: AdminPOSProps = {}) {
   const { user } = useAuth();
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin' || Boolean(user?.permissions?.includes('admin'));
+  const isBranchManager = user?.role === 'manager' || Boolean(user?.permissions?.includes('manager') || user?.permissions?.includes('branch_manager'));
+  const canProcessShopPay = isAdmin || isBranchManager;
   const canRefund = Boolean(user?.role === 'admin' || user?.permissions?.includes('refund-job'));
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const allShops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
@@ -2987,6 +2990,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       posPaymentChannel?.toLowerCase().includes("gateway")
     );
     const willBeShopPaid = !isBeamOnlinePre && Boolean(isPaid);
+
+    if (willBeShopPaid && !canProcessShopPay) {
+      toast.error(
+        currentLanguage === "en"
+          ? "Only Admin or Branch Managers are allowed to press Pay."
+          : "เฉพาะผู้จัดการหน้าร้าน (Branch Manager) หรือ Admin เท่านั้นที่สามารถกด Pay รับชำระเงินได้"
+      );
+      return;
+    }
 
     // Cash Validation Check
     if (willBeShopPaid && paymentMethod === "cash" && remainingToPayPre > 0) {
@@ -6064,6 +6076,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               <Button 
                 disabled={
                   isProcessing || 
+                  Boolean(isPaid && !canProcessShopPay) ||
                   Boolean(loadedJobId && (() => { const lj = jobs.find(j => j.id === loadedJobId) || latestJob; return lj?.status === "cancel" || (lj?.status as string) === "cancelled"; })()) ||
                   !!(isPaid && (!effectivePaymentChannel || effectivePaymentChannel === "")) ||
                   !!(isPaid && paymentMethod === "credit" && selectedCustomer && (((selectedCustomer.creditBalance || 0) < total) || isWalletExpired(selectedCustomer))) ||

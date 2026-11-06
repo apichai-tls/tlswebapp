@@ -3649,6 +3649,15 @@ function AdminPageContent() {
     const isAlreadyCompleted = existingJob?.status === "completed";
     const isExistingCancelled = existingJob?.status === "cancel" || (existingJob?.status as string) === "cancelled";
 
+    if (isPayment && !(isAdmin || isBranchManager)) {
+      abortSubmit(
+        currentLanguage === "en"
+          ? "Only Admin or Branch Managers are allowed to process Shop Paid."
+          : "เฉพาะผู้จัดการหน้าร้าน (Branch Manager) หรือ Admin เท่านั้นที่สามารถกด Pay รับชำระเงินได้"
+      );
+      return;
+    }
+
     if (isPayment && isExistingCancelled) {
       abortSubmit(currentLanguage === "en" ? "Cannot process payment for a cancelled order." : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
       return;
@@ -4226,6 +4235,11 @@ function AdminPageContent() {
           customerLineId: dialogLineProfileId.trim() || existingParsedNotes?.customerLineId || null,
           customerWhatsappId: dialogWhatsappId.trim() || existingParsedNotes?.customerWhatsappId || null,
         };
+        if (isPayment) {
+          notesObj.shopPaidBy = user?.name || user?.email || "Admin";
+        } else if (!existingParsedNotes?.shopPaidBy && isNoChargePrepaidJob) {
+          notesObj.shopPaidBy = user?.name || user?.email || "Admin";
+        }
         if (isNoChargePrepaidJob) {
           notesObj.isBillSent = true;
         }
@@ -10715,6 +10729,7 @@ function AdminPageContent() {
                             <Button 
                               type="button"
                               disabled={
+                                !(isAdmin || isBranchManager) ||
                                 isSubmitting || 
                                 isDetailLoading || 
                                 (dialogCart.length === 0 && (dialogTotal || 0) <= 0) || 
@@ -10731,7 +10746,7 @@ function AdminPageContent() {
                               }
                               onClick={() => handleCreate(true)}
                               className={`flex-[1.4] h-9 rounded-xl text-xs font-extrabold transition-all shadow-md border-none text-white flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-                                isPaidJob || isCancelledJob
+                                isPaidJob || isCancelledJob || !(isAdmin || isBranchManager)
                                   ? 'bg-slate-700 text-slate-300'
                                   : isWalletInsufficient || (paymentChannel === "Deduct Member" && isCustomerWalletExpired) || isSplitAmountInvalid
                                     ? 'bg-rose-600/80 hover:bg-rose-600'
@@ -10740,10 +10755,12 @@ function AdminPageContent() {
                                       : 'bg-emerald-600 hover:bg-emerald-500'
                               }`}
                               title={
-                                isCancelledJob
-                                  ? (currentLanguage === "en" ? "Cancelled orders cannot be paid" : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้")
-                                  : isPaidJob
-                                    ? (currentLanguage === "en" ? "Payment Completed" : "บิลนี้ชำระเงินเรียบร้อยแล้ว")
+                                !(isAdmin || isBranchManager)
+                                  ? (currentLanguage === "en" ? "Only Admin or Branch Managers can press Pay" : "เฉพาะผู้จัดการหน้าร้าน (Branch Manager) หรือ Admin เท่านั้นที่สามารถกด Pay ได้")
+                                  : isCancelledJob
+                                    ? (currentLanguage === "en" ? "Cancelled orders cannot be paid" : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้")
+                                    : isPaidJob
+                                      ? (currentLanguage === "en" ? "Payment Completed" : "บิลนี้ชำระเงินเรียบร้อยแล้ว")
                                     : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
                                       ? "Wallet หมดอายุแล้ว"
                                       : isWalletInsufficient
@@ -12268,7 +12285,7 @@ function AdminPageContent() {
           initialAddress={dialogOpen && !selectedProfileCustomer ? stripRoomSuffix(pickupLoc || deliveryLoc || "") : undefined}
           initialCoords={dialogOpen && !selectedProfileCustomer ? (pickupCoords || deliveryCoords) : undefined}
           initialRoomNo={dialogOpen && !selectedProfileCustomer ? (pickupRoom || deliveryRoom) : undefined}
-          initialBranchId={dialogOpen && !selectedProfileCustomer ? (shopLocations[selectedStoreIndex]?.id || "") : undefined}
+          initialBranchId=""
           initialIsVip={dialogOpen && !selectedProfileCustomer ? Boolean(selectedVIPLabel) : undefined}
           onTopUpCustomer={(c) => {
             setTopUpCustomer(c);

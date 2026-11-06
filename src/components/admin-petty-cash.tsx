@@ -55,8 +55,9 @@ import {
   reviewPettyCashTransactionAction,
   savePettyCashCategoriesAction,
   savePettyCashHolderLimitAction,
+  savePettyCashVehiclePlatesAction,
 } from "@/actions/db";
-import { shopStore } from "@/lib/store";
+import { shopStore, riderStore } from "@/lib/store";
 import { getUsers } from "@/actions/users";
 
 interface PettyCashTx {
@@ -77,6 +78,7 @@ interface PettyCashTx {
   description: string;
   vendorName?: string | null;
   invoiceNo?: string | null;
+  vehiclePlate?: string | null;
   paymentMethod?: string | null;
   receiptUrls: string[];
   slipUrls: string[];
@@ -155,6 +157,22 @@ const EXPENSE_DOC_TYPE_CONFIG: Record<
   },
 };
 
+function isVehicleExpenseCategory(cat: string): boolean {
+  const lower = (cat || "").toLowerCase();
+  return (
+    lower.includes("fuel") ||
+    lower.includes("transport") ||
+    lower.includes("น้ำมัน") ||
+    lower.includes("ทางด่วน") ||
+    lower.includes("ค่ารถ") ||
+    lower.includes("maintenance") ||
+    lower.includes("repair") ||
+    lower.includes("parts") ||
+    lower.includes("ซ่อม") ||
+    lower.includes("อะไหล่")
+  );
+}
+
 function isPdfOrDocUrl(url: string): boolean {
   const clean = (url || "").split("?")[0].toLowerCase();
   return /\.(pdf|doc|docx|xls|xlsx|csv|txt|zip)$/.test(clean);
@@ -218,6 +236,11 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
   const [formCategory, setFormCategory] = useState<string>("");
   const [newQuickCategory, setNewQuickCategory] = useState<string>("");
   const [showQuickAddCategory, setShowQuickAddCategory] = useState<boolean>(false);
+  const [vehiclePlates, setVehiclePlates] = useState<string[]>([]);
+  const [formVehiclePlate, setFormVehiclePlate] = useState<string>("");
+  const [newQuickPlate, setNewQuickPlate] = useState<string>("");
+  const [showQuickAddPlate, setShowQuickAddPlate] = useState<boolean>(false);
+  const [riders, setRiders] = useState<any[]>([]);
   const [formAmount, setFormAmount] = useState<string>("");
   const [formDescription, setFormDescription] = useState<string>("");
   const [formVendorName, setFormVendorName] = useState<string>("");
@@ -268,9 +291,12 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       })
       .catch(() => {});
     setShops(shopStore.getSnapshot() || []);
+    setRiders(riderStore.getSnapshot() || []);
     const unsubShops = shopStore.subscribe(() => setShops(shopStore.getSnapshot() || []));
+    const unsubRiders = riderStore.subscribe(() => setRiders(riderStore.getSnapshot() || []));
     return () => {
       unsubShops();
+      unsubRiders();
     };
   }, []);
 
@@ -401,6 +427,9 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         setTransactions(res.transactions || []);
         setCategories(res.categories || []);
         setHolderLimits((res as any).holderLimits || {});
+        if (Array.isArray((res as any).vehiclePlates)) {
+          setVehiclePlates((res as any).vehiclePlates);
+        }
       } else {
         toast.error(res.error || "ไม่สามารถโหลดข้อมูลเงินสดย่อยได้");
       }
@@ -414,6 +443,39 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Combine vehicle plates from active Riders + saved custom plates + existing transactions
+  const availableVehiclePlateOptions = useMemo(() => {
+    const plateToRiders = new Map<string, string[]>();
+    (riders || [])
+      .filter((r) => r && r.isActive !== false && r.vehiclePlate && String(r.vehiclePlate).trim())
+      .forEach((r) => {
+        const plate = String(r.vehiclePlate).trim();
+        const label = r.nickname || r.name || "";
+        const list = plateToRiders.get(plate) || [];
+        if (label && !list.includes(label)) list.push(label);
+        plateToRiders.set(plate, list);
+      });
+
+    const allPlates = new Set<string>();
+    plateToRiders.forEach((_, plate) => allPlates.add(plate));
+    (vehiclePlates || []).forEach((p) => {
+      if (p && String(p).trim()) allPlates.add(String(p).trim());
+    });
+    (transactions || []).forEach((t) => {
+      if (t.vehiclePlate && String(t.vehiclePlate).trim()) {
+        allPlates.add(String(t.vehiclePlate).trim());
+      }
+    });
+
+    return Array.from(allPlates).map((plate) => {
+      const rNames = plateToRiders.get(plate);
+      return {
+        value: plate,
+        label: rNames && rNames.length > 0 ? `${plate} (${rNames.join(", ")})` : plate,
+      };
+    });
+  }, [riders, vehiclePlates, transactions]);
 
   // Per-Holder Balances (computed immediately from all non-rejected/non-void transactions + authorized holders!)
   const holderSummaries = useMemo(() => {
@@ -580,7 +642,8 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
           (t.category || "").toLowerCase().includes(q) ||
           (t.description || "").toLowerCase().includes(q) ||
           (t.vendorName || "").toLowerCase().includes(q) ||
-          (t.invoiceNo || "").toLowerCase().includes(q);
+          (t.invoiceNo || "").toLowerCase().includes(q) ||
+          (t.vehiclePlate || "").toLowerCase().includes(q);
         if (!match) return false;
       }
       return true;
@@ -812,12 +875,15 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     setFormDescription("");
     setFormVendorName("");
     setFormInvoiceNo("");
+    setFormVehiclePlate("");
     setFormPaymentMethod(mode === "TOPUP" || mode === "TRANSFER" ? "Transfer" : "Cash");
     setFormDate(format(new Date(), "yyyy-MM-dd'T'HH:mm"));
     setFormReceiptUrls([]);
     setFormSlipUrls([]);
     setShowQuickAddCategory(false);
     setNewQuickCategory("");
+    setShowQuickAddPlate(false);
+    setNewQuickPlate("");
     setTxModalOpen(true);
   };
 
@@ -868,12 +934,15 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     setFormDescription(tx.description);
     setFormVendorName(tx.vendorName || "");
     setFormInvoiceNo(tx.invoiceNo || "");
+    setFormVehiclePlate(tx.vehiclePlate || "");
     setFormPaymentMethod(tx.paymentMethod || "Cash");
     setFormDate(format(new Date(tx.transactionDate), "yyyy-MM-dd'T'HH:mm"));
     setFormReceiptUrls(Array.isArray(tx.receiptUrls) ? [...tx.receiptUrls] : []);
     setFormSlipUrls(Array.isArray(tx.slipUrls) ? [...tx.slipUrls] : []);
     setShowQuickAddCategory(false);
     setNewQuickCategory("");
+    setShowQuickAddPlate(false);
+    setNewQuickPlate("");
     setTxModalOpen(true);
   };
 
@@ -891,6 +960,23 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       toast.success(`เพิ่มหมวดหมู่ "${trimmed}" เรียบร้อยแล้ว`);
     } else {
       toast.error(res.error || "ไม่สามารถบันทึกหมวดหมู่ได้");
+    }
+  };
+
+  // Quick Add Vehicle Plate inside Expense Form
+  const handleQuickAddPlate = async () => {
+    const trimmed = newQuickPlate.trim();
+    if (!trimmed) return;
+    const nextPlates = Array.from(new Set([...vehiclePlates, trimmed]));
+    const res = await savePettyCashVehiclePlatesAction(nextPlates);
+    if (res.success && res.vehiclePlates) {
+      setVehiclePlates(res.vehiclePlates);
+      setFormVehiclePlate(trimmed);
+      setNewQuickPlate("");
+      setShowQuickAddPlate(false);
+      toast.success(`เพิ่มเลขทะเบียนรถ "${trimmed}" เรียบร้อยแล้ว`);
+    } else {
+      toast.error(res.error || "ไม่สามารถบันทึกเลขทะเบียนรถได้");
     }
   };
 
@@ -965,6 +1051,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
           description: formDescription.trim(),
           vendorName: formVendorName.trim() || null,
           invoiceNo: formInvoiceNo.trim() || null,
+          vehiclePlate: txMode === "EXPENSE" && isVehicleExpenseCategory(formCategory) ? (formVehiclePlate.trim() || null) : null,
           paymentMethod: formPaymentMethod,
           receiptUrls: formReceiptUrls,
           slipUrls: formSlipUrls,
@@ -1052,6 +1139,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
           description: effectiveDescription,
           vendorName: formVendorName.trim() || null,
           invoiceNo: formInvoiceNo.trim() || null,
+          vehiclePlate: txMode === "EXPENSE" && isVehicleExpenseCategory(formCategory) ? (formVehiclePlate.trim() || null) : null,
           paymentMethod: effectiveMethod,
           receiptUrls: formReceiptUrls,
           slipUrls: formSlipUrls,
@@ -1162,6 +1250,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       "Branch",
       "Type",
       "Category",
+      "Vehicle Plate (ทะเบียนรถ)",
       "Description",
       "Vendor / ร้านค้า",
       "Invoice / เลขที่บิล",
@@ -1186,6 +1275,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         branchName,
         t.type,
         t.category,
+        t.vehiclePlate || "-",
         t.description,
         t.vendorName || "-",
         t.invoiceNo || "-",
@@ -1679,74 +1769,15 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
               </>
             )}
 
-            <div className="relative" ref={expenseMenuRef}>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => setExpenseMenuOpen((prev) => !prev)}
-                className="h-9 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl gap-1.5 shadow-sm cursor-pointer"
-              >
-                <ArrowUpRight size={14} />
-                - Record Expense (บันทึกเบิกจ่าย)
-                <ChevronDown size={14} className={`ml-0.5 transition-transform ${expenseMenuOpen ? "rotate-180" : ""}`} />
-              </Button>
-
-              {expenseMenuOpen && (
-                <div className="absolute right-0 mt-1.5 w-68 rounded-xl bg-white border border-slate-200 shadow-xl py-1.5 z-50 text-xs">
-                  <div className="px-3.5 py-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
-                    Select Expense Voucher Type
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleOpenCreateModal("EXPENSE", undefined, "EXPENSE_DOC")}
-                    className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-semibold transition-colors cursor-pointer"
-                  >
-                    <span className="flex items-center gap-2.5">
-                      <FileText size={15} className="text-indigo-600 shrink-0" />
-                      <span>Expense Document (ใบเบิกค่าใช้จ่าย)</span>
-                    </span>
-                    <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono">Alt+N</span>
-                  </button>
-
-                  {canApproveOrTopUp && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => handleOpenCreateModal("EXPENSE", undefined, "DEBT_PAYMENT")}
-                        className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-semibold transition-colors cursor-pointer"
-                      >
-                        <span className="flex items-center gap-2.5">
-                          <FileText size={15} className="text-amber-600 shrink-0" />
-                          <span>Debt / Capital Payment (ชำระหนี้/เงินทุน)</span>
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleOpenCreateModal("EXPENSE", undefined, "PAYMENT_VOUCHER")}
-                        className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-semibold transition-colors cursor-pointer"
-                      >
-                        <span className="flex items-center gap-2.5">
-                          <Files size={15} className="text-sky-600 shrink-0" />
-                          <span>Payment Voucher (ใบสำคัญจ่าย)</span>
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleOpenCreateModal("EXPENSE", undefined, "PAYROLL")}
-                        className="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 text-slate-700 font-semibold transition-colors cursor-pointer"
-                      >
-                        <span className="flex items-center gap-2.5">
-                          <Banknote size={15} className="text-emerald-600 shrink-0" />
-                          <span>Payroll & Wages (เงินเดือน/ค่าแรง)</span>
-                        </span>
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => handleOpenCreateModal("EXPENSE", undefined, "EXPENSE_DOC")}
+              className="h-9 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl gap-1.5 shadow-sm cursor-pointer"
+            >
+              <ArrowUpRight size={14} />
+              - Record Expense (บันทึกเบิกจ่าย)
+            </Button>
           </div>
         </div>
       </div>
@@ -2512,8 +2543,13 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                       {/* Description / Vendor / Invoice */}
                       <td className="py-3.5 px-4 max-w-[280px]">
                         <div className="font-medium text-slate-900 break-words">{tx.description}</div>
-                        {(tx.vendorName || tx.invoiceNo) && (
+                        {(tx.vehiclePlate || tx.vendorName || tx.invoiceNo) && (
                           <div className="text-[10.5px] text-slate-500 mt-1 flex flex-wrap gap-1.5">
+                            {tx.vehiclePlate && (
+                              <span className="bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-amber-800 font-bold">
+                                🚗 ทะเบียน: {tx.vehiclePlate}
+                              </span>
+                            )}
                             {tx.vendorName && (
                               <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-600 font-medium">
                                 🏪 {tx.vendorName}
@@ -2989,37 +3025,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
             </DialogDescription>
           </DialogHeader>
 
-          {/* 4-Type Switcher inside Expense Modal when creating new (Accounting/Admin only) */}
-          {txMode === "EXPENSE" && !editingTx && canApproveOrTopUp && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 bg-slate-100 rounded-xl">
-              {(
-                [
-                  { key: "EXPENSE_DOC", label: "Expense Document" },
-                  { key: "DEBT_PAYMENT", label: "Debt / Capital" },
-                  { key: "PAYMENT_VOUCHER", label: "Payment Voucher" },
-                  { key: "PAYROLL", label: "Payroll" },
-                ] as { key: ExpenseDocType; label: string }[]
-              ).map((item) => {
-                const active = expenseDocType === item.key;
-                return (
-                  <button
-                    key={item.key}
-                    type="button"
-                    onClick={() => {
-                      setExpenseDocType(item.key);
-                      const defCat = EXPENSE_DOC_TYPE_CONFIG[item.key].defaultCategory;
-                      setFormCategory(defCat || categories[0] || "Store Misc (ค่าใช้จ่ายหน้าร้าน/เบ็ดเตล็ด)");
-                    }}
-                    className={`py-1.5 px-2 rounded-lg text-[11px] font-bold transition-all cursor-pointer truncate ${
-                      active ? "bg-white text-rose-700 shadow-xs ring-1 ring-slate-200" : "text-slate-600 hover:text-slate-900"
-                    }`}
-                  >
-                    {item.label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+
 
           <div className="space-y-3.5 py-1 text-xs">
             {/* Row 1: Holder / Recipient & Branch */}
@@ -3175,11 +3181,11 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
               </div>
 
               <div className="space-y-1">
-                <Label className="text-[11px] font-bold text-slate-700">Date & Time (วัน-เวลา)</Label>
+                <Label className="text-[11px] font-bold text-slate-700">Date (วันที่)</Label>
                 <Input
-                  type="datetime-local"
-                  value={formDate}
-                  onChange={(e) => setFormDate(e.target.value)}
+                  type="date"
+                  value={formDate ? formDate.slice(0, 10) : format(new Date(), "yyyy-MM-dd")}
+                  onChange={(e) => { const d = e.target.value; const timePart = formDate && formDate.includes("T") ? formDate.slice(11, 16) : format(new Date(), "HH:mm"); setFormDate(d ? `${d}T${timePart}` : format(new Date(), "yyyy-MM-dd'T'HH:mm")); }}
                   className="h-9 rounded-xl text-xs border-slate-200"
                 />
               </div>
@@ -3244,6 +3250,59 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 </div>
               )}
             </div>
+
+            {/* Row 3.5: Vehicle License Plate (shown when Category is Transport/Fuel or Maintenance/Repair) */}
+            {txMode === "EXPENSE" && isVehicleExpenseCategory(formCategory) && (
+              <div className="space-y-1 p-2.5 rounded-xl bg-amber-50/70 border border-amber-200/90">
+                <div className="flex items-center justify-between">
+                  <Label className="text-[11px] font-bold text-amber-950 flex items-center gap-1.5">
+                    <span>🚗 Vehicle License Plate (เลขทะเบียนรถ)</span>
+                  </Label>
+                  <button
+                    type="button"
+                    onClick={() => setShowQuickAddPlate(!showQuickAddPlate)}
+                    className="text-[10.5px] font-bold text-amber-700 hover:underline cursor-pointer"
+                  >
+                    {showQuickAddPlate ? "Close (ปิดช่องเพิ่มทะเบียน)" : "+ Add Plate (เพิ่มเลขทะเบียนรถใหม่)"}
+                  </button>
+                </div>
+
+                <select
+                  value={formVehiclePlate}
+                  onChange={(e) => setFormVehiclePlate(e.target.value)}
+                  className="h-9 w-full rounded-xl border border-amber-300 bg-white px-2.5 text-xs font-bold text-slate-900 outline-none focus:border-amber-600"
+                >
+                  <option value="">-- Select Vehicle License Plate (เลือกเลขทะเบียนรถ / ไม่ระบุ) --</option>
+                  {availableVehiclePlateOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                  {formVehiclePlate && !availableVehiclePlateOptions.some((o) => o.value === formVehiclePlate) && (
+                    <option value={formVehiclePlate}>{formVehiclePlate}</option>
+                  )}
+                </select>
+
+                {showQuickAddPlate && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <Input
+                      value={newQuickPlate}
+                      onChange={(e) => setNewQuickPlate(e.target.value)}
+                      placeholder="ระบุเลขทะเบียนรถใหม่... (เช่น 1กข 1234 กทม)"
+                      className="h-8 text-xs rounded-lg bg-white border-amber-300"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleQuickAddPlate}
+                      className="h-8 px-3 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white rounded-lg shrink-0 cursor-pointer"
+                    >
+                      Save (บันทึก)
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Row 4: Description */}
             <div className="space-y-1">
