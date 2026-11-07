@@ -660,18 +660,18 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
   };
 
   return (
-    <div className="space-y-5">
+    <div className="flex-1 overflow-auto p-4 sm:p-6 lg:p-8 space-y-6 w-full">
       {/* 1. Header & Primary Action Banner */}
       <div className="bg-gradient-to-r from-sky-900 via-indigo-950 to-slate-900 text-white p-5 sm:p-6 rounded-2xl shadow-xl relative overflow-hidden space-y-4">
         <div className="absolute right-0 top-0 bottom-0 w-96 bg-radial from-sky-500/20 via-transparent to-transparent pointer-events-none" />
 
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative z-10">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 relative z-10">
           <div className="space-y-1">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="p-2 rounded-xl bg-sky-500/20 text-sky-300 border border-sky-400/30">
                 <Droplets size={22} className="text-sky-300" />
               </span>
-              <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white flex items-center gap-2">
+              <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white flex items-center gap-2 flex-wrap">
                 Chemicals & Supplies Orders
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-white/10 text-sky-200 border border-white/15">
                   สั่งซื้อน้ำยาและอุปกรณ์
@@ -684,27 +684,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
             </p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {isAdmin && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setViewTab(viewTab === 'orders' ? 'catalog' : 'orders')}
-                className={`h-10 px-3.5 border-white/20 text-white font-bold text-xs rounded-xl backdrop-blur-sm transition-all gap-1.5 cursor-pointer ${
-                  viewTab === 'catalog'
-                    ? 'bg-white text-slate-900 border-white hover:bg-slate-100'
-                    : 'bg-white/10 hover:bg-white/20'
-                }`}
-              >
-                <SlidersHorizontal size={14} />
-                <span>
-                  {viewTab === 'catalog'
-                    ? 'Back to Orders (ดูคำสั่งซื้อ)'
-                    : 'Set Available Items (ตั้งค่ารายการสินค้า)'}
-                </span>
-              </Button>
-            )}
-
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             {viewTab === 'orders' ? (
               <>
                 <Button
@@ -712,7 +692,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                   variant="outline"
                   onClick={() => loadOrders(true)}
                   disabled={refreshing}
-                  className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl backdrop-blur-sm transition-all"
+                  className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl backdrop-blur-sm transition-all cursor-pointer"
                   title="Refresh order list"
                 >
                   <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
@@ -743,7 +723,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                   size="sm"
                   variant="outline"
                   onClick={handleResetCatalog}
-                  className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl backdrop-blur-sm transition-all gap-1.5"
+                  className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl backdrop-blur-sm transition-all gap-1.5 cursor-pointer"
                   title="Restore factory default catalog items"
                 >
                   <RotateCcw size={14} />
@@ -755,11 +735,11 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
         </div>
 
         {/* Sub-tab Navigation: Orders vs Catalog Manager */}
-        <div className="flex items-center gap-1.5 p-1 bg-white/10 backdrop-blur-md rounded-xl border border-white/15 w-fit relative z-10">
+        <div className="flex items-center gap-1.5 p-1 bg-white/10 backdrop-blur-md rounded-xl border border-white/15 w-fit max-w-full overflow-x-auto relative z-10 custom-scrollbar">
           <button
             type="button"
             onClick={() => setViewTab('orders')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
               viewTab === 'orders'
                 ? 'bg-white text-slate-900 shadow-sm'
                 : 'text-white/80 hover:text-white hover:bg-white/10'
@@ -780,7 +760,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
             <button
               type="button"
               onClick={() => setViewTab('catalog')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
                 viewTab === 'catalog'
                   ? 'bg-white text-slate-900 shadow-sm'
                   : 'text-white/80 hover:text-white hover:bg-white/10'
