@@ -396,13 +396,20 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         // Auto-detect screen: if < 1920px width, default to "fit" so all columns fit without scrolling
         setScreenFit(window.innerWidth < 2560 ? "fit" : "standard");
       }
-      const savedZoom = localStorage.getItem("tls_kanban_zoom");
+      const savedZoom = localStorage.getItem("tls_kanban_zoom") || localStorage.getItem("tls_global_zoom");
       if (savedZoom) {
         const parsed = parseInt(savedZoom, 10);
         if (!isNaN(parsed) && parsed >= 70 && parsed <= 125) {
           setZoomLevel(parsed);
         }
       }
+
+      const handleSync = (e: any) => {
+        if (e.detail?.fit) setScreenFit(e.detail.fit);
+        if (typeof e.detail?.zoom === 'number') setZoomLevel(e.detail.zoom);
+      };
+      window.addEventListener("tls-screen-fit-changed", handleSync);
+      return () => window.removeEventListener("tls-screen-fit-changed", handleSync);
     }
   }, []);
 
@@ -2334,6 +2341,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                     setScreenFit(nextMode);
                     if (typeof window !== "undefined") {
                       localStorage.setItem("tls_kanban_screen_fit", nextMode);
+                      localStorage.setItem("tls_global_screen_fit", nextMode);
+                      window.dispatchEvent(new CustomEvent("tls-screen-fit-changed", { detail: { fit: nextMode, zoom: zoomLevel } }));
                     }
                     toast.success(
                       nextMode === "fit" 

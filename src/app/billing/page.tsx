@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo, useSyncExternalStore } from "react";
+import { FitScreenToggle } from "@/components/fit-screen-toggle";
 import { ProtectedRoute } from "@/components/protected-route";
 import { Logo } from "@/components/logo";
 import { useJobs } from "@/lib/use-jobs";
@@ -1630,6 +1631,7 @@ export default function BillingPage() {
           </div>
 
           <div className="flex items-center gap-3">
+            <FitScreenToggle />
             <NotificationBell
               onSelectTask={() => {
                 window.location.href = `/admin#tasks`;

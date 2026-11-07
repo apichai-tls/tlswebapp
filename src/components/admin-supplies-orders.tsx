@@ -56,6 +56,7 @@ import {
   updateSupplyOrderStatusAction,
   deleteSupplyOrderAction,
 } from '@/actions/db';
+import { FitScreenToggle } from '@/components/fit-screen-toggle';
 
 interface AdminSuppliesOrdersProps {
   currentUser?: any;
@@ -462,6 +463,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
         </div>
 
         <div className="relative z-10 flex items-center gap-2 shrink-0">
+          <FitScreenToggle />
           <Button
             size="sm"
             variant="outline"

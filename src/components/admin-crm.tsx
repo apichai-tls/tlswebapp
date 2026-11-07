@@ -211,10 +211,15 @@ export function AdminCRM({
   // Initialize and persist screen layout preferences from localStorage
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const savedFit = localStorage.getItem("tls_crm_screen_fit");
+      const savedFit = (localStorage.getItem("tls_crm_screen_fit") || localStorage.getItem("tls_global_screen_fit")) as any;
       if (savedFit === "fit" || savedFit === "standard") {
         setScreenFit(savedFit);
       }
+      const handleSync = (e: any) => {
+        if (e.detail?.fit) setScreenFit(e.detail.fit);
+      };
+      window.addEventListener("tls-screen-fit-changed", handleSync);
+      return () => window.removeEventListener("tls-screen-fit-changed", handleSync);
     }
   }, []);
 
@@ -1465,6 +1470,8 @@ export function AdminCRM({
               setScreenFit(nextMode);
               if (typeof window !== "undefined") {
                 localStorage.setItem("tls_crm_screen_fit", nextMode);
+                localStorage.setItem("tls_global_screen_fit", nextMode);
+                window.dispatchEvent(new CustomEvent("tls-screen-fit-changed", { detail: { fit: nextMode } }));
               }
               toast.success(
                 nextMode === "fit" 
