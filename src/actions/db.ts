@@ -10334,10 +10334,18 @@ export async function getSupplyOrdersAction(filterBranchId?: string) {
 
     const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
     
-    if (filterBranchId && filterBranchId !== 'all') {
+    // Strict Outlet Isolation:
+    // Non-admin staff can strictly ONLY view orders belonging to their assigned outlet (branchId)
+    // or orders they personally created. Non-admin users cannot query or see orders from other branches.
+    if (!isAdmin) {
+      const staffBranchId = authUser.branchId;
+      if (!staffBranchId) {
+        orders = orders.filter((o: any) => o.requesterId === authUser.id);
+      } else {
+        orders = orders.filter((o: any) => o.branchId === staffBranchId || o.requesterId === authUser.id);
+      }
+    } else if (filterBranchId && filterBranchId !== 'all') {
       orders = orders.filter((o: any) => o.branchId === filterBranchId);
-    } else if (!isAdmin && authUser.branchId) {
-      orders = orders.filter((o: any) => o.branchId === authUser.branchId || o.requesterId === authUser.id);
     }
 
     orders.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -10362,6 +10370,36 @@ export async function createSupplyOrderAction(input: {
 
     if (!input.items || input.items.length === 0) {
       return { success: false, error: "Please select at least one item to order." };
+    }
+
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    let targetBranchId = input.branchId;
+    let targetBranchName = input.branchName;
+
+    // Strict Outlet Isolation:
+    // Non-admin staff can strictly ONLY make orders for their assigned outlet.
+    if (!isAdmin) {
+      if (!authUser.branchId) {
+        return {
+          success: false,
+          error: "Permission Denied: Your staff account is not assigned to an outlet. You can only place orders for your assigned outlet.",
+        };
+      }
+
+      // Enforce the user's assigned outlet, overriding any arbitrary branchId submitted
+      targetBranchId = authUser.branchId;
+
+      try {
+        const staffShop = await prisma.shopLocation.findUnique({
+          where: { id: targetBranchId },
+          select: { name: true },
+        });
+        if (staffShop?.name) {
+          targetBranchName = staffShop.name;
+        }
+      } catch (err) {
+        console.warn("[createSupplyOrderAction] Could not fetch shop name for branch:", targetBranchId);
+      }
     }
 
     const setting = await prisma.setting.findUnique({
@@ -10393,8 +10431,8 @@ export async function createSupplyOrderAction(input: {
     const newOrder = {
       id,
       orderNumber,
-      branchId: input.branchId,
-      branchName: input.branchName,
+      branchId: targetBranchId,
+      branchName: targetBranchName,
       requesterId: authUser.id,
       requesterName: authUser.name || authUser.email?.split('@')[0] || "Staff",
       requesterEmail: authUser.email,
@@ -10424,7 +10462,7 @@ export async function createSupplyOrderAction(input: {
           entityId: id,
           entityType: "SUPPLY_ORDER",
           action: "CREATE_SUPPLY_ORDER",
-          details: `Supply order ${orderNumber} created for branch ${input.branchName} (${input.items.length} items, est. ฿${totalEstimatedCost})`,
+          details: `Supply order ${orderNumber} created for branch ${targetBranchName} (${input.items.length} items, est. ฿${totalEstimatedCost})`,
           userId: authUser.id,
           userName: authUser.name || authUser.email,
         },
@@ -10441,7 +10479,7 @@ export async function createSupplyOrderAction(input: {
           data: adminUsers.map(adm => ({
             userId: adm.id,
             title: `New Supply Order: ${orderNumber}`,
-            message: `${authUser.name || authUser.email} requested ${totalItemsCount} item(s) for ${input.branchName}`,
+            message: `${authUser.name || authUser.email} requested ${totalItemsCount} item(s) for ${targetBranchName}`,
             type: "note",
           }))
         });

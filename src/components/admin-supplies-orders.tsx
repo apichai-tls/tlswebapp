@@ -34,6 +34,8 @@ import {
   Star,
   CheckCircle,
   XCircle,
+  Lock,
+  Store,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -141,7 +143,8 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     try {
       if (!silent) setLoading(true);
       else setRefreshing(true);
-      const res = await getSupplyOrdersAction(branchFilter);
+      const effectiveBranch = isAdmin ? branchFilter : (currentUser?.branchId || undefined);
+      const res = await getSupplyOrdersAction(effectiveBranch);
       if (res.success && res.orders) {
         setOrders(res.orders);
       } else {
@@ -153,6 +156,18 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
       setLoading(false);
       setRefreshing(false);
     }
+  };
+
+  // Open Create Order Modal with Outlet Check
+  const handleOpenCreateModal = () => {
+    if (!isAdmin && !currentUser?.branchId) {
+      toast.error('Your staff account is not assigned to an outlet. You can only place orders for your assigned outlet.');
+      return;
+    }
+    if (!isAdmin && currentUser?.branchId) {
+      setOrderBranchId(currentUser.branchId);
+    }
+    setIsCreateOpen(true);
   };
 
   // 2. Load Catalog (Admin Configured Items)
@@ -469,13 +484,19 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
       return;
     }
 
-    const branchObj = shops.find((s) => s.id === orderBranchId);
-    const branchName = branchObj ? branchObj.name : orderBranchId === 'ONLINE' ? 'Online Central' : orderBranchId;
+    if (!isAdmin && !currentUser?.branchId) {
+      toast.error('Your staff account is not assigned to an outlet. You can only place orders for your assigned outlet.');
+      return;
+    }
+
+    const effectiveBranchId = !isAdmin && currentUser?.branchId ? currentUser.branchId : orderBranchId;
+    const branchObj = shops.find((s) => s.id === effectiveBranchId);
+    const branchName = branchObj ? branchObj.name : effectiveBranchId === 'ONLINE' ? 'Online Central' : effectiveBranchId;
 
     try {
       setSubmittingOrder(true);
       const res = await createSupplyOrderAction({
-        branchId: orderBranchId,
+        branchId: effectiveBranchId,
         branchName,
         priority: orderPriority,
         neededByDate,
@@ -700,7 +721,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
 
                 <Button
                   size="sm"
-                  onClick={() => setIsCreateOpen(true)}
+                  onClick={handleOpenCreateModal}
                   className="h-10 px-4 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-sky-600/30 gap-2 cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98]"
                 >
                   <Plus size={16} />
@@ -910,7 +931,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
 
               {/* Quick Filters */}
               <div className="flex flex-wrap items-center gap-2">
-                {isAdmin && (
+                {isAdmin ? (
                   <select
                     value={branchFilter}
                     onChange={(e) => setBranchFilter(e.target.value)}
@@ -924,6 +945,16 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                       </option>
                     ))}
                   </select>
+                ) : (
+                  <div className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                    <Store size={14} className="text-sky-600 shrink-0" />
+                    <span className="truncate max-w-[140px] sm:max-w-none">
+                      {shops.find((s) => s.id === currentUser?.branchId)?.name || 'My Outlet'}
+                    </span>
+                    <span className="text-[10px] text-amber-700 font-bold bg-amber-100/80 px-1.5 py-0.5 rounded-md ml-1 flex items-center gap-1 shrink-0">
+                      <Lock size={9} /> My Outlet
+                    </span>
+                  </div>
                 )}
 
                 <select
@@ -1003,7 +1034,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
               </div>
               <Button
                 size="sm"
-                onClick={() => setIsCreateOpen(true)}
+                onClick={handleOpenCreateModal}
                 className="h-9 px-4 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl gap-1.5"
               >
                 <Plus size={15} />
@@ -1525,19 +1556,45 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
             {/* Requester & Branch Strip */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 bg-slate-50 rounded-xl border border-slate-200/80">
               <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-600">Branch (สาขา) *</label>
-                <select
-                  value={orderBranchId}
-                  onChange={(e) => setOrderBranchId(e.target.value)}
-                  className="w-full h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-bold text-slate-800 focus:outline-none"
-                >
-                  <option value="ONLINE">Online Central Dispatch</option>
-                  {shops.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+                <label className="text-xs font-bold text-slate-600 flex items-center justify-between">
+                  <span>Branch (สาขา) *</span>
+                  {!isAdmin && (
+                    <span className="text-[10px] font-bold text-amber-600 flex items-center gap-0.5">
+                      <Lock size={10} /> Locked to Outlet
+                    </span>
+                  )}
+                </label>
+                {isAdmin ? (
+                  <select
+                    value={orderBranchId}
+                    onChange={(e) => setOrderBranchId(e.target.value)}
+                    className="w-full h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-bold text-slate-800 focus:outline-none"
+                  >
+                    <option value="ONLINE">Online Central Dispatch</option>
+                    {shops.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="w-full h-9 rounded-xl border border-slate-200 bg-slate-100/90 px-3 flex items-center justify-between text-xs font-bold text-slate-800 shadow-2xs">
+                    <span className="flex items-center gap-1.5 truncate">
+                      <Store size={14} className="text-sky-600 shrink-0" />
+                      <span className="truncate">
+                        {shops.find((s) => s.id === (currentUser?.branchId || orderBranchId))?.name || 'Assigned Outlet'}
+                      </span>
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-[10px] font-black text-amber-700 bg-amber-100/80 px-2 py-0.5 rounded-full shrink-0">
+                      <Lock size={10} /> My Outlet
+                    </span>
+                  </div>
+                )}
+                {!isAdmin && (
+                  <p className="text-[10px] text-slate-400 font-medium">
+                    Orders can only be submitted for your assigned outlet.
+                  </p>
+                )}
               </div>
 
               <div className="space-y-1">
