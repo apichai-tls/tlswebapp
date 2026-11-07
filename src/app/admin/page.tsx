@@ -29,6 +29,7 @@ import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } 
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { WisePaymentDialog } from "@/components/wise-payment-dialog";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
+import { AutoRecurringWorker } from "@/components/auto-recurring-worker";
 import {
   isItemMatchingCategory,
   getCategoryLabel,
@@ -12617,6 +12618,9 @@ function AdminPageContent() {
 
       {/* Silent Background Auto-Receipt Worker */}
       <AutoReceiptWorker />
+
+      {/* Silent Background Auto-Recurring Orders Worker */}
+      <AutoRecurringWorker />
     </>
   );
 }

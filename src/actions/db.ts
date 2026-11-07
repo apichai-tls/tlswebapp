@@ -9936,3 +9936,375 @@ export async function savePettyCashHolderLimitAction(
     return { success: false, error: err?.message || "Failed to save holder limit" };
   }
 }
+
+
+
+// -------------------------------------------------------------
+// RECURRING ORDER AUTOMATION (SETTING KEY: "recurring_orders_schedules")
+// -------------------------------------------------------------
+const RECURRING_ORDERS_SETTING_KEY = "recurring_orders_schedules";
+
+export async function getRecurringSchedulesAction() {
+  try {
+    const setting = await prisma.setting.findUnique({
+      where: { key: RECURRING_ORDERS_SETTING_KEY },
+    });
+    let schedules: any[] = [];
+    if (setting?.value) {
+      try {
+        const parsed = JSON.parse(setting.value);
+        if (Array.isArray(parsed)) {
+          schedules = parsed;
+        }
+      } catch (e) {
+        console.error("[getRecurringSchedulesAction] Parse error:", e);
+      }
+    }
+    return { success: true, schedules };
+  } catch (err: any) {
+    console.error("[getRecurringSchedulesAction] Error:", err);
+    return { success: false, schedules: [], error: err?.message || "Failed to fetch recurring schedules" };
+  }
+}
+
+export async function saveRecurringScheduleAction(scheduleData: any) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    if (!scheduleData || !scheduleData.customerId || !scheduleData.customerName) {
+      return { success: false, error: "Customer name and customer ID are required" };
+    }
+
+    if (!Array.isArray(scheduleData.daysOfWeek) || scheduleData.daysOfWeek.length === 0) {
+      return { success: false, error: "Please select at least one day of the week" };
+    }
+
+    const res = await getRecurringSchedulesAction();
+    let schedules: any[] = (res.schedules as any[]) || [];
+
+    const nowIso = new Date().toISOString();
+    let targetSchedule: any;
+
+    if (scheduleData.id) {
+      const idx = schedules.findIndex((s: any) => s.id === scheduleData.id);
+      if (idx >= 0) {
+        targetSchedule = {
+          ...schedules[idx],
+          ...scheduleData,
+          updatedAt: nowIso,
+        };
+        schedules[idx] = targetSchedule;
+      } else {
+        targetSchedule = {
+          ...scheduleData,
+          id: scheduleData.id,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          createdBy: authUser.name || authUser.email,
+          totalJobsCreated: 0,
+        };
+        schedules.unshift(targetSchedule);
+      }
+    } else {
+      targetSchedule = {
+        ...scheduleData,
+        id: `REC-${Date.now()}`,
+        status: scheduleData.status || "active",
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        createdBy: authUser.name || authUser.email,
+        totalJobsCreated: 0,
+      };
+      schedules.unshift(targetSchedule);
+    }
+
+    await prisma.setting.upsert({
+      where: { key: RECURRING_ORDERS_SETTING_KEY },
+      update: { value: JSON.stringify(schedules) },
+      create: { key: RECURRING_ORDERS_SETTING_KEY, value: JSON.stringify(schedules) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: targetSchedule.id,
+          entityType: "RECURRING_SCHEDULE",
+          action: scheduleData.id ? "UPDATE_RECURRING_SCHEDULE" : "CREATE_RECURRING_SCHEDULE",
+          details: `Recurring schedule for ${targetSchedule.customerName} (${targetSchedule.daysOfWeek.length} days/week)`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch (logErr) {
+      console.warn("[saveRecurringScheduleAction] ActivityLog error:", logErr);
+    }
+
+    return { success: true, schedule: targetSchedule, schedules };
+  } catch (err: any) {
+    console.error("[saveRecurringScheduleAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to save recurring schedule" };
+  }
+}
+
+export async function deleteRecurringScheduleAction(scheduleId: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    if (!scheduleId) return { success: false, error: "Schedule ID is required" };
+
+    const res = await getRecurringSchedulesAction();
+    let schedules: any[] = (res.schedules as any[]) || [];
+    const target = schedules.find((s: any) => s.id === scheduleId);
+    schedules = schedules.filter((s: any) => s.id !== scheduleId);
+
+    await prisma.setting.upsert({
+      where: { key: RECURRING_ORDERS_SETTING_KEY },
+      update: { value: JSON.stringify(schedules) },
+      create: { key: RECURRING_ORDERS_SETTING_KEY, value: JSON.stringify(schedules) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: scheduleId,
+          entityType: "RECURRING_SCHEDULE",
+          action: "DELETE_RECURRING_SCHEDULE",
+          details: `Deleted recurring schedule for ${target?.customerName || scheduleId}`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch {}
+
+    return { success: true, schedules };
+  } catch (err: any) {
+    console.error("[deleteRecurringScheduleAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to delete recurring schedule" };
+  }
+}
+
+export async function toggleRecurringScheduleStatusAction(scheduleId: string, status: "active" | "paused", reason?: string, pausedUntil?: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const res = await getRecurringSchedulesAction();
+    let schedules: any[] = (res.schedules as any[]) || [];
+    const idx = schedules.findIndex((s: any) => s.id === scheduleId);
+    if (idx === -1) return { success: false, error: "Schedule not found" };
+
+    schedules[idx].status = status;
+    schedules[idx].pauseReason = status === "paused" ? (reason || null) : null;
+    schedules[idx].pausedUntil = status === "paused" ? (pausedUntil || null) : null;
+    schedules[idx].updatedAt = new Date().toISOString();
+
+    await prisma.setting.upsert({
+      where: { key: RECURRING_ORDERS_SETTING_KEY },
+      update: { value: JSON.stringify(schedules) },
+      create: { key: RECURRING_ORDERS_SETTING_KEY, value: JSON.stringify(schedules) },
+    });
+
+    return { success: true, schedule: schedules[idx], schedules };
+  } catch (err: any) {
+    console.error("[toggleRecurringScheduleStatusAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to update schedule status" };
+  }
+}
+
+export async function runRecurringOrdersAutomationAction() {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const res = await getRecurringSchedulesAction();
+    const schedules: any[] = (res.schedules as any[]) || [];
+
+    // Bangkok timezone GMT+7
+    const nowBkk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
+    const todayDayOfWeek = nowBkk.getDay(); // 0 = Sun, 1 = Mon ...
+    const year = nowBkk.getFullYear();
+    const month = String(nowBkk.getMonth() + 1).padStart(2, '0');
+    const day = String(nowBkk.getDate()).padStart(2, '0');
+    const todayStr = `${year}-${month}-${day}`;
+
+    const dueSchedules = schedules.filter((s: any) => {
+      if (s.status !== "active") return false;
+      if (s.pausedUntil && new Date(s.pausedUntil) > nowBkk) return false;
+      if (!Array.isArray(s.daysOfWeek) || !s.daysOfWeek.includes(todayDayOfWeek)) return false;
+      if (s.lastGeneratedDate === todayStr) return false; // Already created today!
+      return true;
+    });
+
+    if (dueSchedules.length === 0) {
+      return { success: true, generatedCount: 0, message: "No recurring orders due for today or all already generated." };
+    }
+
+    const generatedJobs: any[] = [];
+
+    for (const schedule of dueSchedules) {
+      try {
+        // Calculate pickup and delivery times
+        let pickupHour = 9;
+        if (schedule.timeSlot && schedule.timeSlot.includes(":")) {
+          const match = schedule.timeSlot.match(/(\d{1,2}):/);
+          if (match) pickupHour = parseInt(match[1], 10);
+        }
+        const pickupDate = new Date(nowBkk);
+        pickupDate.setHours(pickupHour, 0, 0, 0);
+
+        const turnaroundDays = Number(schedule.deliveryDaysOffset) || 1;
+        const deliveryDate = new Date(pickupDate.getTime() + turnaroundDays * 86400000);
+        deliveryDate.setHours(17, 0, 0, 0);
+
+        const specialNotes = schedule.specialInstructions ? ` [Notes: ${schedule.specialInstructions}]` : "";
+        const jobNotes = `[Auto-Recurring Order] ${schedule.frequencyType === 'weekly' ? 'Weekly pickup' : 'Multi-day pickup'}${specialNotes}`;
+
+        const defaultServiceItems = Array.isArray(schedule.defaultItems) && schedule.defaultItems.length > 0
+          ? schedule.defaultItems
+          : [{
+              serviceId: "S-WF-STD",
+              name: schedule.serviceSummary || "Wash & Fold (Standard)",
+              price: 0,
+              quantity: 1,
+              unit: "bag",
+            }];
+
+        const jobPayload: any = {
+          customerName: schedule.customerName,
+          customerPhone: schedule.customerPhone,
+          customerId: schedule.customerId,
+          address: schedule.address,
+          roomNumber: schedule.roomNo || "",
+          branchId: schedule.branchId || "ONLINE",
+          brand: schedule.brand || "that_laundry_shop",
+          type: "both",
+          status: "pending",
+          pickupScheduledAt: pickupDate,
+          deliveryScheduledAt: deliveryDate,
+          items: defaultServiceItems,
+          notes: jobNotes,
+          source: "recurring_automation",
+          clientRequestId: `REC_AUTO_${schedule.id}_${todayStr}`,
+        };
+
+        const createdJob = await addJobAction(jobPayload);
+        if (createdJob && createdJob.id) {
+          schedule.lastGeneratedDate = todayStr;
+          schedule.lastJobId = createdJob.id;
+          schedule.totalJobsCreated = (schedule.totalJobsCreated || 0) + 1;
+          generatedJobs.push({
+            scheduleId: schedule.id,
+            customerName: schedule.customerName,
+            jobId: createdJob.id,
+            pickupDate: pickupDate.toISOString(),
+          });
+        }
+      } catch (jobErr: any) {
+        console.error(`[runRecurringOrdersAutomationAction] Error creating job for schedule ${schedule.id}:`, jobErr);
+      }
+    }
+
+    // Save updated schedule timestamps
+    if (generatedJobs.length > 0) {
+      await prisma.setting.upsert({
+        where: { key: RECURRING_ORDERS_SETTING_KEY },
+        update: { value: JSON.stringify(schedules) },
+        create: { key: RECURRING_ORDERS_SETTING_KEY, value: JSON.stringify(schedules) },
+      });
+
+      try {
+        await prisma.activityLog.create({
+          data: {
+            entityId: "RECURRING_AUTOMATION",
+            entityType: "AUTOMATION",
+            action: "AUTO_GENERATE_RECURRING_ORDERS",
+            details: `Auto-generated ${generatedJobs.length} recurring orders for today (${todayStr})`,
+            userId: authUser.id,
+            userName: authUser.name || authUser.email,
+          },
+        });
+      } catch {}
+    }
+
+    return {
+      success: true,
+      generatedCount: generatedJobs.length,
+      generatedJobs,
+      schedules,
+    };
+  } catch (err: any) {
+    console.error("[runRecurringOrdersAutomationAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to execute recurring orders automation" };
+  }
+}
+
+export async function triggerRecurringOrderNowAction(scheduleId: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const res = await getRecurringSchedulesAction();
+    const schedules: any[] = (res.schedules as any[]) || [];
+    const schedule = schedules.find((s: any) => s.id === scheduleId);
+    if (!schedule) return { success: false, error: "Schedule not found" };
+
+    const nowBkk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
+    const year = nowBkk.getFullYear();
+    const month = String(nowBkk.getMonth() + 1).padStart(2, '0');
+    const day = String(nowBkk.getDate()).padStart(2, '0');
+    const todayStr = `${year}-${month}-${day}`;
+
+    let pickupHour = 9;
+    if (schedule.timeSlot && schedule.timeSlot.includes(":")) {
+      const match = schedule.timeSlot.match(/(\d{1,2}):/);
+      if (match) pickupHour = parseInt(match[1], 10);
+    }
+    const pickupDate = new Date(nowBkk);
+    pickupDate.setHours(pickupHour, 0, 0, 0);
+
+    const turnaroundDays = Number(schedule.deliveryDaysOffset) || 1;
+    const deliveryDate = new Date(pickupDate.getTime() + turnaroundDays * 86400000);
+    deliveryDate.setHours(17, 0, 0, 0);
+
+    const specialNotes = schedule.specialInstructions ? ` [Notes: ${schedule.specialInstructions}]` : "";
+    const jobNotes = `[Manual Trigger: Recurring Order] ${schedule.frequencyType === 'weekly' ? 'Weekly' : 'Multi-day'}${specialNotes}`;
+
+    const defaultServiceItems = Array.isArray(schedule.defaultItems) && schedule.defaultItems.length > 0
+      ? schedule.defaultItems
+      : [{
+          serviceId: "S-WF-STD",
+          name: schedule.serviceSummary || "Wash & Fold (Standard)",
+          price: 0,
+          quantity: 1,
+          unit: "bag",
+        }];
+
+    const jobPayload: any = {
+      customerName: schedule.customerName,
+      customerPhone: schedule.customerPhone,
+      customerId: schedule.customerId,
+      address: schedule.address,
+      roomNumber: schedule.roomNo || "",
+      branchId: schedule.branchId || "ONLINE",
+      brand: schedule.brand || "that_laundry_shop",
+      type: "both",
+      status: "pending",
+      pickupScheduledAt: pickupDate,
+      deliveryScheduledAt: deliveryDate,
+      items: defaultServiceItems,
+      notes: jobNotes,
+      source: "recurring_manual_trigger",
+      clientRequestId: `REC_MANUAL_${schedule.id}_${Date.now()}`,
+    };
+
+    const createdJob = await addJobAction(jobPayload);
+
+    // Update schedule
+    schedule.lastGeneratedDate = todayStr;
+    schedule.lastJobId = createdJob.id;
+    schedule.totalJobsCreated = (schedule.totalJobsCreated || 0) + 1;
+
+    await prisma.setting.upsert({
+      where: { key: RECURRING_ORDERS_SETTING_KEY },
+      update: { value: JSON.stringify(schedules) },
+      create: { key: RECURRING_ORDERS_SETTING_KEY, value: JSON.stringify(schedules) },
+    });
+
+    return { success: true, job: createdJob, schedule };
+  } catch (err: any) {
+    console.error("[triggerRecurringOrderNowAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to trigger recurring order" };
+  }
+}

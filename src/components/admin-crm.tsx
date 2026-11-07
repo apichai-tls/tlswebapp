@@ -25,6 +25,7 @@ import {
 } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ReportsWalletApprovals } from "@/components/reports-wallet-approvals";
+import { AdminRecurringOrders } from "@/components/admin-recurring-orders";
 import { getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, normalizePhone, matchCustomerSearch, formatBaht } from "@/lib/utils";
@@ -218,13 +219,14 @@ export function AdminCRM({
   }, []);
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "expired_wallets" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "expired_wallets" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "recurring_orders">("all");
   const [selectedBrand, setSelectedBrand] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [viewLayout, setViewLayout] = useState<"table" | "grid">("table");
   const [sortBy, setSortBy] = useState<"auto" | "ltv" | "balance" | "orders" | "recent">("auto");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [recurringModalCustomer, setRecurringModalCustomer] = useState<Customer | null>(null);
 
   // Duplicate Customer States (Strictly Admin Only)
   const [selectedPrimaryMap, setSelectedPrimaryMap] = useState<Record<string, string>>({}); // phoneKey -> primaryCustomerId
@@ -1787,6 +1789,20 @@ export function AdminCRM({
               <span>Statement Report</span>
             </button>
 
+            {/* Recurring Orders Automation Tab */}
+            <button
+              type="button"
+              onClick={() => { setActiveTab("recurring_orders"); setRecurringModalCustomer(null); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl border transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "recurring_orders"
+                  ? "bg-indigo-600 text-white border-indigo-600 shadow-2xs"
+                  : "bg-white text-slate-700 border-slate-200 hover:bg-indigo-50/70 hover:border-indigo-200"
+              }`}
+            >
+              <RefreshCw size={13} className={activeTab === "recurring_orders" ? "text-white animate-spin-slow" : "text-indigo-600"} />
+              <span>Recurring Orders</span>
+            </button>
+
             {canApproveWallet && (
               <button
                 onClick={() => { setActiveTab("wallet_approvals"); setCurrentPage(1); }}
@@ -2740,6 +2756,16 @@ export function AdminCRM({
             </Table>
           </div>
         </div>
+        ) : activeTab === "recurring_orders" ? (
+          <div className={`p-4 sm:p-5 ${screenFit === "fit" ? "flex-1 min-h-0 overflow-y-auto custom-scrollbar" : ""}`}>
+            <AdminRecurringOrders
+              customers={customers}
+              shops={shops}
+              onViewJob={onViewJob}
+              initialSelectedCustomer={recurringModalCustomer}
+              onCloseModal={() => setRecurringModalCustomer(null)}
+            />
+          </div>
         ) : activeTab === "wallet_approvals" ? (
           <div className={`p-1 ${screenFit === "fit" ? "flex-1 min-h-0 overflow-y-auto custom-scrollbar" : ""}`}>
             <ReportsWalletApprovals onViewJob={onViewJob} />
@@ -3076,6 +3102,17 @@ export function AdminCRM({
 
                         {/* Utility Actions */}
                         <div className="flex items-center gap-0.5 bg-slate-50 border border-slate-200/70 rounded-lg p-0.5 shrink-0">
+                          <button
+                            type="button"
+                            className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-white rounded-md transition-colors cursor-pointer"
+                            title="Setup Recurring Laundry Schedule"
+                            onClick={() => {
+                              setRecurringModalCustomer(customer);
+                              setActiveTab("recurring_orders");
+                            }}
+                          >
+                            <RefreshCw size={13} />
+                          </button>
                           <button
                             type="button"
                             className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-white rounded-md transition-colors cursor-pointer"
@@ -3546,6 +3583,19 @@ export function AdminCRM({
 
                               {/* Utility Icon Actions Group */}
                               <div className="flex items-center gap-0.5 bg-slate-50/80 border border-slate-200/80 rounded-lg p-0.5">
+                                {/* Setup Recurring Schedule */}
+                                <button
+                                  type="button"
+                                  className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-white hover:shadow-2xs rounded-md transition-all cursor-pointer"
+                                  title="Setup Recurring Laundry Schedule"
+                                  onClick={() => {
+                                    setRecurringModalCustomer(customer);
+                                    setActiveTab("recurring_orders");
+                                  }}
+                                >
+                                  <RefreshCw size={13} />
+                                </button>
+
                                 {/* Customer Report / Statement button */}
                                 <button
                                   type="button"
