@@ -10606,3 +10606,278 @@ export async function deleteSupplyOrderAction(orderId: string) {
     return { success: false, error: err?.message || "Failed to delete supply order" };
   }
 }
+
+// ==========================================
+// SUPPLY CATALOG MANAGEMENT (ADMIN SETTINGS)
+// ==========================================
+const SUPPLY_CATALOG_SETTING_KEY = "TLS_SUPPLY_CATALOG_V1";
+
+export async function getSupplyCatalogAction() {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_CATALOG_SETTING_KEY },
+    });
+
+    let items: any[] = [];
+    if (setting?.value) {
+      try {
+        items = JSON.parse(setting.value);
+      } catch {
+        items = [];
+      }
+    }
+
+    if (!items || items.length === 0) {
+      const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
+      items = DEFAULT_SUPPLY_CATALOG.map((item) => ({ ...item, available: item.available !== false }));
+    }
+
+    return { success: true, items };
+  } catch (err: any) {
+    console.error("[getSupplyCatalogAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to load supply catalog", items: [] };
+  }
+}
+
+export async function saveSupplyCatalogItemAction(item: {
+  id?: string;
+  name: string;
+  nameTh?: string;
+  category: any;
+  categoryLabel?: string;
+  defaultUnit: string;
+  estimatedPrice: number;
+  popular?: boolean;
+  description?: string;
+  available?: boolean;
+  vendor?: string;
+}) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    if (!isAdmin) {
+      return { success: false, error: "Only administrators can configure available supply items." };
+    }
+
+    if (!item.name || !item.name.trim()) {
+      return { success: false, error: "Item name is required." };
+    }
+
+    const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_CATALOG_SETTING_KEY },
+    });
+
+    let items: any[] = [];
+    if (setting?.value) {
+      try {
+        items = JSON.parse(setting.value);
+      } catch {
+        items = [];
+      }
+    }
+
+    if (!items || items.length === 0) {
+      items = [...DEFAULT_SUPPLY_CATALOG.map((i) => ({ ...i, available: i.available !== false }))];
+    }
+
+    const itemId = item.id || `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const categoryLabel = item.categoryLabel || item.category;
+
+    const formattedItem = {
+      id: itemId,
+      name: item.name.trim(),
+      nameTh: item.nameTh?.trim() || item.name.trim(),
+      category: item.category || 'chemical',
+      categoryLabel,
+      defaultUnit: item.defaultUnit?.trim() || 'Unit',
+      estimatedPrice: Number(item.estimatedPrice) || 0,
+      popular: Boolean(item.popular),
+      description: item.description?.trim() || "",
+      available: item.available !== false,
+      vendor: item.vendor?.trim() || "",
+    };
+
+    const existingIdx = items.findIndex((i: any) => i.id === itemId);
+    if (existingIdx >= 0) {
+      items[existingIdx] = formattedItem;
+    } else {
+      items.push(formattedItem);
+    }
+
+    await prisma.setting.upsert({
+      where: { key: SUPPLY_CATALOG_SETTING_KEY },
+      update: { value: JSON.stringify(items) },
+      create: { key: SUPPLY_CATALOG_SETTING_KEY, value: JSON.stringify(items) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: itemId,
+          entityType: "SUPPLY_CATALOG",
+          action: existingIdx >= 0 ? "UPDATE_SUPPLY_ITEM" : "CREATE_SUPPLY_ITEM",
+          details: `Supply item ${formattedItem.name} (${formattedItem.category}) ${existingIdx >= 0 ? 'updated' : 'added'} by ${authUser.name || authUser.email}`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch {}
+
+    return { success: true, item: formattedItem, items };
+  } catch (err: any) {
+    console.error("[saveSupplyCatalogItemAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to save supply item" };
+  }
+}
+
+export async function toggleSupplyItemAvailabilityAction(itemId: string, available: boolean) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    if (!isAdmin) {
+      return { success: false, error: "Only administrators can configure item availability." };
+    }
+
+    const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_CATALOG_SETTING_KEY },
+    });
+
+    let items: any[] = [];
+    if (setting?.value) {
+      try {
+        items = JSON.parse(setting.value);
+      } catch {
+        items = [];
+      }
+    }
+
+    if (!items || items.length === 0) {
+      items = [...DEFAULT_SUPPLY_CATALOG.map((i) => ({ ...i, available: i.available !== false }))];
+    }
+
+    const targetItem = items.find((i: any) => i.id === itemId);
+    if (!targetItem) {
+      return { success: false, error: "Item not found in catalog." };
+    }
+
+    targetItem.available = available;
+
+    await prisma.setting.upsert({
+      where: { key: SUPPLY_CATALOG_SETTING_KEY },
+      update: { value: JSON.stringify(items) },
+      create: { key: SUPPLY_CATALOG_SETTING_KEY, value: JSON.stringify(items) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: itemId,
+          entityType: "SUPPLY_CATALOG",
+          action: available ? "ENABLE_SUPPLY_ITEM" : "DISABLE_SUPPLY_ITEM",
+          details: `Supply item ${targetItem.name} marked ${available ? 'AVAILABLE' : 'UNAVAILABLE'} for orders`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch {}
+
+    return { success: true, items };
+  } catch (err: any) {
+    console.error("[toggleSupplyItemAvailabilityAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to update item availability" };
+  }
+}
+
+export async function deleteSupplyCatalogItemAction(itemId: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    if (!isAdmin) {
+      return { success: false, error: "Only administrators can delete supply items." };
+    }
+
+    const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_CATALOG_SETTING_KEY },
+    });
+
+    let items: any[] = [];
+    if (setting?.value) {
+      try {
+        items = JSON.parse(setting.value);
+      } catch {
+        items = [];
+      }
+    }
+
+    if (!items || items.length === 0) {
+      items = [...DEFAULT_SUPPLY_CATALOG.map((i) => ({ ...i, available: i.available !== false }))];
+    }
+
+    const filtered = items.filter((i: any) => i.id !== itemId);
+
+    await prisma.setting.upsert({
+      where: { key: SUPPLY_CATALOG_SETTING_KEY },
+      update: { value: JSON.stringify(filtered) },
+      create: { key: SUPPLY_CATALOG_SETTING_KEY, value: JSON.stringify(filtered) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: itemId,
+          entityType: "SUPPLY_CATALOG",
+          action: "DELETE_SUPPLY_ITEM",
+          details: `Supply item ${itemId} was deleted from catalog`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch {}
+
+    return { success: true, items: filtered };
+  } catch (err: any) {
+    console.error("[deleteSupplyCatalogItemAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to delete supply item" };
+  }
+}
+
+export async function resetSupplyCatalogAction() {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    if (!isAdmin) {
+      return { success: false, error: "Only administrators can reset the catalog." };
+    }
+
+    const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
+    const defaultItems = DEFAULT_SUPPLY_CATALOG.map((i) => ({ ...i, available: true }));
+
+    await prisma.setting.upsert({
+      where: { key: SUPPLY_CATALOG_SETTING_KEY },
+      update: { value: JSON.stringify(defaultItems) },
+      create: { key: SUPPLY_CATALOG_SETTING_KEY, value: JSON.stringify(defaultItems) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: "SUPPLY_CATALOG",
+          entityType: "SUPPLY_CATALOG",
+          action: "RESET_SUPPLY_CATALOG",
+          details: `Supply catalog reset to default items by ${authUser.name || authUser.email}`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch {}
+
+    return { success: true, items: defaultItems };
+  } catch (err: any) {
+    console.error("[resetSupplyCatalogAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to reset supply catalog" };
+  }
+}

@@ -28,6 +28,8 @@ export interface CatalogSupplyItem {
   estimatedPrice: number;
   popular?: boolean;
   description?: string;
+  available?: boolean; // admin can set items available or out of stock / hidden
+  vendor?: string;     // preferred supplier name
 }
 
 export interface SupplyOrderItem {

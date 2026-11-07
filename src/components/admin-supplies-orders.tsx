@@ -13,13 +13,11 @@ import {
   Truck,
   AlertCircle,
   Trash2,
-  ExternalLink,
   Printer,
   Building2,
   Sparkles,
   Calendar,
   X,
-  ChevronRight,
   ShieldCheck,
   RefreshCw,
   ShoppingBag,
@@ -28,6 +26,14 @@ import {
   Check,
   AlertTriangle,
   FileCheck,
+  SlidersHorizontal,
+  Edit2,
+  RotateCcw,
+  Boxes,
+  Power,
+  Star,
+  CheckCircle,
+  XCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -55,8 +61,12 @@ import {
   createSupplyOrderAction,
   updateSupplyOrderStatusAction,
   deleteSupplyOrderAction,
+  getSupplyCatalogAction,
+  saveSupplyCatalogItemAction,
+  toggleSupplyItemAvailabilityAction,
+  deleteSupplyCatalogItemAction,
+  resetSupplyCatalogAction,
 } from '@/actions/db';
-import { FitScreenToggle } from '@/components/fit-screen-toggle';
 
 interface AdminSuppliesOrdersProps {
   currentUser?: any;
@@ -66,18 +76,33 @@ interface AdminSuppliesOrdersProps {
 export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOrdersProps) {
   const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'superadmin';
 
-  // Data state
+  // Navigation sub-tab: 'orders' | 'catalog'
+  const [viewTab, setViewTab] = useState<'orders' | 'catalog'>('orders');
+
+  // Orders data state
   const [orders, setOrders] = useState<SupplyOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Filters
+  // Dynamic Catalog state (Configured by Admin)
+  const [catalog, setCatalog] = useState<CatalogSupplyItem[]>(DEFAULT_SUPPLY_CATALOG);
+  const [loadingCatalog, setLoadingCatalog] = useState(false);
+
+  // Catalog Management filters & edit states
+  const [catalogFilterCategory, setCatalogFilterCategory] = useState<string>('all');
+  const [catalogFilterSearch, setCatalogFilterSearch] = useState<string>('');
+  const [catalogFilterAvailability, setCatalogFilterAvailability] = useState<'all' | 'available' | 'disabled'>('all');
+  const [isEditItemModalOpen, setIsEditItemModalOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<Partial<CatalogSupplyItem> | null>(null);
+  const [savingItem, setSavingItem] = useState(false);
+
+  // Order List Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [branchFilter, setBranchFilter] = useState<string>('all');
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
 
-  // Modals
+  // Modals for Orders
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [selectedOrderForView, setSelectedOrderForView] = useState<SupplyOrder | null>(null);
   const [selectedOrderForPrint, setSelectedOrderForPrint] = useState<SupplyOrder | null>(null);
@@ -90,11 +115,11 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
   const [selectedItems, setSelectedItems] = useState<SupplyOrderItem[]>([]);
   const [submittingOrder, setSubmittingOrder] = useState(false);
 
-  // Catalog Picker State in Create Modal
+  // Catalog Picker State inside Order Form Modal
   const [catalogCategory, setCatalogCategory] = useState<string>('all');
   const [catalogSearch, setCatalogSearch] = useState('');
 
-  // Custom Item Inputs
+  // Custom Item Inputs inside Order Form
   const [isAddingCustom, setIsAddingCustom] = useState(false);
   const [customName, setCustomName] = useState('');
   const [customQty, setCustomQty] = useState(1);
@@ -130,8 +155,24 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     }
   };
 
+  // 2. Load Catalog (Admin Configured Items)
+  const loadCatalog = async () => {
+    try {
+      setLoadingCatalog(true);
+      const res = await getSupplyCatalogAction();
+      if (res.success && res.items) {
+        setCatalog(res.items);
+      }
+    } catch (e: any) {
+      console.error('Error loading catalog:', e);
+    } finally {
+      setLoadingCatalog(false);
+    }
+  };
+
   useEffect(() => {
     loadOrders();
+    loadCatalog();
   }, [branchFilter]);
 
   // Sync Branch ID when shops or user change
@@ -155,19 +196,41 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     }
   }, [selectedOrderForView]);
 
-  // Catalog items filtered
-  const filteredCatalog = useMemo(() => {
-    return DEFAULT_SUPPLY_CATALOG.filter((item) => {
+  // Filtered Catalog for Order Creation Form (ONLY items marked as AVAILABLE)
+  const filteredOrderFormCatalog = useMemo(() => {
+    return catalog.filter((item) => {
+      // Must be available for branch ordering
+      if (item.available === false) return false;
+
       const matchCat = catalogCategory === 'all' || item.category === catalogCategory;
       const matchSearch =
         !catalogSearch.trim() ||
         item.name.toLowerCase().includes(catalogSearch.toLowerCase()) ||
-        item.nameTh.toLowerCase().includes(catalogSearch.toLowerCase());
+        item.nameTh?.toLowerCase().includes(catalogSearch.toLowerCase());
       return matchCat && matchSearch;
     });
-  }, [catalogCategory, catalogSearch]);
+  }, [catalog, catalogCategory, catalogSearch]);
 
-  // Filtered orders list
+  // Filtered Catalog for Admin Management View
+  const filteredCatalogAdmin = useMemo(() => {
+    return catalog.filter((item) => {
+      const matchCat = catalogFilterCategory === 'all' || item.category === catalogFilterCategory;
+      const matchSearch =
+        !catalogFilterSearch.trim() ||
+        item.name.toLowerCase().includes(catalogFilterSearch.toLowerCase()) ||
+        item.nameTh?.toLowerCase().includes(catalogFilterSearch.toLowerCase()) ||
+        item.vendor?.toLowerCase().includes(catalogFilterSearch.toLowerCase());
+
+      const matchAvail =
+        catalogFilterAvailability === 'all' ||
+        (catalogFilterAvailability === 'available' && item.available !== false) ||
+        (catalogFilterAvailability === 'disabled' && item.available === false);
+
+      return matchCat && matchSearch && matchAvail;
+    });
+  }, [catalog, catalogFilterCategory, catalogFilterSearch, catalogFilterAvailability]);
+
+  // Filtered Orders List
   const filteredOrders = useMemo(() => {
     return orders.filter((o) => {
       const matchQuery =
@@ -184,7 +247,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     });
   }, [orders, searchQuery, statusFilter, priorityFilter]);
 
-  // KPI Calculations
+  // Orders KPI Stats
   const stats = useMemo(() => {
     const total = orders.length;
     const pending = orders.filter((o) => o.status === 'pending').length;
@@ -198,7 +261,144 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     return { total, pending, processing, dispatched, completed, totalEstimatedCost };
   }, [orders]);
 
-  // Handlers for Cart / Items Selection
+  // Catalog KPI Stats
+  const catalogStats = useMemo(() => {
+    const total = catalog.length;
+    const available = catalog.filter((i) => i.available !== false).length;
+    const disabled = catalog.filter((i) => i.available === false).length;
+    const popular = catalog.filter((i) => i.popular).length;
+    return { total, available, disabled, popular };
+  }, [catalog]);
+
+  // --- CATALOG MANAGEMENT HANDLERS ---
+  const handleToggleItemAvailability = async (item: CatalogSupplyItem) => {
+    const nextVal = item.available === false ? true : false;
+    // Optimistic local update
+    setCatalog((prev) =>
+      prev.map((i) => (i.id === item.id ? { ...i, available: nextVal } : i))
+    );
+    try {
+      const res = await toggleSupplyItemAvailabilityAction(item.id, nextVal);
+      if (res.success) {
+        toast.success(
+          nextVal
+            ? `"${item.name}" is now AVAILABLE for branch orders`
+            : `"${item.name}" is now DISABLED (Out of Stock)`
+        );
+        if (res.items) setCatalog(res.items);
+      } else {
+        toast.error(res.error || 'Failed to update item availability');
+        loadCatalog();
+      }
+    } catch (e: any) {
+      toast.error('Error updating availability: ' + e.message);
+      loadCatalog();
+    }
+  };
+
+  const handleOpenCreateItemModal = () => {
+    setEditingItem({
+      id: '',
+      name: '',
+      nameTh: '',
+      category: 'chemical',
+      categoryLabel: 'Detergents & Softeners',
+      defaultUnit: 'Gallon (20L)',
+      estimatedPrice: 0,
+      popular: false,
+      description: '',
+      available: true,
+      vendor: '',
+    });
+    setIsEditItemModalOpen(true);
+  };
+
+  const handleOpenEditItemModal = (item: CatalogSupplyItem) => {
+    setEditingItem({ ...item });
+    setIsEditItemModalOpen(true);
+  };
+
+  const handleSaveCatalogItem = async () => {
+    if (!editingItem || !editingItem.name?.trim()) {
+      toast.error('Please enter the item name');
+      return;
+    }
+    try {
+      setSavingItem(true);
+      const catKey = (editingItem.category || 'chemical') as SupplyItemCategory;
+      const catLabel = SUPPLY_CATEGORY_LABELS[catKey]?.en || 'Supplies';
+
+      const res = await saveSupplyCatalogItemAction({
+        id: editingItem.id || undefined,
+        name: editingItem.name,
+        nameTh: editingItem.nameTh || editingItem.name,
+        category: catKey,
+        categoryLabel: catLabel,
+        defaultUnit: editingItem.defaultUnit || 'Unit',
+        estimatedPrice: Number(editingItem.estimatedPrice) || 0,
+        popular: Boolean(editingItem.popular),
+        description: editingItem.description || '',
+        available: editingItem.available !== false,
+        vendor: editingItem.vendor || '',
+      });
+
+      if (res.success) {
+        toast.success(editingItem.id ? 'Supply item updated' : 'New supply item added to catalog');
+        setIsEditItemModalOpen(false);
+        setEditingItem(null);
+        if (res.items) setCatalog(res.items);
+        else loadCatalog();
+      } else {
+        toast.error(res.error || 'Failed to save supply item');
+      }
+    } catch (e: any) {
+      toast.error('Error saving item: ' + e.message);
+    } finally {
+      setSavingItem(false);
+    }
+  };
+
+  const handleDeleteCatalogItem = async (itemId: string, name: string) => {
+    if (!confirm(`Are you sure you want to remove "${name}" from the supplies catalog?`)) {
+      return;
+    }
+    try {
+      const res = await deleteSupplyCatalogItemAction(itemId);
+      if (res.success) {
+        toast.success(`"${name}" removed from catalog`);
+        if (res.items) setCatalog(res.items);
+        else loadCatalog();
+      } else {
+        toast.error(res.error || 'Failed to delete item');
+      }
+    } catch (e: any) {
+      toast.error('Error: ' + e.message);
+    }
+  };
+
+  const handleResetCatalog = async () => {
+    if (
+      !confirm(
+        'Are you sure you want to restore the supplies catalog to the standard factory defaults? Any custom added items will be reset.'
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await resetSupplyCatalogAction();
+      if (res.success) {
+        toast.success('Supplies catalog reset to standard defaults');
+        if (res.items) setCatalog(res.items);
+        else loadCatalog();
+      } else {
+        toast.error(res.error || 'Failed to reset catalog');
+      }
+    } catch (e: any) {
+      toast.error('Error: ' + e.message);
+    }
+  };
+
+  // --- ORDER CART HANDLERS ---
   const handleAddCatalogItem = (catalogItem: CatalogSupplyItem) => {
     setSelectedItems((prev) => {
       const existing = prev.find((it) => it.catalogItemId === catalogItem.id);
@@ -259,10 +459,10 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     setCustomQty(1);
     setCustomPrice(0);
     setIsAddingCustom(false);
-    toast.success('Custom item added');
+    toast.success('Custom item added to order');
   };
 
-  // Submit Order
+  // Submit Order to Admin
   const handleSubmitOrder = async () => {
     if (selectedItems.length === 0) {
       toast.error('Please select at least one chemical or supply item to order');
@@ -286,7 +486,6 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
       if (res.success && res.order) {
         toast.success(`Supply order ${res.order.orderNumber} submitted to Admin!`);
         setIsCreateOpen(false);
-        // Reset form
         setSelectedItems([]);
         setOrderNotes('');
         setNeededByDate('');
@@ -367,7 +566,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     }
   };
 
-  // Helper Badge Colors
+  // Status Badge
   const getStatusBadge = (status: SupplyOrderStatus) => {
     switch (status) {
       case 'pending':
@@ -442,478 +641,868 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
   return (
     <div className="space-y-5">
       {/* 1. Header & Primary Action Banner */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-gradient-to-r from-sky-900 via-indigo-950 to-slate-900 text-white p-5 sm:p-6 rounded-2xl shadow-xl relative overflow-hidden">
-        <div className="absolute right-0 top-0 bottom-0 w-80 bg-radial from-sky-500/20 via-transparent to-transparent pointer-events-none" />
-        <div className="relative z-10 space-y-1">
-          <div className="flex items-center gap-2">
-            <span className="p-2 rounded-xl bg-sky-500/20 text-sky-300 border border-sky-400/30">
-              <Droplets size={22} className="text-sky-300" />
-            </span>
-            <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white flex items-center gap-2">
-              Chemicals & Supplies Orders
-              <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-white/10 text-sky-200 border border-white/15">
-                สั่งซื้อน้ำยาและอุปกรณ์
+      <div className="bg-gradient-to-r from-sky-900 via-indigo-950 to-slate-900 text-white p-5 sm:p-6 rounded-2xl shadow-xl relative overflow-hidden space-y-4">
+        <div className="absolute right-0 top-0 bottom-0 w-96 bg-radial from-sky-500/20 via-transparent to-transparent pointer-events-none" />
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative z-10">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="p-2 rounded-xl bg-sky-500/20 text-sky-300 border border-sky-400/30">
+                <Droplets size={22} className="text-sky-300" />
               </span>
-            </h1>
-          </div>
-          <p className="text-xs sm:text-sm text-sky-100/80 max-w-2xl leading-relaxed">
-            Order detergents, fabric softeners, packaging, and store supplies. Branch requests are
-            submitted directly to admin for approval, vendor procurement, and dispatch.
-          </p>
-        </div>
-
-        <div className="relative z-10 flex items-center gap-2 shrink-0">
-          <FitScreenToggle />
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => loadOrders(true)}
-            disabled={refreshing}
-            className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl backdrop-blur-sm transition-all"
-            title="Refresh order list"
-          >
-            <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
-            <span className="hidden sm:inline ml-1.5">Refresh</span>
-          </Button>
-
-          <Button
-            size="sm"
-            onClick={() => {
-              setIsCreateOpen(true);
-            }}
-            className="h-10 px-4 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-sky-600/30 gap-2 cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98]"
-          >
-            <Plus size={16} />
-            <span>+ New Supply Order (สั่งซื้อน้ำยา)</span>
-          </Button>
-        </div>
-      </div>
-
-      {/* 2. Executive KPI Summary Strip */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-        {/* KPI 1: Pending Review */}
-        <div
-          onClick={() => setStatusFilter(statusFilter === 'pending' ? 'all' : 'pending')}
-          className={`bg-white rounded-2xl border p-4 shadow-2xs cursor-pointer transition-all hover:shadow-md ${
-            statusFilter === 'pending'
-              ? 'border-amber-500 ring-2 ring-amber-500/20 bg-amber-50/20'
-              : 'border-slate-200/80 border-t-4 border-t-amber-500'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-              Pending Admin Review
-            </span>
-            <span className="p-1.5 rounded-lg bg-amber-50 text-amber-600">
-              <Clock size={14} />
-            </span>
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-black text-amber-600">{stats.pending}</span>
-            <span className="text-xs text-amber-700 font-semibold">orders</span>
-          </div>
-          <p className="text-[11px] text-slate-500 mt-1 font-medium">Awaiting admin processing</p>
-        </div>
-
-        {/* KPI 2: In Processing */}
-        <div
-          onClick={() => setStatusFilter(statusFilter === 'processing' ? 'all' : 'processing')}
-          className={`bg-white rounded-2xl border p-4 shadow-2xs cursor-pointer transition-all hover:shadow-md ${
-            statusFilter === 'processing'
-              ? 'border-purple-500 ring-2 ring-purple-500/20 bg-purple-50/20'
-              : 'border-slate-200/80 border-t-4 border-t-purple-500'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-              Vendor Processing
-            </span>
-            <span className="p-1.5 rounded-lg bg-purple-50 text-purple-600">
-              <Package size={14} />
-            </span>
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-black text-purple-700">{stats.processing}</span>
-            <span className="text-xs text-purple-600 font-semibold">orders</span>
-          </div>
-          <p className="text-[11px] text-slate-500 mt-1 font-medium">Ordered from chemical vendor</p>
-        </div>
-
-        {/* KPI 3: In Transit */}
-        <div
-          onClick={() => setStatusFilter(statusFilter === 'dispatched' ? 'all' : 'dispatched')}
-          className={`bg-white rounded-2xl border p-4 shadow-2xs cursor-pointer transition-all hover:shadow-md ${
-            statusFilter === 'dispatched'
-              ? 'border-blue-500 ring-2 ring-blue-500/20 bg-blue-50/20'
-              : 'border-slate-200/80 border-t-4 border-t-blue-500'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-              Dispatched / On The Way
-            </span>
-            <span className="p-1.5 rounded-lg bg-blue-50 text-blue-600">
-              <Truck size={14} />
-            </span>
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-black text-blue-600">{stats.dispatched}</span>
-            <span className="text-xs text-blue-600 font-semibold">shipments</span>
-          </div>
-          <p className="text-[11px] text-slate-500 mt-1 font-medium">Out for delivery to branch</p>
-        </div>
-
-        {/* KPI 4: Fulfilled / Completed */}
-        <div
-          onClick={() => setStatusFilter(statusFilter === 'completed' ? 'all' : 'completed')}
-          className={`bg-white rounded-2xl border p-4 shadow-2xs cursor-pointer transition-all hover:shadow-md ${
-            statusFilter === 'completed'
-              ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-50/20'
-              : 'border-slate-200/80 border-t-4 border-t-emerald-500'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-              Received & Completed
-            </span>
-            <span className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600">
-              <CheckCircle2 size={14} />
-            </span>
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-black text-emerald-600">{stats.completed}</span>
-            <span className="text-xs text-emerald-700 font-semibold">fulfilled</span>
-          </div>
-          <p className="text-[11px] text-slate-500 mt-1 font-medium">Successfully received at branch</p>
-        </div>
-      </div>
-
-      {/* 3. Search & Filter Bar */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-3 sm:p-4 shadow-2xs space-y-3">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-          {/* Search Box */}
-          <div className="relative flex-1">
-            <Search
-              size={15}
-              className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-            />
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by Order # (e.g. SUP-202611-0001), requester, branch, or item name..."
-              className="pl-9 h-10 text-xs bg-slate-50 border-slate-200 rounded-xl focus:bg-white transition-colors"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-              >
-                <X size={14} />
-              </button>
-            )}
-          </div>
-
-          {/* Quick Filters */}
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Branch Filter (for admin or multi-branch) */}
-            {isAdmin && (
-              <select
-                value={branchFilter}
-                onChange={(e) => setBranchFilter(e.target.value)}
-                className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 focus:bg-white focus:outline-none"
-              >
-                <option value="all">All Branches</option>
-                <option value="ONLINE">Online Dispatch</option>
-                {shops.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-            )}
-
-            {/* Priority Filter */}
-            <select
-              value={priorityFilter}
-              onChange={(e) => setPriorityFilter(e.target.value)}
-              className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 focus:bg-white focus:outline-none"
-            >
-              <option value="all">All Priorities</option>
-              <option value="urgent">Urgent</option>
-              <option value="critical">Critical (Out of Stock)</option>
-              <option value="normal">Normal</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Status Filter Chips */}
-        <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-100 text-xs">
-          <span className="text-[11px] font-bold text-slate-400 mr-1 flex items-center gap-1">
-            <Filter size={11} /> Filter Status:
-          </span>
-          {[
-            { id: 'all', label: 'All Orders', count: stats.total },
-            { id: 'pending', label: 'Pending Review', count: stats.pending, color: 'text-amber-700' },
-            { id: 'processing', label: 'Processing', count: stats.processing, color: 'text-purple-700' },
-            { id: 'dispatched', label: 'In Transit', count: stats.dispatched, color: 'text-blue-700' },
-            { id: 'completed', label: 'Completed', count: stats.completed, color: 'text-emerald-700' },
-            { id: 'cancelled', label: 'Cancelled', count: orders.filter((o) => o.status === 'cancelled').length },
-          ].map((tab) => {
-            const isSelected = statusFilter === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setStatusFilter(tab.id)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5 ${
-                  isSelected
-                    ? 'bg-slate-900 text-white shadow-xs'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80'
-                }`}
-              >
-                <span>{tab.label}</span>
-                <span
-                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
-                    isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
-                  }`}
-                >
-                  {tab.count}
+              <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white flex items-center gap-2">
+                Chemicals & Supplies Orders
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-white/10 text-sky-200 border border-white/15">
+                  สั่งซื้อน้ำยาและอุปกรณ์
                 </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* 4. Orders List Table / Feed */}
-      {loading ? (
-        <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-2xs">
-          <RefreshCw size={28} className="animate-spin mx-auto text-sky-600 mb-3" />
-          <p className="text-sm font-bold text-slate-700">Loading chemical & supply orders...</p>
-          <p className="text-xs text-slate-400 mt-1">Retrieving branch purchase requests</p>
-        </div>
-      ) : filteredOrders.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center shadow-2xs space-y-3">
-          <div className="w-14 h-14 rounded-2xl bg-sky-50 text-sky-600 mx-auto flex items-center justify-center">
-            <ShoppingBag size={28} />
-          </div>
-          <div>
-            <h3 className="text-base font-extrabold text-slate-800">No supply orders found</h3>
-            <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
-              {searchQuery || statusFilter !== 'all'
-                ? 'Try adjusting your search filters or status selection.'
-                : 'No chemicals or supplies have been ordered yet. Click below to submit an order to the admin.'}
+              </h1>
+            </div>
+            <p className="text-xs sm:text-sm text-sky-100/80 max-w-2xl leading-relaxed">
+              Order detergents, fabric softeners, packaging, and store supplies. Admins can configure
+              which items are available for branch orders and manage procurement.
             </p>
           </div>
-          <Button
-            size="sm"
-            onClick={() => setIsCreateOpen(true)}
-            className="h-9 px-4 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl gap-1.5"
-          >
-            <Plus size={15} />
-            <span>Create First Supply Order</span>
-          </Button>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {isAdmin && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setViewTab(viewTab === 'orders' ? 'catalog' : 'orders')}
+                className={`h-10 px-3.5 border-white/20 text-white font-bold text-xs rounded-xl backdrop-blur-sm transition-all gap-1.5 cursor-pointer ${
+                  viewTab === 'catalog'
+                    ? 'bg-white text-slate-900 border-white hover:bg-slate-100'
+                    : 'bg-white/10 hover:bg-white/20'
+                }`}
+              >
+                <SlidersHorizontal size={14} />
+                <span>
+                  {viewTab === 'catalog'
+                    ? 'Back to Orders (ดูคำสั่งซื้อ)'
+                    : 'Set Available Items (ตั้งค่ารายการสินค้า)'}
+                </span>
+              </Button>
+            )}
+
+            {viewTab === 'orders' ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => loadOrders(true)}
+                  disabled={refreshing}
+                  className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl backdrop-blur-sm transition-all"
+                  title="Refresh order list"
+                >
+                  <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
+                  <span className="hidden sm:inline ml-1.5">Refresh</span>
+                </Button>
+
+                <Button
+                  size="sm"
+                  onClick={() => setIsCreateOpen(true)}
+                  className="h-10 px-4 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-sky-600/30 gap-2 cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98]"
+                >
+                  <Plus size={16} />
+                  <span>+ New Supply Order (สั่งซื้อน้ำยา)</span>
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  size="sm"
+                  onClick={handleOpenCreateItemModal}
+                  className="h-10 px-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-emerald-600/30 gap-2 cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98]"
+                >
+                  <Plus size={16} />
+                  <span>+ Add New Supply Item (เพิ่มสินค้าใหม่)</span>
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleResetCatalog}
+                  className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl backdrop-blur-sm transition-all gap-1.5"
+                  title="Restore factory default catalog items"
+                >
+                  <RotateCcw size={14} />
+                  <span className="hidden sm:inline">Reset Defaults</span>
+                </Button>
+              </>
+            )}
+          </div>
         </div>
-      ) : (
-        <div className="space-y-3">
-          <AnimatePresence>
-            {filteredOrders.map((order) => {
-              const isUrgent = order.priority === 'urgent' || order.priority === 'critical';
+
+        {/* Sub-tab Navigation: Orders vs Catalog Manager */}
+        <div className="flex items-center gap-1.5 p-1 bg-white/10 backdrop-blur-md rounded-xl border border-white/15 w-fit relative z-10">
+          <button
+            type="button"
+            onClick={() => setViewTab('orders')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              viewTab === 'orders'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-white/80 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            <ShoppingBag size={14} />
+            <span>Branch Orders (คำสั่งซื้อของสาขา)</span>
+            <span
+              className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                viewTab === 'orders' ? 'bg-indigo-100 text-indigo-800' : 'bg-white/20 text-white'
+              }`}
+            >
+              {stats.total}
+            </span>
+          </button>
+
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setViewTab('catalog')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+                viewTab === 'catalog'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-white/80 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              <Boxes size={14} />
+              <span>Available Items & Catalog (ตั้งค่ารายการสินค้าที่สั่งได้)</span>
+              <span
+                className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                  viewTab === 'catalog' ? 'bg-sky-100 text-sky-800' : 'bg-white/20 text-white'
+                }`}
+              >
+                {catalog.length}
+              </span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ======================================================== */}
+      {/* VIEW TAB 1: BRANCH ORDERS (คำสั่งซื้อของสาขา) */}
+      {/* ======================================================== */}
+      {viewTab === 'orders' && (
+        <>
+          {/* Executive KPI Summary Strip */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+            {/* KPI 1: Pending Review */}
+            <div
+              onClick={() => setStatusFilter(statusFilter === 'pending' ? 'all' : 'pending')}
+              className={`bg-white rounded-2xl border p-4 shadow-2xs cursor-pointer transition-all hover:shadow-md ${
+                statusFilter === 'pending'
+                  ? 'border-amber-500 ring-2 ring-amber-500/20 bg-amber-50/20'
+                  : 'border-slate-200/80 border-t-4 border-t-amber-500'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Pending Admin Review
+                </span>
+                <span className="p-1.5 rounded-lg bg-amber-50 text-amber-600">
+                  <Clock size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-amber-600">{stats.pending}</span>
+                <span className="text-xs text-amber-700 font-semibold">orders</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Awaiting admin processing</p>
+            </div>
+
+            {/* KPI 2: In Processing */}
+            <div
+              onClick={() => setStatusFilter(statusFilter === 'processing' ? 'all' : 'processing')}
+              className={`bg-white rounded-2xl border p-4 shadow-2xs cursor-pointer transition-all hover:shadow-md ${
+                statusFilter === 'processing'
+                  ? 'border-purple-500 ring-2 ring-purple-500/20 bg-purple-50/20'
+                  : 'border-slate-200/80 border-t-4 border-t-purple-500'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Vendor Processing
+                </span>
+                <span className="p-1.5 rounded-lg bg-purple-50 text-purple-600">
+                  <Package size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-purple-700">{stats.processing}</span>
+                <span className="text-xs text-purple-600 font-semibold">orders</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Ordered from chemical vendor</p>
+            </div>
+
+            {/* KPI 3: In Transit */}
+            <div
+              onClick={() => setStatusFilter(statusFilter === 'dispatched' ? 'all' : 'dispatched')}
+              className={`bg-white rounded-2xl border p-4 shadow-2xs cursor-pointer transition-all hover:shadow-md ${
+                statusFilter === 'dispatched'
+                  ? 'border-blue-500 ring-2 ring-blue-500/20 bg-blue-50/20'
+                  : 'border-slate-200/80 border-t-4 border-t-blue-500'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Dispatched / On The Way
+                </span>
+                <span className="p-1.5 rounded-lg bg-blue-50 text-blue-600">
+                  <Truck size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-blue-600">{stats.dispatched}</span>
+                <span className="text-xs text-blue-600 font-semibold">shipments</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Out for delivery to branch</p>
+            </div>
+
+            {/* KPI 4: Fulfilled / Completed */}
+            <div
+              onClick={() => setStatusFilter(statusFilter === 'completed' ? 'all' : 'completed')}
+              className={`bg-white rounded-2xl border p-4 shadow-2xs cursor-pointer transition-all hover:shadow-md ${
+                statusFilter === 'completed'
+                  ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-50/20'
+                  : 'border-slate-200/80 border-t-4 border-t-emerald-500'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Received & Completed
+                </span>
+                <span className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600">
+                  <CheckCircle2 size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-emerald-600">{stats.completed}</span>
+                <span className="text-xs text-emerald-700 font-semibold">fulfilled</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Successfully received at branch</p>
+            </div>
+          </div>
+
+          {/* Search & Filter Bar */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-3 sm:p-4 shadow-2xs space-y-3">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              {/* Search Box */}
+              <div className="relative flex-1">
+                <Search
+                  size={15}
+                  className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+                />
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search by Order # (e.g. SUP-202611-0001), requester, branch, or item name..."
+                  className="pl-9 h-10 text-xs bg-slate-50 border-slate-200 rounded-xl focus:bg-white transition-colors"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+
+              {/* Quick Filters */}
+              <div className="flex flex-wrap items-center gap-2">
+                {isAdmin && (
+                  <select
+                    value={branchFilter}
+                    onChange={(e) => setBranchFilter(e.target.value)}
+                    className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 focus:bg-white focus:outline-none"
+                  >
+                    <option value="all">All Branches</option>
+                    <option value="ONLINE">Online Dispatch</option>
+                    {shops.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                <select
+                  value={priorityFilter}
+                  onChange={(e) => setPriorityFilter(e.target.value)}
+                  className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 focus:bg-white focus:outline-none"
+                >
+                  <option value="all">All Priorities</option>
+                  <option value="urgent">Urgent</option>
+                  <option value="critical">Critical (Out of Stock)</option>
+                  <option value="normal">Normal</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Status Filter Chips */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-100 text-xs">
+              <span className="text-[11px] font-bold text-slate-400 mr-1 flex items-center gap-1">
+                <Filter size={11} /> Filter Status:
+              </span>
+              {[
+                { id: 'all', label: 'All Orders', count: stats.total },
+                { id: 'pending', label: 'Pending Review', count: stats.pending, color: 'text-amber-700' },
+                { id: 'processing', label: 'Processing', count: stats.processing, color: 'text-purple-700' },
+                { id: 'dispatched', label: 'In Transit', count: stats.dispatched, color: 'text-blue-700' },
+                { id: 'completed', label: 'Completed', count: stats.completed, color: 'text-emerald-700' },
+                {
+                  id: 'cancelled',
+                  label: 'Cancelled',
+                  count: orders.filter((o) => o.status === 'cancelled').length,
+                },
+              ].map((tab) => {
+                const isSelected = statusFilter === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setStatusFilter(tab.id)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5 ${
+                      isSelected
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80'
+                    }`}
+                  >
+                    <span>{tab.label}</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+                        isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {tab.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Orders List Table / Cards */}
+          {loading ? (
+            <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-2xs">
+              <RefreshCw size={28} className="animate-spin mx-auto text-sky-600 mb-3" />
+              <p className="text-sm font-bold text-slate-700">Loading chemical & supply orders...</p>
+              <p className="text-xs text-slate-400 mt-1">Retrieving branch purchase requests</p>
+            </div>
+          ) : filteredOrders.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center shadow-2xs space-y-3">
+              <div className="w-14 h-14 rounded-2xl bg-sky-50 text-sky-600 mx-auto flex items-center justify-center">
+                <ShoppingBag size={28} />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-slate-800">No supply orders found</h3>
+                <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                  {searchQuery || statusFilter !== 'all'
+                    ? 'Try adjusting your search filters or status selection.'
+                    : 'No chemicals or supplies have been ordered yet. Click below to submit an order to the admin.'}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => setIsCreateOpen(true)}
+                className="h-9 px-4 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl gap-1.5"
+              >
+                <Plus size={15} />
+                <span>Create First Supply Order</span>
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <AnimatePresence>
+                {filteredOrders.map((order) => {
+                  const isUrgent = order.priority === 'urgent' || order.priority === 'critical';
+                  return (
+                    <motion.div
+                      key={order.id}
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0 }}
+                      className={`bg-white rounded-2xl border transition-all hover:shadow-md p-4 sm:p-5 shadow-2xs ${
+                        isUrgent ? 'border-amber-300 bg-amber-50/10' : 'border-slate-200'
+                      }`}
+                    >
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                        {/* Left: Order Info & Metadata */}
+                        <div className="space-y-2 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-sm font-black text-indigo-950 bg-indigo-50 px-2.5 py-0.5 rounded-lg border border-indigo-200/80">
+                              {order.orderNumber}
+                            </span>
+
+                            {getStatusBadge(order.status)}
+                            {getPriorityBadge(order.priority)}
+
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md">
+                              <Building2 size={12} className="text-slate-400" />
+                              <span>{order.branchName}</span>
+                            </span>
+
+                            <span className="text-[11px] text-slate-400">
+                              {new Date(order.createdAt).toLocaleDateString('en-GB', {
+                                day: 'numeric',
+                                month: 'short',
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                          </div>
+
+                          {/* Requester & Notes */}
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
+                            <span className="font-semibold">
+                              Requested by:{' '}
+                              <span className="font-extrabold text-slate-900">{order.requesterName}</span>{' '}
+                              {order.requesterRole && (
+                                <span className="text-[10px] uppercase text-slate-400">
+                                  ({order.requesterRole})
+                                </span>
+                              )}
+                            </span>
+                            {order.neededByDate && (
+                              <span className="flex items-center gap-1 text-amber-700 font-semibold bg-amber-50 px-2 py-0.5 rounded">
+                                <Calendar size={11} />
+                                <span>Needed by: {order.neededByDate}</span>
+                              </span>
+                            )}
+                            {order.vendorPoNumber && (
+                              <span className="text-purple-700 font-bold bg-purple-50 px-2 py-0.5 rounded">
+                                PO #{order.vendorPoNumber}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Item Pills Summary */}
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                            {order.items.map((it, idx) => (
+                              <span
+                                key={idx}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-50 border border-slate-200 text-slate-800"
+                              >
+                                <span className="text-sky-600 font-black">{it.quantity}x</span>
+                                <span className="truncate max-w-[200px]">{it.name}</span>
+                                <span className="text-[10px] text-slate-400">({it.unit})</span>
+                              </span>
+                            ))}
+                          </div>
+
+                          {order.notes && (
+                            <p className="text-xs text-slate-500 italic bg-slate-50 p-2 rounded-lg border border-slate-100">
+                              "{order.notes}"
+                            </p>
+                          )}
+
+                          {order.adminNotes && (
+                            <div className="flex items-start gap-1.5 text-xs text-indigo-900 bg-indigo-50/70 p-2 rounded-lg border border-indigo-100">
+                              <ShieldCheck size={14} className="text-indigo-600 shrink-0 mt-0.5" />
+                              <div>
+                                <span className="font-bold">Admin Processing Note:</span> {order.adminNotes}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Right: Estimated Cost & Actions */}
+                        <div className="flex sm:flex-col items-center sm:items-end justify-between gap-3 shrink-0 pt-3 lg:pt-0 border-t sm:border-t-0 border-slate-100">
+                          <div className="text-left sm:text-right">
+                            <div className="text-xs text-slate-400 font-semibold">Total Items</div>
+                            <div className="text-base font-black text-slate-900">
+                              {order.totalItemsCount}{' '}
+                              <span className="text-xs font-semibold text-slate-500">items</span>
+                            </div>
+                            {order.totalEstimatedCost > 0 && (
+                              <div className="text-xs font-bold text-sky-700">
+                                Est. ฿{order.totalEstimatedCost.toLocaleString()}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                            {/* Quick Admin Actions */}
+                            {isAdmin && order.status === 'pending' && (
+                              <Button
+                                size="sm"
+                                onClick={() => handleQuickStatusChange(order, 'approved')}
+                                className="h-8 px-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
+                                title="Approve Order"
+                              >
+                                <CheckCircle2 size={13} />
+                                <span>Approve</span>
+                              </Button>
+                            )}
+
+                            {isAdmin && order.status === 'approved' && (
+                              <Button
+                                size="sm"
+                                onClick={() => handleQuickStatusChange(order, 'processing')}
+                                className="h-8 px-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
+                                title="Mark Processing with Vendor"
+                              >
+                                <RefreshCw size={13} />
+                                <span>Mark Processing</span>
+                              </Button>
+                            )}
+
+                            {isAdmin && order.status === 'processing' && (
+                              <Button
+                                size="sm"
+                                onClick={() => handleQuickStatusChange(order, 'dispatched')}
+                                className="h-8 px-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
+                                title="Mark Dispatched / In Transit"
+                              >
+                                <Truck size={13} />
+                                <span>Mark Dispatched</span>
+                              </Button>
+                            )}
+
+                            {order.status === 'dispatched' && (
+                              <Button
+                                size="sm"
+                                onClick={() => handleQuickStatusChange(order, 'completed')}
+                                className="h-8 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
+                                title="Mark Received by Branch"
+                              >
+                                <Check size={13} />
+                                <span>Confirm Received</span>
+                              </Button>
+                            )}
+
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setSelectedOrderForView(order)}
+                              className="h-8 px-2.5 text-xs font-bold rounded-xl border-slate-200 text-slate-700 hover:bg-slate-50 gap-1 cursor-pointer"
+                            >
+                              <Eye size={13} />
+                              <span>View Details</span>
+                            </Button>
+
+                            <button
+                              type="button"
+                              onClick={() => setSelectedOrderForPrint(order)}
+                              className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+                              title="Print Order Slip"
+                            >
+                              <Printer size={14} />
+                            </button>
+
+                            {isAdmin && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteOrder(order.id, order.orderNumber)}
+                                className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
+                                title="Delete Order"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ======================================================== */}
+      {/* VIEW TAB 2: AVAILABLE ITEMS & CATALOG (ADMIN SETTINGS)   */}
+      {/* ======================================================== */}
+      {viewTab === 'catalog' && isAdmin && (
+        <div className="space-y-4">
+          {/* Catalog KPI Analytics Strip */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+            <div className="bg-white rounded-2xl border border-slate-200/80 border-t-4 border-t-sky-500 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Total Items in Catalog
+                </span>
+                <span className="p-1.5 rounded-lg bg-sky-50 text-sky-600">
+                  <Boxes size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-slate-900">{catalogStats.total}</span>
+                <span className="text-xs text-slate-400 font-semibold">supplies</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">All laundry chemicals & goods</p>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-200/80 border-t-4 border-t-emerald-500 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Available for Order
+                </span>
+                <span className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600">
+                  <CheckCircle size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-emerald-600">{catalogStats.available}</span>
+                <span className="text-xs text-emerald-700 font-semibold">active</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Branches can place orders</p>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-200/80 border-t-4 border-t-amber-500 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Disabled / Out of Stock
+                </span>
+                <span className="p-1.5 rounded-lg bg-amber-50 text-amber-600">
+                  <XCircle size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-amber-600">{catalogStats.disabled}</span>
+                <span className="text-xs text-amber-700 font-semibold">hidden</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Closed for ordering</p>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-200/80 border-t-4 border-t-indigo-500 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Popular Essentials
+                </span>
+                <span className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600">
+                  <Star size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-indigo-600">{catalogStats.popular}</span>
+                <span className="text-xs text-indigo-700 font-semibold">featured</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Highlighted for fast re-ordering</p>
+            </div>
+          </div>
+
+          {/* Catalog Search & Category Filters */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="relative flex-1">
+                <Search
+                  size={15}
+                  className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+                />
+                <Input
+                  value={catalogFilterSearch}
+                  onChange={(e) => setCatalogFilterSearch(e.target.value)}
+                  placeholder="Search supply items by English name, Thai name, or vendor..."
+                  className="pl-9 h-10 text-xs bg-slate-50 border-slate-200 rounded-xl focus:bg-white"
+                />
+                {catalogFilterSearch && (
+                  <button
+                    onClick={() => setCatalogFilterSearch('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <select
+                  value={catalogFilterAvailability}
+                  onChange={(e) => setCatalogFilterAvailability(e.target.value as any)}
+                  className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 focus:bg-white focus:outline-none"
+                >
+                  <option value="all">All Availability</option>
+                  <option value="available">Available for Order Only</option>
+                  <option value="disabled">Disabled / Out of Stock Only</option>
+                </select>
+
+                <Button
+                  size="sm"
+                  onClick={handleOpenCreateItemModal}
+                  className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-xs gap-1.5 cursor-pointer"
+                >
+                  <Plus size={15} />
+                  <span>+ Add Item</span>
+                </Button>
+              </div>
+            </div>
+
+            {/* Category Filter Pills */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setCatalogFilterCategory('all')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  catalogFilterCategory === 'all'
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                All Categories ({catalog.length})
+              </button>
+              {Object.entries(SUPPLY_CATEGORY_LABELS).map(([catKey, label]) => {
+                const count = catalog.filter((i) => i.category === catKey).length;
+                const isSelected = catalogFilterCategory === catKey;
+                return (
+                  <button
+                    key={catKey}
+                    type="button"
+                    onClick={() => setCatalogFilterCategory(catKey)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                      isSelected
+                        ? 'bg-sky-700 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    <span>{label.icon}</span>
+                    <span>{label.en}</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+                        isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Catalog Items Management Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            {filteredCatalogAdmin.map((item) => {
+              const isAvailable = item.available !== false;
+              const catCfg = SUPPLY_CATEGORY_LABELS[item.category] || SUPPLY_CATEGORY_LABELS.other;
+
               return (
-                <motion.div
-                  key={order.id}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0 }}
-                  className={`bg-white rounded-2xl border transition-all hover:shadow-md p-4 sm:p-5 shadow-2xs ${
-                    isUrgent ? 'border-amber-300 bg-amber-50/10' : 'border-slate-200'
+                <div
+                  key={item.id}
+                  className={`bg-white rounded-2xl border p-4 shadow-2xs transition-all flex flex-col justify-between gap-3 ${
+                    isAvailable
+                      ? 'border-slate-200 hover:border-slate-300 hover:shadow-md'
+                      : 'border-amber-300/80 bg-amber-50/20 opacity-85'
                   }`}
                 >
-                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                    {/* Left: Order Info & Metadata */}
-                    <div className="space-y-2 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-mono text-sm font-black text-indigo-950 bg-indigo-50 px-2.5 py-0.5 rounded-lg border border-indigo-200/80">
-                          {order.orderNumber}
-                        </span>
+                  <div className="space-y-2">
+                    {/* Top Row: Category Badge & Availability Switch */}
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">
+                        <span>{catCfg.icon}</span>
+                        <span>{catCfg.en}</span>
+                      </span>
 
-                        {getStatusBadge(order.status)}
-                        {getPriorityBadge(order.priority)}
-
-                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md">
-                          <Building2 size={12} className="text-slate-400" />
-                          <span>{order.branchName}</span>
-                        </span>
-
-                        <span className="text-[11px] text-slate-400">
-                          {new Date(order.createdAt).toLocaleDateString('en-GB', {
-                            day: 'numeric',
-                            month: 'short',
-                            year: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
-                        </span>
-                      </div>
-
-                      {/* Requester & Notes */}
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
-                        <span className="font-semibold">
-                          Requested by:{' '}
-                          <span className="font-extrabold text-slate-900">{order.requesterName}</span>{' '}
-                          {order.requesterRole && (
-                            <span className="text-[10px] uppercase text-slate-400">
-                              ({order.requesterRole})
-                            </span>
-                          )}
-                        </span>
-                        {order.neededByDate && (
-                          <span className="flex items-center gap-1 text-amber-700 font-semibold bg-amber-50 px-2 py-0.5 rounded">
-                            <Calendar size={11} />
-                            <span>Needed by: {order.neededByDate}</span>
-                          </span>
-                        )}
-                        {order.vendorPoNumber && (
-                          <span className="text-purple-700 font-bold bg-purple-50 px-2 py-0.5 rounded">
-                            PO #{order.vendorPoNumber}
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Item Pills Summary */}
-                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                        {order.items.map((it, idx) => (
-                          <span
-                            key={idx}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-50 border border-slate-200 text-slate-800"
-                          >
-                            <span className="text-sky-600 font-black">{it.quantity}x</span>
-                            <span className="truncate max-w-[200px]">{it.name}</span>
-                            <span className="text-[10px] text-slate-400">({it.unit})</span>
-                          </span>
-                        ))}
-                      </div>
-
-                      {order.notes && (
-                        <p className="text-xs text-slate-500 italic bg-slate-50 p-2 rounded-lg border border-slate-100">
-                          "{order.notes}"
-                        </p>
-                      )}
-
-                      {order.adminNotes && (
-                        <div className="flex items-start gap-1.5 text-xs text-indigo-900 bg-indigo-50/70 p-2 rounded-lg border border-indigo-100">
-                          <ShieldCheck size={14} className="text-indigo-600 shrink-0 mt-0.5" />
-                          <div>
-                            <span className="font-bold">Admin Processing Note:</span> {order.adminNotes}
-                          </div>
-                        </div>
-                      )}
+                      {/* 1-Click Available Toggle Switch */}
+                      <button
+                        type="button"
+                        onClick={() => handleToggleItemAvailability(item)}
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10.5px] font-extrabold transition-all cursor-pointer shadow-2xs ${
+                          isAvailable
+                            ? 'bg-emerald-500 text-white hover:bg-emerald-600'
+                            : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
+                        }`}
+                        title={
+                          isAvailable
+                            ? 'Item is available for branch order (Click to disable / out of stock)'
+                            : 'Item is disabled / out of stock (Click to enable)'
+                        }
+                      >
+                        <Power size={11} className={isAvailable ? 'animate-pulse' : ''} />
+                        <span>{isAvailable ? 'Available (สั่งได้)' : 'Disabled (ปิดรับ)'}</span>
+                      </button>
                     </div>
 
-                    {/* Right: Estimated Cost & Actions */}
-                    <div className="flex sm:flex-col items-center sm:items-end justify-between gap-3 shrink-0 pt-3 lg:pt-0 border-t sm:border-t-0 border-slate-100">
-                      <div className="text-left sm:text-right">
-                        <div className="text-xs text-slate-400 font-semibold">Total Items</div>
-                        <div className="text-base font-black text-slate-900">
-                          {order.totalItemsCount}{' '}
-                          <span className="text-xs font-semibold text-slate-500">items</span>
-                        </div>
-                        {order.totalEstimatedCost > 0 && (
-                          <div className="text-xs font-bold text-sky-700">
-                            Est. ฿{order.totalEstimatedCost.toLocaleString()}
-                          </div>
+                    {/* Item Titles */}
+                    <div>
+                      <div className="flex items-start justify-between gap-1">
+                        <h4 className="text-sm font-black text-slate-900 leading-snug">{item.name}</h4>
+                        {item.popular && (
+                          <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 shrink-0 flex items-center gap-0.5">
+                            <Star size={10} className="fill-amber-500 text-amber-500" />
+                            <span>Popular</span>
+                          </span>
                         )}
                       </div>
+                      <p className="text-xs text-slate-500 mt-0.5">{item.nameTh}</p>
+                    </div>
 
-                      <div className="flex items-center gap-1.5 flex-wrap justify-end">
-                        {/* Quick Admin Actions */}
-                        {isAdmin && order.status === 'pending' && (
-                          <Button
-                            size="sm"
-                            onClick={() => handleQuickStatusChange(order, 'approved')}
-                            className="h-8 px-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
-                            title="Approve Order"
-                          >
-                            <CheckCircle2 size={13} />
-                            <span>Approve</span>
-                          </Button>
-                        )}
+                    {item.description && (
+                      <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
+                        {item.description}
+                      </p>
+                    )}
 
-                        {isAdmin && order.status === 'approved' && (
-                          <Button
-                            size="sm"
-                            onClick={() => handleQuickStatusChange(order, 'processing')}
-                            className="h-8 px-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
-                            title="Mark Processing with Vendor"
-                          >
-                            <RefreshCw size={13} />
-                            <span>Mark Processing</span>
-                          </Button>
-                        )}
-
-                        {isAdmin && order.status === 'processing' && (
-                          <Button
-                            size="sm"
-                            onClick={() => handleQuickStatusChange(order, 'dispatched')}
-                            className="h-8 px-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
-                            title="Mark Dispatched / In Transit"
-                          >
-                            <Truck size={13} />
-                            <span>Mark Dispatched</span>
-                          </Button>
-                        )}
-
-                        {order.status === 'dispatched' && (
-                          <Button
-                            size="sm"
-                            onClick={() => handleQuickStatusChange(order, 'completed')}
-                            className="h-8 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
-                            title="Mark Received by Branch"
-                          >
-                            <Check size={13} />
-                            <span>Confirm Received</span>
-                          </Button>
-                        )}
-
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => setSelectedOrderForView(order)}
-                          className="h-8 px-2.5 text-xs font-bold rounded-xl border-slate-200 text-slate-700 hover:bg-slate-50 gap-1"
-                        >
-                          <Eye size={13} />
-                          <span>View Details</span>
-                        </Button>
-
-                        <button
-                          type="button"
-                          onClick={() => setSelectedOrderForPrint(order)}
-                          className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
-                          title="Print Order Slip"
-                        >
-                          <Printer size={14} />
-                        </button>
-
-                        {isAdmin && (
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteOrder(order.id, order.orderNumber)}
-                            className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
-                            title="Delete Order"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        )}
+                    {/* Metadata & Unit Price */}
+                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
+                      <div>
+                        <span className="text-[10px] text-slate-400 font-bold block uppercase">
+                          Default Unit
+                        </span>
+                        <span className="font-extrabold text-slate-700">{item.defaultUnit}</span>
                       </div>
+
+                      <div className="text-right">
+                        <span className="text-[10px] text-slate-400 font-bold block uppercase">
+                          Estimated Cost
+                        </span>
+                        <span className="font-black text-sky-700">
+                          {item.estimatedPrice > 0 ? `฿${item.estimatedPrice.toLocaleString()}` : 'Free / N/A'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {item.vendor && (
+                      <div className="text-[10px] text-slate-400 font-medium">
+                        Supplier: <span className="font-bold text-slate-600">{item.vendor}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Actions Row */}
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleItemAvailability(item)}
+                      className="text-xs font-bold text-slate-500 hover:text-slate-800 flex items-center gap-1 cursor-pointer"
+                    >
+                      {isAvailable ? 'Click to Disable' : 'Click to Enable'}
+                    </button>
+
+                    <div className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleOpenEditItemModal(item)}
+                        className="h-7 px-2.5 text-xs font-bold rounded-lg gap-1 border-slate-200 hover:bg-slate-100"
+                        title="Edit Item Details"
+                      >
+                        <Edit2 size={12} />
+                        <span>Edit</span>
+                      </Button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCatalogItem(item.id, item.name)}
+                        className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                        title="Delete Item"
+                      >
+                        <Trash2 size={13} />
+                      </button>
                     </div>
                   </div>
-                </motion.div>
+                </div>
               );
             })}
-          </AnimatePresence>
+          </div>
         </div>
       )}
 
-      {/* 5. Create Order Modal (The Clean Form for Users to Order Detergents & Supplies) */}
+      {/* ======================================================== */}
+      {/* 3. DIALOG: CREATE SUPPLY ORDER (FOR BRANCH USERS)        */}
+      {/* ======================================================== */}
       <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
         <DialogContent className="max-w-3xl p-0 overflow-hidden bg-white rounded-2xl border border-slate-200 shadow-2xl">
           <DialogHeader className="p-5 bg-gradient-to-r from-sky-900 to-indigo-950 text-white">
@@ -935,7 +1524,6 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
           <div className="p-5 space-y-5 max-h-[75vh] overflow-y-auto custom-scrollbar">
             {/* Requester & Branch Strip */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 bg-slate-50 rounded-xl border border-slate-200/80">
-              {/* Branch */}
               <div className="space-y-1">
                 <label className="text-xs font-bold text-slate-600">Branch (สาขา) *</label>
                 <select
@@ -952,7 +1540,6 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 </select>
               </div>
 
-              {/* Priority */}
               <div className="space-y-1">
                 <label className="text-xs font-bold text-slate-600">Priority (ระดับความด่วน)</label>
                 <select
@@ -966,7 +1553,6 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 </select>
               </div>
 
-              {/* Needed By Date */}
               <div className="space-y-1">
                 <label className="text-xs font-bold text-slate-600">Needed By Date (วันที่ต้องการ)</label>
                 <Input
@@ -987,7 +1573,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                     <span>Select Chemicals & Supplies (เลือกรายการสั่งซื้อ)</span>
                   </h4>
                   <p className="text-[11px] text-slate-400">
-                    Click '+ Add' on any standard item below, or create a custom item
+                    Showing items currently available for order as set by the admin
                   </p>
                 </div>
 
@@ -1057,7 +1643,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
-                  All Items ({DEFAULT_SUPPLY_CATALOG.length})
+                  All Available ({filteredOrderFormCatalog.length})
                 </button>
                 {Object.entries(SUPPLY_CATEGORY_LABELS).map(([catKey, label]) => {
                   const isSelected = catalogCategory === catKey;
@@ -1081,7 +1667,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
 
               {/* Catalog Items Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 max-h-56 overflow-y-auto custom-scrollbar p-1">
-                {filteredCatalog.map((item) => {
+                {filteredOrderFormCatalog.map((item) => {
                   const existingItem = selectedItems.find((it) => it.catalogItemId === item.id);
                   const isAdded = Boolean(existingItem);
                   return (
@@ -1272,7 +1858,175 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
         </DialogContent>
       </Dialog>
 
-      {/* 6. Order Details & Admin Processing Modal */}
+      {/* ======================================================== */}
+      {/* 4. DIALOG: ADMIN ADD / EDIT SUPPLY ITEM (CATALOG CONFIG) */}
+      {/* ======================================================== */}
+      <Dialog open={isEditItemModalOpen} onOpenChange={setIsEditItemModalOpen}>
+        <DialogContent className="max-w-xl p-0 overflow-hidden bg-white rounded-2xl border border-slate-200 shadow-2xl">
+          <DialogHeader className="p-5 bg-gradient-to-r from-slate-900 to-indigo-950 text-white">
+            <div className="flex items-center gap-2.5">
+              <span className="p-2 rounded-xl bg-white/10 text-emerald-300">
+                <Boxes size={20} />
+              </span>
+              <div>
+                <DialogTitle className="text-base font-black text-white">
+                  {editingItem?.id ? 'Edit Supply Item' : 'Add New Supply Item to Catalog'}
+                </DialogTitle>
+                <p className="text-xs text-slate-300 mt-0.5">
+                  Set up items and chemicals that will be available for branch managers to order
+                </p>
+              </div>
+            </div>
+          </DialogHeader>
+
+          {editingItem && (
+            <div className="p-5 space-y-4 max-h-[72vh] overflow-y-auto custom-scrollbar text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1 sm:col-span-2">
+                  <label className="font-bold text-slate-700">Item Name (English) *</label>
+                  <Input
+                    value={editingItem.name || ''}
+                    onChange={(e) => setEditingItem({ ...editingItem, name: e.target.value })}
+                    placeholder="e.g. Liquid Laundry Detergent (Commercial 20L)"
+                    className="h-9 text-xs"
+                  />
+                </div>
+
+                <div className="space-y-1 sm:col-span-2">
+                  <label className="font-bold text-slate-700">Item Name (Thai / ภาษาไทย)</label>
+                  <Input
+                    value={editingItem.nameTh || ''}
+                    onChange={(e) => setEditingItem({ ...editingItem, nameTh: e.target.value })}
+                    placeholder="e.g. น้ำยาซักผ้าสูตรเข้มข้น แกลลอน 20 ลิตร"
+                    className="h-9 text-xs"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700">Category (หมวดหมู่) *</label>
+                  <select
+                    value={editingItem.category || 'chemical'}
+                    onChange={(e) => setEditingItem({ ...editingItem, category: e.target.value as any })}
+                    className="w-full h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-800 focus:bg-white focus:outline-none"
+                  >
+                    {Object.entries(SUPPLY_CATEGORY_LABELS).map(([k, cfg]) => (
+                      <option key={k} value={k}>
+                        {cfg.icon} {cfg.en} ({cfg.th})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700">Default Packaging Unit *</label>
+                  <Input
+                    value={editingItem.defaultUnit || ''}
+                    onChange={(e) => setEditingItem({ ...editingItem, defaultUnit: e.target.value })}
+                    placeholder="e.g. Gallon (20L), Box (500 pcs), Bottle (1L), Roll"
+                    className="h-9 text-xs"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700">Estimated Price (฿)</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={editingItem.estimatedPrice ?? 0}
+                    onChange={(e) =>
+                      setEditingItem({ ...editingItem, estimatedPrice: parseFloat(e.target.value) || 0 })
+                    }
+                    placeholder="0"
+                    className="h-9 text-xs"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700">Preferred Supplier / Vendor</label>
+                  <Input
+                    value={editingItem.vendor || ''}
+                    onChange={(e) => setEditingItem({ ...editingItem, vendor: e.target.value })}
+                    placeholder="e.g. The Laundering Company / Ecolab"
+                    className="h-9 text-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700">Description / Specifications</label>
+                <textarea
+                  value={editingItem.description || ''}
+                  onChange={(e) => setEditingItem({ ...editingItem, description: e.target.value })}
+                  placeholder="Usage instructions, dilution ratio, specific machine compatibility..."
+                  rows={2}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-800 focus:bg-white focus:outline-none custom-scrollbar"
+                />
+              </div>
+
+              {/* Toggles */}
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/90 space-y-2.5">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editingItem.available !== false}
+                    onChange={(e) => setEditingItem({ ...editingItem, available: e.target.checked })}
+                    className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <div>
+                    <span className="font-extrabold text-slate-800 text-xs">
+                      Available for Branch Orders (เปิดให้สาขาสั่งซื้อได้)
+                    </span>
+                    <span className="text-[11px] text-slate-400 block">
+                      Uncheck to temporarily hide or mark this chemical / supply as Out of Stock
+                    </span>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer border-t border-slate-200/60 pt-2">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(editingItem.popular)}
+                    onChange={(e) => setEditingItem({ ...editingItem, popular: e.target.checked })}
+                    className="w-4 h-4 rounded text-amber-500 focus:ring-amber-400"
+                  />
+                  <div>
+                    <span className="font-extrabold text-slate-800 text-xs flex items-center gap-1">
+                      <Star size={12} className="text-amber-500 fill-amber-500" />
+                      <span>Highlight as Popular / Essential (สินค้าใช้บ่อย)</span>
+                    </span>
+                    <span className="text-[11px] text-slate-400 block">
+                      Shown at top of catalog with a 'Popular' badge for quick one-click re-ordering
+                    </span>
+                  </div>
+                </label>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsEditItemModalOpen(false)}
+              className="h-8.5 text-xs font-bold rounded-xl"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSaveCatalogItem}
+              disabled={savingItem}
+              className="h-8.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl gap-1.5"
+            >
+              {savingItem ? 'Saving...' : editingItem?.id ? 'Update Item' : 'Add Item to Catalog'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ======================================================== */}
+      {/* 5. DIALOG: ORDER DETAILS & ADMIN PROCESSING MODAL        */}
+      {/* ======================================================== */}
       <Dialog
         open={Boolean(selectedOrderForView)}
         onOpenChange={(open) => !open && setSelectedOrderForView(null)}
@@ -1375,7 +2129,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                   </div>
                 )}
 
-                {/* Admin Processing & Procurement Controls (for Admins) */}
+                {/* Admin Processing & Procurement Controls */}
                 {isAdmin ? (
                   <div className="p-4 bg-indigo-50/60 rounded-xl border border-indigo-200/80 space-y-3">
                     <div className="flex items-center gap-1.5 text-xs font-black text-indigo-950 uppercase tracking-wider">
@@ -1454,7 +2208,6 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                     </div>
                   </div>
                 ) : (
-                  /* Read-only processing details for non-admin staff */
                   selectedOrderForView.adminNotes && (
                     <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-100 text-xs">
                       <div className="font-bold text-indigo-900 flex items-center gap-1 mb-1">
@@ -1485,7 +2238,9 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
         </DialogContent>
       </Dialog>
 
-      {/* 7. Printable Order Slip Modal */}
+      {/* ======================================================== */}
+      {/* 6. DIALOG: PRINTABLE ORDER SLIP                          */}
+      {/* ======================================================== */}
       <Dialog
         open={Boolean(selectedOrderForPrint)}
         onOpenChange={(open) => !open && setSelectedOrderForPrint(null)}
