@@ -49,6 +49,7 @@ import {
   FileText,
   Clock,
   ShoppingBag,
+  MessageSquare,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";

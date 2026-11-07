@@ -7,6 +7,7 @@ import {
   type LineContactRecord,
 } from "@/lib/line";
 import { getStoredLineOaSettings } from "@/actions/line";
+import { recordInboundSocialMessageAction } from "@/actions/social-inbox";
 
 export const dynamic = "force-dynamic";
 
@@ -197,6 +198,21 @@ export async function POST(req: NextRequest) {
         contacts.splice(existingIdx, 1);
       }
       contacts.unshift(updatedRecord);
+      if (messageText || event.type === "follow" || event?.message?.type === "image") {
+        await recordInboundSocialMessageAction({
+          channel: "line",
+          externalContactId: userId,
+          contactName: updatedRecord.displayName,
+          contactPhone: updatedRecord.linkedCustomerPhone || undefined,
+          contactAvatar: updatedRecord.pictureUrl,
+          text:
+            messageText ||
+            (event?.message?.type === "image"
+              ? "📷 [Customer sent an image via LINE]"
+              : "[Followed LINE Official Account]"),
+          customerId: updatedRecord.linkedCustomerId,
+        }).catch(() => {});
+      }
     }
 
     // Keep up to 500 recent LINE OA contacts so staff can search any customer by name/photo

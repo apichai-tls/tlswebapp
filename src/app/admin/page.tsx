@@ -69,6 +69,7 @@ import { AdminMarketing } from "@/components/admin-marketing";
 import { AdminTopSpenders } from "@/components/admin-top-spenders";
 import { AdminTasks, prefetchTasksData } from "@/components/admin-tasks";
 import { AdminSuppliesOrders } from "@/components/admin-supplies-orders";
+import { AdminSocialInbox } from "@/components/admin-social-inbox";
 import { FitScreenToggle } from "@/components/fit-screen-toggle";
 import { NotificationBell } from "@/components/notification-bell";
 import { TopUpDialog } from "@/components/top-up-dialog";
@@ -299,7 +300,7 @@ function AdminPageContent() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
@@ -333,7 +334,7 @@ function AdminPageContent() {
     const searchParams = new URLSearchParams(window.location.search);
     const tabParam = searchParams.get("tab");
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "petty-cash", "building-report", "marketing", "top-spenders", "tasks", "supplies"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "petty-cash", "building-report", "marketing", "top-spenders", "tasks", "supplies", "inbox"];
     const targetTab = (tabParam && validTabs.includes(tabParam)) ? tabParam : hash;
 
     if (validTabs.includes(targetTab)) {
@@ -357,8 +358,8 @@ function AdminPageContent() {
     }
 
     // For all other roles: jump to the first tab they have access to (default is dashboard)
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "petty-cash", "marketing", "settings", "users", "activity-logs", "supplies"
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "inbox", "services", "map", "riders", "calculator", "tasks", "reports", "petty-cash", "marketing", "settings", "users", "activity-logs", "supplies"
     ];
     const hasPermission = (key: string) => {
       if (user.role === 'admin') return true;
@@ -405,7 +406,7 @@ function AdminPageContent() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -1134,7 +1135,7 @@ function AdminPageContent() {
 
   const hasAccess = (key: string) => {
     if (user?.role === 'admin') return true;
-    if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois' || key === 'supplies') return true;
+    if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois' || key === 'supplies' || key === 'inbox') return true;
     if (key === 'building-report' || key === 'top-spenders') return Boolean(user?.permissions?.includes('reports') || user?.permissions?.includes('marketing') || user?.permissions?.includes('customers') || user?.permissions?.includes('building-report') || user?.permissions?.includes('top-spenders'));
     return user?.permissions?.includes(key) ?? false;
   };
@@ -5958,6 +5959,33 @@ function AdminPageContent() {
                   </motion.a>
                 )}
 
+                {hasAccess("inbox") && (
+                  <motion.a
+                    href="#inbox"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("inbox"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "inbox"
+                        ? "bg-emerald-50/90 text-emerald-700 ring-1 ring-emerald-500/20 shadow-2xs font-bold"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="Omnichannel Chat (WhatsApp, LINE OA, Social)"
+                  >
+                    {activeTab === "inbox" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-emerald-600 rounded-r-full" />
+                    )}
+                    <MessageSquare size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "inbox" ? "text-emerald-600" : "text-emerald-500 group-hover:text-emerald-600"}`} />
+                    {!isSidebarCollapsed && (
+                      <div className="flex items-center justify-between flex-1 min-w-0">
+                        <span className="truncate">Social Inbox (Chat)</span>
+                        <span className="ml-auto px-1.5 py-0.2 rounded-full text-[9px] font-black bg-emerald-100 text-emerald-800">
+                          WA/LINE
+                        </span>
+                      </div>
+                    )}
+                  </motion.a>
+                )}
+
                 {hasAccess("services") && (
                   <motion.a
                     href="#services"
@@ -6673,6 +6701,21 @@ function AdminPageContent() {
                       </a>
                     )}
                     <a
+                      href="#inbox"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setActiveTab("inbox");
+                        window.location.hash = "inbox";
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                        activeTab === "inbox" ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-500/20 font-bold" : "text-slate-600 hover:bg-slate-100/70"
+                      }`}
+                    >
+                      <MessageSquare size={17} className={activeTab === "inbox" ? "text-emerald-600" : "text-emerald-500"} />
+                      <span>Social Inbox (WhatsApp & LINE)</span>
+                    </a>
+                    <a
                       href="#supplies"
                       onClick={(e) => {
                         e.preventDefault();
@@ -6780,6 +6823,7 @@ function AdminPageContent() {
                 users: { section: "Management", title: "Manage Users", subtitle: "Staff accounts, roles & branch permissions" },
                 settings: { section: "Management", title: "System Settings", subtitle: "Branches, payment channels & configurations" },
                 supplies: { section: "Operations", title: "Chemicals & Supplies Orders", subtitle: "Branch detergent orders, replenishment & admin processing" },
+                inbox: { section: "Sales & CRM", title: "Omnichannel Social Inbox", subtitle: "Unified customer chat across WhatsApp, LINE OA, Messenger, Instagram & Telegram" },
               };
               const currentMeta = tabMeta[activeTab] || { section: "Workspace", title: "Dashboard", subtitle: "That Laundry Shop" };
               return (
@@ -12288,6 +12332,19 @@ function AdminPageContent() {
 
           {activeTab === "supplies" && hasAccess("supplies") && (
             <AdminSuppliesOrders currentUser={user} shops={shopLocations} />
+          )}
+
+          {activeTab === "inbox" && hasAccess("inbox") && (
+            <AdminSocialInbox
+              currentUser={user}
+              customers={customers}
+              jobs={jobs}
+              shops={shopLocations}
+              onEditJob={stableHandleEditFullJob}
+              onCreateJobForCustomer={(cust) => {
+                stableHandleCreateNewJob();
+              }}
+            />
           )}
 
           {/* Fallback for no access to current tab */}
