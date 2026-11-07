@@ -1083,39 +1083,6 @@ export function AdminRecurringOrders({
                   );
                 })}
               </div>
-
-              {/* Dropdown & Package Description */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                <div className="space-y-1">
-                  <label className="text-[11px] font-bold text-slate-500">Or Select Category Dropdown</label>
-                  <select
-                    value={serviceType}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setServiceType(val);
-                      const matched = SERVICE_CATEGORIES.find((c) => c.id === val);
-                      if (matched) setServiceSummary(matched.defaultSummary);
-                    }}
-                    className="w-full h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-800 focus:bg-white focus:outline-none"
-                  >
-                    {SERVICE_CATEGORIES.map((cat) => (
-                      <option key={cat.id} value={cat.id}>
-                        {cat.icon} {cat.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[11px] font-bold text-slate-500">Package Description (รายละเอียดบริการ)</label>
-                  <Input
-                    value={serviceSummary}
-                    onChange={(e) => setServiceSummary(e.target.value)}
-                    placeholder="e.g. KILO (Wash & Fold), Iron 10 shirts, Dry clean suits..."
-                    className="h-9 text-xs bg-slate-50 border-slate-200 rounded-xl"
-                  />
-                </div>
-              </div>
             </div>
 
             {/* Branch & Brand */}
