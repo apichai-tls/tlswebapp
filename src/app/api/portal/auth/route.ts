@@ -15,6 +15,8 @@ import {
 
 export const dynamic = 'force-dynamic'
 
+export type OtpDeliveryChannel = 'sms' | 'whatsapp' | 'email'
+
 function maskName(name: string): string {
   const parts = name.trim().split(/\s+/)
   return parts
@@ -25,28 +27,113 @@ function maskName(name: string): string {
     .join(' ')
 }
 
-async function dispatchOtpMessage(identifier: string, otpCode: string, refCode: string) {
-  console.log(`[Portal OTP] To: ${identifier} | OTP: ${otpCode} (Ref: ${refCode})`)
-  // Ready for webhook / SMS provider (ThaiBulkSMS / Twilio) if configured in .env
-  const webhookUrl = process.env.PORTAL_OTP_WEBHOOK_URL
+function maskEmail(email?: string | null): string | null {
+  if (!email || !email.includes('@')) return null
+  const [local, domain] = email.trim().split('@')
+  if (!local || !domain) return null
+  const visible = local.length <= 2 ? local.charAt(0) : local.slice(0, 2)
+  return `${visible}***@${domain}`
+}
+
+function isThaiPhoneNumber(input: string): boolean {
+  const clean = input.replace(/[\s\-().]/g, '')
+  if (clean.startsWith('+66') || clean.startsWith('66')) return true
+  if (/^0[689]\d{8}$/.test(clean)) return true
+  return false
+}
+
+function detectDefaultChannel(identifier: string): OtpDeliveryChannel {
+  if (identifier.includes('@')) return 'email'
+  // International non-Thai numbers default to WhatsApp (can be switched to SMS or Email)
+  if (identifier.trim().startsWith('+') && !isThaiPhoneNumber(identifier)) {
+    return 'whatsapp'
+  }
+  return 'sms'
+}
+
+function getProviderRouteLabel(channel: OtpDeliveryChannel, destination: string): string {
+  if (channel === 'email') return 'Email OTP (Free)'
+  if (channel === 'whatsapp') return 'WhatsApp OTP (Twilio / Meta)'
+  return isThaiPhoneNumber(destination)
+    ? 'SMS OTP (ThaiBulkSMS +66)'
+    : 'Global SMS OTP (Twilio)'
+}
+
+async function dispatchOtpMessage(params: {
+  to: string
+  channel: OtpDeliveryChannel
+  otpCode: string
+  refCode: string
+}) {
+  const { to, channel, otpCode, refCode } = params
+  const providerRoute = getProviderRouteLabel(channel, to)
+  console.log(
+    `[Portal OTP] Channel: ${channel.toUpperCase()} (${providerRoute}) | To: ${to} | OTP: ${otpCode} (Ref: ${refCode})`
+  )
+
+  // 1. Optional direct Resend Email API support if RESEND_API_KEY is configured
+  if (channel === 'email' && process.env.RESEND_API_KEY) {
+    try {
+      const fromEmail =
+        process.env.PORTAL_OTP_FROM_EMAIL || 'That Laundry Shop <noreply@thatlaundryshop.com>'
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: fromEmail,
+          to: [to],
+          subject: `${otpCode} is your That Laundry Shop verification code (Ref: ${refCode})`,
+          html: `
+            <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px;">
+              <h2 style="margin: 0 0 8px; color: #0f172a;">That Laundry Shop</h2>
+              <p style="color: #475569; font-size: 14px; margin: 0 0 16px;">Use the 6-digit verification code below to sign in or verify your account:</p>
+              <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 16px; text-align: center; margin-bottom: 16px;">
+                <div style="font-size: 28px; font-weight: 800; letter-spacing: 6px; color: #0284c7; font-family: monospace;">${otpCode}</div>
+                <div style="font-size: 12px; color: #64748b; margin-top: 6px;">Ref: <strong>${refCode}</strong> • Valid for 5 minutes</div>
+              </div>
+              <p style="color: #94a3b8; font-size: 12px; margin: 0;">If you did not request this code, you can safely ignore this email.</p>
+            </div>
+          `
+        })
+      })
+      if (res.ok) {
+        return { deliveredExternal: true, providerRoute }
+      }
+    } catch (e) {
+      console.warn('[Portal OTP] Resend email dispatch failed, falling back to demo display:', e)
+    }
+  }
+
+  // 2. Ready for webhook / SMS / WhatsApp / Email provider (ThaiBulkSMS / Twilio / SMTP webhook) if configured in .env
+  const webhookUrl =
+    channel === 'email'
+      ? process.env.PORTAL_OTP_EMAIL_WEBHOOK_URL || process.env.PORTAL_OTP_WEBHOOK_URL
+      : process.env.PORTAL_OTP_WEBHOOK_URL
+
   if (webhookUrl) {
     try {
       await fetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          to: identifier,
+          to,
+          channel,
+          providerRoute,
           otpCode,
           refCode,
           message: `Your That Laundry Shop verification code is ${otpCode} (Ref: ${refCode}). Valid for 5 minutes.`
         })
       })
-      return { deliveredExternal: true }
+      return { deliveredExternal: true, providerRoute }
     } catch (e) {
       console.warn('[Portal OTP] External webhook failed, falling back to demo display:', e)
     }
   }
-  return { deliveredExternal: false }
+
+  return { deliveredExternal: false, providerRoute }
 }
 
 async function findCustomerByIdentifier(identifier: string, preferredBrand?: string) {
@@ -232,11 +319,17 @@ export async function POST(req: Request) {
       }
       const cleanId = String(identifier).trim()
       const customer = await findCustomerByIdentifier(cleanId, brand)
+      const defaultChannel = detectDefaultChannel(cleanId)
 
       // Brand-new customer -> send OTP for registration
       if (!customer) {
         const challenge = generateOtpChallenge(cleanId, 'register')
-        await dispatchOtpMessage(cleanId, challenge.otpCode, challenge.refCode)
+        const dispatchInfo = await dispatchOtpMessage({
+          to: cleanId,
+          channel: defaultChannel,
+          otpCode: challenge.otpCode,
+          refCode: challenge.refCode
+        })
 
         return NextResponse.json({
           success: true,
@@ -246,26 +339,44 @@ export async function POST(req: Request) {
           otpToken: challenge.otpToken,
           refCode: challenge.refCode,
           expiresInSeconds: challenge.expiresInSeconds,
-          demoOtpCode: challenge.otpCode
+          demoOtpCode: challenge.otpCode,
+          deliveryChannel: defaultChannel,
+          deliveredTo: cleanId,
+          providerRoute: dispatchInfo.providerRoute,
+          hasEmail: cleanId.includes('@'),
+          maskedEmail: cleanId.includes('@') ? maskEmail(cleanId) : null
         })
       }
+
+      const customerMaskedEmail = maskEmail(customer.email)
+      const customerHasEmail = Boolean(customer.email && customer.email.includes('@'))
 
       // Existing POS customer without password -> send OTP for first-time setup
       if (!customer.passwordHash) {
         const challenge = generateOtpChallenge(cleanId, 'first_setup')
-        await dispatchOtpMessage(cleanId, challenge.otpCode, challenge.refCode)
+        const dispatchInfo = await dispatchOtpMessage({
+          to: cleanId,
+          channel: defaultChannel,
+          otpCode: challenge.otpCode,
+          refCode: challenge.refCode
+        })
 
         return NextResponse.json({
           success: true,
           exists: true,
           needsPasswordSetup: true,
           maskedName: maskName(customer.name),
+          maskedEmail: customerMaskedEmail,
+          hasEmail: customerHasEmail,
           brand: customer.brand || 'that_laundry_shop',
           otpRequired: true,
           otpToken: challenge.otpToken,
           refCode: challenge.refCode,
           expiresInSeconds: challenge.expiresInSeconds,
-          demoOtpCode: challenge.otpCode
+          demoOtpCode: challenge.otpCode,
+          deliveryChannel: defaultChannel,
+          deliveredTo: defaultChannel === 'email' ? customerMaskedEmail || cleanId : cleanId,
+          providerRoute: dispatchInfo.providerRoute
         })
       }
 
@@ -275,12 +386,14 @@ export async function POST(req: Request) {
         exists: true,
         needsPasswordSetup: false,
         maskedName: maskName(customer.name),
+        maskedEmail: customerMaskedEmail,
+        hasEmail: customerHasEmail,
         brand: customer.brand || 'that_laundry_shop',
         otpRequired: false
       })
     }
 
-    // 2. Request / Resend OTP explicitly (for Forgot Password, Resend OTP, etc.)
+    // 2. Request / Resend OTP explicitly (supports switching channel: 'sms' | 'whatsapp' | 'email')
     if (action === 'request_otp') {
       if (!identifier || !String(identifier).trim()) {
         return NextResponse.json({ error: 'Phone number or email is required' }, { status: 400 })
@@ -293,24 +406,82 @@ export async function POST(req: Request) {
           ? 'register'
           : 'first_setup'
 
+      const requestedChannel: OtpDeliveryChannel =
+        body.channel === 'email' || body.channel === 'whatsapp' || body.channel === 'sms'
+          ? body.channel
+          : detectDefaultChannel(cleanId)
+
+      const customTargetEmail = body.targetEmail ? String(body.targetEmail).trim().toLowerCase() : ''
+
+      let customer: any = null
       if (purpose === 'reset_password' || purpose === 'first_setup') {
-        const customer = await findCustomerByIdentifier(cleanId, brand)
+        customer = await findCustomerByIdentifier(cleanId, brand)
         if (!customer) {
           return NextResponse.json({ error: 'Customer account not found' }, { status: 404 })
         }
       }
 
+      // Resolve actual destination based on channel
+      let destination = cleanId
+      let displayDestination = cleanId
+
+      if (requestedChannel === 'email') {
+        if (cleanId.includes('@')) {
+          destination = cleanId
+          displayDestination = cleanId
+        } else if (customTargetEmail && customTargetEmail.includes('@')) {
+          destination = customTargetEmail
+          displayDestination = customTargetEmail
+        } else if (customer?.email && customer.email.includes('@')) {
+          destination = customer.email.trim()
+          displayDestination = maskEmail(customer.email) || customer.email
+        } else {
+          return NextResponse.json(
+            {
+              error: 'Please enter an email address to receive the OTP via Email',
+              needsEmailInput: true
+            },
+            { status: 400 }
+          )
+        }
+      } else {
+        // SMS or WhatsApp channel when user originally typed an email
+        if (cleanId.includes('@')) {
+          const fallbackPhone = body.targetPhone
+            ? String(body.targetPhone).trim()
+            : customer?.phone || customer?.whatsappId || ''
+          if (!fallbackPhone) {
+            return NextResponse.json(
+              { error: 'No phone number linked to this account for SMS/WhatsApp OTP' },
+              { status: 400 }
+            )
+          }
+          destination = fallbackPhone
+          displayDestination = fallbackPhone
+        }
+      }
+
       const challenge = generateOtpChallenge(cleanId, purpose)
-      await dispatchOtpMessage(cleanId, challenge.otpCode, challenge.refCode)
+      const dispatchInfo = await dispatchOtpMessage({
+        to: destination,
+        channel: requestedChannel,
+        otpCode: challenge.otpCode,
+        refCode: challenge.refCode
+      })
 
       return NextResponse.json({
         success: true,
-        message: 'OTP code sent',
+        message: `OTP code sent via ${requestedChannel.toUpperCase()}`,
         purpose,
         otpToken: challenge.otpToken,
         refCode: challenge.refCode,
         expiresInSeconds: challenge.expiresInSeconds,
-        demoOtpCode: challenge.otpCode
+        demoOtpCode: challenge.otpCode,
+        deliveryChannel: requestedChannel,
+        deliveredTo: displayDestination,
+        providerRoute: dispatchInfo.providerRoute,
+        hasEmail: Boolean(customer?.email || customTargetEmail || cleanId.includes('@')),
+        maskedEmail: maskEmail(customTargetEmail || customer?.email || (cleanId.includes('@') ? cleanId : null))
       })
     }
 
@@ -431,13 +602,19 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Customer account not found' }, { status: 404 })
       }
 
+      const newEmail =
+        !customer.email && body.otpEmail && String(body.otpEmail).includes('@')
+          ? String(body.otpEmail).trim().toLowerCase()
+          : undefined
+
       const updated = await prisma.customer.update({
         where: { id: customer.id },
         data: {
           passwordHash: hashPassword(String(password)),
           forcePasswordReset: false,
           isVerified: true,
-          verifiedVia: 'portal_otp_first_setup'
+          verifiedVia: body.deliveryChannel ? `portal_otp_${body.deliveryChannel}` : 'portal_otp_first_setup',
+          ...(newEmail ? { email: newEmail } : {})
         },
         include: {
           addresses: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }] }
@@ -478,13 +655,19 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Customer account not found' }, { status: 404 })
       }
 
+      const newEmail =
+        !customer.email && body.otpEmail && String(body.otpEmail).includes('@')
+          ? String(body.otpEmail).trim().toLowerCase()
+          : undefined
+
       const updated = await prisma.customer.update({
         where: { id: customer.id },
         data: {
           passwordHash: hashPassword(String(password)),
           forcePasswordReset: false,
           isVerified: true,
-          verifiedVia: 'portal_otp_reset'
+          verifiedVia: body.deliveryChannel ? `portal_otp_${body.deliveryChannel}` : 'portal_otp_reset',
+          ...(newEmail ? { email: newEmail } : {})
         },
         include: {
           addresses: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }] }
@@ -504,9 +687,16 @@ export async function POST(req: Request) {
     // 6. Register new customer account (Requires OTP verification)
     if (action === 'register') {
       const { name, nickName, phone, email, roomNo, condoName, addressText } = body
+      const cleanId = String(identifier || phone || email || '').trim()
+      const isIdEmail = cleanId.includes('@')
+
       const cleanName = String(name || '').trim().toUpperCase()
-      const cleanPhone = String(phone || identifier || '').trim()
-      const cleanEmail = email ? String(email).trim().toLowerCase() : null
+      const cleanPhone = String(phone || (!isIdEmail ? cleanId : '') || '').trim()
+      const cleanEmail = email
+        ? String(email).trim().toLowerCase()
+        : isIdEmail
+        ? cleanId.toLowerCase()
+        : null
 
       if (!cleanName) {
         return NextResponse.json({ error: 'Full Name is required' }, { status: 400 })
@@ -523,7 +713,7 @@ export async function POST(req: Request) {
 
       const otpCheck = verifyOtpChallenge({
         otpToken: String(otpToken || ''),
-        identifier: cleanPhone,
+        identifier: cleanId,
         otpCode: String(otpCode || ''),
         expectedPurpose: 'register'
       })
@@ -554,7 +744,7 @@ export async function POST(req: Request) {
           brand: targetBrand,
           sourceSystem: 'customer_portal',
           isVerified: true,
-          verifiedVia: 'portal_otp_register',
+          verifiedVia: body.deliveryChannel ? `portal_otp_${body.deliveryChannel}` : 'portal_otp_register',
           tier: 'Regular',
           defaultAddress: fullAddressStr || null,
           roomNo: roomNo ? String(roomNo).trim() : null,

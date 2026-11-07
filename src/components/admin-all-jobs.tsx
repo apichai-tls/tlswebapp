@@ -713,7 +713,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
   const handleCollectRiderCash = async (job: Job, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (!canManageJobs) return;
+    if (!isBranchManager) {
+      toast.error("เฉพาะผู้จัดการหน้าร้าน (Branch Manager) เท่านั้นที่สามารถกดรับชำระเงินได้");
+      return;
+    }
     if (job.status === "cancel" || (job.status as string) === "cancelled") {
       toast.error("งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
       return;
@@ -787,6 +790,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         job,
         {
           isShopPaid: true,
+          shopPaidBy: staffName,
           cashPlaced: true,
           cashCollectedFromRiderAt: new Date().toISOString(),
           cashCollectedBy: staffName,
@@ -1208,6 +1212,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false) ||
                       (job.pickupScheduledAt ? isSameDay(new Date(job.pickupScheduledAt), today) : false) ||
                       (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), today) : false) ||
+                      (job.shopPaidAt ? isSameDay(new Date(job.shopPaidAt), today) : false) ||
                       (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
       } else if (dateFilter === "yesterday") {
         matchesDate = isSameDay(new Date(job.createdAt), yesterday) || 
@@ -1215,6 +1220,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), yesterday) : false) ||
                       (job.pickupScheduledAt ? isSameDay(new Date(job.pickupScheduledAt), yesterday) : false) ||
                       (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), yesterday) : false) ||
+                      (job.shopPaidAt ? isSameDay(new Date(job.shopPaidAt), yesterday) : false) ||
                       (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), yesterday) : false);
       } else if (dateFilter === "custom") {
         const jobDate = new Date(job.createdAt);
@@ -1225,6 +1231,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       (job.scheduledAt ? (new Date(job.scheduledAt) >= start && new Date(job.scheduledAt) <= end) : false) ||
                       (job.pickupScheduledAt ? (new Date(job.pickupScheduledAt) >= start && new Date(job.pickupScheduledAt) <= end) : false) ||
                       (job.deliveryScheduledAt ? (new Date(job.deliveryScheduledAt) >= start && new Date(job.deliveryScheduledAt) <= end) : false) ||
+                      (job.shopPaidAt ? (new Date(job.shopPaidAt) >= start && new Date(job.shopPaidAt) <= end) : false) ||
                       (!job.completedAt && job.status === 'completed' && job.updatedAt ? (new Date(job.updatedAt) >= start && new Date(job.updatedAt) <= end) : false);
       }
       if (!matchesDate) return false;
@@ -1564,8 +1571,175 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     return `${diffHours} ชั่วโมง ${diffMinutes} นาที`;
   };
 
+  // Jobs strictly filtered to "Shop Paid on the selected date" for Excel Export & PDF Report
+  const shopPaidReportJobs = useMemo(() => {
+    const searchLower = searchTerm.toLowerCase().trim();
+    const currentSelectedBranchIds = isAreaRestricted ? effectiveSelectedBranchIds : selectedBranchIds;
+    const totalBranchCount = isAreaRestricted ? allowedBranches.length : shopLocations.length;
+    const isAllBranchesSelected = currentSelectedBranchIds.length >= totalBranchCount;
+
+    const resolveShopPaidDate = (job: Job): Date | null => {
+      if (!job.isShopPaid || !job.shopPaidAt) return null;
+      const d = new Date(job.shopPaidAt);
+      return isNaN(d.getTime()) ? null : d;
+    };
+
+    const list = jobs.filter((job) => {
+      if (job.status === 'topup' || job.status === 'cancel') return false;
+
+      if (isAreaRestricted) {
+        if (!job.branchId || !allowedBranchIdSet.has(job.branchId)) return false;
+      }
+      if (user?.role === 'manager' && !isCSO && job.status === 'tba') return false;
+      if (selectedBrand !== "ALL") {
+        const jobBrand = job.brand || "that_laundry_shop";
+        if (jobBrand !== selectedBrand) return false;
+      }
+      if (jobSourceFilter === "ONLINE") {
+        const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
+        if (isPos) return false;
+      } else if (jobSourceFilter === "POS") {
+        const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
+        if (!isPos) return false;
+      }
+      if (!isAllBranchesSelected && currentSelectedBranchIds.length > 0) {
+        if (!job.branchId || !currentSelectedBranchIds.includes(job.branchId)) return false;
+      } else if (currentSelectedBranchIds.length === 0) {
+        return false;
+      }
+
+      // Strictly check that the job is Shop Paid AND its Shop Paid timestamp matches the selected date
+      const paidDate = resolveShopPaidDate(job);
+      if (!paidDate) return false;
+
+      let matchesPaidDate = true;
+      if (dateFilter === "today") {
+        matchesPaidDate = isSameDay(paidDate, today);
+      } else if (dateFilter === "yesterday") {
+        matchesPaidDate = isSameDay(paidDate, yesterday);
+      } else if (dateFilter === "custom") {
+        if (startDate && endDate) {
+          const start = parseLocalDayDate(startDate, false);
+          const end = parseLocalDayDate(endDate, true);
+          matchesPaidDate = paidDate >= start && paidDate <= end;
+        }
+      }
+      if (!matchesPaidDate) return false;
+
+      if (selectedRiderId !== "ALL") {
+        const matchesRider =
+          job.deliveryRiderId === selectedRiderId ||
+          job.pickupRiderId === selectedRiderId ||
+          job.riderId === selectedRiderId;
+        if (!matchesRider) return false;
+      }
+
+      if (
+        paymentChannelFilter !== "ALL" &&
+        !paymentChannelFilter.startsWith("STATUS_")
+      ) {
+        const breakdown = getJobPaymentBreakdown(job);
+        const hasChannelInSplit = breakdown.payments.some(
+          (p) => (p.channel || "").toLowerCase() === paymentChannelFilter.toLowerCase()
+        );
+        if ((job.paymentChannel || "") !== paymentChannelFilter && !hasChannelInSplit) {
+          return false;
+        }
+      }
+
+      if (searchLower) {
+        const c = findMatchingCustomer(customers, {
+          customerId: job.customerId,
+          customerName: job.customerName,
+          customerPhone: job.customerPhone,
+        });
+        const pRider = job.pickupRiderId ? riders.find((r) => r.id === job.pickupRiderId) : null;
+        const dRider = job.deliveryRiderId ? riders.find((r) => r.id === job.deliveryRiderId) : null;
+        const aRider = job.riderId ? riders.find((r) => r.id === job.riderId) : null;
+        const matchesSearch =
+          job.id.toLowerCase().includes(searchLower) ||
+          formatJobDisplayId(job.id).toLowerCase().includes(searchLower) ||
+          (job.billNo || "").toLowerCase().includes(searchLower) ||
+          ((job as any).proformaNumber || "").toLowerCase().includes(searchLower) ||
+          (job.customerName || "").toLowerCase().includes(searchLower) ||
+          (job.customerPhone || "").toLowerCase().includes(searchLower) ||
+          (c?.memberId || "").toLowerCase().includes(searchLower) ||
+          (job.pickupLocation || "").toLowerCase().includes(searchLower) ||
+          (job.dropoffLocation || "").toLowerCase().includes(searchLower) ||
+          (pRider?.name || "").toLowerCase().includes(searchLower) ||
+          (dRider?.name || "").toLowerCase().includes(searchLower) ||
+          (aRider?.name || "").toLowerCase().includes(searchLower);
+        if (!matchesSearch) return false;
+      }
+
+      return true;
+    });
+
+    return list.sort((a, b) => {
+      const dA = resolveShopPaidDate(a)?.getTime() || new Date(a.createdAt).getTime();
+      const dB = resolveShopPaidDate(b)?.getTime() || new Date(b.createdAt).getTime();
+      return dB - dA;
+    });
+  }, [
+    jobs,
+    isAreaRestricted,
+    effectiveSelectedBranchIds,
+    selectedBranchIds,
+    allowedBranches,
+    shopLocations,
+    allowedBranchIdSet,
+    user?.role,
+    isCSO,
+    selectedBrand,
+    jobSourceFilter,
+    dateFilter,
+    today,
+    yesterday,
+    startDate,
+    endDate,
+    selectedRiderId,
+    paymentChannelFilter,
+    searchTerm,
+    customers,
+    riders,
+  ]);
+
+  const getJobShopPaidBy = (job: Job): string => {
+    if (job.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(job.adminNotesJson);
+        if (parsed && typeof parsed === "object") {
+          if (typeof parsed.shopPaidBy === "string" && parsed.shopPaidBy.trim()) {
+            return parsed.shopPaidBy.trim();
+          }
+          if (typeof parsed.cashCollectedBy === "string" && parsed.cashCollectedBy.trim()) {
+            return parsed.cashCollectedBy.trim();
+          }
+          if (Array.isArray(parsed.payments) && parsed.payments.length > 0) {
+            const payers = Array.from(
+              new Set(
+                parsed.payments
+                  .map((p: any) => (typeof p?.paidBy === "string" ? p.paidBy.trim() : ""))
+                  .filter(Boolean)
+              )
+            );
+            if (payers.length > 0) return payers.join(", ");
+          }
+        }
+      } catch {}
+    }
+    if ((job as any).shopPaidBy && typeof (job as any).shopPaidBy === "string") {
+      return (job as any).shopPaidBy;
+    }
+    return job.source === "pos" ? (job.createdBy || "-") : "-";
+  };
+
   const exportToCSV = () => {
-    const csvData = filteredJobs.map(job => {
+    if (shopPaidReportJobs.length === 0) {
+      toast.info("ไม่พบรายการงานที่เป็น Shop Paid ในวันที่เลือก");
+      return;
+    }
+    const csvData = shopPaidReportJobs.map(job => {
       const customer = findMatchingCustomer(customers, {
         customerId: job.customerId,
         customerName: job.customerName,
@@ -1574,30 +1748,42 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       const branch = shopLocations.find(s => s.id === job.branchId);
       const bMeta = getJobBillingMeta(job);
       const col = getJobKanbanColumn(job);
+      const paidAtRaw = job.shopPaidAt;
+      const totalAmt = Number(job.totalAmount) || 0;
+      const deliveryFee = Number(job.fee) || 0;
+      const serviceAmt = Math.max(0, Math.round((totalAmt - deliveryFee) * 100) / 100);
       return {
+        // 1. ข้อมูลอ้างอิงออเดอร์และสาขา (Order & Branch Identification)
         "Job ID": formatJobDisplayId(job.id),
         "Bill No": job.billNo || "-",
-        "Bill Issued": bMeta.isBillIssued ? "YES" : "NO",
-        "Bill Sent to Customer": bMeta.isBillSent ? "SENT" : "NOT SENT",
-        "Date": format(new Date(job.createdAt), "dd MMM yyyy, HH:mm"),
-        "Month": format(new Date(job.createdAt), "MM"),
         "Branch": branch?.name || "-",
+        "Order Source": job.source === "pos" ? "POS (Walk-in)" : "ONLINE",
+        "Status": statusConfig[col]?.label || job.status,
+        // 2. ข้อมูลการชำระเงินหน้าร้านและยอดเงิน (Shop Payment & Financial Summary)
+        "SHOP Pay Status": "PAID",
+        "SHOP Paid At": paidAtRaw ? format(new Date(paidAtRaw), "dd/MM/yyyy HH:mm") : "-",
+        "SHOP Paid By": getJobShopPaidBy(job),
+        "Payment Channel": job.paymentChannel || "-",
+        "Service Amount (THB)": serviceAmt,
+        "Delivery Fee (THB)": deliveryFee,
+        "Total Amount (THB)": totalAmt,
+        // 3. ข้อมูลลูกค้าและสถานะบิล/CSO (Customer, Billing & CSO Payment)
         "Customer Name": job.customerName || "Walk-in Guest",
         "Customer Phone": job.customerPhone || "-",
-        "Pickup Location": formatLocationWithRoom(job.pickupLocation, customer, shopLocations),
-        "Dropoff Location": formatLocationWithRoom(job.dropoffLocation, customer, shopLocations),
-        "Total Amount (THB)": job.totalAmount || 0,
-        "Delivery Fee (THB)": job.fee || 0,
+        "Bill Issued": bMeta.isBillIssued ? "YES" : "NO",
+        "Bill Sent to Customer": bMeta.isBillSent ? "SENT" : "NOT SENT",
+        "CSO Pay Status": job.isPaid ? "PAID" : "UNPAID",
+        "CSO Paid At": job.csoPaidAt ? format(new Date(job.csoPaidAt), "dd/MM/yyyy HH:mm") : "-",
+        // 4. ข้อมูลวันเวลา การจัดส่ง และไรเดอร์ (Timeline, Riders & Locations)
+        "Created Date": format(new Date(job.createdAt), "dd/MM/yyyy HH:mm"),
+        "Completed Date": job.completedAt ? format(new Date(job.completedAt), "dd/MM/yyyy HH:mm") : "-",
+        "Total Duration": job.completedAt ? getTotalDuration(new Date(job.createdAt), new Date(job.completedAt)) : "-",
+        "Month": paidAtRaw ? format(new Date(paidAtRaw), "MM") : format(new Date(job.createdAt), "MM"),
         "Pickup Rider": job.pickupRiderId ? (riders.find(r => r.id === job.pickupRiderId)?.name || job.pickupRiderId) : "-",
         "Delivery Rider": job.deliveryRiderId ? (riders.find(r => r.id === job.deliveryRiderId)?.name || job.deliveryRiderId) : "-",
         "Assigned Rider": (!job.pickupRiderId && !job.deliveryRiderId && job.riderId) ? (riders.find(r => r.id === job.riderId)?.name || job.riderId) : "-",
-        "Payment Channel": job.paymentChannel || "-",
-        "CSO Pay Status": job.isPaid ? "PAID" : "UNPAID",
-        "CSO Paid At": job.csoPaidAt ? format(new Date(job.csoPaidAt), "dd/MM/yyyy HH:mm") : "-",
-        "SHOP Pay Status": isJobFullyPaid(job) ? "PAID" : "UNPAID",
-        "SHOP Paid At": job.shopPaidAt ? format(new Date(job.shopPaidAt), "dd/MM/yyyy HH:mm") : "-",
-        "Total Duration": job.completedAt ? getTotalDuration(new Date(job.createdAt), new Date(job.completedAt)) : "-",
-        "Status": statusConfig[col]?.label || job.status
+        "Pickup Location": formatLocationWithRoom(job.pickupLocation, customer, shopLocations),
+        "Dropoff Location": formatLocationWithRoom(job.dropoffLocation, customer, shopLocations),
       };
     });
     const csv = Papa.unparse(csvData);
@@ -1605,15 +1791,325 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.setAttribute("download", `jobs_report_${format(new Date(), "yyyyMMdd_HHmm")}.csv`);
+    const dateSuffix =
+      dateFilter === "today"
+        ? format(today, "yyyyMMdd")
+        : dateFilter === "yesterday"
+        ? format(yesterday, "yyyyMMdd")
+        : `${startDate}_to_${endDate}`;
+    link.setAttribute("download", `shop_paid_jobs_${dateSuffix}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    toast.success("Exported to CSV successfully");
+    toast.success(`ส่งออกรายการ Shop Paid จำนวน ${shopPaidReportJobs.length} รายการเรียบร้อยแล้ว`);
   };
 
   const printToPDF = () => {
-    window.print();
+    if (shopPaidReportJobs.length === 0) {
+      toast.info("ไม่พบรายการงานที่เป็น Shop Paid ในวันที่เลือก");
+      return;
+    }
+
+    const escapeHtml = (val: any) =>
+      String(val ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+
+    const datePeriodLabel =
+      dateFilter === "today"
+        ? `Today (${format(today, "dd/MM/yyyy")})`
+        : dateFilter === "yesterday"
+        ? `Yesterday (${format(yesterday, "dd/MM/yyyy")})`
+        : `${startDate ? format(parseLocalDayDate(startDate, false), "dd/MM/yyyy") : "-"} – ${endDate ? format(parseLocalDayDate(endDate, true), "dd/MM/yyyy") : "-"}`;
+
+    const currentSelectedBranchIds = isAreaRestricted ? effectiveSelectedBranchIds : selectedBranchIds;
+    const totalBranchCount = isAreaRestricted ? allowedBranches.length : shopLocations.length;
+    const isAllBranchesSelected = currentSelectedBranchIds.length >= totalBranchCount;
+    const branchLabel = isAllBranchesSelected
+      ? "All Branches (ทุกสาขา)"
+      : currentSelectedBranchIds
+          .map((id) => getBranchShortName(shopLocations.find((s) => s.id === id)?.name) || id)
+          .join(", ");
+
+    let totalRevenue = 0;
+    let totalDeliveryFee = 0;
+    const channelTotals: Record<string, { count: number; amount: number }> = {};
+
+    shopPaidReportJobs.forEach((job) => {
+      const amt = Number(job.totalAmount) || 0;
+      const fee = Number(job.fee) || 0;
+      totalRevenue += amt;
+      totalDeliveryFee += fee;
+      const ch = (job.paymentChannel || "Unspecified").trim();
+      if (!channelTotals[ch]) channelTotals[ch] = { count: 0, amount: 0 };
+      channelTotals[ch].count += 1;
+      channelTotals[ch].amount += amt;
+    });
+
+    const channelCardsHtml = Object.entries(channelTotals)
+      .sort((a, b) => b[1].amount - a[1].amount)
+      .map(
+        ([ch, stat]) => `
+          <div class="summary-card">
+            <div class="summary-label">${escapeHtml(ch)}</div>
+            <div class="summary-value">฿${stat.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+            <div class="summary-sub">${stat.count} ออเดอร์</div>
+          </div>
+        `
+      )
+      .join("");
+
+    const rowsHtml = shopPaidReportJobs
+      .map((job, idx) => {
+        const branch = shopLocations.find((s) => s.id === job.branchId);
+        const branchShort = getBranchShortName(branch?.name) || branch?.name || "-";
+        const col = getJobKanbanColumn(job);
+        const statusLabel = statusConfig[col]?.label || job.status;
+        const paidAtRaw = job.shopPaidAt;
+        const paidAtStr = paidAtRaw ? format(new Date(paidAtRaw), "dd/MM/yyyy HH:mm") : "-";
+        const paidByStr = getJobShopPaidBy(job);
+        const createdAtStr = format(new Date(job.createdAt), "dd/MM/yyyy HH:mm");
+        const amt = Number(job.totalAmount) || 0;
+        const fee = Number(job.fee) || 0;
+
+        return `
+          <tr>
+            <td style="text-align:center;color:#64748b;">${idx + 1}</td>
+            <td style="font-family:monospace;font-weight:700;color:#0f172a;">#${escapeHtml(formatJobDisplayId(job.id))}</td>
+            <td style="font-family:monospace;font-weight:600;color:#334155;">${escapeHtml(job.billNo || "-")}</td>
+            <td>${escapeHtml(branchShort)}</td>
+            <td style="text-align:center;"><span class="status-badge">${escapeHtml(statusLabel)}</span></td>
+            <td style="white-space:nowrap;font-weight:600;color:#047857;">${escapeHtml(paidAtStr)}</td>
+            <td style="font-weight:600;color:#1e293b;">${escapeHtml(paidByStr)}</td>
+            <td><span class="channel-badge">${escapeHtml(job.paymentChannel || "Unspecified")}</span></td>
+            <td>
+              <div style="font-weight:700;color:#0f172a;">${escapeHtml(job.customerName || "Walk-in Guest")}</div>
+              <div style="font-size:10px;color:#64748b;">${escapeHtml(job.customerPhone || "-")}</div>
+            </td>
+            <td style="white-space:nowrap;color:#64748b;">${escapeHtml(createdAtStr)}</td>
+            <td style="text-align:right;color:#475569;">฿${fee.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            <td style="text-align:right;font-weight:800;color:#0f172a;">฿${amt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    const printWin = window.open("", "_blank", "width=1150,height=850");
+    if (!printWin) {
+      toast.error("เบราว์เซอร์บล็อกหน้าต่างป๊อปอัป กรุณาอนุญาต Pop-up เพื่อพิมพ์ PDF");
+      return;
+    }
+
+    const html = `<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <title>Shop Paid Report - ${escapeHtml(datePeriodLabel)}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Sarabun', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #0f172a;
+      margin: 0;
+      padding: 16px;
+      background: #ffffff;
+      font-size: 11.5px;
+    }
+    .report-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 12px;
+      margin-bottom: 14px;
+    }
+    .report-title {
+      font-size: 20px;
+      font-weight: 800;
+      color: #0f172a;
+      margin: 0 0 4px 0;
+    }
+    .report-subtitle {
+      font-size: 12px;
+      color: #475569;
+      font-weight: 600;
+    }
+    .report-meta {
+      text-align: right;
+      font-size: 11px;
+      color: #475569;
+      line-height: 1.5;
+    }
+    .summary-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .summary-card {
+      flex: 1 1 140px;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 8px 12px;
+      background: #f8fafc;
+    }
+    .summary-card.primary {
+      background: #ecfdf5;
+      border-color: #a7f3d0;
+    }
+    .summary-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+    .summary-card.primary .summary-label {
+      color: #047857;
+    }
+    .summary-value {
+      font-size: 16px;
+      font-weight: 800;
+      color: #0f172a;
+      margin-top: 2px;
+    }
+    .summary-card.primary .summary-value {
+      color: #065f46;
+    }
+    .summary-sub {
+      font-size: 10px;
+      color: #64748b;
+      font-weight: 600;
+      margin-top: 1px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    th {
+      background: #f1f5f9;
+      color: #334155;
+      font-weight: 800;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.03em;
+      padding: 8px 8px;
+      border-top: 1px solid #cbd5e1;
+      border-bottom: 1px solid #cbd5e1;
+      text-align: left;
+    }
+    td {
+      padding: 7px 8px;
+      border-bottom: 1px solid #e2e8f0;
+      vertical-align: middle;
+    }
+    tr:nth-child(even) td {
+      background: #fafafa;
+    }
+    .channel-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 5px;
+      font-size: 10px;
+      font-weight: 700;
+      background: #eef2ff;
+      color: #3730a3;
+      border: 1px solid #c7d2fe;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 5px;
+      font-size: 9.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      background: #f1f5f9;
+      color: #334155;
+      border: 1px solid #cbd5e1;
+    }
+    tfoot td {
+      background: #f8fafc !important;
+      font-weight: 800;
+      border-top: 2px solid #0f172a;
+      border-bottom: 2px solid #0f172a;
+      padding: 9px 8px;
+      font-size: 12px;
+    }
+    @media print {
+      body { padding: 0; }
+      .no-print { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="report-header">
+    <div>
+      <h1 class="report-title">รายงานสรุปงานที่รับชำระเงินแล้ว (Shop Paid Jobs Report)</h1>
+      <div class="report-subtitle">แสดงเฉพาะรายการที่มีสถานะ Shop Paid ในวันที่เลือก • สาขา: ${escapeHtml(branchLabel)}</div>
+    </div>
+    <div class="report-meta">
+      <div><strong>วันที่รับชำระ (Shop Paid Date):</strong> ${escapeHtml(datePeriodLabel)}</div>
+      <div><strong>จำนวนรายการทั้งหมด:</strong> ${shopPaidReportJobs.length} ออเดอร์</div>
+      <div><strong>พิมพ์เมื่อ:</strong> ${format(new Date(), "dd/MM/yyyy HH:mm")}</div>
+    </div>
+  </div>
+
+  <div class="summary-grid">
+    <div class="summary-card primary">
+      <div class="summary-label">ยอดรวม Shop Paid ทั้งสิ้น (Grand Total)</div>
+      <div class="summary-value">฿${totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+      <div class="summary-sub">${shopPaidReportJobs.length} ออเดอร์ (ค่าส่งรวม ฿${totalDeliveryFee.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</div>
+    </div>
+    ${channelCardsHtml}
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:32px;text-align:center;">#</th>
+        <th style="width:90px;">Job ID</th>
+        <th style="width:85px;">Bill No</th>
+        <th style="width:95px;">Branch</th>
+        <th style="width:80px;text-align:center;">Status</th>
+        <th style="width:110px;">Shop Paid At</th>
+        <th style="width:105px;">Shop Paid By</th>
+        <th style="width:115px;">Payment Channel</th>
+        <th>Customer</th>
+        <th style="width:105px;">Created At</th>
+        <th style="width:80px;text-align:right;">Delivery Fee</th>
+        <th style="width:100px;text-align:right;">Total Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rowsHtml}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="10" style="text-align:right;">รวมทั้งสิ้น (${shopPaidReportJobs.length} ออเดอร์)</td>
+        <td style="text-align:right;">฿${totalDeliveryFee.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+        <td style="text-align:right;color:#065f46;">฿${totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <script>
+    window.onload = function() {
+      setTimeout(function() {
+        window.focus();
+        window.print();
+      }, 250);
+    };
+  </script>
+</body>
+</html>`;
+
+    printWin.document.open();
+    printWin.document.write(html);
+    printWin.document.close();
   };
 
   return (
@@ -3185,7 +3681,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                         <CheckCircle2 size={10} className="text-emerald-600" />
                                         <span>Cash Collected ({riderName})</span>
                                       </span>
-                                    ) : canManageJobs ? (
+                                    ) : isBranchManager ? (
                                       <button
                                         type="button"
                                         onClick={(e) => handleCollectRiderCash(job, e)}
@@ -4023,7 +4519,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                         <CheckCircle2 size={11} className="text-emerald-600" />
                                         <span>Collected</span>
                                       </span>
-                                    ) : canManageJobs ? (
+                                    ) : isBranchManager ? (
                                       <button
                                         type="button"
                                         onClick={(e) => handleCollectRiderCash(job, e)}

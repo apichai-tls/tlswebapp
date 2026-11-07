@@ -42,6 +42,11 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 export function AdminMarketingCoupons() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin" || user?.role === "superadmin";
+  const canManageCampaigns =
+    isAdmin ||
+    user?.role === "marketing" ||
+    user?.department === "marketing" ||
+    Boolean(user?.permissions?.includes("marketing"));
   const customers = useCustomers();
 
   // Data states
@@ -289,7 +294,7 @@ export function AdminMarketingCoupons() {
 
         {/* Action: + Issue Coupon, Templates & Campaigns Buttons */}
         <div className="flex items-center gap-2 shrink-0">
-          {isAdmin && (
+          {canManageCampaigns && (
             <Button
               type="button"
               variant="outline"

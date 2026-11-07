@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
@@ -46,13 +46,23 @@ export function AdminCustomerDialog({
   onOpenChange, 
   customer, 
   onSaved,
-  onTopUpCustomer
+  onTopUpCustomer,
+  initialAddress,
+  initialCoords,
+  initialRoomNo,
+  initialBranchId,
+  initialIsVip,
 }: { 
   open: boolean; 
   onOpenChange: (open: boolean) => void; 
   customer?: Customer | null;
   onSaved?: (c: Customer) => void;
   onTopUpCustomer?: (c: Customer) => void;
+  initialAddress?: string | null;
+  initialCoords?: { lat: number; lng: number } | null;
+  initialRoomNo?: string | null;
+  initialBranchId?: string | null;
+  initialIsVip?: boolean;
 }) {
   const { user } = useAuth();
   const canAdjustBalance = Boolean(user?.permissions?.includes("adjust-wallet") || user?.role === "admin");
@@ -449,7 +459,7 @@ export function AdminCustomerDialog({
       setNickName("");
       setGender("Rather not say");
       setDob("");
-      setCustomerTier("standard");
+      setCustomerTier(initialIsVip ? "vip" : "standard");
 
       setPhone("");
       setIsWhatsapp(true);
@@ -463,25 +473,43 @@ export function AdminCustomerDialog({
 
       setAddressLabel("Hotel");
       setCustomAddressLabel("");
-      setAddress("");
-      setRoomNo("");
+      const cleanInitAddr = (initialAddress || "").trim();
+      setAddress(cleanInitAddr);
+      setRoomNo((initialRoomNo || "").trim());
       setDistrict("Watthana (Thonglor, Ekkamai, Phrom Phong)");
       setLeaveWithJuristic(true);
-      setCoords(null);
-      setSelectedLocation(null);
+      const matchedPoi = cleanInitAddr
+        ? pois.find(p => p.name.trim().toLowerCase() === cleanInitAddr.toLowerCase())
+        : null;
+      const effectiveInitCoords = isValidPinnedCoords(initialCoords)
+        ? initialCoords
+        : (matchedPoi && isValidPinnedCoords(matchedPoi.coords) ? matchedPoi.coords : null);
+      setCoords(effectiveInitCoords);
+      setSelectedLocation(
+        cleanInitAddr && effectiveInitCoords
+          ? {
+              name: cleanInitAddr,
+              address: matchedPoi?.address || cleanInitAddr,
+              lat: effectiveInitCoords.lat,
+              lng: effectiveInitCoords.lng,
+              placeId: matchedPoi?.placeId || matchedPoi?.id,
+              isLocal: true,
+            }
+          : null
+      );
 
       setRequiresTaxInvoice(false);
       setCompanyName("");
       setTaxId("");
       setTaxBranch("Head Office (สำนักงานใหญ่)");
-      setTaxBillingAddress("");
+      setTaxBillingAddress(cleanInitAddr && cleanInitAddr !== "--" ? cleanInitAddr : "");
 
       setRemark("");
       setBrand("that_laundry_shop");
       setSourceSystem("web_booking");
       setIsCorporate(false);
       setMemberId("");
-      setBranchId("");
+      setBranchId((initialBranchId || "").trim());
       setMemberStartDate("");
       setMemberExpiryDate("");
       setPriceListId("regular");
@@ -490,9 +518,8 @@ export function AdminCustomerDialog({
       setCorporatePickupCommission(0);
       setCorporateDeliveryCommission(0);
       setCorporateCommissionRatePerKm(0);
-      setSelectedLocation(null);
     }
-  }, [open, customer]);
+  }, [open, customer, initialAddress, initialCoords, initialRoomNo, initialBranchId, initialIsVip, pois]);
 
   const handleAdjustSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

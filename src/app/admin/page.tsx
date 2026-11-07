@@ -71,7 +71,7 @@ import { NotificationBell } from "@/components/notification-bell";
 import { TopUpDialog } from "@/components/top-up-dialog";
 import { RefundCorrectDialog } from "@/components/refund-correct-dialog";
 import { SplitPaymentDialog, type SplitPaymentLine } from "@/components/split-payment-dialog";
-import AdminFeeCalculator from "@/components/admin-fee-calculator";
+import AdminFeeCalculator, { type CalculatorOrderPayload } from "@/components/admin-fee-calculator";
 import AdminPoiManager from "@/components/admin-poi-manager";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -1641,7 +1641,43 @@ function AdminPageContent() {
     return Boolean(matched?.conditions?.disallowMemberWallet || matched?.instantRule?.disallowMemberWallet);
   }, [appliedPromo, promoCampaigns]);
 
+  const hasDialogNonPackageItems = useMemo(() => {
+    if (isRewashJob) return false;
+    if (!selectedProfileCustomer?.isMember) return false;
+    return dialogCart.some(item =>
+      item.category !== "PACKAGE" &&
+      item.id !== "topup-member-item" &&
+      item.id !== "delivery-pickup-service-item" &&
+      item.id !== "delivery-only-service-item"
+    );
+  }, [selectedProfileCustomer, dialogCart, isRewashJob]);
+
+  const hasEligibleMemberInstantPromo = useMemo(() => {
+    if (isRewashJob || isPaidJob) return false;
+    if (!selectedProfileCustomer?.isMember) return false;
+    if (dialogCart.length === 0) return false;
+    const nowBkkStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+    const pickupDateStr = pickupScheduledTime ? pickupScheduledTime.slice(0, 10) : nowBkkStr;
+    for (const c of promoCampaigns) {
+      if (!c.enabled) continue;
+      if (c.campaignMode !== "INSTANT_DISCOUNT" && !c.instantRule) continue;
+      const rule = c.instantRule;
+      if (!rule || !rule.promoCode) continue;
+      const startStr = (c.startDate || "").slice(0, 10);
+      const endStr = (c.endDate || "").slice(0, 10);
+      const isDateActive =
+        (startStr && endStr && nowBkkStr >= startStr && nowBkkStr <= endStr) ||
+        (startStr && endStr && pickupDateStr >= startStr && pickupDateStr <= endStr);
+      if (!isDateActive) continue;
+      if (c.conditions?.excludeMember || c.conditions?.allowMember === false) continue;
+      const calc = calculateInstantCampaignDiscount(dialogCart, c);
+      if (calc.meetsMinQuantity && calc.discountAmount > 0) return true;
+    }
+    return false;
+  }, [isRewashJob, isPaidJob, selectedProfileCustomer?.isMember, dialogCart, pickupScheduledTime, promoCampaigns]);
+
   const forceMemberPaymentDialog = useMemo(() => {
+    if (hasEligibleMemberInstantPromo) return false;
     if (isRewashJob) return false;
     if (isMemberWalletDisallowedByPromo) return false;
     if (!selectedProfileCustomer?.isMember) return false;
@@ -1651,7 +1687,7 @@ function AdminPageContent() {
       item.id !== "delivery-pickup-service-item" && 
       item.id !== "delivery-only-service-item"
     );
-  }, [selectedProfileCustomer, dialogCart, isRewashJob, isMemberWalletDisallowedByPromo]);
+  }, [selectedProfileCustomer, dialogCart, isRewashJob, isMemberWalletDisallowedByPromo, hasEligibleMemberInstantPromo]);
 
   useEffect(() => {
     if (isMemberWalletDisallowedByPromo && !isPaidJob) {
@@ -1662,7 +1698,7 @@ function AdminPageContent() {
         setSplitPayments((prev) => prev.filter((sp) => sp.channel !== "Deduct Member"));
       }
     }
-  }, [isMemberWalletDisallowedByPromo, isPaidJob, paymentChannel, splitPayments]);
+  }, [isMemberWalletDisallowedByPromo, isPaidJob]);
 
   const currentLaundryPrice = useMemo(() => {
     if (isRewashJob) return 0;
@@ -1760,7 +1796,7 @@ function AdminPageContent() {
 
   const activePaymentChannels = useMemo(() => {
     const channels = getActivePaymentChannels(systemSettings, !!selectedProfileCustomer?.isMember);
-    if (isMemberWalletDisallowedByPromo) {
+    if (false && isMemberWalletDisallowedByPromo) {
       return channels.filter((c) => c.name !== "Deduct Member");
     }
     return channels;
@@ -1863,8 +1899,10 @@ function AdminPageContent() {
       // Auto-select "Deduct Member" as payment channel for Member customers
       // But do NOT auto-set isPaid=true — user must confirm by pressing Paid themselves
       setPaymentChannel("Deduct Member");
+    } else if (hasDialogNonPackageItems && !appliedPromo && !paymentChannel) {
+      setPaymentChannel("Deduct Member");
     }
-  }, [forceMemberPaymentDialog, dialogTotal, selectedProfileCustomer?.creditBalance]);
+  }, [forceMemberPaymentDialog, hasDialogNonPackageItems]);
 
 
   useEffect(() => {
@@ -2354,6 +2392,71 @@ function AdminPageContent() {
     setDialogOpen(true);
   };
 
+  const handleCreateOrderFromCalculator = (payload: CalculatorOrderPayload) => {
+    const targetBranchIdx = payload.branchId ? shopLocations.findIndex(s => s.id === payload.branchId) : -1;
+    const userBranchIdx = user?.branchId ? shopLocations.findIndex(s => s.id === user.branchId) : -1;
+    const effectiveIdx = targetBranchIdx >= 0 ? targetBranchIdx : (userBranchIdx >= 0 ? userBranchIdx : selectedStoreIndex);
+    const targetShop = shopLocations[effectiveIdx] || shopLocations[0];
+
+    if (targetShop?.isPosEnabled) {
+      const bShift = getBranchOpenShift(targetShop.id);
+      if (bShift && isShiftDateFromPreviousDay(bShift)) {
+        toast.error(
+          currentLanguage === "en"
+            ? `Branch "${targetShop.name}" has an unclosed shift from ${format(new Date(bShift.openedAt), "dd/MM/yyyy")}. Please close it first.`
+            : `สาขา "${targetShop.name}" มีกะค้างของวันที่ ${format(new Date(bShift.openedAt), "dd/MM/yyyy")} กรุณาปิดกะเก่าก่อนสร้างบิลใหม่`
+        );
+        if (activeTab !== "jobs") handleTabChange("jobs");
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "close", branchId: targetShop.id } }));
+        }, 50);
+        return;
+      }
+      if (!bShift) {
+        toast.error(
+          currentLanguage === "en"
+            ? `Please open today's cashier shift for "${targetShop.name}" before creating a new job.`
+            : `กรุณาเปิดกะลิ้นชักเงินสดของสาขา "${targetShop.name}" ก่อนสร้างบิลใหม่`
+        );
+        if (activeTab !== "jobs") handleTabChange("jobs");
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "open", branchId: targetShop.id } }));
+        }, 50);
+        return;
+      }
+    }
+
+    resetDialogForm();
+    if (effectiveIdx >= 0) {
+      setSelectedStoreIndex(effectiveIdx);
+    }
+    setIsPickup(payload.isPickup);
+    setIsDelivery(payload.isDelivery);
+    setIsWalkIn(!payload.isPickup);
+
+    const pName = payload.pickupLoc?.name || "";
+    const dName = payload.deliveryLoc?.name || "";
+    setPickupLoc(payload.isPickup ? pName : "");
+    setPickupCoords(payload.isPickup && payload.pickupLoc?.coords ? payload.pickupLoc.coords : null);
+    setPickupDist(payload.isPickup ? (payload.pickupDist || 0) : 0);
+
+    setDeliveryLoc(payload.isDelivery ? dName : "");
+    setDeliveryCoords(payload.isDelivery && payload.deliveryLoc?.coords ? payload.deliveryLoc.coords : null);
+    setDeliveryDist(payload.isDelivery ? (payload.deliveryDist || 0) : 0);
+
+    setDifferentDeliveryAddress(Boolean(payload.isDeliveryDirty));
+    setIsDeliveryDirty(Boolean(payload.isDeliveryDirty));
+    setSelectedVIPLabel(payload.isVip ? "VIP" : "");
+    setEditingFeeLock(payload.lockedFee);
+
+    setDialogOpen(true);
+    toast.success(
+      currentLanguage === "en"
+        ? `Order opened with locked delivery fee ฿${payload.lockedFee}`
+        : `เปิด Job พร้อมล็อกค่ารับ-ส่ง ฿${payload.lockedFee} จากหน้าคำนวณระยะทางแล้ว`
+    );
+  };
+
   const handleToggleRewash = (nextVal: boolean) => {
     setIsRewashJob(nextVal);
     if (nextVal) {
@@ -2818,13 +2921,22 @@ function AdminPageContent() {
       if (!isDateActive) continue;
 
       // Customer eligibility check
-      const isCorp = Boolean(selectedProfileCustomer?.isCorporate || selectedProfileCustomer?.priceListId);
+      const isCorp = Boolean(selectedProfileCustomer?.isCorporate || activeDialogCorpPriceList || (selectedProfileCustomer as any)?.customerType === "corporate" || (selectedProfileCustomer as any)?.priceType === "corporate" || (selectedProfileCustomer as any)?.tier === "corporate");
       const isVIP = Boolean(selectedProfileCustomer?.isVIP);
       const isMember = Boolean(selectedProfileCustomer?.isMember);
       if (isCorp && c.conditions?.excludeCorporate && !c.conditions?.allowCorporate) continue;
       if (isVIP && (c.conditions?.excludeVIP || c.conditions?.allowVIP === false)) continue;
       if (isMember && !isVIP && (c.conditions?.excludeMember || c.conditions?.allowMember === false)) continue;
       if (!isCorp && !isVIP && !isMember && c.conditions?.allowGeneral === false) continue;
+
+      const disallowWallet = Boolean(rule.disallowMemberWallet ?? c.conditions?.disallowMemberWallet);
+      if (isMember && disallowWallet) {
+        const isStillMemberWalletOrUnselected =
+          !paymentChannel ||
+          paymentChannel === "Deduct Member" ||
+          (paymentChannel === "Split Payment" && (splitPayments.length < 2 || splitMemberDeductAmt > 0));
+        if (isStillMemberWalletOrUnselected) continue;
+      }
 
       const calc = calculateInstantCampaignDiscount(dialogCart, c);
       if (!calc.meetsMinQuantity || calc.discountAmount <= 0) continue;
@@ -2857,6 +2969,10 @@ function AdminPageContent() {
     promoCampaigns,
     customerPastJobs,
     editingJobId,
+    paymentChannel,
+    splitPayments,
+    splitMemberDeductAmt,
+    activeDialogCorpPriceList,
   ]);
 
   useEffect(() => {
@@ -3177,6 +3293,11 @@ function AdminPageContent() {
     setDialogContactChannel(effectiveChannel);
     setDialogLineProfileId(effectiveLineId);
     setDialogWhatsappId(effectiveWaId);
+    if (originalJobRef.current) {
+      (originalJobRef.current as any)._initialContactChannel = effectiveChannel || null;
+      (originalJobRef.current as any)._initialLineId = effectiveLineId || null;
+      (originalJobRef.current as any)._initialWhatsappId = effectiveWaId || null;
+    }
 
     const resolvedPhones = resolveCustomerPhones({
       customerPhone: job.customerPhone,
@@ -3243,6 +3364,9 @@ function AdminPageContent() {
       if (pm === "transfer") fallbackChannel = "Transfer";
       else if (pm === "cash") fallbackChannel = "Cash / COD";
       else if (pm === "credit" || pm === "card") fallbackChannel = "Credit Card";
+    }
+    if (!fallbackChannel && foundCustomer?.isMember && !hasValidPromo && !hasRawPromo) {
+      fallbackChannel = "Deduct Member";
     }
     setPaymentChannel(fallbackChannel);
 
@@ -3446,8 +3570,14 @@ function AdminPageContent() {
       const d = new Date(val);
       return isNaN(d.getTime()) ? new Date(fallbackMs) : d;
     };
-    setPickupScheduledTime(format(roundToNearest30(safeDate(job.pickupScheduledAt || job.scheduledAt, Date.now())), "yyyy-MM-dd'T'HH:mm"));
-    setDeliveryScheduledTime(format(roundToNearest30(safeDate(job.deliveryScheduledAt, Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+    const initialPickupTimeStr = format(roundToNearest30(safeDate(job.pickupScheduledAt || job.scheduledAt, Date.now())), "yyyy-MM-dd'T'HH:mm");
+    const initialDeliveryTimeStr = format(roundToNearest30(safeDate(job.deliveryScheduledAt, Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm");
+    setPickupScheduledTime(initialPickupTimeStr);
+    setDeliveryScheduledTime(initialDeliveryTimeStr);
+    if (originalJobRef.current) {
+      (originalJobRef.current as any)._initialPickupTimeStr = initialPickupTimeStr;
+      (originalJobRef.current as any)._initialDeliveryTimeStr = initialDeliveryTimeStr;
+    }
     setPickupRiderId(job.pickupRiderId || "");
     setDeliveryRiderId(job.deliveryRiderId || "");
 
@@ -3518,6 +3648,15 @@ function AdminPageContent() {
     const existingJob = editingJobId ? (jobs.find(j => String(j.id) === String(editingJobId)) || originalJobRef.current) : null;
     const isAlreadyCompleted = existingJob?.status === "completed";
     const isExistingCancelled = existingJob?.status === "cancel" || (existingJob?.status as string) === "cancelled";
+
+    if (isPayment && !(isAdmin || isBranchManager)) {
+      abortSubmit(
+        currentLanguage === "en"
+          ? "Only Admin or Branch Managers are allowed to process Shop Paid."
+          : "เฉพาะผู้จัดการหน้าร้าน (Branch Manager) หรือ Admin เท่านั้นที่สามารถกด Pay รับชำระเงินได้"
+      );
+      return;
+    }
 
     if (isPayment && isExistingCancelled) {
       abortSubmit(currentLanguage === "en" ? "Cannot process payment for a cancelled order." : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้");
@@ -4096,6 +4235,11 @@ function AdminPageContent() {
           customerLineId: dialogLineProfileId.trim() || existingParsedNotes?.customerLineId || null,
           customerWhatsappId: dialogWhatsappId.trim() || existingParsedNotes?.customerWhatsappId || null,
         };
+        if (isPayment) {
+          notesObj.shopPaidBy = user?.name || user?.email || "Admin";
+        } else if (!existingParsedNotes?.shopPaidBy && isNoChargePrepaidJob) {
+          notesObj.shopPaidBy = user?.name || user?.email || "Admin";
+        }
         if (isNoChargePrepaidJob) {
           notesObj.isBillSent = true;
         }
@@ -4146,12 +4290,12 @@ function AdminPageContent() {
             if (isNaN(d.getTime())) return '';
             return format(roundToNearest30(d), "yyyy-MM-dd'T'HH:mm");
           };
-          if (pickupScheduledTime === toRoundedMinStr(orig.pickupScheduledAt || orig.scheduledAt)) {
+          if (pickupScheduledTime === (orig._initialPickupTimeStr || toRoundedMinStr(orig.pickupScheduledAt || orig.scheduledAt))) {
             data.pickupScheduledAt = orig.pickupScheduledAt;
             data.pickupScheduledEndAt = orig.pickupScheduledEndAt;
             data.scheduledAt = orig.scheduledAt;
           }
-          if (deliveryScheduledTime === toRoundedMinStr(orig.deliveryScheduledAt)) {
+          if (deliveryScheduledTime === (orig._initialDeliveryTimeStr || toRoundedMinStr(orig.deliveryScheduledAt))) {
             data.deliveryScheduledAt = orig.deliveryScheduledAt;
             data.deliveryScheduledEndAt = orig.deliveryScheduledEndAt;
           }
@@ -4188,9 +4332,9 @@ function AdminPageContent() {
               const hangerCountVal = Math.max(0, Number(p?.hangerCount) || 0);
               const foldedCountVal = Math.max(0, Number(p?.foldedCount) || 0);
               const processingBranchIdVal = p?.processingBranchId || null;
-              const contactChannelVal = p?.contactChannel || null;
-              const customerLineIdVal = p?.customerLineId || null;
-              const customerWhatsappIdVal = p?.customerWhatsappId || null;
+              const contactChannelVal = p?.contactChannel ?? orig._initialContactChannel ?? null;
+              const customerLineIdVal = p?.customerLineId ?? orig._initialLineId ?? null;
+              const customerWhatsappIdVal = p?.customerWhatsappId ?? orig._initialWhatsappId ?? null;
               return JSON.stringify({ notes, payments, isTaxInvoiceRequested: isTax, isRewash, rewashFromJobId, noRiderCommission, hangerCount: hangerCountVal, foldedCount: foldedCountVal, processingBranchId: processingBranchIdVal, contactChannel: contactChannelVal, customerLineId: customerLineIdVal, customerWhatsappId: customerWhatsappIdVal });
             } catch {
               return String(raw);
@@ -6967,21 +7111,56 @@ function AdminPageContent() {
                                   setPromoCodeInput("");
                                   setPromoError(null);
                                   
-                                  const cleanCustAddr = c.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-" ? c.defaultAddress : "";
+                                  const cleanCustAddr = c.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-" ? stripRoomSuffix(c.defaultAddress) : "";
                                   const validCustCoords = isRealCustomerCoords(c.defaultCoords, c.defaultAddress) ? c.defaultCoords : null;
-                                  setPickupLoc(cleanCustAddr);
-                                  setPickupRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
-                                  setPickupCoords(validCustCoords);
-                                  
-                                  setDeliveryLoc(cleanCustAddr);
-                                  setDeliveryRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
-                                  setDeliveryCoords(validCustCoords);
-                                  
-                                  setDifferentDeliveryAddress(false);
-                                  setIsDeliveryDirty(false);
-                                  setIsFreeDelivery(false);
-                                  updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
-                                  setEditingFeeLock(null);
+                                  const custRoomVal = (c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim();
+                                  const existingDialogAddr = stripRoomSuffix(pickupLoc || deliveryLoc || "").trim().toLowerCase();
+                                  const cleanIncomingAddr = cleanCustAddr.trim().toLowerCase();
+                                  const existingDialogCoords = pickupCoords || deliveryCoords;
+                                  const isSameCoords = Boolean(
+                                    existingDialogCoords &&
+                                    validCustCoords &&
+                                    Math.abs(existingDialogCoords.lat - validCustCoords.lat) < 0.0008 &&
+                                    Math.abs(existingDialogCoords.lng - validCustCoords.lng) < 0.0008
+                                  );
+                                  const isSameAddrText = Boolean(
+                                    existingDialogAddr &&
+                                    cleanIncomingAddr &&
+                                    (existingDialogAddr === cleanIncomingAddr ||
+                                      existingDialogAddr.includes(cleanIncomingAddr) ||
+                                      cleanIncomingAddr.includes(existingDialogAddr))
+                                  );
+                                  const isVipTierChanged = Boolean(c.isVIP) !== Boolean(selectedVIPLabel);
+                                  const shouldKeepLockedRoute = Boolean(
+                                    editingFeeLock !== null &&
+                                    !isVipTierChanged &&
+                                    (!cleanIncomingAddr || !existingDialogAddr || isSameAddrText || isSameCoords)
+                                  );
+
+                                  if (shouldKeepLockedRoute) {
+                                    if (!existingDialogAddr && cleanCustAddr) {
+                                      setPickupLoc(cleanCustAddr);
+                                      setPickupCoords(validCustCoords);
+                                      setDeliveryLoc(cleanCustAddr);
+                                      setDeliveryCoords(validCustCoords);
+                                      updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
+                                    }
+                                    setPickupRoom(custRoomVal);
+                                    setDeliveryRoom(custRoomVal);
+                                    setIsFreeDelivery(false);
+                                  } else {
+                                    setPickupLoc(cleanCustAddr);
+                                    setPickupRoom(custRoomVal);
+                                    setPickupCoords(validCustCoords);
+                                    setDeliveryLoc(cleanCustAddr);
+                                    setDeliveryRoom(custRoomVal);
+                                    setDeliveryCoords(validCustCoords);
+                                    setDifferentDeliveryAddress(false);
+                                    setIsDeliveryDirty(false);
+                                    setIsFreeDelivery(false);
+                                    updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
+                                    setEditingFeeLock(null);
+                                  }
                                   
                                   if (c.isVIP) {
                                     setSelectedVIPLabel("VIP");
@@ -6991,9 +7170,11 @@ function AdminPageContent() {
                                   if (c.isMember) {
                                     setSelectedMemberLabel("Member");
                                     setSelectedMemberId(c.memberId || "");
+                                    setPaymentChannel("Deduct Member");
                                   } else {
                                     setSelectedMemberLabel("");
                                     setSelectedMemberId("");
+                                    if (paymentChannel === "Deduct Member") setPaymentChannel("");
                                   }
                                   setCustomerPriceListId(c.priceListId || null);
                                   handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, c.priceListId || null);
@@ -7184,9 +7365,12 @@ function AdminPageContent() {
                                       }
                                       const updatedJson = JSON.stringify(updatedObj);
                                       const actorDetails = user ? { actorId: user.id, actorName: staffName, actorRole: user.role } : undefined;
-                                      await jobStore.updateJobDetails(editingJobId, { adminNotesJson: updatedJson }, actorDetails);
+                                      const updatedJob = await jobStore.updateJobDetails(editingJobId, { adminNotesJson: updatedJson }, actorDetails);
                                       if (originalJobRef.current) {
                                         (originalJobRef.current as any).adminNotesJson = updatedJson;
+                                        if ((updatedJob as any)?.updatedAt) {
+                                          (originalJobRef.current as any).updatedAt = (updatedJob as any).updatedAt;
+                                        }
                                       }
                                       toast.success(nextSent ? "Marked as Bill Sent to Customer ✓" : "Marked as Bill Not Sent");
                                     }}
@@ -7714,10 +7898,16 @@ function AdminPageContent() {
                               const nextJson = JSON.stringify(baseObj);
                               if (originalJobRef.current && String(originalJobRef.current.id) === String(activeEditJob.id)) {
                                 originalJobRef.current.adminNotesJson = nextJson;
+                                (originalJobRef.current as any)._initialContactChannel = nextChannel || null;
+                                (originalJobRef.current as any)._initialLineId = trimmedLine || null;
+                                (originalJobRef.current as any)._initialWhatsappId = trimmedWa || null;
                               }
-                              await jobStore.updateJobDetails(activeEditJob.id, {
+                              const savedJob = await jobStore.updateJobDetails(activeEditJob.id, {
                                 adminNotesJson: nextJson,
                               });
+                              if (originalJobRef.current && String(originalJobRef.current.id) === String(activeEditJob.id) && (savedJob as any)?.updatedAt) {
+                                (originalJobRef.current as any).updatedAt = (savedJob as any).updatedAt;
+                              }
                             }
                             if (selectedProfileCustomer) {
                               const custUpdates: Record<string, any> = {};
@@ -7811,9 +8001,6 @@ function AdminPageContent() {
                                     <Input
                                       value={dialogLineProfileId}
                                       onChange={(e) => setDialogLineProfileId(e.target.value)}
-                                      onBlur={() => {
-                                        persistContactDetails("line", dialogLineProfileId, dialogWhatsappId);
-                                      }}
                                       onKeyDown={(e) => {
                                         if (e.key === "Enter") {
                                           e.preventDefault();
@@ -7902,9 +8089,6 @@ function AdminPageContent() {
                                     <Input
                                       value={dialogWhatsappId}
                                       onChange={(e) => setDialogWhatsappId(e.target.value)}
-                                      onBlur={() => {
-                                        persistContactDetails("whatsapp", dialogLineProfileId, dialogWhatsappId);
-                                      }}
                                       onKeyDown={(e) => {
                                         if (e.key === "Enter") {
                                           e.preventDefault();
@@ -9879,9 +10063,38 @@ function AdminPageContent() {
                                     <span className="font-bold text-[9.5px]">{currentLanguage === "en" ? "No Rider Comm" : "งดค่าคอมไรเดอร์"}</span>
                                   </Label>
                               </div>
-                              <div className="text-right select-none">
-                                {activeIsFreeDelivery && <span className="text-[9px] line-through text-slate-500 mr-1.5">฿{baseFee.toFixed(0)}</span>}
-                                <span className={`text-[11px] font-black ${activeIsFreeDelivery ? 'text-emerald-400' : 'text-slate-200'}`}>Fee: ฿{fee.toFixed(0)}</span>
+                              <div className="text-right select-none flex items-center gap-1.5">
+                                {!isPaidJob && !isRewashJob && !activeIsFreeDelivery && (
+                                  editingFeeLock !== null ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingFeeLock(null);
+                                        toast.info(currentLanguage === "en" ? "Delivery fee unlocked (auto-calculating from route)" : "ปลดล็อกค่ารับ-ส่งแล้ว (คำนวณตามระยะทางอัตโนมัติ)");
+                                      }}
+                                      className="px-1.5 py-0.5 rounded bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/60 text-emerald-300 text-[9px] font-bold flex items-center gap-0.5 cursor-pointer transition-colors"
+                                      title={currentLanguage === "en" ? "Rate is locked. Click to unlock and recalculate from distance." : "ล็อกราคาค่ารับ-ส่งไว้แล้ว (คลิกเพื่อปลดล็อกให้คำนวณตามระยะทาง)"}
+                                    >
+                                      <Lock size={9} />
+                                      <span>Fixed</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingFeeLock(baseFee);
+                                        toast.success(currentLanguage === "en" ? `Locked delivery fee at ฿${baseFee.toFixed(0)}` : `ล็อกราคาค่ารับ-ส่งที่ ฿${baseFee.toFixed(0)} เรียบร้อยแล้ว`);
+                                      }}
+                                      className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-indigo-950 border border-slate-600 hover:border-indigo-500/60 text-slate-300 hover:text-indigo-300 text-[9px] font-bold flex items-center gap-0.5 cursor-pointer transition-colors"
+                                      title={currentLanguage === "en" ? "Click to lock this delivery fee so it won't change when creating customer" : "คลิกเพื่อล็อกราคาค่ารับ-ส่งนี้ไว้ (ราคาจะไม่เปลี่ยนเมื่อสร้างลูกค้าในสถานที่เดิม)"}
+                                    >
+                                      <Lock size={9} />
+                                      <span>Fix Rate</span>
+                                    </button>
+                                  )
+                                )}
+                                {activeIsFreeDelivery && <span className="text-[9px] line-through text-slate-500 mr-0.5">฿{baseFee.toFixed(0)}</span>}
+                                <span className={`text-[11px] font-black ${activeIsFreeDelivery ? 'text-emerald-400' : editingFeeLock !== null ? 'text-emerald-300' : 'text-slate-200'}`}>Fee: ฿{fee.toFixed(0)}</span>
                               </div>
                             </div>
                           )}
@@ -10068,6 +10281,11 @@ function AdminPageContent() {
                                   value={isRewashJob ? "Rewash / No Charge" : (forceMemberPaymentDialog ? "Deduct Member" : paymentChannel)}
                                   onChange={(e) => {
                                     const val = e.target.value;
+                                    if (val === "Deduct Member" && isMemberWalletDisallowedByPromo) {
+                                      setAppliedPromo(null);
+                                      setPromoCodeInput("");
+                                      setPromoError(null);
+                                    }
                                     if (val === "Split Payment") {
                                       setPaymentChannel("Split Payment");
                                       setShowSplitPaymentDialog(true);
@@ -10091,6 +10309,11 @@ function AdminPageContent() {
                                   ))}
                                   <option value="Split Payment">Split Payment</option>
                                 </select>
+                                {selectedProfileCustomer?.isMember && hasEligibleMemberInstantPromo && !appliedPromo && (!paymentChannel || paymentChannel === "Deduct Member") && !isPaidJob && (
+                                  <div className="mt-1 px-2 py-1 rounded-lg bg-amber-950/60 border border-amber-500/40 text-[9px] text-amber-300 font-medium leading-tight">
+                                    💡 สมาชิกรับสิทธิ์โปรฯ พิเศษได้เมื่อเปลี่ยนช่องทางชำระเป็น เงินสด / โอน / บัตร
+                                  </div>
+                                )}
                                 {paymentChannel === "Split Payment" && splitPayments.length >= 2 && (
                                   <div className="mt-1 p-1.5 rounded-lg bg-indigo-950/60 border border-indigo-500/50 text-[9px] space-y-1 shadow-sm">
                                     <div className="flex items-center justify-between text-indigo-300 font-bold border-b border-indigo-800/50 pb-0.5">
@@ -10506,6 +10729,7 @@ function AdminPageContent() {
                             <Button 
                               type="button"
                               disabled={
+                                !(isAdmin || isBranchManager) ||
                                 isSubmitting || 
                                 isDetailLoading || 
                                 (dialogCart.length === 0 && (dialogTotal || 0) <= 0) || 
@@ -10522,7 +10746,7 @@ function AdminPageContent() {
                               }
                               onClick={() => handleCreate(true)}
                               className={`flex-[1.4] h-9 rounded-xl text-xs font-extrabold transition-all shadow-md border-none text-white flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-                                isPaidJob || isCancelledJob
+                                isPaidJob || isCancelledJob || !(isAdmin || isBranchManager)
                                   ? 'bg-slate-700 text-slate-300'
                                   : isWalletInsufficient || (paymentChannel === "Deduct Member" && isCustomerWalletExpired) || isSplitAmountInvalid
                                     ? 'bg-rose-600/80 hover:bg-rose-600'
@@ -10531,10 +10755,12 @@ function AdminPageContent() {
                                       : 'bg-emerald-600 hover:bg-emerald-500'
                               }`}
                               title={
-                                isCancelledJob
-                                  ? (currentLanguage === "en" ? "Cancelled orders cannot be paid" : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้")
-                                  : isPaidJob
-                                    ? (currentLanguage === "en" ? "Payment Completed" : "บิลนี้ชำระเงินเรียบร้อยแล้ว")
+                                !(isAdmin || isBranchManager)
+                                  ? (currentLanguage === "en" ? "Only Admin or Branch Managers can press Pay" : "เฉพาะผู้จัดการหน้าร้าน (Branch Manager) หรือ Admin เท่านั้นที่สามารถกด Pay ได้")
+                                  : isCancelledJob
+                                    ? (currentLanguage === "en" ? "Cancelled orders cannot be paid" : "งานที่อยู่ในสถานะ Cancel ไม่สามารถรับชำระเงินได้")
+                                    : isPaidJob
+                                      ? (currentLanguage === "en" ? "Payment Completed" : "บิลนี้ชำระเงินเรียบร้อยแล้ว")
                                     : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
                                       ? "Wallet หมดอายุแล้ว"
                                       : isWalletInsufficient
@@ -12022,6 +12248,7 @@ function AdminPageContent() {
           {activeTab === "calculator" && (
             <AdminFeeCalculator 
               onNavigateToPois={() => handleTabChange("pois")} 
+              onCreateOrder={handleCreateOrderFromCalculator}
             />
           )}
           {activeTab === "pois" && (
@@ -12055,6 +12282,11 @@ function AdminPageContent() {
           open={customerDialogOpen}
           onOpenChange={setCustomerDialogOpen}
           customer={selectedProfileCustomer}
+          initialAddress={dialogOpen && !selectedProfileCustomer ? stripRoomSuffix(pickupLoc || deliveryLoc || "") : undefined}
+          initialCoords={dialogOpen && !selectedProfileCustomer ? (pickupCoords || deliveryCoords) : undefined}
+          initialRoomNo={dialogOpen && !selectedProfileCustomer ? (pickupRoom || deliveryRoom) : undefined}
+          initialBranchId=""
+          initialIsVip={dialogOpen && !selectedProfileCustomer ? Boolean(selectedVIPLabel) : undefined}
           onTopUpCustomer={(c) => {
             setTopUpCustomer(c);
             setShowTopUpDialog(true);
@@ -12063,7 +12295,7 @@ function AdminPageContent() {
           onSaved={(c) => {
             setServiceWeight(2);
             setOtherClothingName("");
-    setOtherClothingPrice(0);
+            setOtherClothingPrice(0);
             setClothingItems({
               polo: { selected: false, quantity: 1 },
               tshirt: { selected: false, quantity: 1 },
@@ -12072,28 +12304,65 @@ function AdminPageContent() {
               bedsheet: { selected: false, quantity: 1 },
               other: { selected: false, quantity: 1 },
             });
+            const resolvedSavedPhones = resolveCustomerPhones({ customer: c });
             setCustomerName(c.name);
-            setCustomerPhone(c.phone);
+            setCustomerPhone(resolvedSavedPhones.primaryPhone || c.phone);
             setSelectedProfileCustomer(c);
             setAppliedPromo(null);
             setPromoCodeInput("");
             setPromoError(null);
             
-            // Always sync address from CRM when customer is selected
             const cleanCustAddr = c.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-" ? stripRoomSuffix(c.defaultAddress) : "";
             const validCustCoords = isRealCustomerCoords(c.defaultCoords, c.defaultAddress) ? c.defaultCoords : null;
-            setPickupLoc(cleanCustAddr);
-            setPickupRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
-            setPickupCoords(validCustCoords);
-            
-            setDeliveryLoc(cleanCustAddr);
-            setDeliveryRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
-            setDeliveryCoords(validCustCoords);
-            
-            setIsDeliveryDirty(false);
-            setIsFreeDelivery(false);
-            updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
-            setEditingFeeLock(null);
+            const custRoomVal = (c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim();
+            const existingDialogAddr = stripRoomSuffix(pickupLoc || deliveryLoc || "").trim().toLowerCase();
+            const cleanIncomingAddr = cleanCustAddr.trim().toLowerCase();
+            const existingDialogCoords = pickupCoords || deliveryCoords;
+            const isSameCoords = Boolean(
+              existingDialogCoords &&
+              validCustCoords &&
+              Math.abs(existingDialogCoords.lat - validCustCoords.lat) < 0.0008 &&
+              Math.abs(existingDialogCoords.lng - validCustCoords.lng) < 0.0008
+            );
+            const isSameAddrText = Boolean(
+              existingDialogAddr &&
+              cleanIncomingAddr &&
+              (existingDialogAddr === cleanIncomingAddr ||
+                existingDialogAddr.includes(cleanIncomingAddr) ||
+                cleanIncomingAddr.includes(existingDialogAddr))
+            );
+            const isVipTierChanged = Boolean(c.isVIP) !== Boolean(selectedVIPLabel);
+            const shouldKeepLockedRoute = Boolean(
+              editingFeeLock !== null &&
+              !isVipTierChanged &&
+              (!cleanIncomingAddr || !existingDialogAddr || isSameAddrText || isSameCoords)
+            );
+
+            if (shouldKeepLockedRoute) {
+              if (!existingDialogAddr && cleanCustAddr) {
+                setPickupLoc(cleanCustAddr);
+                setPickupCoords(validCustCoords);
+                setDeliveryLoc(cleanCustAddr);
+                setDeliveryCoords(validCustCoords);
+                updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
+              }
+              setPickupRoom(custRoomVal);
+              setDeliveryRoom(custRoomVal);
+              setIsFreeDelivery(false);
+            } else {
+              setPickupLoc(cleanCustAddr);
+              setPickupRoom(custRoomVal);
+              setPickupCoords(validCustCoords);
+              
+              setDeliveryLoc(cleanCustAddr);
+              setDeliveryRoom(custRoomVal);
+              setDeliveryCoords(validCustCoords);
+              
+              setIsDeliveryDirty(false);
+              setIsFreeDelivery(false);
+              updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
+              setEditingFeeLock(null);
+            }
             
             if (c.isVIP) {
               setSelectedVIPLabel("VIP");

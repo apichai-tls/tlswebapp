@@ -5,7 +5,7 @@ import { invalidateDbCache } from '@/lib/db-cache'
 import { publishOrderEvent } from '@/lib/realtime-bus'
 import { processTopUpAction, lockJobRowForUpdate } from '@/actions/db'
 import { generateProformaBaseNumber } from '@/lib/utils'
-import { runWithInternalSystemAuth } from '@/lib/server-auth'
+import { runWithInternalSystemAuth } from '@/lib/server-auth'; import { resolveBeamSettlementDate } from '@/lib/beam'
 
 export const dynamic = 'force-dynamic'
 
@@ -349,7 +349,7 @@ export async function POST(req: Request) {
       paymentLinkId ||
       'BEAM-' + Date.now()
 
-    const now = new Date()
+    const { effectiveDate: now, actualDate, isRolledOver } = resolveBeamSettlementDate(new Date(), paymentChannel)
 
     const txResult = await prisma.$transaction(async (tx) => {
       await lockJobRowForUpdate(tx, job.id)
@@ -384,7 +384,7 @@ export async function POST(req: Request) {
               amount: paidAmount,
               method: paymentMethodCode,
               channel: paymentChannel,
-              timestamp: now.toISOString(),
+              timestamp: now.toISOString(), ...(isRolledOver ? { actualPaidAt: actualDate.toISOString() } : {}),
               chargeId,
             },
           ]

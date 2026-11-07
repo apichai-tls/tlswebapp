@@ -690,7 +690,12 @@ export const jobStore = {
     } catch (err: any) {
       console.error('[store] Server save failed for job', id, err);
       emitJobChange();
-      if (typeof window !== 'undefined') {
+      const isSilentUpdate = Boolean(
+        (updates as any)?.__silentBackground ||
+        (updates as any)?.isAutoReceiptWorker ||
+        (updates as any)?.suppressThrow
+      );
+      if (typeof window !== 'undefined' && !isSilentUpdate) {
         const isConflict =
           String(err?.message || '').includes('409') ||
           String(err?.message || '').toLowerCase().includes('conflict');

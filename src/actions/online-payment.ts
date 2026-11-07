@@ -10,7 +10,7 @@ import {
   createBeamPaymentLink,
   getBeamPaymentLink,
   getBeamChargesByReference,
-  disableBeamPaymentLink,
+  disableBeamPaymentLink, resolveBeamSettlementDate,
 } from '@/lib/beam';
 
 export interface CreateOnlinePaymentResult {
@@ -43,7 +43,7 @@ async function markJobAsPaidInDb(params: {
   chargeId?: string;
 }) {
   const { job: initialJob, paidAmount, paymentMethodCode = 'card', channelName = 'Beam Checkout', chargeId } = params;
-  const now = new Date();
+  const { effectiveDate: now, actualDate, isRolledOver } = resolveBeamSettlementDate(new Date(), channelName);
 
   const { updated, transitionedToShopPaid } = await prisma.$transaction(async (tx) => {
     await lockJobRowForUpdate(tx, initialJob.id);
@@ -73,7 +73,7 @@ async function markJobAsPaidInDb(params: {
             amount: paidAmount,
             method: paymentMethodCode === 'card' ? 'card' : 'transfer',
             channel: channelName,
-            timestamp: now.toISOString(),
+            timestamp: now.toISOString(), ...(isRolledOver ? { actualPaidAt: actualDate.toISOString() } : {}),
             chargeId: effectiveChargeId,
           },
         ];
@@ -136,7 +136,7 @@ async function markJobAsPaidInDb(params: {
               isShopPaid: savedJob.isShopPaid,
               paymentMethod: savedJob.paymentMethod,
               paymentChannel: savedJob.paymentChannel,
-              totalAmount: savedJob.totalAmount,
+              totalAmount: savedJob.totalAmount, ...(isRolledOver ? { actualPaidAt: actualDate.toISOString(), effectivePaidAt: now.toISOString(), cutoffRolledOver: true } : {}),
               ...(savedJob.subStatus !== job.subStatus ? { subStatus: savedJob.subStatus } : {}),
             }),
             userId: 'system',

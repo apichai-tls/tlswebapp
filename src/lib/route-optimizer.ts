@@ -29,7 +29,7 @@ export interface OptimizedRouteResult<T = any> {
  * Great-circle distance between two points in km, adjusted by ~1.25 road winding factor
  */
 export function calculateEstimatedDistanceKm(p1: LatLng, p2: LatLng): number {
-  if (!p1 || !p2 || (p1.lat === p2.lat && p1.lng === p2.lng)) return 0;
+  if (!p1 || !p2 || !p1.lat || !p1.lng || !p2.lat || !p2.lng || (p1.lat === p2.lat && p1.lng === p2.lng)) return 0;
   const R = 6371; // Earth radius km
   const dLat = ((p2.lat - p1.lat) * Math.PI) / 180;
   const dLng = ((p2.lng - p1.lng) * Math.PI) / 180;
@@ -44,6 +44,16 @@ export function calculateEstimatedDistanceKm(p1: LatLng, p2: LatLng): number {
   return Math.round(straightKm * 1.25 * 10) / 10;
 }
 
+function hasNonZeroCoords(coords?: LatLng | null): coords is LatLng {
+  return Boolean(
+    coords &&
+      typeof coords.lat === "number" &&
+      typeof coords.lng === "number" &&
+      coords.lat !== 0 &&
+      coords.lng !== 0
+  );
+}
+
 /**
  * Optimizes a list of rider tasks from an origin point (rider live GPS or branch).
  * Solves the Traveling Salesperson Problem (TSP) using Nearest-Neighbor + 2-Opt local search,
@@ -54,10 +64,7 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
   tasks: T[],
   fallbackOriginCoords: LatLng = { lat: 13.736717, lng: 100.523186 }
 ): OptimizedRouteResult<T> {
-  const start: LatLng =
-    origin && origin.lat && origin.lng
-      ? origin
-      : fallbackOriginCoords;
+  const start: LatLng = hasNonZeroCoords(origin) ? origin : fallbackOriginCoords;
 
   if (!tasks || tasks.length === 0) {
     return {
@@ -68,10 +75,9 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
     };
   }
 
-  // Filter tasks with valid target coordinates
-  const validTasks = tasks.filter(
-    (t) => t.targetCoords && typeof t.targetCoords.lat === "number" && typeof t.targetCoords.lng === "number"
-  );
+  // Partition tasks into those with valid coordinates vs missing coordinates
+  const validTasks = tasks.filter((t) => hasNonZeroCoords(t.targetCoords));
+  const fallbackTasks = tasks.filter((t) => !hasNonZeroCoords(t.targetCoords));
 
   if (validTasks.length <= 1) {
     const single = validTasks[0];
@@ -88,6 +94,16 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
         ]
       : [];
 
+    fallbackTasks.forEach((ft) => {
+      items.push({
+        task: ft,
+        stopNumber: items.length + 1,
+        targetCoords: single ? single.targetCoords! : start,
+        distanceFromPrevKm: 0,
+        cumulativeDistanceKm: dist,
+      });
+    });
+
     const gmUrl = single
       ? `https://www.google.com/maps/dir/?api=1&origin=${start.lat},${start.lng}&destination=${single.targetCoords!.lat},${single.targetCoords!.lng}&travelmode=driving`
       : "";
@@ -99,14 +115,6 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
       routeCoordinates: single ? [start, single.targetCoords!] : [start],
     };
   }
-
-  // Precedence constraints: pickup before delivery for the same order
-  const pickupTaskMap = new Map<string, T>();
-  validTasks.forEach((t) => {
-    if (t.legType === "pickup" && t.job?.id) {
-      pickupTaskMap.set(t.job.id, t);
-    }
-  });
 
   // Step 1: Nearest-Neighbor Heuristic from start point
   const unvisited = [...validTasks];
@@ -120,7 +128,11 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
     for (let i = 0; i < unvisited.length; i++) {
       const candidate = unvisited[i];
       // Check precedence constraint: if candidate is delivery and its pickup is in unvisited, cannot visit delivery yet!
-      if (candidate.legType === "delivery" && candidate.job?.id && unvisited.some((u) => u.legType === "pickup" && u.job?.id === candidate.job?.id)) {
+      if (
+        candidate.legType === "delivery" &&
+        candidate.job?.id &&
+        unvisited.some((u) => u.legType === "pickup" && u.job?.id === candidate.job?.id)
+      ) {
         continue;
       }
 
@@ -131,7 +143,6 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
       }
     }
 
-    // Fallback if all remaining have unmet dependencies (safety guard)
     if (bestIdx === -1) {
       bestIdx = 0;
     }
@@ -148,7 +159,6 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
       if (t.legType === "pickup" && t.job?.id) {
         visitedJobPickups.add(t.job.id);
       } else if (t.legType === "delivery" && t.job?.id) {
-        // If the pickup for this job exists anywhere in the route, it must have been visited already!
         const hasPickupInRoute = candidateRoute.some((c) => c.legType === "pickup" && c.job?.id === t.job?.id);
         if (hasPickupInRoute && !visitedJobPickups.has(t.job.id)) {
           return false;
@@ -178,7 +188,6 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
 
     for (let i = 0; i < route.length - 1; i++) {
       for (let k = i + 1; k < route.length; k++) {
-        // 2-opt swap: reverse segment between i and k
         const candidate = [
           ...route.slice(0, i),
           ...route.slice(i, k + 1).reverse(),
@@ -216,12 +225,20 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
     };
   });
 
+  // Append any tasks without valid coordinates so they are never lost from the column
   const totalDist = Math.round(cumulative * 10) / 10;
+  fallbackTasks.forEach((ft) => {
+    orderedTasks.push({
+      task: ft,
+      stopNumber: orderedTasks.length + 1,
+      targetCoords: prevPos,
+      distanceFromPrevKm: 0,
+      cumulativeDistanceKm: totalDist,
+    });
+  });
+
   const routeCoordinates: LatLng[] = [start, ...route.map((t) => t.targetCoords!)];
 
-  // Build Google Maps Multi-stop directions URL
-  // Google Maps Directions API URL format:
-  // https://www.google.com/maps/dir/?api=1&origin=LAT,LNG&destination=LAT,LNG&waypoints=LAT,LNG|LAT,LNG&travelmode=driving
   const lastStop = route[route.length - 1];
   const intermediateStops = route.slice(0, route.length - 1);
 
