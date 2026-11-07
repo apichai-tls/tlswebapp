@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { recordInboundSocialMessageAction } from '@/actions/social-inbox';
 import { formatDisplayPhone } from '@/lib/social-helpers';
+import { SocialMessageAttachment } from '@/types/social-inbox';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +24,7 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    service: 'That Laundry Shop — Omnichannel Social Webhook (WhatsApp, Messenger, Instagram, Telegram)',
+    service: 'That Laundry Shop — Omnichannel Live Social Webhook (WhatsApp, Messenger, Instagram, Telegram)',
     verifyTokenReceived: Boolean(token),
     timestamp: new Date().toISOString(),
   });
@@ -31,7 +32,11 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST /api/webhooks/social
- * Handles inbound messages from WhatsApp Business Cloud API, Facebook Messenger, Instagram, and Telegram
+ * Handles live inbound messages & media attachments from:
+ *  1) WhatsApp Business Cloud API
+ *  2) WhatsApp QR / REST Gateways (WAHA, Evolution API, Baileys, UltraMsg)
+ *  3) Facebook Messenger & Instagram Direct (Meta Graph Webhook)
+ *  4) Telegram Bot Webhook
  */
 export async function POST(req: NextRequest) {
   try {
@@ -53,18 +58,31 @@ export async function POST(req: NextRequest) {
             const contactProfile = contacts.find((c: any) => String(c?.wa_id) === fromPhone);
             const profileName =
               contactProfile?.profile?.name || formatDisplayPhone(fromPhone, '66');
+
+            const attachments: SocialMessageAttachment[] = [];
+            if (msg?.type === 'image' && msg?.image?.url) {
+              attachments.push({
+                type: 'image',
+                url: String(msg.image.url),
+                name: 'WhatsApp Image',
+              });
+            }
+
             const textBody =
               msg?.type === 'text'
                 ? String(msg?.text?.body || '')
-                : `[WhatsApp ${msg?.type || 'media'} message]`;
+                : msg?.image?.caption
+                ? String(msg.image.caption)
+                : `📷 [WhatsApp ${msg?.type || 'media'} message]`;
 
-            if (textBody) {
+            if (textBody || attachments.length > 0) {
               await recordInboundSocialMessageAction({
                 channel: 'whatsapp',
                 externalContactId: fromPhone,
                 contactName: profileName,
                 contactPhone: formatDisplayPhone(fromPhone, '66'),
                 text: textBody,
+                attachments: attachments.length > 0 ? attachments : undefined,
               });
             }
           }
@@ -73,7 +91,49 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: 'ok', channel: 'whatsapp' });
     }
 
-    // 2. Facebook Messenger / Instagram Payload (`object === "page"` or `"instagram"`)
+    // 2. WhatsApp Self-Hosted / QR Gateway Payload (WAHA / Evolution API / UltraMsg)
+    if (
+      (payload?.event === 'message' || payload?.event === 'messages.upsert' || payload?.data?.from) &&
+      (payload?.payload?.from || payload?.data?.from || payload?.data?.key?.remoteJid)
+    ) {
+      const rawFrom =
+        payload?.payload?.from ||
+        payload?.data?.from ||
+        payload?.data?.key?.remoteJid ||
+        '';
+      const fromMe = Boolean(payload?.payload?.fromMe || payload?.data?.key?.fromMe);
+      if (!fromMe && rawFrom) {
+        const fromPhone = String(rawFrom).split('@')[0].replace(/\D/g, '');
+        const senderName =
+          payload?.payload?._data?.notifyName ||
+          payload?.data?.pushName ||
+          formatDisplayPhone(fromPhone, '66');
+        const text =
+          payload?.payload?.body ||
+          payload?.data?.body ||
+          payload?.data?.message?.conversation ||
+          payload?.data?.message?.extendedTextMessage?.text ||
+          '';
+        const mediaUrl = payload?.payload?.mediaUrl || payload?.data?.mediaUrl;
+        const attachments: SocialMessageAttachment[] = mediaUrl
+          ? [{ type: 'image', url: String(mediaUrl), name: 'WhatsApp Media' }]
+          : [];
+
+        if (fromPhone && (text || attachments.length > 0)) {
+          await recordInboundSocialMessageAction({
+            channel: 'whatsapp',
+            externalContactId: fromPhone,
+            contactName: senderName,
+            contactPhone: formatDisplayPhone(fromPhone, '66'),
+            text: text || '📷 [WhatsApp Photo]',
+            attachments: attachments.length > 0 ? attachments : undefined,
+          });
+        }
+      }
+      return NextResponse.json({ status: 'ok', channel: 'whatsapp_gateway' });
+    }
+
+    // 3. Facebook Messenger / Instagram Payload (`object === "page"` or `"instagram"`)
     if (
       (payload?.object === 'page' || payload?.object === 'instagram') &&
       Array.isArray(payload?.entry)
@@ -82,14 +142,31 @@ export async function POST(req: NextRequest) {
       for (const entry of payload.entry) {
         const messaging = Array.isArray(entry?.messaging) ? entry.messaging : [];
         for (const event of messaging) {
+          if (event?.message?.is_echo) continue;
           const senderId = String(event?.sender?.id || '');
           const text = String(event?.message?.text || '').trim();
-          if (senderId && text) {
+          const rawAttachments = Array.isArray(event?.message?.attachments)
+            ? event.message.attachments
+            : [];
+          const attachments: SocialMessageAttachment[] = [];
+
+          for (const att of rawAttachments) {
+            if (att?.payload?.url) {
+              attachments.push({
+                type: att.type === 'image' ? 'image' : 'file',
+                url: String(att.payload.url),
+                name: `${channel.toUpperCase()} ${att.type || 'Attachment'}`,
+              });
+            }
+          }
+
+          if (senderId && (text || attachments.length > 0)) {
             await recordInboundSocialMessageAction({
               channel,
               externalContactId: senderId,
               contactName: `${channel === 'instagram' ? 'IG' : 'FB'} User #${senderId.slice(-5)}`,
-              text,
+              text: text || `📷 [Sent ${attachments.length} attachment(s)]`,
+              attachments: attachments.length > 0 ? attachments : undefined,
             });
           }
         }
@@ -97,7 +174,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: 'ok', channel });
     }
 
-    // 3. Telegram Bot Webhook Payload (`message.chat.id`)
+    // 4. Telegram Bot Webhook Payload (`message.chat.id`)
     if (payload?.message?.chat?.id) {
       const chat = payload.message.chat;
       const from = payload.message.from || {};
@@ -111,7 +188,7 @@ export async function POST(req: NextRequest) {
       if (text) {
         await recordInboundSocialMessageAction({
           channel: 'telegram',
-          externalContactId: from.username ? `@${from.username}` : senderId,
+          externalContactId: senderId,
           contactName: name,
           text,
         });

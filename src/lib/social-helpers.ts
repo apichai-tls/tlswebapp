@@ -84,6 +84,41 @@ export function buildWhatsAppUrl(
 }
 
 /**
+ * Builds a direct WhatsApp Web chat URL (`https://web.whatsapp.com/send?phone=<e164>&text=...`)
+ * Opens directly inside WhatsApp Web without the intermediate wa.me landing page.
+ */
+export function buildWhatsAppWebUrl(
+  rawPhone: string,
+  messageText?: string,
+  defaultCountryCode = '66'
+): string {
+  const e164 = formatPhoneForWhatsApp(rawPhone, defaultCountryCode);
+  if (!e164) return 'https://web.whatsapp.com/';
+  const params = new URLSearchParams({ phone: e164 });
+  if (messageText && messageText.trim()) {
+    params.set('text', messageText.trim());
+  }
+  return `https://web.whatsapp.com/send?${params.toString()}`;
+}
+
+/**
+ * Builds a native WhatsApp Desktop / Mobile App protocol URL (`whatsapp://send?phone=<e164>&text=...`)
+ */
+export function buildWhatsAppProtocolUrl(
+  rawPhone: string,
+  messageText?: string,
+  defaultCountryCode = '66'
+): string {
+  const e164 = formatPhoneForWhatsApp(rawPhone, defaultCountryCode);
+  if (!e164) return 'whatsapp://';
+  const params = new URLSearchParams({ phone: e164 });
+  if (messageText && messageText.trim()) {
+    params.set('text', messageText.trim());
+  }
+  return `whatsapp://send?${params.toString()}`;
+}
+
+/**
  * Normalizes a phone string for loose CRM customer matching (last 8-9 digits)
  */
 export function normalizePhoneKey(raw?: string | null): string {

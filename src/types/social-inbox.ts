@@ -18,6 +18,12 @@ export interface SocialMessageAttachment {
   jobSummary?: string;
 }
 
+export interface SocialMessageReplyRef {
+  messageId: string;
+  senderName: string;
+  text: string;
+}
+
 export interface SocialMessage {
   id: string;
   conversationId: string;
@@ -25,6 +31,7 @@ export interface SocialMessage {
   direction: SocialMessageDirection;
   text: string;
   attachments?: SocialMessageAttachment[];
+  replyTo?: SocialMessageReplyRef;
   senderName: string;
   senderId?: string;
   senderRole?: string;
@@ -32,9 +39,13 @@ export interface SocialMessage {
   deliveryMethod?:
     | 'line_api'
     | 'whatsapp_cloud_api'
+    | 'whatsapp_gateway_api'
     | 'whatsapp_web_bridge'
+    | 'meta_graph_api'
+    | 'telegram_bot_api'
     | 'social_api'
     | 'platform_log';
+  externalMessageId?: string;
   externalError?: string;
   createdAt: string;
 }
@@ -70,13 +81,17 @@ export interface SocialConversation {
 export interface SocialChannelConfig {
   whatsapp: {
     enabled: boolean;
-    mode: 'web_bridge' | 'cloud_api';
+    mode: 'web_bridge' | 'cloud_api' | 'gateway_api';
+    launchTarget?: 'companion_popup' | 'native_app' | 'web_tab';
     businessPhoneNumber: string;
     defaultCountryCode: string;
     autoOpenWaWebOnSend: boolean;
     phoneNumberId?: string;
     accessToken?: string;
     verifyToken?: string;
+    gatewayUrl?: string;
+    gatewayApiKey?: string;
+    gatewayInstanceId?: string;
   };
   line: {
     enabled: boolean;
@@ -102,7 +117,18 @@ export interface SocialChannelConfig {
     enabled: boolean;
     botUsername: string;
     botToken?: string;
+    lastUpdateId?: number;
   };
+}
+
+export interface SocialChannelLiveStatus {
+  channel: SocialChannel;
+  connected: boolean;
+  modeLabel: string;
+  accountName: string;
+  details?: string;
+  avatarUrl?: string;
+  lastCheckedAt: string;
 }
 
 export interface QuickReplyTemplate {

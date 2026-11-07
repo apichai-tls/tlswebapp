@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   MessageSquare,
   Send,
@@ -8,32 +8,31 @@ import {
   Search,
   Phone,
   CheckCheck,
-  Clock,
   Sparkles,
   ExternalLink,
   RefreshCw,
   Settings,
   UserCheck,
-  UserPlus,
   Copy,
-  Check,
   Trash2,
   Image as ImageIcon,
   ShoppingBag,
-  Wallet,
-  Building2,
-  Filter,
   ChevronRight,
-  Globe,
   Link2,
   CheckCircle2,
-  AlertCircle,
   MessageCircle,
-  AtSign,
-  Hash,
   X,
   Zap,
-  FileText,
+  Paperclip,
+  Smile,
+  Reply,
+  Volume2,
+  VolumeX,
+  Radio,
+  AppWindow,
+  Smartphone,
+  Eye,
+  Upload,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -49,8 +48,11 @@ import { toast } from 'sonner';
 import {
   SocialChannel,
   SocialChannelConfig,
+  SocialChannelLiveStatus,
   SocialConversation,
   SocialMessage,
+  SocialMessageAttachment,
+  SocialMessageReplyRef,
   SOCIAL_CHANNEL_META,
   COUNTRY_CODES_LIST,
   DEFAULT_QUICK_TEMPLATES,
@@ -58,8 +60,9 @@ import {
 } from '@/types/social-inbox';
 import {
   formatPhoneForWhatsApp,
-  formatDisplayPhone,
   buildWhatsAppUrl,
+  buildWhatsAppWebUrl,
+  buildWhatsAppProtocolUrl,
   normalizePhoneKey,
   getChannelColorClasses,
 } from '@/lib/social-helpers';
@@ -72,8 +75,37 @@ import {
   updateSocialConversationAction,
   deleteSocialConversationAction,
   saveSocialChannelConfigAction,
+  pollLiveChannelUpdatesAction,
+  checkChannelsLiveStatusAction,
 } from '@/actions/social-inbox';
 import { syncLineOaFollowersAction } from '@/actions/line';
+
+const QUICK_EMOJIS = [
+  '👋',
+  '🙏',
+  '✨',
+  '🧺',
+  '👕',
+  '👗',
+  '🚚',
+  '✅',
+  '💳',
+  '❤️',
+  '😊',
+  '👍',
+  '🎉',
+  '🫧',
+  '🕒',
+  '📍',
+  '📸',
+  '🧾',
+  '🌟',
+  '💐',
+  '🔥',
+  '💯',
+  '🤝',
+  '📞',
+];
 
 interface AdminSocialInboxProps {
   currentUser?: any;
@@ -95,9 +127,16 @@ export function AdminSocialInbox({
   const [conversations, setConversations] = useState<SocialConversation[]>([]);
   const [messages, setMessages] = useState<SocialMessage[]>([]);
   const [config, setConfig] = useState<SocialChannelConfig | null>(null);
+  const [liveStatuses, setLiveStatuses] = useState<Record<
+    SocialChannel,
+    SocialChannelLiveStatus
+  > | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [syncingLine, setSyncingLine] = useState(false);
+  const [liveConnected, setLiveConnected] = useState(true);
+  const [lastLiveSyncAt, setLastLiveSyncAt] = useState<string>('');
+  const [soundEnabled, setSoundEnabled] = useState(true);
 
   // Filters & Selection
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
@@ -106,14 +145,19 @@ export function AdminSocialInbox({
   const [searchQuery, setSearchQuery] = useState('');
   const [showRightPanel, setShowRightPanel] = useState(true);
 
-  // Message Composer State
+  // Native App Composer State
   const [composerText, setComposerText] = useState('');
+  const [stagedAttachments, setStagedAttachments] = useState<SocialMessageAttachment[]>([]);
+  const [uploadingFile, setUploadingFile] = useState(false);
   const [attachmentUrl, setAttachmentUrl] = useState('');
   const [showAttachmentInput, setShowAttachmentInput] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<SocialMessageReplyRef | null>(null);
   const [showTemplatesBar, setShowTemplatesBar] = useState(true);
   const [templateLang, setTemplateLang] = useState<'en' | 'th' | 'both'>('en');
   const [openWaWebOnSend, setOpenWaWebOnSend] = useState(false);
   const [sendingMsg, setSendingMsg] = useState(false);
+  const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
 
   // Modal 1: Create New WhatsApp Chat
   const [isNewWhatsAppOpen, setIsNewWhatsAppOpen] = useState(false);
@@ -147,38 +191,166 @@ export function AdminSocialInbox({
   const [savingSettings, setSavingSettings] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const prevInboundMsgCountRef = useRef<number | null>(null);
 
-  // Load Inbox Data
-  const loadInbox = async (silent = false) => {
+  // Pleasant two-tone native chat chime using Web Audio API
+  const playNotificationChime = useCallback(() => {
+    if (!soundEnabled || typeof window === 'undefined') return;
     try {
-      if (!silent) setLoading(true);
-      else setRefreshing(true);
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
 
-      const res = await getSocialInboxDataAction();
-      if (res.success) {
-        setConversations(res.conversations || []);
-        setMessages(res.messages || []);
-        if (res.config) setConfig(res.config);
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(587.33, now); // D5
+      osc1.frequency.setValueAtTime(880, now + 0.09); // A5
+      gain1.gain.setValueAtTime(0.08, now);
+      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
 
-        if (!selectedConvId && res.conversations && res.conversations.length > 0) {
-          setSelectedConvId(res.conversations[0].id);
-        }
-      } else {
-        if (!silent) toast.error(res.error || 'Failed to load social inbox');
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(now);
+      osc1.stop(now + 0.28);
+    } catch {}
+  }, [soundEnabled]);
+
+  // Launch WhatsApp in Docked Companion Popup Window, Native App, or Web Tab
+  const openWhatsAppBridgeWindow = useCallback(
+    (phone: string, text?: string, preferredMode?: 'companion_popup' | 'native_app' | 'web_tab') => {
+      const mode = preferredMode || config?.whatsapp?.launchTarget || 'companion_popup';
+      const cc = config?.whatsapp?.defaultCountryCode || '66';
+
+      if (mode === 'native_app') {
+        const protoUrl = buildWhatsAppProtocolUrl(phone, text, cc);
+        window.location.href = protoUrl;
+        return;
       }
-    } catch (e: any) {
-      if (!silent) toast.error('Error loading inbox: ' + e.message);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
+
+      if (mode === 'companion_popup') {
+        const webUrl = buildWhatsAppWebUrl(phone, text, cc);
+        const width = 520;
+        const height = 760;
+        const left = Math.max(0, window.screen.width - width - 30);
+        const top = Math.max(0, (window.screen.height - height) / 2);
+        window.open(
+          webUrl,
+          'tls_whatsapp_companion',
+          `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=no,toolbar=no,menubar=no`
+        );
+        return;
+      }
+
+      const waUrl = buildWhatsAppUrl(phone, text, cc);
+      window.open(waUrl, '_blank', 'noopener,noreferrer');
+    },
+    [config]
+  );
+
+  // Load Inbox Data & Live Channel Health
+  const loadInbox = useCallback(
+    async (silent = false) => {
+      try {
+        if (!silent) setLoading(true);
+        else setRefreshing(true);
+
+        const [res, healthRes] = await Promise.all([
+          getSocialInboxDataAction(),
+          checkChannelsLiveStatusAction().catch(() => null),
+        ]);
+
+        if (healthRes?.success && healthRes.statuses) {
+          setLiveStatuses(healthRes.statuses);
+        }
+
+        if (res.success) {
+          const nextMsgs = res.messages || [];
+          const inboundCount = nextMsgs.filter((m) => m.direction === 'inbound').length;
+          prevInboundMsgCountRef.current = inboundCount;
+
+          setConversations(res.conversations || []);
+          setMessages(nextMsgs);
+          if (res.config) setConfig(res.config);
+          setLiveConnected(true);
+          setLastLiveSyncAt(
+            new Date().toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })
+          );
+
+          if (!selectedConvId && res.conversations && res.conversations.length > 0) {
+            setSelectedConvId(res.conversations[0].id);
+          }
+        } else {
+          if (!silent) toast.error(res.error || 'Failed to load social inbox');
+        }
+      } catch (e: any) {
+        if (!silent) toast.error('Error loading inbox: ' + e.message);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [selectedConvId]
+  );
 
   useEffect(() => {
     loadInbox();
   }, []);
 
-  // Scroll to bottom when active conversation or messages change
+  // REAL-TIME LIVE POLLING LOOP (Every 3.5 seconds — works like native chat apps!)
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const res = await pollLiveChannelUpdatesAction();
+        if (res.success && res.conversations && res.messages) {
+          setLiveConnected(true);
+          setLastLiveSyncAt(
+            new Date().toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })
+          );
+
+          const newInboundMsgs = res.messages.filter((m) => m.direction === 'inbound');
+          if (
+            prevInboundMsgCountRef.current !== null &&
+            newInboundMsgs.length > prevInboundMsgCountRef.current
+          ) {
+            const latestInbound = newInboundMsgs[newInboundMsgs.length - 1];
+            playNotificationChime();
+            if (latestInbound) {
+              const chLabel =
+                SOCIAL_CHANNEL_META[latestInbound.channel]?.shortLabel || latestInbound.channel;
+              toast.success(
+                `💬 New ${chLabel} message from ${latestInbound.senderName}: "${latestInbound.text.slice(
+                  0,
+                  60
+                )}"`
+              );
+            }
+          }
+          prevInboundMsgCountRef.current = newInboundMsgs.length;
+
+          setConversations(res.conversations);
+          setMessages(res.messages);
+        }
+      } catch {
+        setLiveConnected(false);
+      }
+    }, 3500);
+
+    return () => clearInterval(interval);
+  }, [playNotificationChime]);
+
+  // Active Conversation & Messages
   const activeConversation = useMemo(
     () => conversations.find((c) => c.id === selectedConvId) || null,
     [conversations, selectedConvId]
@@ -207,7 +379,62 @@ export function AdminSocialInbox({
         }
       });
     }
-  }, [selectedConvId]);
+  }, [selectedConvId, activeConversation?.unreadCount]);
+
+  // Upload File / Image from Device or Clipboard (`Ctrl+V`)
+  const uploadFileToChat = async (file: File) => {
+    try {
+      setUploadingFile(true);
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('entityType', 'system');
+      fd.append('subType', 'chat');
+      fd.append('entityId', 'social');
+
+      const res = await fetch('/api/upload-local', {
+        method: 'POST',
+        body: fd,
+      });
+      const data = await res.json();
+      if (res.ok && data?.publicUrl) {
+        const isImg =
+          file.type.startsWith('image/') ||
+          /\.(jpg|jpeg|png|webp|gif|heic)$/i.test(file.name || '');
+        setStagedAttachments((prev) => [
+          ...prev,
+          {
+            type: isImg ? 'image' : 'file',
+            url: data.publicUrl,
+            name: file.name || 'Chat Photo',
+          },
+        ]);
+        toast.success(`Attached ${file.name || 'photo'} ready to send!`);
+      } else {
+        toast.error(data?.error || 'Failed to upload file');
+      }
+    } catch (e: any) {
+      toast.error('Upload error: ' + e.message);
+    } finally {
+      setUploadingFile(false);
+    }
+  };
+
+  // Handle Clipboard Paste (`Ctrl+V`) directly inside message composer
+  const handleComposerPaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.indexOf('image') !== -1) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          await uploadFileToChat(file);
+        }
+        return;
+      }
+    }
+  };
 
   // Channel Counts & Stats
   const stats = useMemo(() => {
@@ -221,10 +448,20 @@ export function AdminSocialInbox({
       telegram: 0,
       wechat: 0,
     };
+    const unreadByChannel: Record<string, number> = {
+      all: unreadTotal,
+      whatsapp: 0,
+      line: 0,
+      facebook: 0,
+      instagram: 0,
+      telegram: 0,
+      wechat: 0,
+    };
     for (const c of conversations) {
       byChannel[c.channel] = (byChannel[c.channel] || 0) + 1;
+      unreadByChannel[c.channel] = (unreadByChannel[c.channel] || 0) + (c.unreadCount || 0);
     }
-    return { unreadTotal, byChannel };
+    return { unreadTotal, byChannel, unreadByChannel };
   }, [conversations]);
 
   // Filtered Conversations List
@@ -321,7 +558,9 @@ export function AdminSocialInbox({
   };
 
   // Start New WhatsApp Chat Handler
-  const handleCreateWhatsAppChat = async (launchWhatsAppTab: boolean) => {
+  const handleCreateWhatsAppChat = async (
+    launchTarget?: 'none' | 'companion_popup' | 'native_app' | 'web_tab'
+  ) => {
     if (!waPhoneInput.trim()) {
       toast.error('Please enter a phone number or select a customer');
       return;
@@ -347,8 +586,12 @@ export function AdminSocialInbox({
 
         toast.success(`WhatsApp chat ready with ${res.conversation.contactName}`);
 
-        if (launchWhatsAppTab && res.whatsappUrl) {
-          window.open(res.whatsappUrl, '_blank', 'noopener,noreferrer');
+        if (launchTarget && launchTarget !== 'none') {
+          openWhatsAppBridgeWindow(
+            res.conversation.externalContactId,
+            waInitialMessage,
+            launchTarget
+          );
         }
 
         // Reset modal fields
@@ -404,27 +647,37 @@ export function AdminSocialInbox({
   };
 
   // Send Message in Active Conversation
-  const handleSendMessage = async (forceOpenWaWeb = false) => {
+  const handleSendMessage = async (
+    forceWhatsAppTarget?: 'companion_popup' | 'native_app' | 'web_tab'
+  ) => {
     if (!activeConversation) return;
-    if (!composerText.trim() && !attachmentUrl.trim()) {
+
+    const allAttachments: SocialMessageAttachment[] = [...stagedAttachments];
+    if (attachmentUrl.trim()) {
+      allAttachments.push({ type: 'image', url: attachmentUrl.trim(), name: 'Image Link' });
+    }
+
+    if (!composerText.trim() && allAttachments.length === 0) {
       return;
     }
 
     const textToSend = composerText.trim();
-    const attachments = attachmentUrl.trim()
-      ? [{ type: 'image' as const, url: attachmentUrl.trim() }]
-      : [];
+    const replyRef = replyingTo || undefined;
 
     try {
       setSendingMsg(true);
       setComposerText('');
+      setStagedAttachments([]);
       setAttachmentUrl('');
       setShowAttachmentInput(false);
+      setShowEmojiPicker(false);
+      setReplyingTo(null);
 
       const res = await sendSocialMessageAction({
         conversationId: activeConversation.id,
         text: textToSend,
-        attachments,
+        attachments: allAttachments,
+        replyTo: replyRef,
       });
 
       if (res.success) {
@@ -433,10 +686,13 @@ export function AdminSocialInbox({
 
         if (
           activeConversation.channel === 'whatsapp' &&
-          (forceOpenWaWeb || openWaWebOnSend) &&
-          res.whatsappUrl
+          (forceWhatsAppTarget || openWaWebOnSend)
         ) {
-          window.open(res.whatsappUrl, '_blank', 'noopener,noreferrer');
+          openWhatsAppBridgeWindow(
+            activeConversation.externalContactId || activeConversation.contactPhone || '',
+            textToSend,
+            forceWhatsAppTarget || config?.whatsapp?.launchTarget || 'companion_popup'
+          );
         }
 
         if (res.message?.externalError) {
@@ -444,6 +700,7 @@ export function AdminSocialInbox({
         }
       } else {
         setComposerText(textToSend);
+        setStagedAttachments(allAttachments);
         toast.error(res.error || 'Failed to send message');
       }
     } catch (e: any) {
@@ -472,8 +729,8 @@ export function AdminSocialInbox({
     setComposerText(text);
   };
 
-  // Insert Job Status Update into Composer
-  const handleInsertJobStatus = (job: any) => {
+  // Insert Job Status Update (+ Proof Photo if available) into Composer
+  const handleInsertJobStatus = (job: any, includePhoto = false) => {
     const custName = job.customerName || activeConversation?.contactName || 'Customer';
     const statusLabel = (job.status || 'processing').toUpperCase().replace(/_/g, ' ');
     const priceText = job.totalPrice ? `฿${Number(job.totalPrice).toLocaleString()}` : '';
@@ -482,10 +739,32 @@ export function AdminSocialInbox({
     }${job.dropoffLocation ? `\nDelivery Address: ${job.dropoffLocation}` : ''}\n\nThank you for choosing That Laundry Shop! 💚`;
 
     setComposerText(msg);
-    toast.success(`Inserted Order #${job.id} summary into message box`);
+
+    if (includePhoto) {
+      const rawProof = job.deliveryProofImageUrl || job.proofImageUrl;
+      if (rawProof) {
+        let firstPhoto = rawProof;
+        try {
+          const parsed = JSON.parse(rawProof);
+          if (Array.isArray(parsed) && parsed[0]) firstPhoto = parsed[0];
+        } catch {}
+        if (typeof firstPhoto === 'string' && firstPhoto.trim()) {
+          setStagedAttachments((prev) => [
+            ...prev,
+            {
+              type: 'image',
+              url: firstPhoto.trim(),
+              name: `Order #${job.id} Photo`,
+            },
+          ]);
+        }
+      }
+    }
+
+    toast.success(`Inserted Order #${job.id} summary into chat composer`);
   };
 
-  // Simulate Inbound Reply (for testing localhost workflow)
+  // Simulate Inbound Reply (for testing live notification & sound on localhost)
   const handleSimulateInboundReply = async () => {
     if (!activeConversation) return;
     const sampleReplies = [
@@ -505,9 +784,10 @@ export function AdminSocialInbox({
     });
 
     if (res.success) {
+      playNotificationChime();
       if (res.conversations) setConversations(res.conversations);
       if (res.messages) setMessages(res.messages);
-      toast.success(`Received message from ${activeConversation.contactName}`);
+      toast.success(`💬 Live message received from ${activeConversation.contactName}`);
     }
   };
 
@@ -582,8 +862,10 @@ export function AdminSocialInbox({
       setSavingSettings(true);
       const res = await saveSocialChannelConfigAction(config);
       if (res.success) {
-        toast.success('Omnichannel settings saved!');
+        toast.success('Omnichannel live settings saved!');
         setIsSettingsOpen(false);
+        const healthRes = await checkChannelsLiveStatusAction().catch(() => null);
+        if (healthRes?.success) setLiveStatuses(healthRes.statuses);
       } else {
         toast.error(res.error || 'Failed to save settings');
       }
@@ -599,8 +881,24 @@ export function AdminSocialInbox({
 
   return (
     <div className="flex-1 overflow-auto p-4 sm:p-6 lg:p-8 space-y-5 w-full">
+      {/* Hidden File Input for Native Photo/Document Upload */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*,.pdf,.doc,.docx"
+        multiple
+        className="hidden"
+        onChange={async (e) => {
+          const files = Array.from(e.target.files || []);
+          for (const f of files) {
+            await uploadFileToChat(f);
+          }
+          e.target.value = '';
+        }}
+      />
+
       {/* ================================================================ */}
-      {/* 1. OMNICHANNEL HERO BANNER & PRIMARY ACTIONS                      */}
+      {/* 1. OMNICHANNEL HERO BANNER & LIVE STATUS BAR                      */}
       {/* ================================================================ */}
       <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white p-5 sm:p-6 rounded-2xl shadow-xl relative overflow-hidden space-y-4">
         <div className="absolute right-0 top-0 bottom-0 w-96 bg-radial from-emerald-500/20 via-transparent to-transparent pointer-events-none" />
@@ -612,16 +910,26 @@ export function AdminSocialInbox({
                 <MessageSquare size={22} className="text-emerald-300" />
               </span>
               <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white flex items-center gap-2 flex-wrap">
-                Omnichannel Customer Hub
-                <span className="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-white/10 text-emerald-200 border border-white/15">
-                  รวมแชทลูกค้าทุกช่องทาง (WhatsApp • LINE OA • Social)
+                Omnichannel Live Chat Hub
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-black px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-200 border border-emerald-400/40">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      liveConnected ? 'bg-emerald-400 animate-ping' : 'bg-amber-400'
+                    }`}
+                  />
+                  <span
+                    className={`w-2 h-2 rounded-full -ml-3.5 ${
+                      liveConnected ? 'bg-emerald-400' : 'bg-amber-400'
+                    }`}
+                  />
+                  <span>LIVE REAL-TIME SYNC {lastLiveSyncAt ? `• ${lastLiveSyncAt}` : ''}</span>
                 </span>
               </h1>
             </div>
             <p className="text-xs sm:text-sm text-emerald-100/80 max-w-3xl leading-relaxed">
-              Communicate with customers across WhatsApp, LINE Official Account (@thatlaundryshop),
-              Facebook Messenger, Instagram Direct, and Telegram in one unified workspace. Start new
-              WhatsApp chats directly with any phone number or CRM customer.
+              Live two-way messaging across WhatsApp, LINE Official Account (@thatlaundryshop &
+              @050ehvzb), Facebook Messenger, Instagram Direct, and Telegram. Supports instant
+              photo upload, clipboard paste (Ctrl+V), emojis, and docked WhatsApp companion window.
             </p>
           </div>
 
@@ -651,7 +959,7 @@ export function AdminSocialInbox({
               onClick={handleSyncLineFollowers}
               disabled={syncingLine}
               className="h-10 px-3 bg-[#06C755]/20 hover:bg-[#06C755]/30 border-[#06C755]/40 text-emerald-200 font-bold text-xs rounded-xl gap-1.5 cursor-pointer"
-              title="Sync followers from LINE Official Account"
+              title="Sync followers & live messages from LINE Official Account"
             >
               <RefreshCw size={14} className={syncingLine ? 'animate-spin' : ''} />
               <span className="hidden sm:inline">Sync LINE OA</span>
@@ -660,87 +968,144 @@ export function AdminSocialInbox({
             <Button
               size="sm"
               variant="outline"
+              onClick={() => setSoundEnabled(!soundEnabled)}
+              className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl gap-1.5 cursor-pointer"
+              title={soundEnabled ? 'Notification Sound ON' : 'Notification Sound Muted'}
+            >
+              {soundEnabled ? (
+                <Volume2 size={14} className="text-emerald-300" />
+              ) : (
+                <VolumeX size={14} className="text-slate-400" />
+              )}
+            </Button>
+
+            <Button
+              size="sm"
+              variant="outline"
               onClick={() => setIsSettingsOpen(true)}
               className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl gap-1.5 cursor-pointer"
-              title="Configure WhatsApp, LINE OA & Social Webhooks"
+              title="Configure Live API Keys, WhatsApp Bridge & Webhooks"
             >
               <Settings size={14} />
-              <span className="hidden md:inline">Channels</span>
+              <span className="hidden md:inline">Live Channels</span>
             </Button>
           </div>
         </div>
 
-        {/* Channel Filter Pills Bar */}
-        <div className="flex items-center gap-1.5 p-1 bg-white/10 backdrop-blur-md rounded-xl border border-white/15 w-fit max-w-full overflow-x-auto relative z-10 custom-scrollbar">
-          {(
-            [
-              { key: 'all', label: 'All Channels (ทั้งหมด)', count: stats.byChannel.all, dot: 'bg-white' },
-              {
-                key: 'whatsapp',
-                label: 'WhatsApp',
-                count: stats.byChannel.whatsapp,
-                dot: 'bg-[#25D366]',
-              },
-              {
-                key: 'line',
-                label: 'LINE OA',
-                count: stats.byChannel.line,
-                dot: 'bg-[#06C755]',
-              },
-              {
-                key: 'facebook',
-                label: 'Messenger',
-                count: stats.byChannel.facebook,
-                dot: 'bg-[#0084FF]',
-              },
-              {
-                key: 'instagram',
-                label: 'Instagram',
-                count: stats.byChannel.instagram,
-                dot: 'bg-pink-500',
-              },
-              {
-                key: 'telegram',
-                label: 'Telegram',
-                count: stats.byChannel.telegram,
-                dot: 'bg-[#229ED9]',
-              },
-            ] as const
-          ).map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setChannelFilter(tab.key as any)}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
-                channelFilter === tab.key
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-white/80 hover:text-white hover:bg-white/10'
-              }`}
-            >
-              <span className={`w-2 h-2 rounded-full ${tab.dot}`} />
-              <span>{tab.label}</span>
-              <span
-                className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+        {/* Channel Filter Pills + Live Connection Status Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 relative z-10">
+          <div className="flex items-center gap-1.5 p-1 bg-white/10 backdrop-blur-md rounded-xl border border-white/15 w-fit max-w-full overflow-x-auto custom-scrollbar">
+            {(
+              [
+                {
+                  key: 'all',
+                  label: 'All Channels (ทั้งหมด)',
+                  count: stats.byChannel.all,
+                  unread: stats.unreadByChannel.all,
+                  dot: 'bg-white',
+                },
+                {
+                  key: 'whatsapp',
+                  label: 'WhatsApp',
+                  count: stats.byChannel.whatsapp,
+                  unread: stats.unreadByChannel.whatsapp,
+                  dot: 'bg-[#25D366]',
+                },
+                {
+                  key: 'line',
+                  label: 'LINE OA',
+                  count: stats.byChannel.line,
+                  unread: stats.unreadByChannel.line,
+                  dot: 'bg-[#06C755]',
+                },
+                {
+                  key: 'facebook',
+                  label: 'Messenger',
+                  count: stats.byChannel.facebook,
+                  unread: stats.unreadByChannel.facebook,
+                  dot: 'bg-[#0084FF]',
+                },
+                {
+                  key: 'instagram',
+                  label: 'Instagram',
+                  count: stats.byChannel.instagram,
+                  unread: stats.unreadByChannel.instagram,
+                  dot: 'bg-pink-500',
+                },
+                {
+                  key: 'telegram',
+                  label: 'Telegram',
+                  count: stats.byChannel.telegram,
+                  unread: stats.unreadByChannel.telegram,
+                  dot: 'bg-[#229ED9]',
+                },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setChannelFilter(tab.key as any)}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
                   channelFilter === tab.key
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-white/20 text-white'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-white/80 hover:text-white hover:bg-white/10'
                 }`}
               >
-                {tab.count}
-              </span>
-            </button>
-          ))}
+                <span className={`w-2 h-2 rounded-full ${tab.dot}`} />
+                <span>{tab.label}</span>
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                    channelFilter === tab.key
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-white/20 text-white'
+                  }`}
+                >
+                  {tab.count}
+                </span>
+                {tab.unread > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black animate-pulse">
+                    {tab.unread} new
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {/* Live Channel Health Pills */}
+          {liveStatuses && (
+            <div className="hidden 2xl:flex items-center gap-2 text-[10px]">
+              {(['line', 'whatsapp', 'facebook', 'instagram', 'telegram'] as const).map((ch) => {
+                const st = liveStatuses[ch];
+                if (!st) return null;
+                return (
+                  <button
+                    key={ch}
+                    type="button"
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-emerald-100 font-semibold cursor-pointer"
+                    title={st.details || st.modeLabel}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    <span className="font-black text-white">
+                      {SOCIAL_CHANNEL_META[ch].shortLabel}:
+                    </span>
+                    <span className="text-emerald-200">{st.modeLabel}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
       {/* ================================================================ */}
       {/* 2. MAIN 3-COLUMN OMNICHANNEL WORKSPACE                            */}
       {/* ================================================================ */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch min-h-[680px]">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch min-h-[700px]">
         {/* -------------------------------------------------------------- */}
         {/* LEFT COLUMN (3 cols): CONVERSATION LIST                        */}
         {/* -------------------------------------------------------------- */}
-        <div className="lg:col-span-4 xl:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-2xs flex flex-col overflow-hidden h-[680px]">
+        <div className="lg:col-span-4 xl:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-2xs flex flex-col overflow-hidden h-[700px]">
           {/* Search & Status Tabs */}
           <div className="p-3 border-b border-slate-100 space-y-2.5 bg-slate-50/50">
             <div className="relative">
@@ -794,7 +1159,7 @@ export function AdminSocialInbox({
             {loading ? (
               <div className="p-8 text-center text-xs text-slate-400 space-y-2">
                 <RefreshCw size={20} className="animate-spin mx-auto text-emerald-600" />
-                <p>Loading conversations...</p>
+                <p>Connecting to live social channels...</p>
               </div>
             ) : filteredConversations.length === 0 ? (
               <div className="p-8 text-center space-y-3">
@@ -830,12 +1195,12 @@ export function AdminSocialInbox({
                       isSelected
                         ? 'bg-emerald-50/60 border-l-4 border-l-emerald-600'
                         : conv.unreadCount > 0
-                        ? 'bg-sky-50/30'
+                        ? 'bg-sky-50/40'
                         : ''
                     }`}
                   >
                     <div className="flex items-start gap-3">
-                      {/* Avatar + Channel Badge */}
+                      {/* Avatar + Live Online Dot + Channel Badge */}
                       <div className="relative shrink-0">
                         {conv.contactAvatar ? (
                           <img
@@ -897,7 +1262,7 @@ export function AdminSocialInbox({
                           }`}
                         >
                           {conv.lastMessageDirection === 'outbound' && (
-                            <span className="text-slate-400 mr-1">You:</span>
+                            <span className="text-emerald-600 font-bold mr-1">✓✓ You:</span>
                           )}
                           {conv.lastMessageText}
                         </p>
@@ -934,12 +1299,12 @@ export function AdminSocialInbox({
         </div>
 
         {/* -------------------------------------------------------------- */}
-        {/* CENTER COLUMN (6 cols): ACTIVE CHAT CONSOLE                     */}
+        {/* CENTER COLUMN (6 cols): LIVE NATIVE CHAT CONSOLE                */}
         {/* -------------------------------------------------------------- */}
         <div
           className={`${
             showRightPanel ? 'lg:col-span-5 xl:col-span-6' : 'lg:col-span-8 xl:col-span-9'
-          } bg-white rounded-2xl border border-slate-200 shadow-2xs flex flex-col overflow-hidden h-[680px]`}
+          } bg-white rounded-2xl border border-slate-200 shadow-2xs flex flex-col overflow-hidden h-[700px]`}
         >
           {!activeConversation ? (
             <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4 bg-slate-50/40">
@@ -951,8 +1316,8 @@ export function AdminSocialInbox({
                   Select a Conversation or Start a New WhatsApp Chat
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Choose any customer thread on the left or click below to message a customer via
-                  WhatsApp, LINE OA, Messenger, Instagram, or Telegram.
+                  Choose any customer thread on the left or click below to message a customer live
+                  via WhatsApp, LINE OA, Messenger, Instagram, or Telegram.
                 </p>
               </div>
               <div className="flex flex-wrap items-center justify-center gap-2">
@@ -980,8 +1345,22 @@ export function AdminSocialInbox({
               {/* Active Chat Header */}
               <div className="px-4 py-3 border-b border-slate-200 bg-white flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-full bg-slate-900 text-white font-black text-xs flex items-center justify-center shrink-0">
-                    {(activeConversation.contactName || 'C').slice(0, 2).toUpperCase()}
+                  <div className="relative shrink-0">
+                    {activeConversation.contactAvatar ? (
+                      <img
+                        src={activeConversation.contactAvatar}
+                        alt={activeConversation.contactName}
+                        className="w-10 h-10 rounded-full object-cover border border-slate-200"
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-slate-900 text-white font-black text-xs flex items-center justify-center">
+                        {(activeConversation.contactName || 'C').slice(0, 2).toUpperCase()}
+                      </div>
+                    )}
+                    <span
+                      className="w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white absolute bottom-0 right-0"
+                      title="Live Channel Active"
+                    />
                   </div>
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -995,6 +1374,12 @@ export function AdminSocialInbox({
                       >
                         {SOCIAL_CHANNEL_META[activeConversation.channel].label}
                       </span>
+                      {liveStatuses?.[activeConversation.channel] && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          <Radio size={10} className="text-emerald-600 animate-pulse" />
+                          <span>{liveStatuses[activeConversation.channel].modeLabel}</span>
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-3 text-[11px] text-slate-500 mt-0.5 flex-wrap">
@@ -1020,6 +1405,11 @@ export function AdminSocialInbox({
                           <Copy size={10} />
                         </button>
                       )}
+                      {activeConversation.channel === 'line' && (
+                        <span className="text-[10px] text-green-700 font-bold">
+                          LINE ID: {activeConversation.externalContactId.slice(0, 10)}...
+                        </span>
+                      )}
                       {activeConversation.customerMemberId && (
                         <span className="font-mono text-[10px] bg-indigo-50 text-indigo-700 px-1.5 py-0.2 rounded font-bold">
                           Member #{activeConversation.customerMemberId}
@@ -1033,22 +1423,41 @@ export function AdminSocialInbox({
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {(activeConversation.channel === 'whatsapp' ||
                     activeConversation.contactPhone) && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        const url = buildWhatsAppUrl(
-                          activeConversation.contactPhone || activeConversation.externalContactId,
-                          composerText
-                        );
-                        window.open(url, '_blank', 'noopener,noreferrer');
-                      }}
-                      className="h-8 px-2.5 text-[11px] font-bold border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 rounded-lg gap-1 cursor-pointer"
-                      title="Open direct chat in WhatsApp Web / App"
-                    >
-                      <ExternalLink size={12} />
-                      <span>Open WhatsApp</span>
-                    </Button>
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          openWhatsAppBridgeWindow(
+                            activeConversation.contactPhone || activeConversation.externalContactId,
+                            composerText,
+                            'companion_popup'
+                          )
+                        }
+                        className="h-8 px-2.5 text-[11px] font-bold border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 rounded-lg gap-1 cursor-pointer"
+                        title="Open Docked WhatsApp Web Companion Window right beside this screen"
+                      >
+                        <AppWindow size={12} />
+                        <span>WhatsApp Companion</span>
+                      </Button>
+
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          openWhatsAppBridgeWindow(
+                            activeConversation.contactPhone || activeConversation.externalContactId,
+                            composerText,
+                            'native_app'
+                          )
+                        }
+                        className="h-8 px-2 text-[11px] font-bold border-emerald-200 text-emerald-700 hover:bg-emerald-50 rounded-lg gap-1 cursor-pointer"
+                        title="Launch installed WhatsApp Desktop / Mobile App directly (whatsapp://)"
+                      >
+                        <Smartphone size={12} />
+                        <span className="hidden xl:inline">App</span>
+                      </Button>
+                    </>
                   )}
 
                   <Button
@@ -1056,10 +1465,10 @@ export function AdminSocialInbox({
                     variant="outline"
                     onClick={handleSimulateInboundReply}
                     className="h-8 px-2.5 text-[11px] font-bold border-slate-200 text-slate-600 hover:bg-slate-100 rounded-lg gap-1 cursor-pointer"
-                    title="Simulate an incoming customer reply in this chat"
+                    title="Test live incoming message & sound notification"
                   >
                     <Zap size={12} className="text-amber-500" />
-                    <span className="hidden sm:inline">Simulate Reply</span>
+                    <span className="hidden sm:inline">Test Live Reply</span>
                   </Button>
 
                   <Button
@@ -1074,7 +1483,7 @@ export function AdminSocialInbox({
                   >
                     <CheckCircle2 size={12} />
                     <span>
-                      {activeConversation.status === 'resolved' ? 'Resolved' : 'Mark Resolved'}
+                      {activeConversation.status === 'resolved' ? 'Resolved' : 'Resolve'}
                     </span>
                   </Button>
 
@@ -1103,13 +1512,22 @@ export function AdminSocialInbox({
                 </div>
               </div>
 
-              {/* Chat Messages Timeline */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/60 custom-scrollbar">
+              {/* Chat Messages Timeline (Native App Wallpaper Feel) */}
+              <div
+                className={`flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar ${
+                  activeConversation.channel === 'whatsapp'
+                    ? 'bg-[#efeae2]/60'
+                    : activeConversation.channel === 'line'
+                    ? 'bg-[#7494c0]/15'
+                    : 'bg-slate-50/70'
+                }`}
+              >
                 {activeMessages.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400 space-y-2">
                     <MessageCircle size={28} className="text-slate-300" />
                     <p className="text-xs font-semibold">
-                      No messages yet in this conversation. Send a greeting or template below!
+                      No messages yet in this conversation. Send a greeting, photo, or template
+                      below!
                     </p>
                   </div>
                 ) : (
@@ -1118,11 +1536,15 @@ export function AdminSocialInbox({
                     return (
                       <div
                         key={msg.id}
-                        className={`flex flex-col ${isOutbound ? 'items-end' : 'items-start'}`}
+                        className={`group flex flex-col ${
+                          isOutbound ? 'items-end' : 'items-start'
+                        }`}
                       >
                         <div className="flex items-center gap-1.5 mb-1 px-1">
                           <span className="text-[10px] font-bold text-slate-500">
-                            {isOutbound ? msg.senderName || 'Staff' : activeConversation.contactName}
+                            {isOutbound
+                              ? msg.senderName || 'Staff'
+                              : activeConversation.contactName}
                           </span>
                           <span className="text-[10px] text-slate-400">
                             {new Date(msg.createdAt).toLocaleTimeString([], {
@@ -1130,37 +1552,94 @@ export function AdminSocialInbox({
                               minute: '2-digit',
                             })}
                           </span>
+
+                          {/* Hover Quick Actions: Reply & Copy */}
+                          <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 ml-1">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setReplyingTo({
+                                  messageId: msg.id,
+                                  senderName: isOutbound
+                                    ? msg.senderName || 'Staff'
+                                    : activeConversation.contactName,
+                                  text: msg.text,
+                                })
+                              }
+                              className="p-0.5 rounded hover:bg-slate-200 text-slate-500 hover:text-slate-800 cursor-pointer"
+                              title="Reply to this message"
+                            >
+                              <Reply size={11} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(msg.text || '');
+                                toast.success('Copied message text');
+                              }}
+                              className="p-0.5 rounded hover:bg-slate-200 text-slate-500 hover:text-slate-800 cursor-pointer"
+                              title="Copy message text"
+                            >
+                              <Copy size={10} />
+                            </button>
+                          </div>
                         </div>
 
                         <div
-                          className={`max-w-[82%] sm:max-w-[75%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-2xs whitespace-pre-wrap ${
+                          className={`max-w-[82%] sm:max-w-[75%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-xs whitespace-pre-wrap ${
                             isOutbound
                               ? activeConversation.channel === 'whatsapp'
-                                ? 'bg-[#dcf8c6] text-slate-900 border border-emerald-200 rounded-tr-xs'
+                                ? 'bg-[#d9fdd3] text-slate-900 border border-emerald-200/80 rounded-tr-xs'
                                 : activeConversation.channel === 'line'
                                 ? 'bg-[#06C755] text-white rounded-tr-xs'
                                 : 'bg-indigo-600 text-white rounded-tr-xs'
                               : 'bg-white text-slate-800 border border-slate-200 rounded-tl-xs'
                           }`}
                         >
+                          {/* Quoted Reply Block if present */}
+                          {msg.replyTo && (
+                            <div
+                              className={`mb-2 px-2.5 py-1.5 rounded-lg border-l-4 text-[10px] ${
+                                isOutbound && activeConversation.channel !== 'whatsapp'
+                                  ? 'bg-black/15 border-white/70 text-white/90'
+                                  : 'bg-slate-100 border-emerald-500 text-slate-600'
+                              }`}
+                            >
+                              <p className="font-black">{msg.replyTo.senderName}</p>
+                              <p className="truncate opacity-90">{msg.replyTo.text}</p>
+                            </div>
+                          )}
+
                           {msg.text}
 
                           {msg.attachments && msg.attachments.length > 0 && (
                             <div className="mt-2 space-y-1.5">
                               {msg.attachments.map((att, idx) =>
                                 att.type === 'image' && att.url ? (
+                                  <div
+                                    key={idx}
+                                    onClick={() => setLightboxImageUrl(att.url || null)}
+                                    className="relative group/img cursor-pointer overflow-hidden rounded-xl border border-black/10 inline-block"
+                                  >
+                                    <img
+                                      src={att.url}
+                                      alt={att.name || 'Attachment'}
+                                      className="max-h-52 w-auto object-cover transition-transform group-hover/img:scale-[1.02]"
+                                    />
+                                    <span className="absolute bottom-1.5 right-1.5 bg-black/60 text-white text-[9px] font-bold px-2 py-0.5 rounded-md opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center gap-1">
+                                      <Eye size={10} /> View Full
+                                    </span>
+                                  </div>
+                                ) : att.url ? (
                                   <a
                                     key={idx}
                                     href={att.url}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="block overflow-hidden rounded-xl border border-black/10"
+                                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/10 text-[11px] font-bold underline"
                                   >
-                                    <img
-                                      src={att.url}
-                                      alt="Attachment"
-                                      className="max-h-48 w-auto object-cover"
-                                    />
+                                    <Paperclip size={12} />
+                                    <span>{att.name || 'Download Attachment'}</span>
                                   </a>
                                 ) : null
                               )}
@@ -1169,16 +1648,22 @@ export function AdminSocialInbox({
                         </div>
 
                         {isOutbound && (
-                          <div className="flex items-center gap-1 mt-0.5 px-1 text-[9px] text-slate-400">
-                            <CheckCheck size={11} className="text-emerald-600" />
+                          <div className="flex items-center gap-1 mt-0.5 px-1 text-[9px] text-slate-500 font-semibold">
+                            <CheckCheck size={12} className="text-sky-500" />
                             <span>
                               {msg.deliveryMethod === 'line_api'
-                                ? 'Delivered via LINE OA API'
+                                ? 'Delivered Live via LINE OA API'
                                 : msg.deliveryMethod === 'whatsapp_cloud_api'
-                                ? 'Delivered via WhatsApp Cloud API'
+                                ? 'Delivered Live via WhatsApp Cloud API'
+                                : msg.deliveryMethod === 'whatsapp_gateway_api'
+                                ? 'Delivered Live via WhatsApp Gateway'
+                                : msg.deliveryMethod === 'meta_graph_api'
+                                ? 'Delivered Live via Meta Graph API'
+                                : msg.deliveryMethod === 'telegram_bot_api'
+                                ? 'Delivered Live via Telegram Bot API'
                                 : msg.deliveryMethod === 'whatsapp_web_bridge'
-                                ? 'Logged • WhatsApp Ready'
-                                : 'Sent'}
+                                ? 'Sent • WhatsApp Bridge Active'
+                                : 'Delivered'}
                             </span>
                           </div>
                         )}
@@ -1228,14 +1713,72 @@ export function AdminSocialInbox({
                 </div>
               )}
 
-              {/* Attachment Input Strip */}
+              {/* Replying-To Quote Preview Bar */}
+              {replyingTo && (
+                <div className="px-3 py-2 bg-emerald-50/90 border-t border-emerald-200 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Reply size={14} className="text-emerald-600 shrink-0" />
+                    <div className="text-xs min-w-0">
+                      <span className="font-black text-emerald-900 mr-1.5">
+                        Replying to {replyingTo.senderName}:
+                      </span>
+                      <span className="text-slate-600 truncate inline-block max-w-md align-bottom">
+                        {replyingTo.text}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setReplyingTo(null)}
+                    className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+
+              {/* Staged Uploaded Photos / Attachments Preview Bar */}
+              {stagedAttachments.length > 0 && (
+                <div className="px-3 py-2 bg-indigo-50/70 border-t border-indigo-200 flex items-center gap-2 overflow-x-auto">
+                  {stagedAttachments.map((att, idx) => (
+                    <div
+                      key={idx}
+                      className="relative group rounded-xl border border-indigo-200 bg-white p-1.5 flex items-center gap-2 shrink-0 shadow-2xs"
+                    >
+                      {att.type === 'image' && att.url ? (
+                        <img
+                          src={att.url}
+                          alt={att.name || 'Preview'}
+                          className="w-12 h-12 rounded-lg object-cover"
+                        />
+                      ) : (
+                        <Paperclip size={16} className="text-indigo-600" />
+                      )}
+                      <span className="text-[11px] font-bold text-slate-700 max-w-[120px] truncate">
+                        {att.name || 'Photo'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setStagedAttachments((prev) => prev.filter((_, i) => i !== idx))
+                        }
+                        className="p-0.5 rounded-full bg-rose-500 text-white hover:bg-rose-600 cursor-pointer"
+                      >
+                        <X size={11} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Optional Image URL Input Strip */}
               {showAttachmentInput && (
                 <div className="px-3 py-2 bg-sky-50/70 border-t border-sky-200 flex items-center gap-2">
                   <ImageIcon size={14} className="text-sky-600 shrink-0" />
                   <Input
                     value={attachmentUrl}
                     onChange={(e) => setAttachmentUrl(e.target.value)}
-                    placeholder="Paste public HTTPS image URL (e.g. delivery photo or QR slip)..."
+                    placeholder="Or paste an image URL (https://...)..."
                     className="h-8 text-xs bg-white rounded-lg flex-1"
                   />
                   <Button
@@ -1252,16 +1795,66 @@ export function AdminSocialInbox({
                 </div>
               )}
 
+              {/* Emoji Picker Popover Strip */}
+              {showEmojiPicker && (
+                <div className="px-3 py-2 bg-white border-t border-slate-200 flex flex-wrap items-center gap-1.5">
+                  {QUICK_EMOJIS.map((em) => (
+                    <button
+                      key={em}
+                      type="button"
+                      onClick={() => setComposerText((prev) => `${prev}${em}`)}
+                      className="w-8 h-8 rounded-lg hover:bg-slate-100 text-base flex items-center justify-center transition-transform hover:scale-110 cursor-pointer"
+                    >
+                      {em}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {/* Message Composer Footer */}
               <div className="p-3 bg-white border-t border-slate-200 space-y-2">
-                <div className="flex items-end gap-2">
+                <div className="flex items-end gap-1.5">
+                  {/* Upload Photo/File from Computer */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={uploadingFile}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="h-10 w-10 p-0 rounded-xl border-slate-200 text-slate-600 hover:text-emerald-700 hover:border-emerald-300 shrink-0 cursor-pointer"
+                    title="Upload photo or slip from computer (or paste screenshot with Ctrl+V)"
+                  >
+                    {uploadingFile ? (
+                      <RefreshCw size={15} className="animate-spin text-emerald-600" />
+                    ) : (
+                      <Upload size={16} />
+                    )}
+                  </Button>
+
+                  {/* Emoji Picker Toggle */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                    className={`h-10 w-10 p-0 rounded-xl border-slate-200 shrink-0 cursor-pointer ${
+                      showEmojiPicker
+                        ? 'bg-amber-50 border-amber-300 text-amber-600'
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                    title="Insert Emoji"
+                  >
+                    <Smile size={16} />
+                  </Button>
+
+                  {/* Paste Image Link Toggle */}
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
                     onClick={() => setShowAttachmentInput(!showAttachmentInput)}
-                    className="h-10 w-10 p-0 rounded-xl border-slate-200 text-slate-500 hover:text-slate-800 shrink-0 cursor-pointer"
-                    title="Attach image URL"
+                    className="h-10 w-10 p-0 rounded-xl border-slate-200 text-slate-500 hover:text-slate-800 shrink-0 cursor-pointer hidden sm:flex"
+                    title="Attach image via URL"
                   >
                     <ImageIcon size={16} />
                   </Button>
@@ -1269,16 +1862,17 @@ export function AdminSocialInbox({
                   <textarea
                     value={composerText}
                     onChange={(e) => setComposerText(e.target.value)}
+                    onPaste={handleComposerPaste}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
-                        handleSendMessage(false);
+                        handleSendMessage();
                       }
                     }}
                     rows={2}
                     placeholder={`Message ${activeConversation.contactName} via ${
                       SOCIAL_CHANNEL_META[activeConversation.channel].shortLabel
-                    }... (Press Enter to send)`}
+                    }... (Enter to send • Ctrl+V to paste photo)`}
                     className="flex-1 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white p-2.5 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none"
                   />
 
@@ -1286,12 +1880,17 @@ export function AdminSocialInbox({
                     <Button
                       type="button"
                       size="sm"
-                      onClick={() => handleSendMessage(true)}
-                      disabled={sendingMsg || (!composerText.trim() && !attachmentUrl.trim())}
+                      onClick={() => handleSendMessage('companion_popup')}
+                      disabled={
+                        sendingMsg ||
+                        (!composerText.trim() &&
+                          stagedAttachments.length === 0 &&
+                          !attachmentUrl.trim())
+                      }
                       className="h-10 px-3 bg-[#25D366] hover:bg-[#1ebe5d] text-slate-950 font-black text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer shadow-sm"
-                      title="Log message in platform AND launch WhatsApp with pre-filled message"
+                      title="Send & Open in Docked WhatsApp Live Window"
                     >
-                      <ExternalLink size={14} />
+                      <AppWindow size={14} />
                       <span className="hidden sm:inline">Send & WhatsApp</span>
                     </Button>
                   )}
@@ -1299,8 +1898,13 @@ export function AdminSocialInbox({
                   <Button
                     type="button"
                     size="sm"
-                    onClick={() => handleSendMessage(false)}
-                    disabled={sendingMsg || (!composerText.trim() && !attachmentUrl.trim())}
+                    onClick={() => handleSendMessage()}
+                    disabled={
+                      sendingMsg ||
+                      (!composerText.trim() &&
+                        stagedAttachments.length === 0 &&
+                        !attachmentUrl.trim())
+                    }
                     className="h-10 px-4 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer"
                   >
                     <Send size={14} />
@@ -1309,7 +1913,7 @@ export function AdminSocialInbox({
                 </div>
 
                 {activeConversation.channel === 'whatsapp' && (
-                  <div className="flex items-center justify-between text-[10px] text-slate-500 px-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500 px-1">
                     <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -1318,12 +1922,38 @@ export function AdminSocialInbox({
                         className="rounded border-slate-300"
                       />
                       <span>
-                        Always open WhatsApp Web/App (`wa.me`) automatically when pressing Enter
+                        Auto-sync message to Docked WhatsApp Companion Window on Enter
                       </span>
                     </label>
-                    <span className="font-mono text-emerald-700 font-semibold">
-                      wa.me/{formatPhoneForWhatsApp(activeConversation.externalContactId)}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openWhatsAppBridgeWindow(
+                            activeConversation.externalContactId,
+                            composerText,
+                            'companion_popup'
+                          )
+                        }
+                        className="text-emerald-700 font-bold hover:underline cursor-pointer"
+                      >
+                        Open Companion Popup
+                      </button>
+                      <span>•</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openWhatsAppBridgeWindow(
+                            activeConversation.externalContactId,
+                            composerText,
+                            'native_app'
+                          )
+                        }
+                        className="text-emerald-700 font-bold hover:underline cursor-pointer"
+                      >
+                        Open Desktop/Mobile App
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1335,7 +1965,7 @@ export function AdminSocialInbox({
         {/* RIGHT COLUMN (3 cols): CUSTOMER 360° CRM & LAUNDRY ORDERS       */}
         {/* -------------------------------------------------------------- */}
         {showRightPanel && (
-          <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-2xs flex flex-col overflow-hidden h-[680px]">
+          <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-2xs flex flex-col overflow-hidden h-[700px]">
             <div className="p-3.5 border-b border-slate-100 bg-slate-50/60 flex items-center justify-between">
               <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
                 <UserCheck size={15} className="text-indigo-600" />
@@ -1391,7 +2021,10 @@ export function AdminSocialInbox({
                             Wallet Balance
                           </span>
                           <span className="text-xs font-black text-emerald-700">
-                            ฿{Number(linkedCustomer.creditBalance ?? linkedCustomer.walletBalance ?? 0).toLocaleString()}
+                            ฿
+                            {Number(
+                              linkedCustomer.creditBalance ?? linkedCustomer.walletBalance ?? 0
+                            ).toLocaleString()}
                           </span>
                         </div>
                         <div className="bg-white rounded-lg p-2 border border-indigo-100/80">
@@ -1437,29 +2070,53 @@ export function AdminSocialInbox({
                   {/* Quick Channel Actions */}
                   <div className="space-y-1.5">
                     <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                      Direct Channel Launch
+                      Live App Launchers
                     </span>
                     <div className="grid grid-cols-1 gap-1.5">
                       {(activeConversation.contactPhone ||
                         activeConversation.channel === 'whatsapp' ||
                         linkedCustomer?.phone) && (
-                        <a
-                          href={buildWhatsAppUrl(
-                            activeConversation.contactPhone ||
-                              linkedCustomer?.phone ||
-                              activeConversation.externalContactId,
-                            composerText
-                          )}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center justify-between px-3 py-2 rounded-xl border border-emerald-200 bg-emerald-50/70 hover:bg-emerald-100/80 text-xs font-bold text-emerald-900 transition-colors"
-                        >
-                          <span className="flex items-center gap-2">
-                            <Phone size={13} className="text-emerald-600" />
-                            <span>Chat on WhatsApp Web / App</span>
-                          </span>
-                          <ExternalLink size={12} />
-                        </a>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openWhatsAppBridgeWindow(
+                                activeConversation.contactPhone ||
+                                  linkedCustomer?.phone ||
+                                  activeConversation.externalContactId,
+                                composerText,
+                                'companion_popup'
+                              )
+                            }
+                            className="flex items-center justify-between px-3 py-2 rounded-xl border border-emerald-200 bg-emerald-50/70 hover:bg-emerald-100/80 text-xs font-bold text-emerald-900 transition-colors cursor-pointer"
+                          >
+                            <span className="flex items-center gap-2">
+                              <AppWindow size={13} className="text-emerald-600" />
+                              <span>Docked WhatsApp Web Companion</span>
+                            </span>
+                            <ExternalLink size={12} />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openWhatsAppBridgeWindow(
+                                activeConversation.contactPhone ||
+                                  linkedCustomer?.phone ||
+                                  activeConversation.externalContactId,
+                                composerText,
+                                'native_app'
+                              )
+                            }
+                            className="flex items-center justify-between px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-bold text-slate-800 transition-colors cursor-pointer"
+                          >
+                            <span className="flex items-center gap-2">
+                              <Smartphone size={13} className="text-emerald-600" />
+                              <span>Open Native WhatsApp App</span>
+                            </span>
+                            <ExternalLink size={12} />
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -1478,42 +2135,53 @@ export function AdminSocialInbox({
                       </p>
                     ) : (
                       <div className="space-y-2">
-                        {customerJobs.map((job) => (
-                          <div
-                            key={job.id}
-                            className="p-2.5 rounded-xl border border-slate-200 bg-slate-50/60 hover:bg-white transition-all space-y-1.5"
-                          >
-                            <div className="flex items-center justify-between gap-1">
-                              <span
-                                onClick={() => onEditJob && onEditJob(job)}
-                                className="font-mono text-xs font-black text-indigo-700 hover:underline cursor-pointer"
-                              >
-                                #{job.id}
-                              </span>
-                              <Badge
-                                variant="outline"
-                                className="text-[9px] font-bold uppercase px-1.5 py-0"
-                              >
-                                {job.status}
-                              </Badge>
-                            </div>
-                            <div className="flex items-center justify-between text-[11px] text-slate-600">
-                              <span className="truncate">{job.serviceType || 'Laundry'}</span>
-                              <span className="font-black text-slate-900">
-                                ฿{Number(job.totalPrice || 0).toLocaleString()}
-                              </span>
-                            </div>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleInsertJobStatus(job)}
-                              className="w-full h-7 text-[10px] font-bold rounded-lg gap-1 border-slate-200 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-300 cursor-pointer"
+                        {customerJobs.map((job) => {
+                          const hasProofPhoto = Boolean(
+                            job.deliveryProofImageUrl || job.proofImageUrl
+                          );
+                          return (
+                            <div
+                              key={job.id}
+                              className="p-2.5 rounded-xl border border-slate-200 bg-slate-50/60 hover:bg-white transition-all space-y-1.5"
                             >
-                              <Send size={10} />
-                              <span>Insert Order Update in Chat</span>
-                            </Button>
-                          </div>
-                        ))}
+                              <div className="flex items-center justify-between gap-1">
+                                <span
+                                  onClick={() => onEditJob && onEditJob(job)}
+                                  className="font-mono text-xs font-black text-indigo-700 hover:underline cursor-pointer"
+                                >
+                                  #{job.id}
+                                </span>
+                                <Badge
+                                  variant="outline"
+                                  className="text-[9px] font-bold uppercase px-1.5 py-0"
+                                >
+                                  {job.status}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center justify-between text-[11px] text-slate-600">
+                                <span className="truncate">{job.serviceType || 'Laundry'}</span>
+                                <span className="font-black text-slate-900">
+                                  ฿{Number(job.totalPrice || 0).toLocaleString()}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleInsertJobStatus(job, hasProofPhoto)}
+                                  className="w-full h-7 text-[10px] font-bold rounded-lg gap-1 border-slate-200 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-300 cursor-pointer"
+                                >
+                                  <Send size={10} />
+                                  <span>
+                                    {hasProofPhoto
+                                      ? 'Insert Order + Proof Photo'
+                                      : 'Insert Order Update'}
+                                  </span>
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -1523,6 +2191,38 @@ export function AdminSocialInbox({
           </div>
         )}
       </div>
+
+      {/* ================================================================ */}
+      {/* FULL-SCREEN IMAGE LIGHTBOX MODAL                                 */}
+      {/* ================================================================ */}
+      <Dialog open={Boolean(lightboxImageUrl)} onOpenChange={() => setLightboxImageUrl(null)}>
+        <DialogContent className="sm:max-w-3xl rounded-2xl p-3 bg-slate-950 border-slate-800 text-white">
+          <DialogHeader>
+            <DialogTitle className="text-xs font-bold text-slate-300 flex items-center justify-between">
+              <span>Chat Media Preview</span>
+              {lightboxImageUrl && (
+                <a
+                  href={lightboxImageUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-emerald-400 hover:underline text-xs flex items-center gap-1 mr-6"
+                >
+                  <ExternalLink size={12} /> Open Original
+                </a>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          {lightboxImageUrl && (
+            <div className="flex items-center justify-center max-h-[75vh] overflow-auto">
+              <img
+                src={lightboxImageUrl}
+                alt="Full preview"
+                className="max-h-[70vh] w-auto rounded-xl object-contain"
+              />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* ================================================================ */}
       {/* MODAL 1: START NEW WHATSAPP CHAT VIA PLATFORM                    */}
@@ -1539,8 +2239,8 @@ export function AdminSocialInbox({
                   Start New WhatsApp Chat (เปิดแชท WhatsApp ใหม่)
                 </DialogTitle>
                 <p className="text-xs text-emerald-50 mt-0.5">
-                  Select an existing CRM customer or enter any phone number to start a WhatsApp
-                  conversation immediately.
+                  Select an existing CRM customer or enter any phone number to start a live
+                  WhatsApp conversation immediately.
                 </p>
               </div>
             </div>
@@ -1626,7 +2326,7 @@ export function AdminSocialInbox({
                   <span>WhatsApp Phone Number *</span>
                   {liveFormattedWaPhone && (
                     <span className="font-mono text-[10px] text-emerald-700 font-bold">
-                      wa.me/{liveFormattedWaPhone}
+                      +{liveFormattedWaPhone}
                     </span>
                   )}
                 </label>
@@ -1710,25 +2410,36 @@ export function AdminSocialInbox({
               Cancel
             </Button>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 type="button"
                 variant="outline"
                 disabled={creatingWaChat}
-                onClick={() => handleCreateWhatsAppChat(false)}
+                onClick={() => handleCreateWhatsAppChat('none')}
                 className="h-9 px-3 text-xs font-bold rounded-xl border-slate-300 cursor-pointer"
               >
-                Create in Platform Only
+                Create in Inbox
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                disabled={creatingWaChat}
+                onClick={() => handleCreateWhatsAppChat('native_app')}
+                className="h-9 px-3 text-xs font-bold rounded-xl border-emerald-300 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 gap-1 cursor-pointer"
+              >
+                <Smartphone size={13} />
+                <span>WhatsApp App</span>
               </Button>
 
               <Button
                 type="button"
                 disabled={creatingWaChat}
-                onClick={() => handleCreateWhatsAppChat(true)}
+                onClick={() => handleCreateWhatsAppChat('companion_popup')}
                 className="h-9 px-4 bg-[#25D366] hover:bg-[#1ebe5d] text-slate-950 font-black text-xs rounded-xl gap-1.5 cursor-pointer shadow-md"
               >
-                <ExternalLink size={14} />
-                <span>Start Chat & Open WhatsApp</span>
+                <AppWindow size={14} />
+                <span>Start & Open Live Companion</span>
               </Button>
             </div>
           </DialogFooter>
@@ -1745,7 +2456,8 @@ export function AdminSocialInbox({
               Start New Social Channel Conversation
             </DialogTitle>
             <p className="text-xs text-slate-300 mt-0.5">
-              Connect with a customer via LINE OA, Facebook Messenger, Instagram Direct, or Telegram.
+              Connect with a customer live via LINE OA, Facebook Messenger, Instagram Direct, or
+              Telegram.
             </p>
           </DialogHeader>
 
@@ -1872,30 +2584,33 @@ export function AdminSocialInbox({
       </Dialog>
 
       {/* ================================================================ */}
-      {/* MODAL 4: CHANNEL SETTINGS & WEBHOOK CONFIGURATION                */}
+      {/* MODAL 4: LIVE CHANNEL SETTINGS & API / BRIDGE CONFIGURATION      */}
       {/* ================================================================ */}
       <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
-        <DialogContent className="sm:max-w-xl rounded-2xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-2xl rounded-2xl max-h-[88vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="text-base font-black">
-              Omnichannel Social Integration Settings
+            <DialogTitle className="text-base font-black flex items-center gap-2">
+              <Radio size={18} className="text-emerald-600" />
+              <span>Omnichannel Live App & API Configuration</span>
             </DialogTitle>
           </DialogHeader>
 
           {config && (
             <div className="space-y-4 text-xs">
-              {/* WhatsApp Config */}
+              {/* 1. WhatsApp Live Configuration */}
               <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/40 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="font-black text-emerald-900 text-sm">
-                    1. WhatsApp Integration
+                    1. WhatsApp Live Integration
                   </span>
-                  <Badge className="bg-[#25D366] text-slate-950 font-black">Active</Badge>
+                  <Badge className="bg-[#25D366] text-slate-950 font-black">
+                    {liveStatuses?.whatsapp?.modeLabel || 'Live Active'}
+                  </Badge>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <label className="font-bold text-slate-700">Dispatch Mode</label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-1 sm:col-span-2">
+                    <label className="font-bold text-slate-700">Live Dispatch Mode</label>
                     <select
                       value={config.whatsapp.mode}
                       onChange={(e) =>
@@ -1903,16 +2618,21 @@ export function AdminSocialInbox({
                           ...config,
                           whatsapp: {
                             ...config.whatsapp,
-                            mode: e.target.value as 'web_bridge' | 'cloud_api',
+                            mode: e.target.value as 'web_bridge' | 'cloud_api' | 'gateway_api',
                           },
                         })
                       }
                       className="w-full h-9 rounded-lg border border-slate-200 bg-white px-2.5 font-bold"
                     >
                       <option value="web_bridge">
-                        WhatsApp Web / App Direct Bridge (wa.me)
+                        Live WhatsApp Companion Window / Native App Bridge
                       </option>
-                      <option value="cloud_api">Meta WhatsApp Business Cloud API</option>
+                      <option value="cloud_api">
+                        Meta WhatsApp Business Cloud API (graph.facebook.com)
+                      </option>
+                      <option value="gateway_api">
+                        WhatsApp QR / REST Gateway API (WAHA / Evolution / UltraMsg)
+                      </option>
                     </select>
                   </div>
 
@@ -1927,10 +2647,42 @@ export function AdminSocialInbox({
                         })
                       }
                       placeholder="66"
-                      className="h-9 bg-white"
+                      className="h-9 bg-white font-mono"
                     />
                   </div>
                 </div>
+
+                {config.whatsapp.mode === 'web_bridge' && (
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700">
+                      Preferred WhatsApp App Launch Target
+                    </label>
+                    <select
+                      value={config.whatsapp.launchTarget || 'companion_popup'}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          whatsapp: {
+                            ...config.whatsapp,
+                            launchTarget: e.target.value as
+                              | 'companion_popup'
+                              | 'native_app'
+                              | 'web_tab',
+                          },
+                        })
+                      }
+                      className="w-full h-9 rounded-lg border border-slate-200 bg-white px-2.5 font-bold"
+                    >
+                      <option value="companion_popup">
+                        Docked Companion Popup Window (Side-by-Side WhatsApp Web)
+                      </option>
+                      <option value="native_app">
+                        Installed WhatsApp Desktop / Mobile App (whatsapp:// protocol)
+                      </option>
+                      <option value="web_tab">New Browser Tab (wa.me)</option>
+                    </select>
+                  </div>
+                )}
 
                 {config.whatsapp.mode === 'cloud_api' && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
@@ -1966,27 +2718,57 @@ export function AdminSocialInbox({
                   </div>
                 )}
 
-                <p className="text-[11px] text-slate-500">
-                  Webhook URL for Meta / Social Channels:{' '}
-                  <code className="bg-white px-1.5 py-0.5 rounded border font-mono">
-                    /api/webhooks/social
-                  </code>
-                </p>
+                {config.whatsapp.mode === 'gateway_api' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <div className="space-y-1">
+                      <label className="font-bold text-slate-700">
+                        Gateway Send Endpoint URL
+                      </label>
+                      <Input
+                        value={config.whatsapp.gatewayUrl || ''}
+                        onChange={(e) =>
+                          setConfig({
+                            ...config,
+                            whatsapp: { ...config.whatsapp, gatewayUrl: e.target.value },
+                          })
+                        }
+                        placeholder="https://your-waha-gateway/api/sendText"
+                        className="h-8 bg-white font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="font-bold text-slate-700">Gateway API Key / Token</label>
+                      <Input
+                        type="password"
+                        value={config.whatsapp.gatewayApiKey || ''}
+                        onChange={(e) =>
+                          setConfig({
+                            ...config,
+                            whatsapp: { ...config.whatsapp, gatewayApiKey: e.target.value },
+                          })
+                        }
+                        placeholder="API Key..."
+                        className="h-8 bg-white font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
-              {/* LINE OA Config */}
+              {/* 2. LINE OA Live Configuration */}
               <div className="p-4 rounded-xl border border-green-200 bg-green-50/40 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="font-black text-green-900 text-sm">
-                    2. LINE Official Account
+                    2. LINE Official Account (@thatlaundryshop & @050ehvzb)
                   </span>
                   <Badge className="bg-[#06C755] text-white font-bold">
-                    Connected ({config.line.basicId})
+                    {liveStatuses?.line?.accountName || 'Verified Live API'}
                   </Badge>
                 </div>
                 <p className="text-[11px] text-slate-600">
-                  Outbound messages in LINE OA threads are pushed directly to the customer&apos;s
-                  LINE app via the Messaging API. Incoming messages arrive via{' '}
+                  Both text messages and uploaded/pasted photos are pushed live to the
+                  customer&apos;s LINE app via the LINE Messaging API. Customer replies, photos, and
+                  stickers arrive automatically via{' '}
                   <code className="bg-white px-1.5 py-0.5 rounded border font-mono">
                     /api/webhooks/line
                   </code>
@@ -1994,14 +2776,19 @@ export function AdminSocialInbox({
                 </p>
               </div>
 
-              {/* Messenger / Instagram / Telegram */}
-              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-3">
-                <span className="font-black text-slate-900 text-sm block">
-                  3. Messenger, Instagram & Telegram Handles
-                </span>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {/* 3. Facebook Messenger & Instagram Direct Live Graph API */}
+              <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/30 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-black text-blue-950 text-sm">
+                    3. Facebook Messenger & Instagram Direct (Meta Graph API)
+                  </span>
+                  <Badge className="bg-[#0084FF] text-white font-bold">
+                    {config.facebook.pageAccessToken ? 'Live Graph API' : 'Webhook Ready'}
+                  </Badge>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <div>
-                    <label className="text-[10px] font-bold text-slate-500">Facebook Page</label>
+                    <label className="text-[10px] font-bold text-slate-600">Facebook Page Name</label>
                     <Input
                       value={config.facebook.pageName}
                       onChange={(e) =>
@@ -2014,7 +2801,24 @@ export function AdminSocialInbox({
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] font-bold text-slate-500">Instagram Handle</label>
+                    <label className="text-[10px] font-bold text-slate-600">
+                      Page Access Token (for live outbound push)
+                    </label>
+                    <Input
+                      type="password"
+                      value={config.facebook.pageAccessToken || ''}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          facebook: { ...config.facebook, pageAccessToken: e.target.value },
+                        })
+                      }
+                      placeholder="EAA..."
+                      className="h-8 text-xs bg-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-600">Instagram Handle</label>
                     <Input
                       value={config.instagram.accountHandle}
                       onChange={(e) =>
@@ -2027,7 +2831,38 @@ export function AdminSocialInbox({
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] font-bold text-slate-500">Telegram Bot</label>
+                    <label className="text-[10px] font-bold text-slate-600">
+                      Instagram Access Token (optional if using Page Token)
+                    </label>
+                    <Input
+                      type="password"
+                      value={config.instagram.accessToken || ''}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          instagram: { ...config.instagram, accessToken: e.target.value },
+                        })
+                      }
+                      placeholder="EAA..."
+                      className="h-8 text-xs bg-white font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* 4. Telegram Bot Live Polling & Push */}
+              <div className="p-4 rounded-xl border border-sky-200 bg-sky-50/40 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-black text-sky-950 text-sm">
+                    4. Telegram Bot API (Live 3s Polling & Push)
+                  </span>
+                  <Badge className="bg-[#229ED9] text-white font-bold">
+                    {config.telegram.botToken ? 'Live Polling Active' : 'Ready'}
+                  </Badge>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-600">Bot Username</label>
                     <Input
                       value={config.telegram.botUsername}
                       onChange={(e) =>
@@ -2036,7 +2871,25 @@ export function AdminSocialInbox({
                           telegram: { ...config.telegram, botUsername: e.target.value },
                         })
                       }
+                      placeholder="@ThatLaundryShopBot"
                       className="h-8 text-xs bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-600">
+                      Telegram BotFather Token (works live even on localhost!)
+                    </label>
+                    <Input
+                      type="password"
+                      value={config.telegram.botToken || ''}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          telegram: { ...config.telegram, botToken: e.target.value },
+                        })
+                      }
+                      placeholder="123456789:AAH..."
+                      className="h-8 text-xs bg-white font-mono"
                     />
                   </div>
                 </div>
@@ -2057,7 +2910,7 @@ export function AdminSocialInbox({
               onClick={handleSaveConfig}
               className="h-9 px-4 bg-slate-900 text-white text-xs font-bold rounded-xl"
             >
-              Save Channel Settings
+              Save Live Channel Settings
             </Button>
           </DialogFooter>
         </DialogContent>

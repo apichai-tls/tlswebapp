@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import fs from "fs";
+import path from "path";
 import { prisma } from "@/lib/prisma";
 import { invalidateDbCache } from "@/lib/db-cache";
 import {
@@ -8,6 +10,7 @@ import {
 } from "@/lib/line";
 import { getStoredLineOaSettings } from "@/actions/line";
 import { recordInboundSocialMessageAction } from "@/actions/social-inbox";
+import { SocialMessageAttachment } from "@/types/social-inbox";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +18,7 @@ export async function GET() {
   const settings = await getStoredLineOaSettings();
   return NextResponse.json({
     ok: true,
-    service: "That Laundry Shop — LINE Official Account Silent Webhook",
+    service: "That Laundry Shop — LINE Official Account Live Webhook",
     configured: Boolean(settings.channelAccessToken),
     autoSendDeliveryPhoto: settings.autoSendDeliveryPhoto,
     timestamp: new Date().toISOString(),
@@ -198,7 +201,49 @@ export async function POST(req: NextRequest) {
         contacts.splice(existingIdx, 1);
       }
       contacts.unshift(updatedRecord);
-      if (messageText || event.type === "follow" || event?.message?.type === "image") {
+
+      const msgType = event?.message?.type;
+      if (messageText || event.type === "follow" || msgType === "image" || msgType === "sticker") {
+        const inboundAttachments: SocialMessageAttachment[] = [];
+
+        // If customer sent a photo on LINE OA, download binary from LINE Data API and save to /uploads/system/chat/
+        if (msgType === "image" && event?.message?.id && settings.channelAccessToken) {
+          try {
+            const msgId = String(event.message.id).replace(/[^a-zA-Z0-9_-]/g, "");
+            const imgRes = await fetch(
+              `https://api-data.line.me/v2/bot/message/${encodeURIComponent(msgId)}/content`,
+              {
+                headers: {
+                  Authorization: `Bearer ${settings.channelAccessToken.trim()}`,
+                },
+              }
+            );
+            if (imgRes.ok) {
+              const arrBuf = await imgRes.arrayBuffer();
+              const uploadDir = path.resolve(process.cwd(), "storage", "uploads", "system", "chat");
+              await fs.promises.mkdir(uploadDir, { recursive: true });
+              const filename = `line-${msgId}.jpg`;
+              await fs.promises.writeFile(path.join(uploadDir, filename), Buffer.from(arrBuf));
+              inboundAttachments.push({
+                type: "image",
+                url: `/uploads/system/chat/${filename}`,
+                name: "LINE Customer Photo",
+              });
+            }
+          } catch (e) {
+            console.warn("[LINE Webhook] Failed to download inbound image:", e);
+          }
+        } else if (msgType === "sticker" && event?.message?.stickerId) {
+          const stickerId = String(event.message.stickerId).replace(/\D/g, "");
+          if (stickerId) {
+            inboundAttachments.push({
+              type: "image",
+              url: `https://stickershop.line-scdn.net/stickershop/v1/sticker/${stickerId}/android/sticker.png`,
+              name: "LINE Sticker",
+            });
+          }
+        }
+
         await recordInboundSocialMessageAction({
           channel: "line",
           externalContactId: userId,
@@ -207,9 +252,12 @@ export async function POST(req: NextRequest) {
           contactAvatar: updatedRecord.pictureUrl,
           text:
             messageText ||
-            (event?.message?.type === "image"
-              ? "📷 [Customer sent an image via LINE]"
+            (msgType === "image"
+              ? "📷 [Sent a photo via LINE]"
+              : msgType === "sticker"
+              ? "😊 [Sent a LINE Sticker]"
               : "[Followed LINE Official Account]"),
+          attachments: inboundAttachments.length > 0 ? inboundAttachments : undefined,
           customerId: updatedRecord.linkedCustomerId,
         }).catch(() => {});
       }
