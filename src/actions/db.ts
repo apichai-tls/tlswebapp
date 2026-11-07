@@ -10310,3 +10310,299 @@ export async function triggerRecurringOrderNowAction(scheduleId: string) {
     return { success: false, error: err?.message || "Failed to trigger recurring order" };
   }
 }
+
+// ==========================================
+// CHEMICALS & LAUNDRY SUPPLIES ORDERS
+// ==========================================
+const SUPPLY_ORDERS_SETTING_KEY = "TLS_SUPPLY_ORDERS_V1";
+
+export async function getSupplyOrdersAction(filterBranchId?: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_ORDERS_SETTING_KEY },
+    });
+
+    let orders: any[] = [];
+    if (setting?.value) {
+      try {
+        orders = JSON.parse(setting.value);
+      } catch {
+        orders = [];
+      }
+    }
+
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    
+    if (filterBranchId && filterBranchId !== 'all') {
+      orders = orders.filter((o: any) => o.branchId === filterBranchId);
+    } else if (!isAdmin && authUser.branchId) {
+      orders = orders.filter((o: any) => o.branchId === authUser.branchId || o.requesterId === authUser.id);
+    }
+
+    orders.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return { success: true, orders };
+  } catch (err: any) {
+    console.error("[getSupplyOrdersAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to load supply orders", orders: [] };
+  }
+}
+
+export async function createSupplyOrderAction(input: {
+  branchId: string;
+  branchName: string;
+  priority: 'normal' | 'urgent' | 'critical';
+  neededByDate?: string;
+  items: any[];
+  notes?: string;
+}) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+
+    if (!input.items || input.items.length === 0) {
+      return { success: false, error: "Please select at least one item to order." };
+    }
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_ORDERS_SETTING_KEY },
+    });
+
+    let orders: any[] = [];
+    if (setting?.value) {
+      try {
+        orders = JSON.parse(setting.value);
+      } catch {
+        orders = [];
+      }
+    }
+
+    const nowBkk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
+    const yearMonth = `${nowBkk.getFullYear()}${String(nowBkk.getMonth() + 1).padStart(2, '0')}`;
+    const seq = String(orders.length + 1).padStart(4, '0');
+    const orderNumber = `SUP-${yearMonth}-${seq}`;
+    const id = `order_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+    const totalItemsCount = input.items.reduce((sum: number, it: any) => sum + (Number(it.quantity) || 1), 0);
+    const totalEstimatedCost = input.items.reduce((sum: number, it: any) => {
+      const price = Number(it.estimatedPrice) || 0;
+      const qty = Number(it.quantity) || 1;
+      return sum + (price * qty);
+    }, 0);
+
+    const newOrder = {
+      id,
+      orderNumber,
+      branchId: input.branchId,
+      branchName: input.branchName,
+      requesterId: authUser.id,
+      requesterName: authUser.name || authUser.email?.split('@')[0] || "Staff",
+      requesterEmail: authUser.email,
+      requesterRole: authUser.role,
+      priority: input.priority || "normal",
+      neededByDate: input.neededByDate || "",
+      items: input.items,
+      totalItemsCount,
+      totalEstimatedCost,
+      notes: input.notes || "",
+      status: "pending",
+      createdAt: nowBkk.toISOString(),
+      updatedAt: nowBkk.toISOString(),
+    };
+
+    orders.unshift(newOrder);
+
+    await prisma.setting.upsert({
+      where: { key: SUPPLY_ORDERS_SETTING_KEY },
+      update: { value: JSON.stringify(orders) },
+      create: { key: SUPPLY_ORDERS_SETTING_KEY, value: JSON.stringify(orders) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: id,
+          entityType: "SUPPLY_ORDER",
+          action: "CREATE_SUPPLY_ORDER",
+          details: `Supply order ${orderNumber} created for branch ${input.branchName} (${input.items.length} items, est. ฿${totalEstimatedCost})`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch {}
+
+    try {
+      const adminUsers = await prisma.adminUser.findMany({
+        where: { role: 'admin' },
+        select: { id: true }
+      });
+      if (adminUsers.length > 0) {
+        await prisma.notification.createMany({
+          data: adminUsers.map(adm => ({
+            userId: adm.id,
+            title: `New Supply Order: ${orderNumber}`,
+            message: `${authUser.name || authUser.email} requested ${totalItemsCount} item(s) for ${input.branchName}`,
+            type: "note",
+          }))
+        });
+      }
+    } catch {}
+
+    return { success: true, order: newOrder, orders };
+  } catch (err: any) {
+    console.error("[createSupplyOrderAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to submit supply order" };
+  }
+}
+
+export async function updateSupplyOrderStatusAction(
+  orderId: string,
+  status: 'pending' | 'approved' | 'processing' | 'dispatched' | 'completed' | 'cancelled',
+  updates?: {
+    adminNotes?: string;
+    vendorName?: string;
+    vendorPoNumber?: string;
+    trackingNumber?: string;
+    estimatedDeliveryDate?: string;
+  }
+) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_ORDERS_SETTING_KEY },
+    });
+
+    let orders: any[] = [];
+    if (setting?.value) {
+      try {
+        orders = JSON.parse(setting.value);
+      } catch {
+        orders = [];
+      }
+    }
+
+    const orderIdx = orders.findIndex((o: any) => o.id === orderId);
+    if (orderIdx === -1) {
+      return { success: false, error: "Supply order not found" };
+    }
+
+    const order = orders[orderIdx];
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+
+    if (!isAdmin) {
+      if (status !== 'cancelled' || order.requesterId !== authUser.id || order.status !== 'pending') {
+        return { success: false, error: "Only admins can process or update this order." };
+      }
+    }
+
+    const nowBkk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
+    const nowIso = nowBkk.toISOString();
+
+    order.status = status;
+    order.updatedAt = nowIso;
+
+    if (updates?.adminNotes !== undefined) order.adminNotes = updates.adminNotes;
+    if (updates?.vendorName !== undefined) order.vendorName = updates.vendorName;
+    if (updates?.vendorPoNumber !== undefined) order.vendorPoNumber = updates.vendorPoNumber;
+    if (updates?.trackingNumber !== undefined) order.trackingNumber = updates.trackingNumber;
+    if (updates?.estimatedDeliveryDate !== undefined) order.estimatedDeliveryDate = updates.estimatedDeliveryDate;
+
+    if (status === 'processing' || status === 'approved') {
+      order.processedBy = authUser.id;
+      order.processedByName = authUser.name || authUser.email;
+      order.processedAt = nowIso;
+    } else if (status === 'dispatched') {
+      order.dispatchedAt = nowIso;
+    } else if (status === 'completed') {
+      order.completedAt = nowIso;
+    }
+
+    orders[orderIdx] = order;
+
+    await prisma.setting.upsert({
+      where: { key: SUPPLY_ORDERS_SETTING_KEY },
+      update: { value: JSON.stringify(orders) },
+      create: { key: SUPPLY_ORDERS_SETTING_KEY, value: JSON.stringify(orders) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: order.id,
+          entityType: "SUPPLY_ORDER",
+          action: `UPDATE_STATUS_${status.toUpperCase()}`,
+          details: `Supply order ${order.orderNumber} status changed to ${status}${updates?.adminNotes ? ` (Note: ${updates.adminNotes})` : ''}`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch {}
+
+    if (isAdmin && order.requesterId && order.requesterId !== authUser.id) {
+      try {
+        await prisma.notification.create({
+          data: {
+            userId: order.requesterId,
+            title: `Supply Order ${order.orderNumber}: ${status.toUpperCase()}`,
+            message: `Your supply order is now ${status}.${updates?.adminNotes ? ` Note: ${updates.adminNotes}` : ''}`,
+            type: "note",
+          }
+        });
+      } catch {}
+    }
+
+    return { success: true, order, orders };
+  } catch (err: any) {
+    console.error("[updateSupplyOrderStatusAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to update supply order status" };
+  }
+}
+
+export async function deleteSupplyOrderAction(orderId: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    if (!isAdmin) {
+      return { success: false, error: "Only administrators can delete supply orders." };
+    }
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_ORDERS_SETTING_KEY },
+    });
+
+    let orders: any[] = [];
+    if (setting?.value) {
+      try {
+        orders = JSON.parse(setting.value);
+      } catch {
+        orders = [];
+      }
+    }
+
+    const filtered = orders.filter((o: any) => o.id !== orderId);
+
+    await prisma.setting.upsert({
+      where: { key: SUPPLY_ORDERS_SETTING_KEY },
+      update: { value: JSON.stringify(filtered) },
+      create: { key: SUPPLY_ORDERS_SETTING_KEY, value: JSON.stringify(filtered) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: orderId,
+          entityType: "SUPPLY_ORDER",
+          action: "DELETE_SUPPLY_ORDER",
+          details: `Supply order ${orderId} was permanently deleted`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch {}
+
+    return { success: true, orders: filtered };
+  } catch (err: any) {
+    console.error("[deleteSupplyOrderAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to delete supply order" };
+  }
+}

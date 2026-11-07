@@ -68,6 +68,7 @@ import { AdminBuildingReport } from "@/components/admin-building-report";
 import { AdminMarketing } from "@/components/admin-marketing";
 import { AdminTopSpenders } from "@/components/admin-top-spenders";
 import { AdminTasks, prefetchTasksData } from "@/components/admin-tasks";
+import { AdminSuppliesOrders } from "@/components/admin-supplies-orders";
 import { NotificationBell } from "@/components/notification-bell";
 import { TopUpDialog } from "@/components/top-up-dialog";
 import { RefundCorrectDialog } from "@/components/refund-correct-dialog";
@@ -297,7 +298,7 @@ function AdminPageContent() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
@@ -331,7 +332,7 @@ function AdminPageContent() {
     const searchParams = new URLSearchParams(window.location.search);
     const tabParam = searchParams.get("tab");
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "petty-cash", "building-report", "marketing", "top-spenders", "tasks"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "petty-cash", "building-report", "marketing", "top-spenders", "tasks", "supplies"];
     const targetTab = (tabParam && validTabs.includes(tabParam)) ? tabParam : hash;
 
     if (validTabs.includes(targetTab)) {
@@ -355,8 +356,8 @@ function AdminPageContent() {
     }
 
     // For all other roles: jump to the first tab they have access to (default is dashboard)
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "petty-cash", "marketing", "settings", "users", "activity-logs"
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "petty-cash", "marketing", "settings", "users", "activity-logs", "supplies"
     ];
     const hasPermission = (key: string) => {
       if (user.role === 'admin') return true;
@@ -1132,7 +1133,7 @@ function AdminPageContent() {
 
   const hasAccess = (key: string) => {
     if (user?.role === 'admin') return true;
-    if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois') return true;
+    if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois' || key === 'supplies') return true;
     if (key === 'building-report' || key === 'top-spenders') return Boolean(user?.permissions?.includes('reports') || user?.permissions?.includes('marketing') || user?.permissions?.includes('customers') || user?.permissions?.includes('building-report') || user?.permissions?.includes('top-spenders'));
     return user?.permissions?.includes(key) ?? false;
   };
@@ -6242,18 +6243,27 @@ function AdminPageContent() {
               )}
 
               <motion.a
-                href="https://thelaunderingcompany.com/"
-                target="_blank"
-                rel="noopener noreferrer"
+                href="#supplies"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setActiveTab("supplies");
+                  window.location.hash = "supplies";
+                }}
                 whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
-                className={`group flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer text-slate-600 hover:text-slate-900 hover:bg-slate-100/70`}
-                title="Order Detergent"
+                className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                  activeTab === "supplies"
+                    ? "bg-sky-50/90 text-sky-700 ring-1 ring-sky-500/20 shadow-2xs font-bold"
+                    : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                }`}
+                title="Order Detergent & Supplies"
               >
-                <Droplets size={isSidebarCollapsed ? 20 : 17} className="shrink-0 text-sky-500" />
+                {activeTab === "supplies" && !isSidebarCollapsed && (
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-sky-600 rounded-r-full" />
+                )}
+                <Droplets size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "supplies" ? "text-sky-600" : "text-sky-500 group-hover:text-sky-600"}`} />
                 {!isSidebarCollapsed && (
                   <span className="truncate flex items-center justify-between flex-1">
                     <span>Order Detergent</span>
-                    <ExternalLink size={12} className="text-slate-400 ml-1.5 shrink-0" />
                   </span>
                 )}
               </motion.a>
@@ -6662,17 +6672,19 @@ function AdminPageContent() {
                       </a>
                     )}
                     <a
-                      href="https://thelaunderingcompany.com/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => setIsMobileMenuOpen(false)}
-                      className="flex items-center justify-between px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all text-slate-600 hover:bg-slate-100/70 cursor-pointer"
+                      href="#supplies"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setActiveTab("supplies");
+                        window.location.hash = "supplies";
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                        activeTab === "supplies" ? "bg-sky-50 text-sky-700 ring-1 ring-sky-500/20 font-bold" : "text-slate-600 hover:bg-slate-100/70"
+                      }`}
                     >
-                      <div className="flex items-center gap-3">
-                        <Droplets size={17} className="text-sky-500" />
-                        <span>Order Detergent</span>
-                      </div>
-                      <ExternalLink size={13} className="text-slate-400" />
+                      <Droplets size={17} className={activeTab === "supplies" ? "text-sky-600" : "text-sky-500"} />
+                      <span>Order Detergent & Supplies</span>
                     </a>
                   </div>
                 </nav>
@@ -12268,6 +12280,10 @@ function AdminPageContent() {
           {activeTab === "top-spenders" && hasAccess("top-spenders") && <AdminTopSpenders onViewJob={stableHandleEditFullJob} />}
 
           {activeTab === "tasks" && hasAccess("tasks") && <AdminTasks />}
+
+          {activeTab === "supplies" && hasAccess("supplies") && (
+            <AdminSuppliesOrders currentUser={user} shops={shopLocations} />
+          )}
 
           {/* Fallback for no access to current tab */}
           {!hasAccess(activeTab) && (

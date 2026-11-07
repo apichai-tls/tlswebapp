@@ -1553,18 +1553,15 @@ export default function BillingPage() {
           </motion.a>
 
           <motion.a
-            href="https://thelaunderingcompany.com/"
-            target="_blank"
-            rel="noopener noreferrer"
+            href="/admin#supplies"
             whileHover={{ x: 2 }}
             className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
-            title="Order Detergent"
+            title="Order Detergent & Supplies"
           >
             <Droplets size={isSidebarCollapsed ? 22 : 18} className="shrink-0 text-sky-500" />
             {!isSidebarCollapsed && (
               <span className="truncate flex items-center justify-between flex-1">
                 <span>Order Detergent</span>
-                <ExternalLink size={13} className="text-slate-400 ml-1.5 shrink-0" />
               </span>
             )}
           </motion.a>
@@ -1950,17 +1947,12 @@ export default function BillingPage() {
                 </Link>
 
                 <a
-                  href="https://thelaunderingcompany.com/"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  href="/admin#supplies"
                   onClick={() => setIsMobileMenuOpen(false)}
-                  className="flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50 cursor-pointer"
+                  className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50 cursor-pointer"
                 >
-                  <div className="flex items-center gap-3">
-                    <Droplets size={18} className="text-sky-500" />
-                    <span>Order Detergent</span>
-                  </div>
-                  <ExternalLink size={14} className="text-slate-400" />
+                  <Droplets size={18} className="text-sky-500" />
+                  <span>Order Detergent & Supplies</span>
                 </a>
 
                 {hasAccess("calculator") && (
