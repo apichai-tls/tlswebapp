@@ -6,6 +6,18 @@ export interface RecurringScheduleItem {
   unit?: string;
 }
 
+export const SERVICE_CATEGORIES = [
+  { id: "KILO", name: "KILO", label: "KILO (ซักอบพับ / Wash & Fold)", icon: "🧺", defaultSummary: "KILO (Wash & Fold)" },
+  { id: "IRON", name: "IRON", label: "IRON (รีดผ้า / Ironing)", icon: "💨", defaultSummary: "IRON (Ironing)" },
+  { id: "DRY CLEAN", name: "DRY CLEAN", label: "DRY CLEAN (ซักแห้ง / Dry Clean)", icon: "👔", defaultSummary: "DRY CLEAN" },
+  { id: "LINENS", name: "LINENS", label: "LINENS (เครื่องนอน & ผ้าม่าน / Linens)", icon: "🛏️", defaultSummary: "LINENS (Bedding & Linens)" },
+  { id: "PCS", name: "PCS", label: "PCS (รายชิ้น / Per Piece)", icon: "👕", defaultSummary: "PCS (Per Piece)" },
+  { id: "SHOES", name: "SHOES", label: "SHOES (ซักรองเท้า / Shoes)", icon: "👟", defaultSummary: "SHOES (Shoe Cleaning)" },
+  { id: "OTHERS", name: "OTHERS", label: "OTHERS (บริการอื่นๆ / Others)", icon: "📦", defaultSummary: "OTHERS (Special Laundry Service)" },
+] as const;
+
+export type ServiceCategoryId = typeof SERVICE_CATEGORIES[number]["id"] | string;
+
 export interface RecurringSchedule {
   id: string; // e.g. "REC-1730971234567"
   customerId: string;
@@ -24,8 +36,8 @@ export interface RecurringSchedule {
   deliveryTimeSlot?: string;
   
   // Service Template
-  serviceType: "wash_fold" | "dry_clean" | "ironing" | "bedding" | "custom";
-  serviceSummary?: string; // e.g. "Wash & Fold (Standard Bag)"
+  serviceType: ServiceCategoryId;
+  serviceSummary?: string; // e.g. "KILO (Wash & Fold)"
   defaultItems?: RecurringScheduleItem[];
   specialInstructions?: string; // e.g. "Leave with juristic / lobby", "Call before pickup"
   

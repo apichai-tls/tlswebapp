@@ -10156,11 +10156,12 @@ export async function runRecurringOrdersAutomationAction() {
         const defaultServiceItems = Array.isArray(schedule.defaultItems) && schedule.defaultItems.length > 0
           ? schedule.defaultItems
           : [{
-              serviceId: "S-WF-STD",
-              name: schedule.serviceSummary || "Wash & Fold (Standard)",
+              serviceId: `S-${schedule.serviceType || 'KILO'}`,
+              name: schedule.serviceSummary || `${schedule.serviceType || 'KILO'} Service`,
+              category: schedule.serviceType || 'KILO',
               price: 0,
               quantity: 1,
-              unit: "bag",
+              unit: schedule.serviceType === 'KILO' ? 'kg' : 'pcs',
             }];
 
         const jobPayload: any = {
@@ -10264,11 +10265,12 @@ export async function triggerRecurringOrderNowAction(scheduleId: string) {
     const defaultServiceItems = Array.isArray(schedule.defaultItems) && schedule.defaultItems.length > 0
       ? schedule.defaultItems
       : [{
-          serviceId: "S-WF-STD",
-          name: schedule.serviceSummary || "Wash & Fold (Standard)",
+          serviceId: `S-${schedule.serviceType || 'KILO'}`,
+          name: schedule.serviceSummary || `${schedule.serviceType || 'KILO'} Service`,
+          category: schedule.serviceType || 'KILO',
           price: 0,
           quantity: 1,
-          unit: "bag",
+          unit: schedule.serviceType === 'KILO' ? 'kg' : 'pcs',
         }];
 
     const jobPayload: any = {

@@ -40,6 +40,7 @@ import {
   RecurringSchedule,
   DAY_NAMES,
   TIME_SLOTS,
+  SERVICE_CATEGORIES,
 } from "@/types/recurring-order";
 import {
   getRecurringSchedulesAction,
@@ -83,8 +84,8 @@ export function AdminRecurringOrders({
   const [timeSlot, setTimeSlot] = useState("09:00 - 11:00");
   const [deliveryDaysOffset, setDeliveryDaysOffset] = useState(1);
   const [deliveryTimeSlot, setDeliveryTimeSlot] = useState("17:00 - 19:00");
-  const [serviceType, setServiceType] = useState<"wash_fold" | "dry_clean" | "ironing" | "bedding" | "custom">("wash_fold");
-  const [serviceSummary, setServiceSummary] = useState("Wash & Fold (Standard Bag)");
+  const [serviceType, setServiceType] = useState<string>("KILO");
+  const [serviceSummary, setServiceSummary] = useState("KILO (Wash & Fold)");
   const [specialInstructions, setSpecialInstructions] = useState("");
   const [branchId, setBranchId] = useState("ONLINE");
   const [brand, setBrand] = useState("that_laundry_shop");
@@ -141,8 +142,8 @@ export function AdminRecurringOrders({
     setTimeSlot("09:00 - 11:00");
     setDeliveryDaysOffset(1);
     setDeliveryTimeSlot("17:00 - 19:00");
-    setServiceType("wash_fold");
-    setServiceSummary("Wash & Fold (Standard Bag)");
+    setServiceType("KILO");
+    setServiceSummary("KILO (Wash & Fold)");
     setSpecialInstructions(cust?.remark || "");
     setStatus("active");
     setIsDialogOpen(true);
@@ -159,8 +160,8 @@ export function AdminRecurringOrders({
     setTimeSlot(schedule.timeSlot || "09:00 - 11:00");
     setDeliveryDaysOffset(schedule.deliveryDaysOffset ?? 1);
     setDeliveryTimeSlot(schedule.deliveryTimeSlot || "17:00 - 19:00");
-    setServiceType(schedule.serviceType || "wash_fold");
-    setServiceSummary(schedule.serviceSummary || "Wash & Fold (Standard Bag)");
+    setServiceType(schedule.serviceType || "KILO");
+    setServiceSummary(schedule.serviceSummary || "KILO (Wash & Fold)");
     setSpecialInstructions(schedule.specialInstructions || "");
     setBranchId(schedule.branchId || "ONLINE");
     setBrand(schedule.brand || "that_laundry_shop");
@@ -764,11 +765,16 @@ export function AdminRecurringOrders({
                     </div>
 
                     <div className="flex items-center justify-between text-[11px] pt-1 text-slate-500">
-                      <span className="truncate max-w-[180px] font-semibold text-slate-700" title={schedule.serviceSummary}>
-                        🧺 {schedule.serviceSummary || "Wash & Fold"}
+                      <span className="truncate max-w-[200px] font-extrabold text-slate-800 flex items-center gap-1.5" title={schedule.serviceSummary}>
+                        <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[10px] font-black border border-indigo-100 uppercase">
+                          {SERVICE_CATEGORIES.find((c) => c.id === schedule.serviceType)?.icon || "🧺"} {schedule.serviceType || "KILO"}
+                        </span>
+                        <span className="text-slate-600 font-semibold truncate">
+                          {schedule.serviceSummary || "KILO (Wash & Fold)"}
+                        </span>
                       </span>
-                      <span className="text-[10px] text-slate-400">
-                        Created {schedule.totalJobsCreated || 0} jobs
+                      <span className="text-[10px] text-slate-400 shrink-0">
+                        {schedule.totalJobsCreated || 0} jobs
                       </span>
                     </div>
                   </div>
@@ -1039,39 +1045,76 @@ export function AdminRecurringOrders({
               </div>
             </div>
 
-            {/* Service Package & Summary */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-700">Service Category</label>
-                <select
-                  value={serviceType}
-                  onChange={(e) => {
-                    const val = e.target.value as any;
-                    setServiceType(val);
-                    if (val === "wash_fold") setServiceSummary("Wash & Fold (Standard Bag)");
-                    else if (val === "dry_clean") setServiceSummary("Dry Cleaning & Delicate");
-                    else if (val === "ironing") setServiceSummary("Wash & Iron / Pressing");
-                    else if (val === "bedding") setServiceSummary("Bedding & Linen Set");
-                    else setServiceSummary("Custom Laundry Service");
-                  }}
-                  className="w-full h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-800 focus:bg-white focus:outline-none"
-                >
-                  <option value="wash_fold">Wash & Fold (ซัก อบ พับ)</option>
-                  <option value="dry_clean">Dry Cleaning (ซักแห้ง)</option>
-                  <option value="ironing">Wash & Iron (ซัก รีด)</option>
-                  <option value="bedding">Bedding / Linen (เครื่องนอน)</option>
-                  <option value="custom">Custom Service</option>
-                </select>
+            {/* Service Category (POS Categories: KILO, IRON, DRY CLEAN, LINENS, PCS, SHOES, OTHERS) */}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                <span>Service Category (หมวดบริการ) *</span>
+                <span className="text-[10px] text-indigo-700 bg-indigo-50 font-black px-2 py-0.5 rounded-md border border-indigo-200/80 uppercase">
+                  Selected: {serviceType}
+                </span>
+              </label>
+
+              {/* POS Category Cards matching TLS Service Menu */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {SERVICE_CATEGORIES.map((cat) => {
+                  const isSelected = serviceType === cat.id;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => {
+                        setServiceType(cat.id);
+                        setServiceSummary(cat.defaultSummary);
+                      }}
+                      className={`h-16 rounded-xl border text-center transition-all cursor-pointer flex flex-col items-center justify-center p-2 gap-0.5 shadow-2xs ${
+                        isSelected
+                          ? "bg-indigo-50/90 border-indigo-600 ring-2 ring-indigo-500/20 text-indigo-800 font-black shadow-xs"
+                          : "bg-white border-slate-200/90 text-slate-700 font-extrabold hover:border-slate-300 hover:bg-slate-50/80"
+                      }`}
+                    >
+                      <span className="text-xs tracking-wider uppercase font-black flex items-center gap-1.5">
+                        <span>{cat.icon}</span>
+                        <span>{cat.name}</span>
+                      </span>
+                      <span className="text-[9px] font-semibold text-slate-400 truncate max-w-full">
+                        {cat.label.split("(")[1]?.replace(")", "") || ""}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-700">Package Description</label>
-                <Input
-                  value={serviceSummary}
-                  onChange={(e) => setServiceSummary(e.target.value)}
-                  placeholder="e.g. Wash & Fold Standard Bag"
-                  className="h-9 text-xs bg-slate-50 border-slate-200 rounded-xl"
-                />
+              {/* Dropdown & Package Description */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-500">Or Select Category Dropdown</label>
+                  <select
+                    value={serviceType}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setServiceType(val);
+                      const matched = SERVICE_CATEGORIES.find((c) => c.id === val);
+                      if (matched) setServiceSummary(matched.defaultSummary);
+                    }}
+                    className="w-full h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-800 focus:bg-white focus:outline-none"
+                  >
+                    {SERVICE_CATEGORIES.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.icon} {cat.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-500">Package Description (รายละเอียดบริการ)</label>
+                  <Input
+                    value={serviceSummary}
+                    onChange={(e) => setServiceSummary(e.target.value)}
+                    placeholder="e.g. KILO (Wash & Fold), Iron 10 shirts, Dry clean suits..."
+                    className="h-9 text-xs bg-slate-50 border-slate-200 rounded-xl"
+                  />
+                </div>
               </div>
             </div>
 
