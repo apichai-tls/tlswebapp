@@ -1,18 +1,24 @@
-<!-- BEGIN:nextjs-agent-rules -->
+﻿<!-- BEGIN:nextjs-agent-rules -->
 
 ## This is NOT the Next.js you know
 
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in 
+ode_modules/next/dist/docs/ (resolved from this file's directory; in monorepos the 
+ext package may not be visible from the repo root) before writing any code. Heed deprecation notices.
 
-This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+This block is written and re-added by 
+ext dev — verify at 
+ode_modules/next/dist/server/lib/generate-agent-files.js. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
 
 # Development Branch Rule
-- The primary active development branch is `feature/multi-brand-crm`. All ongoing feature work (including CRM, multi-brand, corporate pricing, POS integrations, customer coupons, and settings) must be done on the `feature/multi-brand-crm` branch.
-- When ready for production deployment, changes from `feature/multi-brand-crm` are merged into `main` and pushed to `origin/main`.
+- The primary active development branch is eature/multi-brand-crm. All ongoing feature work (including CRM, multi-brand, corporate pricing, POS integrations, customer coupons, and settings) must be done on the eature/multi-brand-crm branch.
+- When ready for production deployment, changes from eature/multi-brand-crm are merged into main and pushed to origin/main.
+
+# Localhost-First & Explicit Git Push Approval Rule
+- Any changes whatsoever must be implemented, tested, and verified on localhost first.
+- Do NOT run git push (neither to origin/feature/multi-brand-crm nor to origin/main) unless the user explicitly reviews and approves the push in chat.
 
 # Playwright Test Execution Rule
 - Do NOT run Playwright or E2E tests automatically after UI or layout modifications unless explicitly requested by the user.
-
-
