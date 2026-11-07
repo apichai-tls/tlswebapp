@@ -1,4 +1,4 @@
-﻿import { useState, useMemo, useEffect, useRef, useSyncExternalStore } from "react";
+import { useState, useMemo, useEffect, useRef, useSyncExternalStore } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Minimize2, Maximize2, Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck, Layers, Archive, RefreshCw, RotateCcw } from "lucide-react";
+import { Minimize2, Maximize2, Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck, Layers, Archive, RefreshCw, RotateCcw, LayoutGrid, List } from "lucide-react";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { useCustomers } from "@/lib/use-customers";
@@ -221,6 +221,8 @@ export function AdminCRM({
   const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "expired_wallets" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates">("all");
   const [selectedBrand, setSelectedBrand] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
+  const [viewLayout, setViewLayout] = useState<"table" | "grid">("table");
+  const [sortBy, setSortBy] = useState<"auto" | "ltv" | "balance" | "orders" | "recent">("auto");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
@@ -999,17 +1001,32 @@ export function AdminCRM({
     });
   }, [customers, searchTerm, activeTab, selectedBrand, selectedBranch]);
 
-  // Sort by LTV descending (highest spent first) or balance descending for wallet tabs
+  // Sort by selected criteria or default (LTV descending, or balance descending for wallet tabs)
   const sortedCustomers = useMemo(() => {
     return [...filteredCustomers].sort((a, b) => {
+      const statsA = customerAnalytics[a.id] || { ltv: 0, jobsCount: 0, lastActiveDate: undefined };
+      const statsB = customerAnalytics[b.id] || { ltv: 0, jobsCount: 0, lastActiveDate: undefined };
+
+      if (sortBy === "balance") {
+        return (b.creditBalance || 0) - (a.creditBalance || 0);
+      }
+      if (sortBy === "orders") {
+        return statsB.jobsCount - statsA.jobsCount;
+      }
+      if (sortBy === "recent") {
+        const tA = statsA.lastActiveDate ? new Date(statsA.lastActiveDate).getTime() : 0;
+        const tB = statsB.lastActiveDate ? new Date(statsB.lastActiveDate).getTime() : 0;
+        return tB - tA;
+      }
+      if (sortBy === "ltv") {
+        return statsB.ltv - statsA.ltv;
+      }
       if (activeTab === "expired_wallets" || activeTab === "balance") {
         return (b.creditBalance || 0) - (a.creditBalance || 0);
       }
-      const statsA = customerAnalytics[a.id] || { ltv: 0 };
-      const statsB = customerAnalytics[b.id] || { ltv: 0 };
       return statsB.ltv - statsA.ltv;
     });
-  }, [filteredCustomers, customerAnalytics, activeTab]);
+  }, [filteredCustomers, customerAnalytics, activeTab, sortBy]);
 
   const paginatedCustomers = useMemo(() => {
     const startIndex = (currentPage - 1) * pageSize;
@@ -1374,25 +1391,70 @@ export function AdminCRM({
   return (
     <div className={`bg-slate-50/50 ${screenFit === "fit" ? "h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] overflow-hidden flex flex-col p-3 sm:p-4 gap-2.5 min-h-0" : "flex-1 overflow-auto p-6 lg:p-8 space-y-6"}`}>
       
-      {/* Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
-        <div>
-          <div className="flex items-center gap-2 mb-0.5">
-            <span className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg shrink-0">
-              <Database size={18} />
-            </span>
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight leading-tight">Customer Database</h1>
-            <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 border border-indigo-200/70 text-xs font-bold px-2 py-0.5 rounded-full shrink-0">
-              {customers.length} {customers.length === 1 ? "Customer" : "Customers"}
-            </Badge>
+      {/* ─── Executive Command Header ───────────────────────────────────────── */}
+      <div className={`bg-white rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col lg:flex-row lg:items-center justify-between gap-3 shrink-0 ${screenFit === "fit" ? "px-3.5 py-2.5" : "p-4 sm:p-5"}`}>
+        <div className="flex items-center gap-3">
+          <div className={`bg-gradient-to-br from-indigo-600 to-violet-600 text-white rounded-xl flex items-center justify-center shrink-0 shadow-xs shadow-indigo-200 ${screenFit === "fit" ? "w-9 h-9" : "w-11 h-11 rounded-2xl"}`}>
+            <Database size={screenFit === "fit" ? 18 : 22} />
           </div>
-          {screenFit !== "fit" && (
-            <p className="text-xs sm:text-sm text-slate-500 font-medium">
-              Customer Relationship Management ({customers.length} customers) - View history, LTV spent, and custom rates.
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className={`font-black text-slate-900 tracking-tight leading-tight ${screenFit === "fit" ? "text-base sm:text-lg" : "text-xl sm:text-2xl"}`}>
+                Customer Database & CRM
+              </h1>
+              <span className="bg-indigo-50 text-indigo-700 border border-indigo-200/80 text-[11px] font-black px-2.5 py-0.5 rounded-full shrink-0">
+                {customers.length.toLocaleString()} {customers.length === 1 ? "Profile" : "Profiles"}
+              </span>
+              {pendingWalletMap.total > 0 && canApproveWallet && (
+                <button
+                  type="button"
+                  onClick={() => { setActiveTab("wallet_approvals"); setCurrentPage(1); }}
+                  className="bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 text-[11px] font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <ShieldCheck size={12} className="text-amber-600" />
+                  <span>{pendingWalletMap.total} Pending Approval{pendingWalletMap.total > 1 ? "s" : ""}</span>
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] sm:text-xs text-slate-500 font-medium mt-0.5">
+              Unified customer profiles, member credit wallets, custom pricing tiers, and lifetime value analytics
             </p>
-          )}
+          </div>
         </div>
+
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Table vs Card Grid Switcher */}
+          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "topup_history" && (
+            <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200/80">
+              <button
+                type="button"
+                onClick={() => setViewLayout("table")}
+                className={`flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
+                  viewLayout === "table"
+                    ? "bg-white text-indigo-600 shadow-2xs"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+                title="High-Clarity Table View"
+              >
+                <List size={13} />
+                <span className="hidden sm:inline">Table</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewLayout("grid")}
+                className={`flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
+                  viewLayout === "grid"
+                    ? "bg-white text-indigo-600 shadow-2xs"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+                title="Customer Card Grid View"
+              >
+                <LayoutGrid size={13} />
+                <span className="hidden sm:inline">Cards</span>
+              </button>
+            </div>
+          )}
+
           {/* 1-Click Fit Screen Toggle Button */}
           <button
             type="button"
@@ -1408,10 +1470,10 @@ export function AdminCRM({
                   : "Standard layout active: Spacious scrollable layout (ขนาดปกติ)"
               );
             }}
-            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer border ${
+            className={`flex items-center gap-1.5 px-3 h-9 text-xs font-bold rounded-xl transition-all cursor-pointer border ${
               screenFit === "fit"
-                ? "bg-indigo-600 text-white border-indigo-700 shadow-2xs font-bold"
-                : "bg-white text-slate-700 hover:text-slate-900 border-slate-200 shadow-2xs hover:bg-slate-50 font-medium"
+                ? "bg-slate-900 text-white border-slate-900 shadow-2xs"
+                : "bg-white text-slate-700 hover:text-slate-900 border-slate-200 shadow-2xs hover:bg-slate-50"
             }`}
             title={
               screenFit === "fit"
@@ -1420,65 +1482,67 @@ export function AdminCRM({
             }
           >
             {screenFit === "fit" ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-            <span>{screenFit === "fit" ? "Fit Screen" : "Fit to Screen"}</span>
+            <span>{screenFit === "fit" ? "Fit Screen" : "Expand"}</span>
           </button>
 
           <Button 
             onClick={() => onTopUp ? onTopUp() : setTopUpOpen(true)} 
-            className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-2xs shadow-emerald-100 transition-all rounded-xl h-9 px-3.5 text-xs cursor-pointer"
+            className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-2xs transition-all rounded-xl h-9 px-3.5 text-xs cursor-pointer"
           >
-            <Wallet size={15} />
-            Top Up Wallet
+            <Wallet size={14} />
+            <span>+ Top Up Wallet</span>
           </Button>
           <Button 
             onClick={() => openForm()} 
-            className="gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-2xs shadow-indigo-100 transition-all rounded-xl h-9 px-3.5 text-xs cursor-pointer"
+            className="gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-2xs transition-all rounded-xl h-9 px-3.5 text-xs cursor-pointer"
           >
-            <UserPlus size={15} />
-            Add New Customer
+            <UserPlus size={14} />
+            <span>+ Add Customer</span>
           </Button>
         </div>
       </div>
 
-      {/* Modern Analytics Cards */}
+      {/* ─── Modern Color-Accented Analytics KPI Strip ──────────────────────── */}
       <motion.div 
         variants={containerVariants} 
         initial="hidden" 
         animate="visible"
         className={`shrink-0 ${
           screenFit === "fit"
-            ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2"
-            : "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-4"
+            ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5"
+            : "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5"
         }`}
       >
         {/* Card 1: Total Customers */}
         <motion.div 
           variants={itemVariants} 
           onClick={() => { setActiveTab("all"); setCurrentPage(1); }}
-          className={`bg-white border border-slate-200 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-indigo-300 hover:shadow-xs transition-all ${
-            screenFit === "fit" ? "rounded-xl p-2.5 sm:p-3" : "rounded-2xl p-5"
-          }`}
+          className={`bg-white border border-slate-200/90 border-t-4 border-t-indigo-500 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-slate-300 hover:shadow-xs transition-all ${
+            activeTab === "all" ? "ring-2 ring-indigo-500/20" : ""
+          } ${screenFit === "fit" ? "rounded-2xl p-3" : "rounded-2xl p-4"}`}
         >
-          <div className={`absolute right-3 top-3 bg-indigo-50 text-indigo-600 rounded-lg group-hover:scale-110 transition-transform ${
-            screenFit === "fit" ? "p-1.5" : "p-2.5 rounded-xl"
-          }`}>
-            <Users size={screenFit === "fit" ? 16 : 22} />
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <span className="text-slate-400 text-[10px] font-black uppercase tracking-wider">Total Customers</span>
+            <div className="w-7 h-7 bg-indigo-50 text-indigo-600 rounded-lg flex items-center justify-center shrink-0">
+              <Users size={14} />
+            </div>
           </div>
-          <p className="text-slate-400 text-[10px] sm:text-xs font-bold uppercase tracking-wider mb-1">Total Customers</p>
           <div className="flex items-baseline gap-1.5">
-            <h3 className={`font-black text-slate-900 ${screenFit === "fit" ? "text-lg sm:text-xl" : "text-xl lg:text-2xl xl:text-3xl"}`}>{statsCount.all}</h3>
-            <span className="text-[11px] text-slate-500 font-medium">retail</span>
+            <h3 className={`font-black text-slate-900 tracking-tight ${screenFit === "fit" ? "text-xl" : "text-2xl"}`}>
+              {statsCount.all.toLocaleString()}
+            </h3>
+            <span className="text-[11px] text-slate-400 font-semibold">profiles</span>
           </div>
-          <div className={`flex flex-wrap gap-1 ${screenFit === "fit" ? "mt-1.5" : "mt-3 gap-1.5"}`}>
-            <Badge variant="secondary" className="bg-amber-50 text-amber-800 border-none font-bold text-[9.5px] h-4.5 py-0 px-1.5">
-              VIP {statsCount.vip}
-            </Badge>
-            <Badge variant="secondary" className="bg-blue-50 text-blue-800 border-none font-bold text-[9.5px] h-4.5 py-0 px-1.5">
-              Member {statsCount.member}
-            </Badge>
-            <Badge variant="secondary" className="bg-slate-50 text-slate-800 border-none font-bold text-[9.5px] h-4.5 py-0 px-1.5">
-              Corp {statsCount.corporate}
-            </Badge>
+          <div className="flex flex-wrap items-center gap-1 mt-2 pt-2 border-t border-slate-100">
+            <span className="bg-amber-50 text-amber-800 border border-amber-200/70 font-bold text-[9.5px] px-1.5 py-0.2 rounded-md">
+              ⭐ VIP {statsCount.vip}
+            </span>
+            <span className="bg-indigo-50 text-indigo-800 border border-indigo-200/70 font-bold text-[9.5px] px-1.5 py-0.2 rounded-md">
+              👑 Member {statsCount.member}
+            </span>
+            <span className="bg-slate-100 text-slate-700 border border-slate-200 font-bold text-[9.5px] px-1.5 py-0.2 rounded-md">
+              🏢 Corp {statsCount.corporate}
+            </span>
           </div>
         </motion.div>
         
@@ -1486,265 +1550,293 @@ export function AdminCRM({
         <motion.div 
           variants={itemVariants} 
           onClick={() => { setActiveTab("balance"); setCurrentPage(1); }}
-          className={`bg-white border border-slate-200 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-sky-300 hover:shadow-xs transition-all ${
-            screenFit === "fit" ? "rounded-xl p-2.5 sm:p-3" : "rounded-2xl p-5"
+          className={`bg-white border border-slate-200/90 border-t-4 border-t-sky-500 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-slate-300 hover:shadow-xs transition-all ${
+            screenFit === "fit" ? "rounded-2xl p-3" : "rounded-2xl p-4"
           }`}
         >
-          <div className={`absolute right-3 top-3 bg-sky-50 text-sky-600 rounded-lg group-hover:scale-110 transition-transform ${
-            screenFit === "fit" ? "p-1.5" : "p-2.5 rounded-xl"
-          }`}>
-            <Coins size={screenFit === "fit" ? 16 : 22} />
-          </div>
-          <div className="flex items-center justify-between mb-1 pr-6">
-            <p className="text-slate-400 text-[10px] sm:text-xs font-bold uppercase tracking-wider">Credit Wallet</p>
-            <span className="text-[9px] font-bold text-sky-600 bg-sky-50 px-1 py-0.2 rounded">ยอดรวม</span>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-400 text-[10px] font-black uppercase tracking-wider">Credit Wallet</span>
+              <span className="text-[9px] font-bold text-sky-700 bg-sky-50 border border-sky-200/60 px-1.5 py-0.1 rounded-full">ยอดรวม</span>
+            </div>
+            <div className="w-7 h-7 bg-sky-50 text-sky-600 rounded-lg flex items-center justify-center shrink-0">
+              <Coins size={14} />
+            </div>
           </div>
           <div className="flex items-baseline gap-1.5">
-            <h3 className={`font-black ${screenFit === "fit" ? "text-lg sm:text-xl" : "text-xl lg:text-2xl xl:text-3xl"} ${totalCreditBalance < 0 ? "text-rose-600" : "text-slate-800"}`}>
+            <h3 className={`font-black tracking-tight ${screenFit === "fit" ? "text-xl" : "text-2xl"} ${totalCreditBalance < 0 ? "text-rose-600" : "text-slate-900"}`}>
               {formatBaht(totalCreditBalance)}
             </h3>
           </div>
-          <p className={`text-[11px] text-slate-500 font-medium truncate ${screenFit === "fit" ? "mt-1.5" : "mt-3"}`}>
-            <span className="font-bold text-sky-600">{statsCount.allWalletsCount}</span> wallets in system
-          </p>
+          <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium mt-2 pt-2 border-t border-slate-100">
+            <span><strong className="text-sky-700">{statsCount.allWalletsCount}</strong> total wallets</span>
+            <span className="text-[10px] font-bold text-slate-400">
+              {totalCreditBalance > 0 ? `${Math.round((activeCreditBalance / totalCreditBalance) * 100)}% active` : "0%"}
+            </span>
+          </div>
         </motion.div>
 
-        {/* Card 3: Credit Expire */}
-        <motion.div 
-          variants={itemVariants} 
-          onClick={() => { setActiveTab("expired_wallets"); setCurrentPage(1); }}
-          className={`bg-white border border-rose-200/80 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-rose-300 hover:shadow-xs transition-all ${
-            screenFit === "fit" ? "rounded-xl p-2.5 sm:p-3" : "rounded-2xl p-5"
-          }`}
-        >
-          <div className={`absolute right-3 top-3 bg-rose-50 text-rose-600 rounded-lg group-hover:scale-110 transition-transform ${
-            screenFit === "fit" ? "p-1.5" : "p-2.5 rounded-xl"
-          }`}>
-            <Clock size={screenFit === "fit" ? 16 : 22} />
-          </div>
-          <div className="flex items-center justify-between mb-1 pr-6">
-            <p className="text-rose-500 text-[10px] sm:text-xs font-bold uppercase tracking-wider">Credit Expire</p>
-            <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1 py-0.2 rounded">หมดอายุ</span>
-          </div>
-          <div className="flex items-baseline gap-1.5">
-            <h3 className={`font-black text-rose-600 ${screenFit === "fit" ? "text-lg sm:text-xl" : "text-xl lg:text-2xl xl:text-3xl"}`}>
-              {formatBaht(expiredCreditBalance)}
-            </h3>
-          </div>
-          <p className={`text-[11px] text-slate-500 font-medium truncate ${screenFit === "fit" ? "mt-1.5" : "mt-3"}`}>
-            <span className="font-bold text-rose-600">{statsCount.expiredBalance}</span> expired wallets
-          </p>
-        </motion.div>
-
-        {/* Card 4: Active Balance */}
+        {/* Card 3: Active Balance */}
         <motion.div 
           variants={itemVariants} 
           onClick={() => { setActiveTab("balance"); setCurrentPage(1); }}
-          className={`bg-white border border-emerald-200/90 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-emerald-400 hover:shadow-xs transition-all ${
-            screenFit === "fit" ? "rounded-xl p-2.5 sm:p-3" : "rounded-2xl p-5"
-          }`}
+          className={`bg-white border border-slate-200/90 border-t-4 border-t-emerald-500 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-slate-300 hover:shadow-xs transition-all ${
+            activeTab === "balance" ? "ring-2 ring-emerald-500/20" : ""
+          } ${screenFit === "fit" ? "rounded-2xl p-3" : "rounded-2xl p-4"}`}
         >
-          <div className={`absolute right-3 top-3 bg-emerald-50 text-emerald-600 rounded-lg group-hover:scale-110 transition-transform ${
-            screenFit === "fit" ? "p-1.5" : "p-2.5 rounded-xl"
-          }`}>
-            <Wallet size={screenFit === "fit" ? 16 : 22} />
-          </div>
-          <div className="flex items-center justify-between mb-1 pr-6">
-            <p className="text-emerald-700 text-[10px] sm:text-xs font-bold uppercase tracking-wider">Active Balance</p>
-            <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded">Active</span>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <div className="flex items-center gap-1.5">
+              <span className="text-emerald-700 text-[10px] font-black uppercase tracking-wider">Active Balance</span>
+              <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200/60 px-1.5 py-0.1 rounded-full">ใช้งานได้</span>
+            </div>
+            <div className="w-7 h-7 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center shrink-0">
+              <Wallet size={14} />
+            </div>
           </div>
           <div className="flex items-baseline gap-1.5">
-            <h3 className={`font-black ${screenFit === "fit" ? "text-lg sm:text-xl" : "text-xl lg:text-2xl xl:text-3xl"} ${activeCreditBalance < 0 ? "text-rose-600" : "text-emerald-600"}`}>
+            <h3 className={`font-black tracking-tight ${screenFit === "fit" ? "text-xl" : "text-2xl"} ${activeCreditBalance < 0 ? "text-rose-600" : "text-emerald-600"}`}>
               {formatBaht(activeCreditBalance)}
             </h3>
           </div>
-          <p className={`text-[11px] text-slate-500 font-medium truncate ${screenFit === "fit" ? "mt-1.5" : "mt-3"}`}>
-            <span className="font-bold text-emerald-600">{statsCount.activeBalance}</span> active wallets
-          </p>
+          <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium mt-2 pt-2 border-t border-slate-100">
+            <span><strong className="text-emerald-600">{statsCount.activeBalance}</strong> active wallets</span>
+            <span className="text-[10px] font-bold text-emerald-600">Valid membership</span>
+          </div>
+        </motion.div>
+
+        {/* Card 4: Credit Expired */}
+        <motion.div 
+          variants={itemVariants} 
+          onClick={() => { setActiveTab("expired_wallets"); setCurrentPage(1); }}
+          className={`bg-white border border-slate-200/90 border-t-4 border-t-rose-500 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-slate-300 hover:shadow-xs transition-all ${
+            activeTab === "expired_wallets" ? "ring-2 ring-rose-500/20" : ""
+          } ${screenFit === "fit" ? "rounded-2xl p-3" : "rounded-2xl p-4"}`}
+        >
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <div className="flex items-center gap-1.5">
+              <span className="text-rose-600 text-[10px] font-black uppercase tracking-wider">Credit Expired</span>
+              <span className="text-[9px] font-bold text-rose-600 bg-rose-50 border border-rose-200/60 px-1.5 py-0.1 rounded-full">หมดอายุ</span>
+            </div>
+            <div className="w-7 h-7 bg-rose-50 text-rose-600 rounded-lg flex items-center justify-center shrink-0">
+              <Clock size={14} />
+            </div>
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <h3 className={`font-black text-rose-600 tracking-tight ${screenFit === "fit" ? "text-xl" : "text-2xl"}`}>
+              {formatBaht(expiredCreditBalance)}
+            </h3>
+          </div>
+          <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium mt-2 pt-2 border-t border-slate-100">
+            <span><strong className="text-rose-600">{statsCount.expiredBalance}</strong> expired wallets</span>
+            <span className="text-[10px] font-bold text-rose-500">Needs renewal</span>
+          </div>
         </motion.div>
 
         {/* Card 5: Customer LTV */}
         <motion.div 
           variants={itemVariants} 
-          className={`bg-gradient-to-br from-indigo-900 to-indigo-800 border border-indigo-750 shadow-2xs relative overflow-hidden group ${
-            screenFit === "fit" ? "rounded-xl p-2.5 sm:p-3" : "rounded-2xl p-5"
-          }`}
+          onClick={() => { setActiveTab("customer_report"); }}
+          className={`bg-white border border-slate-200/90 border-t-4 border-t-violet-600 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-slate-300 hover:shadow-xs transition-all col-span-2 sm:col-span-1 ${
+            activeTab === "customer_report" ? "ring-2 ring-violet-500/20" : ""
+          } ${screenFit === "fit" ? "rounded-2xl p-3" : "rounded-2xl p-4"}`}
         >
-          <div className={`absolute right-3 top-3 bg-indigo-800 text-indigo-200 rounded-lg group-hover:scale-110 transition-transform ${
-            screenFit === "fit" ? "p-1.5" : "p-2.5 rounded-xl"
-          }`}>
-            <TrendingUp size={screenFit === "fit" ? 16 : 22} />
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <div className="flex items-center gap-1.5">
+              <span className="text-violet-700 text-[10px] font-black uppercase tracking-wider">Customer LTV</span>
+              <span className="text-[9px] font-bold text-violet-700 bg-violet-50 border border-violet-200/60 px-1.5 py-0.1 rounded-full">สะสม</span>
+            </div>
+            <div className="w-7 h-7 bg-violet-50 text-violet-600 rounded-lg flex items-center justify-center shrink-0">
+              <TrendingUp size={14} />
+            </div>
           </div>
-          <p className="text-indigo-200/70 text-[10px] sm:text-xs font-bold uppercase tracking-wider mb-1">Customer LTV</p>
           <div className="flex items-baseline gap-1.5">
-            <h3 className={`font-black text-white ${screenFit === "fit" ? "text-lg sm:text-xl" : "text-xl lg:text-2xl xl:text-3xl"}`}>
-              ฿{totalNetworkLTV.toLocaleString()}
+            <h3 className={`font-black text-slate-900 tracking-tight ${screenFit === "fit" ? "text-xl" : "text-2xl"}`}>
+              ฿{totalNetworkLTV.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </h3>
           </div>
-          <p className={`text-[11px] text-indigo-200 font-medium truncate ${screenFit === "fit" ? "mt-1.5" : "mt-3"}`}>
-            Total completed orders LTV
-          </p>
+          <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium mt-2 pt-2 border-t border-slate-100">
+            <span>Completed orders LTV</span>
+            <span className="text-[10px] font-bold text-violet-600">Statement →</span>
+          </div>
         </motion.div>
       </motion.div>
 
-      {/* Modern Filter & Search Toolbar */}
-      <div className={`shrink-0 bg-white rounded-xl border border-slate-200/80 shadow-2xs ${screenFit === "fit" ? "p-2 sm:p-2.5 space-y-2" : "p-3 sm:p-4 space-y-3"}`}>
-        {/* Top Row: Categories Navigation Strip */}
-        <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
-          <button
-            onClick={() => { setActiveTab("all"); setCurrentPage(1); }}
-            className={`flex items-center gap-1.5 ${screenFit === "fit" ? "px-2.5 py-1 text-xs" : "px-3.5 py-2 text-xs"} font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
-              activeTab === "all"
-                ? "bg-slate-900 text-white shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
-            }`}
-          >
-            <Users size={13} />
-            <span>All</span>
-            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "all" ? "bg-white/20 text-white" : "bg-slate-100 text-slate-500"}`}>
-              {statsCount.all}
-            </span>
-          </button>
-
-          <button
-            onClick={() => { setActiveTab("vip"); setCurrentPage(1); }}
-            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
-              activeTab === "vip"
-                ? "bg-amber-500 text-white shadow-xs"
-                : "text-slate-600 hover:text-amber-800 hover:bg-amber-50/70"
-            }`}
-          >
-            <Star size={13} className={activeTab === "vip" ? "fill-white text-white" : "fill-amber-400 text-amber-500"} />
-            <span>VIP</span>
-            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "vip" ? "bg-white/20 text-white" : "bg-amber-100/70 text-amber-800"}`}>
-              {statsCount.vip}
-            </span>
-          </button>
-
-          <button
-            onClick={() => { setActiveTab("member"); setCurrentPage(1); }}
-            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
-              activeTab === "member"
-                ? "bg-indigo-600 text-white shadow-xs"
-                : "text-slate-600 hover:text-indigo-800 hover:bg-indigo-50/70"
-            }`}
-          >
-            <Crown size={13} />
-            <span>Members</span>
-            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "member" ? "bg-white/20 text-white" : "bg-indigo-100/70 text-indigo-800"}`}>
-              {statsCount.member}
-            </span>
-          </button>
-
-          <button
-            onClick={() => { setActiveTab("corporate"); setCurrentPage(1); }}
-            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
-              activeTab === "corporate"
-                ? "bg-slate-800 text-white shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
-            }`}
-          >
-            <Building size={13} />
-            <span>Corporate</span>
-            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "corporate" ? "bg-white/20 text-white" : "bg-slate-100 text-slate-500"}`}>
-              {statsCount.corporate}
-            </span>
-          </button>
-
-          <button
-            onClick={() => { setActiveTab("balance"); setCurrentPage(1); }}
-            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
-              activeTab === "balance"
-                ? "bg-emerald-600 text-white shadow-xs"
-                : "text-slate-600 hover:text-emerald-800 hover:bg-emerald-50/70"
-            }`}
-          >
-            <Wallet size={13} />
-            <span>Active Wallets</span>
-            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "balance" ? "bg-white/20 text-white" : "bg-emerald-100/70 text-emerald-800"}`}>
-              {statsCount.activeBalance}
-            </span>
-          </button>
-
-          <button
-            onClick={() => { setActiveTab("expired_wallets"); setCurrentPage(1); }}
-            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
-              activeTab === "expired_wallets"
-                ? "bg-rose-600 text-white shadow-xs"
-                : "text-slate-600 hover:text-rose-800 hover:bg-rose-50/70"
-            }`}
-          >
-            <Clock size={13} />
-            <span>Credit Expired</span>
-            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "expired_wallets" ? "bg-white/20 text-white" : "bg-rose-100/70 text-rose-800"}`}>
-              {statsCount.expiredBalance}
-            </span>
-          </button>
-
-          <button
-            onClick={() => { setActiveTab("topup_history"); setCurrentPage(1); }}
-            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
-              activeTab === "topup_history"
-                ? "bg-emerald-700 text-white shadow-xs"
-                : "text-slate-600 hover:text-emerald-900 hover:bg-emerald-50/70"
-            }`}
-          >
-            <Receipt size={13} />
-            <span>Top-up History</span>
-            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "topup_history" ? "bg-white/20 text-white" : "bg-slate-100 text-slate-500"}`}>
-              {allTopUpTxs.length}
-            </span>
-          </button>
-
-          {canApproveWallet && (
+      {/* ─── Unified Segment & Operations Command Bar ───────────────────────── */}
+      <div className={`shrink-0 bg-white rounded-2xl border border-slate-200/90 shadow-2xs ${screenFit === "fit" ? "p-2.5 space-y-2" : "p-3.5 sm:p-4 space-y-3"}`}>
+        {/* Top Row: Customer Segments (Left) + Wallet & Operations Views (Right) */}
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-2">
+          {/* Customer Segment Pills */}
+          <div className="flex flex-wrap items-center gap-1 bg-slate-100/80 p-1 rounded-xl border border-slate-200/60 w-fit max-w-full">
             <button
-              onClick={() => { setActiveTab("wallet_approvals"); setCurrentPage(1); }}
-              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
-                activeTab === "wallet_approvals"
-                  ? "bg-amber-600 text-white shadow-xs"
-                  : "text-slate-600 hover:text-amber-900 hover:bg-amber-50/70"
+              onClick={() => { setActiveTab("all"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "all"
+                  ? "bg-slate-900 text-white shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900 hover:bg-white/70"
               }`}
             >
-              <ShieldCheck size={13} />
-              <span>Wallet Approvals</span>
-              {pendingWalletMap.total > 0 && (
-                <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-md ${
-                  activeTab === "wallet_approvals" ? "bg-white text-amber-700" : "bg-amber-500 text-white"
-                }`}>
-                  {pendingWalletMap.total}
-                </span>
-              )}
+              <Users size={13} />
+              <span>All</span>
+              <span className={`text-[10px] font-black px-1.5 py-0.1 rounded-full ${activeTab === "all" ? "bg-white/20 text-white" : "bg-slate-200/80 text-slate-600"}`}>
+                {statsCount.all}
+              </span>
             </button>
-          )}
 
-          {isAdmin && (
             <button
-              type="button"
-              onClick={() => { setActiveTab("duplicates"); setCurrentPage(1); }}
-              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
-                activeTab === "duplicates"
-                  ? "bg-rose-700 text-white shadow-xs"
-                  : "text-slate-600 hover:text-rose-900 hover:bg-rose-50/70"
+              onClick={() => { setActiveTab("vip"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "vip"
+                  ? "bg-amber-500 text-white shadow-2xs"
+                  : "text-slate-600 hover:text-amber-800 hover:bg-white/70"
               }`}
             >
-              <GitMerge size={13} />
-              <span>Duplicates</span>
-              {duplicateGroups.length > 0 && (
-                <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-md ${
-                  activeTab === "duplicates" ? "bg-white text-rose-700" : "bg-rose-500 text-white"
-                }`}>
-                  {duplicateGroups.length}
-                </span>
-              )}
+              <Star size={13} className={activeTab === "vip" ? "fill-white text-white" : "fill-amber-400 text-amber-500"} />
+              <span>VIP</span>
+              <span className={`text-[10px] font-black px-1.5 py-0.1 rounded-full ${activeTab === "vip" ? "bg-white/20 text-white" : "bg-amber-100 text-amber-800"}`}>
+                {statsCount.vip}
+              </span>
             </button>
-          )}
+
+            <button
+              onClick={() => { setActiveTab("member"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "member"
+                  ? "bg-indigo-600 text-white shadow-2xs"
+                  : "text-slate-600 hover:text-indigo-800 hover:bg-white/70"
+              }`}
+            >
+              <Crown size={13} />
+              <span>Members</span>
+              <span className={`text-[10px] font-black px-1.5 py-0.1 rounded-full ${activeTab === "member" ? "bg-white/20 text-white" : "bg-indigo-100 text-indigo-800"}`}>
+                {statsCount.member}
+              </span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab("corporate"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "corporate"
+                  ? "bg-slate-800 text-white shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900 hover:bg-white/70"
+              }`}
+            >
+              <Building size={13} />
+              <span>Corporate</span>
+              <span className={`text-[10px] font-black px-1.5 py-0.1 rounded-full ${activeTab === "corporate" ? "bg-white/20 text-white" : "bg-slate-200 text-slate-700"}`}>
+                {statsCount.corporate}
+              </span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab("balance"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "balance"
+                  ? "bg-emerald-600 text-white shadow-2xs"
+                  : "text-slate-600 hover:text-emerald-800 hover:bg-white/70"
+              }`}
+            >
+              <Wallet size={13} />
+              <span>Active Wallets</span>
+              <span className={`text-[10px] font-black px-1.5 py-0.1 rounded-full ${activeTab === "balance" ? "bg-white/20 text-white" : "bg-emerald-100 text-emerald-800"}`}>
+                {statsCount.activeBalance}
+              </span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab("expired_wallets"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "expired_wallets"
+                  ? "bg-rose-600 text-white shadow-2xs"
+                  : "text-slate-600 hover:text-rose-800 hover:bg-white/70"
+              }`}
+            >
+              <Clock size={13} />
+              <span>Expired</span>
+              <span className={`text-[10px] font-black px-1.5 py-0.1 rounded-full ${activeTab === "expired_wallets" ? "bg-white/20 text-white" : "bg-rose-100 text-rose-800"}`}>
+                {statsCount.expiredBalance}
+              </span>
+            </button>
+          </div>
+
+          {/* Right Operations & Audit Tabs */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              onClick={() => { setActiveTab("topup_history"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl border transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "topup_history"
+                  ? "bg-emerald-700 text-white border-emerald-700 shadow-2xs"
+                  : "bg-white text-slate-700 border-slate-200 hover:bg-emerald-50/70 hover:border-emerald-200"
+              }`}
+            >
+              <Receipt size={13} className={activeTab === "topup_history" ? "text-white" : "text-emerald-600"} />
+              <span>Top-up History</span>
+              <span className={`text-[10px] font-black px-1.5 py-0.1 rounded-full ${activeTab === "topup_history" ? "bg-white/20 text-white" : "bg-slate-100 text-slate-600"}`}>
+                {allTopUpTxs.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab("customer_report"); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl border transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "customer_report"
+                  ? "bg-violet-600 text-white border-violet-600 shadow-2xs"
+                  : "bg-white text-slate-700 border-slate-200 hover:bg-violet-50/70 hover:border-violet-200"
+              }`}
+            >
+              <FileText size={13} className={activeTab === "customer_report" ? "text-white" : "text-violet-600"} />
+              <span>Statement Report</span>
+            </button>
+
+            {canApproveWallet && (
+              <button
+                onClick={() => { setActiveTab("wallet_approvals"); setCurrentPage(1); }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl border transition-all whitespace-nowrap cursor-pointer ${
+                  activeTab === "wallet_approvals"
+                    ? "bg-amber-600 text-white border-amber-600 shadow-2xs"
+                    : "bg-white text-slate-700 border-slate-200 hover:bg-amber-50/70 hover:border-amber-200"
+                }`}
+              >
+                <ShieldCheck size={13} className={activeTab === "wallet_approvals" ? "text-white" : "text-amber-600"} />
+                <span>Wallet Approvals</span>
+                {pendingWalletMap.total > 0 && (
+                  <span className={`text-[10px] font-black px-1.5 py-0.1 rounded-full ${
+                    activeTab === "wallet_approvals" ? "bg-white text-amber-700" : "bg-amber-500 text-white"
+                  }`}>
+                    {pendingWalletMap.total}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => { setActiveTab("duplicates"); setCurrentPage(1); }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl border transition-all whitespace-nowrap cursor-pointer ${
+                  activeTab === "duplicates"
+                    ? "bg-rose-700 text-white border-rose-700 shadow-2xs"
+                    : "bg-white text-slate-700 border-slate-200 hover:bg-rose-50/70 hover:border-rose-200"
+                }`}
+              >
+                <GitMerge size={13} className={activeTab === "duplicates" ? "text-white" : "text-rose-600"} />
+                <span>Duplicates</span>
+                {duplicateGroups.length > 0 && (
+                  <span className={`text-[10px] font-black px-1.5 py-0.1 rounded-full ${
+                    activeTab === "duplicates" ? "bg-white text-rose-700" : "bg-rose-500 text-white"
+                  }`}>
+                    {duplicateGroups.length}
+                  </span>
+                )}
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Bottom Row: Secondary Filter Badges + Search Input */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2.5 border-t border-slate-100">
+        {/* Bottom Row: Brand, Branch, Sort & Quick Search Input */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-2 border-t border-slate-100">
           <div className="flex flex-wrap items-center gap-2">
             {/* Brand Segmented Control */}
-            <div className="inline-flex items-center p-0.5 bg-slate-100/90 rounded-xl border border-slate-200/50">
+            <div className="inline-flex items-center p-0.5 bg-slate-100/90 rounded-xl border border-slate-200/60">
               <button
                 type="button"
                 onClick={() => { setSelectedBrand("all"); setCurrentPage(1); }}
@@ -1758,7 +1850,7 @@ export function AdminCRM({
                 type="button"
                 onClick={() => { setSelectedBrand("that_laundry_shop"); setCurrentPage(1); }}
                 className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                  selectedBrand === "that_laundry_shop" ? "bg-white text-blue-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                  selectedBrand === "that_laundry_shop" ? "bg-white text-indigo-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
                 }`}
               >
                 TLS ({brandStats.tls})
@@ -1782,7 +1874,7 @@ export function AdminCRM({
                   setSelectedBranch(e.target.value);
                   setCurrentPage(1);
                 }}
-                className="h-8 pl-8 pr-7 text-xs font-semibold rounded-xl border border-slate-200 bg-white text-slate-700 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer shadow-2xs transition-all appearance-none"
+                className="h-8.5 pl-8 pr-7 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer shadow-2xs transition-all appearance-none"
               >
                 <option value="all">All Branches</option>
                 <option value="ONLINE">🌐 Online</option>
@@ -1799,17 +1891,39 @@ export function AdminCRM({
               <Store size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
               <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             </div>
+
+            {/* Sort By Selector */}
+            {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "topup_history" && (
+              <div className="relative">
+                <select
+                  value={sortBy}
+                  onChange={(e) => {
+                    setSortBy(e.target.value as any);
+                    setCurrentPage(1);
+                  }}
+                  className="h-8.5 pl-8 pr-7 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer shadow-2xs transition-all appearance-none"
+                >
+                  <option value="auto">Sort: Smart Default</option>
+                  <option value="ltv">Sort: Highest LTV (฿)</option>
+                  <option value="balance">Sort: Highest Wallet (฿)</option>
+                  <option value="orders">Sort: Most Orders</option>
+                  <option value="recent">Sort: Recently Active</option>
+                </select>
+                <ArrowUpDown size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              </div>
+            )}
           </div>
 
           {/* Quick Search */}
           {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && (
-            <div className="relative w-full sm:w-72 md:w-80">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
+            <div className="relative w-full sm:w-80 md:w-96">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
               <Input 
-                placeholder="Search name, phone, member ID..." 
+                placeholder="Search customer name, phone, #Member ID, LINE..." 
                 value={searchTerm}
                 onChange={(e) => { setSearchTerm(e.target.value); setCurrentPage(1); }}
-                className="pl-9 pr-8 h-8.5 border-slate-200 bg-slate-50/70 focus-visible:bg-white focus-visible:ring-indigo-500/20 rounded-xl text-xs font-medium transition-all"
+                className="pl-9 pr-8 h-8.5 border-slate-200 bg-slate-50/70 focus-visible:bg-white focus-visible:ring-indigo-500/20 rounded-xl text-xs font-semibold transition-all"
               />
               {searchTerm && (
                 <button
@@ -2870,16 +2984,287 @@ export function AdminCRM({
               )}
             </div>
           )
+        ) : viewLayout === "grid" ? (
+          <div className={`p-4 sm:p-5 bg-slate-50/40 ${screenFit === "fit" ? "flex-1 min-h-0 overflow-y-auto custom-scrollbar" : ""}`}>
+            {sortedCustomers.length === 0 ? (
+              <div className="h-56 flex flex-col items-center justify-center text-slate-400 space-y-2 bg-white rounded-2xl border border-dashed border-slate-200">
+                <Users size={36} className="text-slate-300" />
+                <p className="font-bold text-sm text-slate-600">No customers found matching the search criteria</p>
+                <p className="text-xs text-slate-400">Try adjusting your search keywords, brand, or segment filters</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
+                {paginatedCustomers.map((customer) => {
+                  const stats = customerAnalytics[customer.id] || { jobsCount: 0, ltv: 0 };
+                  const isNewCustomer = customer.isNew === true;
+                  const expired = customer.isMember && isWalletExpired(customer);
+                  const balance = customer.creditBalance || 0;
+                  const accentBorder = customer.isVIP
+                    ? "border-t-amber-500"
+                    : (customer.isCorporate || customer.tier === "corporate")
+                      ? "border-t-amber-600"
+                      : expired
+                        ? "border-t-rose-500"
+                        : customer.isMember
+                          ? "border-t-indigo-500"
+                          : "border-t-slate-300";
+
+                  return (
+                    <div
+                      key={customer.id}
+                      className={`group bg-white rounded-2xl border border-slate-200/80 border-t-4 ${accentBorder} shadow-2xs hover:shadow-md hover:border-slate-300 transition-all flex flex-col justify-between p-4 gap-3.5`}
+                    >
+                      {/* Top Header: Avatar + Name + Tier & Brand Badges + Quick Utility Icons */}
+                      <div className="flex items-start justify-between gap-2.5">
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div className="relative shrink-0">
+                            <div className={`w-10 h-10 rounded-xl border flex items-center justify-center font-bold text-xs shadow-2xs ${getAvatarStyles(customer)}`}>
+                              {getInitials(customer.name)}
+                            </div>
+                            {getAvatarBadge(customer)}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedProfileCustomer(customer);
+                                  setProfileOpen(true);
+                                }}
+                                className="font-extrabold text-slate-900 text-sm hover:text-indigo-600 transition-colors text-left truncate max-w-[180px] cursor-pointer"
+                                title={customer.name}
+                              >
+                                {customer.name}
+                              </button>
+                              {customer.isVIP && (
+                                <Badge className="bg-amber-50 text-amber-700 border border-amber-200/70 py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
+                                  <Star size={8} className="text-amber-500 fill-amber-500" /> VIP
+                                </Badge>
+                              )}
+                              {(customer.isCorporate || customer.tier === "corporate") && (
+                                <Badge className="bg-amber-50 text-amber-800 border border-amber-200/70 py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
+                                  <Building size={8} className="text-amber-600" /> CORP
+                                </Badge>
+                              )}
+                              {isNewCustomer && (
+                                <Badge className="bg-sky-50 text-sky-700 border border-sky-200/60 py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider rounded-md">
+                                  NEW
+                                </Badge>
+                              )}
+                              <Badge className={customer.brand === "noname_laundry" ? "bg-amber-100 text-amber-900 border border-amber-300 py-0 px-1.5 h-4.5 text-[9px] font-black uppercase rounded-md" : "bg-slate-100 text-slate-600 border border-slate-200 py-0 px-1.5 h-4.5 text-[9px] font-bold uppercase rounded-md"}>
+                                {customer.brand === "noname_laundry" ? "Noname" : "TLS"}
+                              </Badge>
+                            </div>
+
+                            {/* Contact row */}
+                            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] font-medium text-slate-500 mt-1">
+                              <span className="inline-flex items-center gap-1 font-semibold text-slate-600">
+                                <Phone size={10} className="text-slate-400" />
+                                {customer.phone && customer.phone !== "-"
+                                  ? customer.phone
+                                  : customer.secondaryPhone || (customer.whatsappId ? `WA: ${customer.whatsappId}` : "-")}
+                              </span>
+                              {customer.lineId && (
+                                <span className="inline-flex items-center gap-1 text-indigo-600 font-semibold truncate max-w-[140px]">
+                                  <MessageCircle size={10} className="text-indigo-400 shrink-0" />
+                                  {customer.lineId}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Utility Actions */}
+                        <div className="flex items-center gap-0.5 bg-slate-50 border border-slate-200/70 rounded-lg p-0.5 shrink-0">
+                          <button
+                            type="button"
+                            className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-white rounded-md transition-colors cursor-pointer"
+                            title="Customer Statement / Transaction Report"
+                            onClick={() => {
+                              setSelectedCustomerForReport(customer);
+                              setActiveTab("customer_report");
+                            }}
+                          >
+                            <FileText size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-slate-800 hover:bg-white rounded-md transition-colors cursor-pointer"
+                            title="View Customer Profile"
+                            onClick={() => {
+                              setSelectedProfileCustomer(customer);
+                              setProfileOpen(true);
+                            }}
+                          >
+                            <Eye size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-amber-600 hover:bg-white rounded-md transition-colors cursor-pointer"
+                            title="Edit Customer"
+                            onClick={() => openForm(customer)}
+                          >
+                            <Edit size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-white rounded-md transition-colors cursor-pointer"
+                            title="Delete Customer"
+                            onClick={() => handleDelete(customer.id, customer.name)}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Address Strip */}
+                      <div className="flex items-center justify-between gap-2 bg-slate-50/90 border border-slate-100 rounded-xl px-3 py-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <MapPin size={12} className="text-indigo-500 shrink-0" />
+                          <span className="text-xs font-semibold text-slate-700 truncate" title={customer.defaultAddress}>
+                            {customer.defaultAddress || "No address provided"}
+                          </span>
+                        </div>
+                        {customer.secondaryAddress ? (
+                          <span className="inline-flex items-center gap-1 bg-white border border-slate-200/80 px-2 py-0.5 rounded-md text-[10px] font-extrabold text-slate-700 shrink-0 max-w-[130px] truncate" title={customer.secondaryAddress}>
+                            <Building size={9} className="text-slate-400 shrink-0" />
+                            {customer.secondaryAddress}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-200/60 px-1.5 py-0.5 rounded-md shrink-0">
+                            No Room
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Financial & LTV Dual Metric Strip */}
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <div className={`rounded-xl border px-3 py-2 ${
+                          balance < 0
+                            ? "bg-rose-50/60 border-rose-200/80"
+                            : expired
+                              ? "bg-rose-50/40 border-rose-200/70"
+                              : balance > 0
+                                ? "bg-emerald-50/50 border-emerald-200/70"
+                                : "bg-slate-50/60 border-slate-200/60"
+                        }`}>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Credit Wallet</span>
+                            {pendingWalletMap.byCustomer[customer.id] > 0 && (
+                              <span className="text-[9px] font-extrabold text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded-full">
+                                Pending ({pendingWalletMap.byCustomer[customer.id]})
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-baseline gap-1.5 mt-0.5">
+                            <span className={`text-sm font-black tabular-nums ${
+                              balance < 0 || expired ? "text-rose-600" : balance > 0 ? "text-emerald-700" : "text-slate-500"
+                            }`}>
+                              {formatBaht(balance)}
+                            </span>
+                            {expired && (
+                              <span className="text-[9px] font-extrabold text-rose-600 uppercase">Expired</span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-slate-200/70 bg-slate-50/60 px-3 py-2">
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Customer LTV</span>
+                            <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.2 rounded-full">
+                              {stats.jobsCount} orders
+                            </span>
+                          </div>
+                          <div className="flex items-baseline justify-between gap-1 mt-0.5">
+                            <span className="text-sm font-black text-slate-900 tabular-nums">
+                              ฿{stats.ltv.toLocaleString()}
+                            </span>
+                            <span className="text-[9px] font-semibold text-slate-400 truncate">
+                              {getLastActiveText(stats.lastActiveDate)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Footer: Tier / Branch Badges + Quick Wallet Buttons */}
+                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                        <div className="flex flex-wrap items-center gap-1 min-w-0">
+                          {Boolean(customer.memberId) && (
+                            <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200/60 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5">
+                              ID: {customer.memberId}
+                            </Badge>
+                          )}
+                          {customer.branchId && (
+                            <Badge className="bg-sky-50 text-sky-700 border border-sky-200/60 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5">
+                              <Store size={8} />
+                              {customer.branchId === "ONLINE" ? "Online" : (getCleanBranchName(shops.find(s => s.id === customer.branchId)?.name) || customer.branchId)}
+                            </Badge>
+                          )}
+                          {customer.priceListId && customer.priceListId !== "regular" && (customer.isMember || customer.isVIP || customer.isCorporate || customer.priceListId !== "PL-MP56NWKW") ? (
+                            <Badge className="bg-purple-50 text-purple-700 border border-purple-200/50 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5">
+                              <Crown size={8} className="text-purple-600" />
+                              {priceLists.find(p => p.id === customer.priceListId)?.name || "Special"}
+                            </Badge>
+                          ) : (
+                            <Badge className="bg-slate-50 text-slate-500 border border-slate-200/60 shadow-none font-medium text-[9px] h-4.5 py-0 px-1.5">
+                              Standard Rate
+                            </Badge>
+                          )}
+                        </div>
+
+                        {customer.isMember && (canTopUp || canAdjustBalance) && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            {canTopUp && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 px-2 border-emerald-300 bg-emerald-50/80 text-emerald-700 hover:bg-emerald-600 hover:text-white hover:border-emerald-600 text-[10px] font-bold rounded-lg gap-1 cursor-pointer"
+                                onClick={() => {
+                                  if (onTopUp) {
+                                    onTopUp(customer);
+                                  } else {
+                                    setTopUpCustomer(customer);
+                                    setTopUpAmount("");
+                                    setTopUpOpen(true);
+                                  }
+                                }}
+                              >
+                                <Wallet size={10} /> Top Up
+                              </Button>
+                            )}
+                            {canAdjustBalance && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 px-2 border-amber-300 bg-amber-50/80 text-amber-700 hover:bg-amber-600 hover:text-white hover:border-amber-600 text-[10px] font-bold rounded-lg gap-1 cursor-pointer"
+                                onClick={() => {
+                                  setTopUpCustomer(customer);
+                                  setTopUpAmount("");
+                                  setTopUpOpen(true);
+                                }}
+                              >
+                                <SlidersHorizontal size={10} /> Adjust
+                              </Button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         ) : (
           <div className={`overflow-x-auto ${screenFit === "fit" ? "flex-1 min-h-0 overflow-y-auto custom-scrollbar" : ""}`}>
             <Table className="relative w-full">
               <TableHeader className={screenFit === "fit" ? "sticky top-0 z-10 bg-slate-50/95 backdrop-blur-xs shadow-2xs border-b border-slate-200/80" : ""}>
-                <TableRow className="bg-slate-50/95 hover:bg-slate-50/95 border-b-slate-200/80">
-                  <TableHead className={`font-bold text-slate-600 pl-6 text-[11px] uppercase tracking-wider ${screenFit === "fit" ? "py-2.5" : "py-3.5"}`}>Customer & Contact</TableHead>
-                  <TableHead className={`font-bold text-slate-600 text-[11px] uppercase tracking-wider ${screenFit === "fit" ? "py-2.5" : "py-3.5"}`}>Delivery Address</TableHead>
-                  <TableHead className={`font-bold text-slate-600 text-[11px] uppercase tracking-wider ${screenFit === "fit" ? "py-2.5" : "py-3.5"}`}>Wallet & Pricing Tier</TableHead>
-                  <TableHead className={`font-bold text-slate-600 text-[11px] uppercase tracking-wider text-center ${screenFit === "fit" ? "py-2.5" : "py-3.5"}`}>LTV & Activity</TableHead>
-                  <TableHead className={`font-bold text-slate-600 pr-6 text-[11px] uppercase tracking-wider text-right ${screenFit === "fit" ? "py-2.5" : "py-3.5"}`}>Actions</TableHead>
+                <TableRow className="bg-slate-50/90 hover:bg-slate-50/90 border-b border-slate-200/80">
+                  <TableHead className={`font-extrabold text-slate-500 pl-6 text-[10px] uppercase tracking-wider w-[26%] ${screenFit === "fit" ? "py-2.5" : "py-3"}`}>Customer & Contact</TableHead>
+                  <TableHead className={`font-extrabold text-slate-500 text-[10px] uppercase tracking-wider w-[22%] ${screenFit === "fit" ? "py-2.5" : "py-3"}`}>Delivery Address</TableHead>
+                  <TableHead className={`font-extrabold text-slate-500 text-[10px] uppercase tracking-wider w-[26%] ${screenFit === "fit" ? "py-2.5" : "py-3"}`}>Wallet & Pricing Tier</TableHead>
+                  <TableHead className={`font-extrabold text-slate-500 text-[10px] uppercase tracking-wider text-right w-[12%] ${screenFit === "fit" ? "py-2.5" : "py-3"}`}>LTV & Activity</TableHead>
+                  <TableHead className={`font-extrabold text-slate-500 pr-6 text-[10px] uppercase tracking-wider text-right w-[14%] ${screenFit === "fit" ? "py-2.5" : "py-3"}`}>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -2898,185 +3283,200 @@ export function AdminCRM({
                     paginatedCustomers.map((customer, index) => {
                       const stats = customerAnalytics[customer.id] || { jobsCount: 0, ltv: 0 };
                       const isNewCustomer = customer.isNew === true;
-                      
+                      const balance = customer.creditBalance || 0;
+                      const expired = customer.isMember && isWalletExpired(customer);
+                      const lastActiveLabel = getLastActiveText(stats.lastActiveDate);
+                      const isRecentlyActive = lastActiveLabel.includes("today") || lastActiveLabel === "Yesterday" || lastActiveLabel.includes("days ago");
+
                       return (
                         <motion.tr
                           key={customer.id}
-                          initial={{ opacity: 0, x: -10 }}
+                          initial={{ opacity: 0, x: -6 }}
                           animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, scale: 0.95 }}
-                          transition={{ delay: index * 0.02 }}
-                          className="border-b border-slate-100 hover:bg-slate-50/30 transition-colors"
+                          exit={{ opacity: 0, scale: 0.98 }}
+                          transition={{ delay: Math.min(index * 0.012, 0.2) }}
+                          className="group border-b border-slate-100/90 hover:bg-indigo-50/25 transition-colors"
                         >
                           {/* 1. Profile Info & Avatar */}
-                          <TableCell className={`pl-6 ${screenFit === "fit" ? "py-2 sm:py-2.5" : "py-4.5"}`}>
+                          <TableCell className={`pl-6 ${screenFit === "fit" ? "py-2" : "py-3"}`}>
                             <div className="flex items-center gap-3">
                               {/* Initials Avatar with dynamic tier badge */}
                               <div className="relative shrink-0">
-                                <div className={`rounded-xl border flex items-center justify-center font-bold text-xs shadow-xs shrink-0 ${screenFit === "fit" ? "w-8 h-8 text-[11px]" : "w-10 h-10"} ${getAvatarStyles(customer)}`}>
+                                <div className={`rounded-xl border flex items-center justify-center font-bold text-xs shadow-2xs shrink-0 ${screenFit === "fit" ? "w-8 h-8 text-[11px]" : "w-9.5 h-9.5"} ${getAvatarStyles(customer)}`}>
                                   {getInitials(customer.name)}
                                 </div>
                                 {getAvatarBadge(customer)}
                               </div>
-                              
-                              <div className="space-y-1">
+
+                              <div className="min-w-0 space-y-0.5">
                                 <div className="flex flex-wrap items-center gap-1.5">
-                                  <span className="font-bold text-slate-900 text-sm">{customer.name}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedProfileCustomer(customer);
+                                      setProfileOpen(true);
+                                    }}
+                                    className="font-extrabold text-slate-900 text-[13px] hover:text-indigo-600 transition-colors text-left cursor-pointer"
+                                  >
+                                    {customer.name}
+                                  </button>
                                   {customer.isVIP && (
-                                    <Badge className="bg-amber-50 text-amber-700 border border-amber-200/50 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
+                                    <Badge className="bg-amber-50 text-amber-700 border border-amber-200/60 shadow-none py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
                                       <Star size={8} className="text-amber-500 fill-amber-500" />
                                       VIP
                                     </Badge>
                                   )}
                                   {(customer.isCorporate || customer.tier === "corporate") && (
-                                    <Badge className="bg-amber-50 text-amber-800 border border-amber-200/50 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
-                                      <Building size={8} className="text-amber-600" /> 
+                                    <Badge className="bg-amber-50 text-amber-800 border border-amber-200/60 shadow-none py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
+                                      <Building size={8} className="text-amber-600" />
                                       CORP B2B
                                     </Badge>
                                   )}
                                   {!customer.isMember && !customer.isVIP && !customer.isCorporate && customer.tier !== "corporate" && Boolean(customer.memberId && customer.memberId.trim()) && (
                                     <Badge
                                       title={`Former Member (${customer.memberId}) downgraded to Standard Tier`}
-                                      className="bg-amber-50 text-amber-800 border border-amber-300 shadow-2xs py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md"
+                                      className="bg-amber-50 text-amber-800 border border-amber-300 shadow-none py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md"
                                     >
                                       <Crown size={8} className="text-amber-600" />
                                       <span>↘ Ex-Member</span>
                                     </Badge>
                                   )}
                                   {isNewCustomer ? (
-                                    <Badge className="bg-sky-50 text-sky-700 border border-sky-200/40 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider rounded-md">
+                                    <Badge className="bg-sky-50 text-sky-700 border border-sky-200/50 shadow-none py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider rounded-md">
                                       NEW
                                     </Badge>
                                   ) : null}
                                   {customer.brand === "noname_laundry" ? (
-                                    <Badge className="bg-amber-100 text-amber-900 border border-amber-300 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider rounded-md">
+                                    <Badge className="bg-amber-100 text-amber-900 border border-amber-300 shadow-none py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider rounded-md">
                                       Noname
                                     </Badge>
                                   ) : (
-                                    <Badge className="bg-slate-100 text-slate-600 border border-slate-200 py-0 px-1.5 h-4.5 text-[9px] font-bold uppercase tracking-wider rounded-md">
+                                    <Badge className="bg-slate-100 text-slate-600 border border-slate-200/80 shadow-none py-0 px-1.5 h-4 text-[9px] font-bold uppercase tracking-wider rounded-md">
                                       TLS
                                     </Badge>
                                   )}
                                 </div>
 
-                                <div className="flex flex-col gap-0.5 text-slate-500 text-[11px] font-medium">
-                                  <div className="flex items-center gap-1">
+                                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-slate-500 text-[11px] font-medium">
+                                  <span className="inline-flex items-center gap-1 text-slate-600 font-semibold">
                                     <Phone size={10} className="text-slate-400" />
-                                    <span>
-                                      {customer.phone && customer.phone !== "-"
-                                        ? customer.phone
-                                        : customer.secondaryPhone || (customer.whatsappId ? `WA: ${customer.whatsappId}` : "-")}
-                                    </span>
-                                  </div>
+                                    {customer.phone && customer.phone !== "-"
+                                      ? customer.phone
+                                      : customer.secondaryPhone || (customer.whatsappId ? `WA: ${customer.whatsappId}` : "-")}
+                                  </span>
                                   {customer.whatsappId && customer.phone && customer.phone !== "-" && (
-                                    <div className="flex items-center gap-1">
+                                    <span className="inline-flex items-center gap-1">
                                       <MessageCircle size={10} className="text-emerald-500" />
-                                      <span>WA: <span className="text-emerald-700 font-semibold">{customer.whatsappId}</span></span>
-                                    </div>
-                                  )}
-                                  {customer.email && (
-                                    <div className="flex items-center gap-1">
-                                      <Mail size={10} className="text-slate-400" />
-                                      <span className="truncate max-w-[150px]">{customer.email}</span>
-                                    </div>
+                                      <span className="text-emerald-700 font-semibold">{customer.whatsappId}</span>
+                                    </span>
                                   )}
                                   {customer.lineId && (
-                                    <div className="flex items-center gap-1">
+                                    <span className="inline-flex items-center gap-1">
                                       <MessageCircle size={10} className="text-indigo-400" />
-                                      <span>LINE: <span className="text-indigo-600 font-semibold">{customer.lineId}</span></span>
-                                    </div>
+                                      <span className="text-indigo-600 font-semibold">{customer.lineId}</span>
+                                    </span>
+                                  )}
+                                  {customer.email && (
+                                    <span className="inline-flex items-center gap-1 truncate max-w-[150px]">
+                                      <Mail size={10} className="text-slate-400" />
+                                      <span className="truncate">{customer.email}</span>
+                                    </span>
                                   )}
                                 </div>
                               </div>
                             </div>
                           </TableCell>
 
-                          {/* 3. Address Column (Primary Address + secondary room details) */}
-                          <TableCell className={screenFit === "fit" ? "py-2 sm:py-2.5" : "py-4.5"}>
-                            <div className="flex flex-col gap-1 max-w-[220px]">
-                              <div className="flex items-start gap-1">
+                          {/* 2. Address Column (Primary Address + secondary room details) */}
+                          <TableCell className={screenFit === "fit" ? "py-2" : "py-3"}>
+                            <div className="flex flex-col gap-1 max-w-[240px]">
+                              <div className="flex items-start gap-1.5">
                                 <MapPin size={12} className="text-indigo-500 shrink-0 mt-0.5" />
-                                <span className="text-xs font-semibold text-slate-700 leading-snug line-clamp-2" title={customer.defaultAddress}>
-                                  {customer.defaultAddress}
+                                <span className="text-xs font-semibold text-slate-700 leading-snug line-clamp-1" title={customer.defaultAddress}>
+                                  {customer.defaultAddress || "-"}
                                 </span>
                               </div>
                               {customer.secondaryAddress ? (
-                                <div className="flex items-center gap-1 ml-3.5 bg-slate-100 px-2 py-0.5 rounded-md w-fit">
+                                <div className="inline-flex items-center gap-1 ml-4 bg-slate-100/90 border border-slate-200/70 px-2 py-0.5 rounded-md w-fit max-w-[210px]">
                                   <Building size={10} className="text-slate-500 shrink-0" />
-                                  <span className="text-[10px] font-black text-slate-600">
+                                  <span className="text-[10px] font-bold text-slate-700 truncate" title={customer.secondaryAddress}>
                                     {customer.secondaryAddress}
                                   </span>
                                 </div>
                               ) : (
-                                <span className="text-[10px] text-amber-500 font-bold ml-3.5 italic">⚠️ No building/room</span>
+                                <span className="text-[10px] text-amber-600/90 font-semibold ml-4 inline-flex items-center gap-1">
+                                  • No room/unit specified
+                                </span>
                               )}
                             </div>
                           </TableCell>
 
-                          {/* 4. Financial Wallet & Pricing Tier */}
-                          <TableCell className={screenFit === "fit" ? "py-2 sm:py-2.5" : "py-4.5"}>
-                            <div className="space-y-1.5">
-                              {/* Wallet Balance */}
-                              <div className="flex items-center gap-1">
-                                <Wallet size={12} className={customer.isMember && isWalletExpired(customer) ? "text-rose-400" : "text-slate-400"} />
-                                <span className={`text-xs font-bold ${
-                                  (customer.creditBalance || 0) < 0
-                                    ? "text-rose-600 font-extrabold"
-                                    : customer.isMember && isWalletExpired(customer)
-                                      ? "text-rose-600"
-                                      : (customer.creditBalance || 0) > 0 ? "text-emerald-600" : "text-slate-400"
+                          {/* 3. Financial Wallet & Pricing Tier */}
+                          <TableCell className={screenFit === "fit" ? "py-2" : "py-3"}>
+                            <div className="space-y-1">
+                              {/* Wallet Balance Pill + Status */}
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-extrabold tabular-nums border ${
+                                  balance < 0
+                                    ? "bg-rose-50 text-rose-700 border-rose-200"
+                                    : expired
+                                      ? "bg-rose-50/70 text-rose-600 border-rose-200/80"
+                                      : balance > 0
+                                        ? "bg-emerald-50/80 text-emerald-700 border-emerald-200/80"
+                                        : "bg-slate-50 text-slate-400 border-slate-200/60 font-semibold"
                                 }`}>
-                                  {formatBaht(customer.creditBalance || 0)}
+                                  <Wallet size={11} className={balance < 0 || expired ? "text-rose-500" : balance > 0 ? "text-emerald-600" : "text-slate-400"} />
+                                  {formatBaht(balance)}
                                 </span>
+
                                 {pendingWalletMap.byCustomer[customer.id] > 0 && (
-                                  <span className="text-[9px] font-bold text-amber-700 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded-full ml-1">
-                                    Pending Approval ({pendingWalletMap.byCustomer[customer.id]})
+                                  <span className="text-[9px] font-extrabold text-amber-800 bg-amber-100/90 border border-amber-300/80 px-1.5 py-0.5 rounded-md">
+                                    Pending ({pendingWalletMap.byCustomer[customer.id]})
                                   </span>
                                 )}
-                                {customer.isMember && isWalletExpired(customer) && (
-                                  <span className="text-[9px] text-rose-500 font-bold bg-rose-50 px-1 rounded border border-rose-200">
-                                    หมดอายุ
+                                {expired && (
+                                  <span className="text-[9px] text-rose-600 font-extrabold bg-rose-50 px-1.5 py-0.5 rounded-md border border-rose-200">
+                                    Expired
                                   </span>
                                 )}
                               </div>
-                              
-                              {/* Price tier badge */}
-                              <div className="flex flex-wrap items-center gap-1.5 mt-1">
+
+                              {/* Price tier & Member metadata row */}
+                              <div className="flex flex-wrap items-center gap-1">
                                 {Boolean(customer.memberId) && (
-                                  <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200/50 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5">
+                                  <Badge className="bg-indigo-50/90 text-indigo-700 border border-indigo-200/60 shadow-none font-bold text-[9px] h-4 py-0 px-1.5 rounded">
                                     ID: {customer.memberId}
                                   </Badge>
                                 )}
 
                                 {customer.branchId && (
-                                  <Badge className="bg-sky-50 text-sky-700 border border-sky-200/60 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5">
+                                  <Badge className="bg-sky-50/90 text-sky-700 border border-sky-200/60 shadow-none font-bold text-[9px] h-4 py-0 px-1.5 rounded flex items-center gap-0.5">
                                     <Store size={8} />
                                     {customer.branchId === "ONLINE" ? "Online" : (getCleanBranchName(shops.find(s => s.id === customer.branchId)?.name) || customer.branchId)}
                                   </Badge>
                                 )}
-                                
+
                                 {(customer.isMember || Boolean(customer.memberId)) && customer.memberExpiryDate && (
-                                  <Badge className={`border shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5 ${
-                                    isWalletExpired(customer)
-                                      ? "bg-rose-50 text-rose-700 border-rose-200/50"
-                                      : "bg-emerald-50 text-emerald-700 border-emerald-200/50"
+                                  <Badge className={`border shadow-none font-bold text-[9px] h-4 py-0 px-1.5 rounded flex items-center gap-0.5 ${
+                                    expired
+                                      ? "bg-rose-50 text-rose-700 border-rose-200/60"
+                                      : "bg-emerald-50/80 text-emerald-700 border-emerald-200/60"
                                   }`}>
                                     <Clock size={8} />
-                                    {isWalletExpired(customer)
-                                      ? `Expired: ${format(new Date(customer.memberExpiryDate), "dd MMM yyyy")}`
-                                      : `Expires: ${format(new Date(customer.memberExpiryDate), "dd MMM yyyy")}`
+                                    {expired
+                                      ? `Exp: ${format(new Date(customer.memberExpiryDate), "dd MMM yy")}`
+                                      : `Exp: ${format(new Date(customer.memberExpiryDate), "dd MMM yy")}`
                                     }
                                   </Badge>
                                 )}
 
-                                
                                 {customer.priceListId && customer.priceListId !== "regular" && (customer.isMember || customer.isVIP || customer.isCorporate || customer.priceListId !== "PL-MP56NWKW") ? (
-                                  <Badge className="bg-purple-50 text-purple-700 border border-purple-200/30 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5">
-                                    <Crown size={8} className="text-purple-600" /> 
+                                  <Badge className="bg-purple-50/90 text-purple-700 border border-purple-200/50 shadow-none font-bold text-[9px] h-4 py-0 px-1.5 rounded flex items-center gap-0.5">
+                                    <Crown size={8} className="text-purple-600" />
                                     {priceLists.find(p => p.id === customer.priceListId)?.name || "Special Rate"}
                                   </Badge>
                                 ) : (
-                                  <Badge className="bg-slate-50 text-slate-500 border border-slate-200/60 shadow-none font-medium text-[9px] h-4.5 py-0 px-1.5">
+                                  <Badge className="bg-slate-50 text-slate-500 border border-slate-200/60 shadow-none font-medium text-[9px] h-4 py-0 px-1.5 rounded">
                                     Standard Rate
                                   </Badge>
                                 )}
@@ -3084,33 +3484,33 @@ export function AdminCRM({
                             </div>
                           </TableCell>
 
-                          {/* 5. LTV & Activity stats */}
-                          <TableCell className={`text-center ${screenFit === "fit" ? "py-2 sm:py-2.5" : "py-4.5"}`}>
-
-                            <div className="flex flex-col items-center gap-1">
-                              <span className="text-sm font-black text-slate-900">
-                                ฿{stats.ltv.toLocaleString()}
-                              </span>
-                              <span className="text-[10px] text-slate-500 bg-slate-100 font-semibold px-2 py-0.5 rounded-full">
-                                {stats.jobsCount} orders
-                              </span>
-                              <span className="text-[9px] text-slate-400 flex items-center gap-0.5 mt-0.5">
-                                <Clock size={8} />
-                                {getLastActiveText(stats.lastActiveDate)}
+                          {/* 4. LTV & Activity stats */}
+                          <TableCell className={`text-right ${screenFit === "fit" ? "py-2" : "py-3"}`}>
+                            <div className="flex flex-col items-end gap-0.5">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[13px] font-black text-slate-900 tabular-nums">
+                                  ฿{stats.ltv.toLocaleString()}
+                                </span>
+                                <span className="text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-100 font-bold px-1.5 py-0.2 rounded-md tabular-nums">
+                                  {stats.jobsCount} {stats.jobsCount === 1 ? "order" : "orders"}
+                                </span>
+                              </div>
+                              <span className="text-[10px] text-slate-400 font-medium inline-flex items-center gap-1">
+                                <span className={`w-1.5 h-1.5 rounded-full ${isRecentlyActive ? "bg-emerald-500" : stats.jobsCount > 0 ? "bg-slate-300" : "bg-slate-200"}`} />
+                                {lastActiveLabel}
                               </span>
                             </div>
                           </TableCell>
 
-                          {/* 6. Action buttons */}
-                          <TableCell className={`pr-6 text-right ${screenFit === "fit" ? "py-1.5 sm:py-2" : "py-4"}`}>
-
+                          {/* 5. Action buttons */}
+                          <TableCell className={`pr-6 text-right ${screenFit === "fit" ? "py-1.5" : "py-2.5"}`}>
                             <div className="flex items-center justify-end gap-1.5">
                               {/* Top Up button — Package flow (Member customers only) */}
                               {canTopUp && customer.isMember && (
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  className="h-8 px-2.5 border-emerald-300/80 bg-emerald-50/60 text-emerald-700 hover:bg-emerald-600 hover:text-white hover:border-emerald-600 transition-all gap-1 text-[11px] font-bold rounded-lg cursor-pointer shadow-2xs"
+                                  className="h-7.5 px-2.5 border-emerald-300/90 bg-emerald-50/70 text-emerald-700 hover:bg-emerald-600 hover:text-white hover:border-emerald-600 transition-all gap-1 text-[11px] font-bold rounded-lg cursor-pointer shadow-2xs"
                                   onClick={() => {
                                     if (onTopUp) {
                                       onTopUp(customer);
@@ -3121,7 +3521,7 @@ export function AdminCRM({
                                     }
                                   }}
                                 >
-                                  <Wallet size={12} />
+                                  <Wallet size={11} />
                                   Top Up
                                 </Button>
                               )}
@@ -3131,7 +3531,7 @@ export function AdminCRM({
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  className="h-8 px-2 border-amber-300/80 bg-amber-50/60 text-amber-700 hover:bg-amber-600 hover:text-white hover:border-amber-600 transition-all gap-1 text-[11px] font-bold rounded-lg cursor-pointer shadow-2xs"
+                                  className="h-7.5 px-2 border-amber-300/90 bg-amber-50/70 text-amber-700 hover:bg-amber-600 hover:text-white hover:border-amber-600 transition-all gap-1 text-[11px] font-bold rounded-lg cursor-pointer shadow-2xs"
                                   title="Adjust Balance (Manual)"
                                   onClick={() => {
                                     setTopUpCustomer(customer);
@@ -3139,57 +3539,57 @@ export function AdminCRM({
                                     setTopUpOpen(true);
                                   }}
                                 >
-                                  <SlidersHorizontal size={12} />
+                                  <SlidersHorizontal size={11} />
                                   Adjust
                                 </Button>
                               )}
 
                               {/* Utility Icon Actions Group */}
-                              <div className="flex items-center gap-0.5 pl-1 border-l border-slate-200/80">
+                              <div className="flex items-center gap-0.5 bg-slate-50/80 border border-slate-200/80 rounded-lg p-0.5">
                                 {/* Customer Report / Statement button */}
                                 <button
                                   type="button"
-                                  className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-indigo-50/80 rounded-lg transition-colors cursor-pointer"
+                                  className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-white hover:shadow-2xs rounded-md transition-all cursor-pointer"
                                   title="Customer Statement / Transaction Report"
                                   onClick={() => {
                                     setSelectedCustomerForReport(customer);
                                     setActiveTab("customer_report");
                                   }}
                                 >
-                                  <FileText size={15} />
+                                  <FileText size={14} />
                                 </button>
 
                                 {/* View detail button */}
-                                <button 
+                                <button
                                   type="button"
-                                  className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                                  className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-slate-800 hover:bg-white hover:shadow-2xs rounded-md transition-all cursor-pointer"
                                   title="View Customer Profile"
                                   onClick={() => {
                                     setSelectedProfileCustomer(customer);
                                     setProfileOpen(true);
                                   }}
                                 >
-                                  <Eye size={15} />
+                                  <Eye size={14} />
                                 </button>
 
                                 {/* Edit button */}
-                                <button 
+                                <button
                                   type="button"
-                                  className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
+                                  className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-amber-600 hover:bg-white hover:shadow-2xs rounded-md transition-all cursor-pointer"
                                   title="Edit Customer"
                                   onClick={() => openForm(customer)}
                                 >
-                                  <Edit size={15} />
+                                  <Edit size={14} />
                                 </button>
 
                                 {/* Delete button */}
-                                <button 
+                                <button
                                   type="button"
-                                  className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                                  className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-white hover:shadow-2xs rounded-md transition-all cursor-pointer"
                                   title="Delete Customer"
                                   onClick={() => handleDelete(customer.id, customer.name)}
                                 >
-                                  <Trash2 size={15} />
+                                  <Trash2 size={14} />
                                 </button>
                               </div>
                             </div>
