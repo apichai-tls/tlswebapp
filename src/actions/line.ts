@@ -920,6 +920,7 @@ export async function sendDeliveryProofViaLineAction(params: {
       deliveryPhotoSentBy: params.actorName || "LINE OA Bot",
       deliveryPhotoSentChannel: "LINE OA",
       deliveryPhotoSentLineUserId: lineUserId,
+      deliveryPhotoSentMessageText: textMessage,
     };
 
     const updatedJob = await prisma.job.update({
@@ -943,6 +944,26 @@ export async function sendDeliveryProofViaLineAction(params: {
         userName: params.actorName || "LINE OA Bot",
       },
     });
+
+    // Also record the sent LINE message & delivery photos in the Omnichannel Social Inbox & lineOaContacts
+    try {
+      const { recordOutboundSocialMessageFromSystemAction } = await import("@/actions/social-inbox");
+      await recordOutboundSocialMessageFromSystemAction({
+        channel: "line",
+        externalContactId: lineUserId,
+        contactName: customer?.name || job.customerName || undefined,
+        contactPhone: isValidPhoneNumber(customer?.phone || job.customerPhone)
+          ? customer?.phone || job.customerPhone || ""
+          : "",
+        customerId: customer?.id || job.customerId || null,
+        text: textMessage,
+        imageUrls: rawPhotos.slice(0, 4),
+        senderName: params.actorName || "LINE OA Bot",
+        messageId: `msg_line_job_${job.id}`,
+      });
+    } catch (inboxErr) {
+      console.warn("[LINE OA] Failed to record outbound message to Social Inbox:", inboxErr);
+    }
 
     invalidateDbCache();
     await publishOrderEvent({

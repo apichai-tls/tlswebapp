@@ -258,20 +258,43 @@ export async function getSocialInboxDataAction() {
     let didMutate = false;
     const nowIso = new Date().toISOString();
 
-    // Merge top 40 recent LINE OA contacts into conversations if not already present
+    const customerByLineId = new Map<string, (typeof allCustomers)[0]>();
+    for (const c of allCustomers) {
+      if (c.lineId && /^U[0-9a-f]{32}$/i.test(c.lineId.trim())) {
+        customerByLineId.set(c.lineId.trim(), c);
+      }
+    }
+    const lineContactById = new Map(lineContacts.map((lc) => [lc.userId, lc]));
+
+    // prioritize LINE contacts with actual messages or linked CRM customer first, then recent followers
+    const prioritizedLineContacts = [...lineContacts].sort((a, b) => {
+      const aHasMsg = Boolean(a.lastMessageText && a.lastMessageText !== '[Followed LINE OA]') ? 1 : 0;
+      const bHasMsg = Boolean(b.lastMessageText && b.lastMessageText !== '[Followed LINE OA]') ? 1 : 0;
+      if (aHasMsg !== bHasMsg) return bHasMsg - aHasMsg;
+      const aHasCrm = Boolean(a.linkedCustomerId || customerByLineId.has(a.userId)) ? 1 : 0;
+      const bHasCrm = Boolean(b.linkedCustomerId || customerByLineId.has(b.userId)) ? 1 : 0;
+      if (aHasCrm !== bHasCrm) return bHasCrm - aHasCrm;
+      return 0;
+    });
+
     const existingLineIds = new Set(
       conversations.filter((c) => c.channel === 'line').map((c) => c.externalContactId)
     );
 
-    for (const lc of lineContacts.slice(0, 40)) {
+    const followerOnlyFallbackTs = '2026-01-01T00:00:00.000Z';
+
+    for (const lc of prioritizedLineContacts.slice(0, 200)) {
       if (!lc.userId || existingLineIds.has(lc.userId)) continue;
 
       const matchedCust =
         allCustomers.find((c) => c.id === lc.linkedCustomerId || c.lineId === lc.userId) || null;
 
+      const hasRealMsg = Boolean(lc.lastMessageText && lc.lastMessageText !== '[Followed LINE OA]');
       const convId = `conv_line_${lc.userId.slice(-10)}`;
-      const initialText = lc.lastMessageText || 'Connected via LINE Official Account (@thatlaundryshop)';
-      const ts = lc.lastInteractionAt || nowIso;
+      const initialText = hasRealMsg
+        ? lc.lastMessageText!
+        : 'Connected via LINE Official Account (@thatlaundryshop)';
+      const ts = hasRealMsg ? (lc.lastInteractionAt || nowIso) : followerOnlyFallbackTs;
 
       const newConv: SocialConversation = {
         id: convId,
@@ -287,7 +310,7 @@ export async function getSocialInboxDataAction() {
         customerWalletBalance: matchedCust?.creditBalance || 0,
         brand: (matchedCust?.brand as any) || 'that_laundry_shop',
         status: 'open',
-        unreadCount: lc.lastMessageText && lc.lastMessageText !== '[Followed LINE OA]' ? 1 : 0,
+        unreadCount: hasRealMsg ? 1 : 0,
         lastMessageText: initialText,
         lastMessageAt: ts,
         lastMessageDirection: 'inbound',
@@ -298,7 +321,7 @@ export async function getSocialInboxDataAction() {
       conversations.push(newConv);
       existingLineIds.add(lc.userId);
 
-      if (lc.lastMessageText) {
+      if (hasRealMsg && lc.lastMessageText) {
         messages.push({
           id: `msg_init_${lc.userId.slice(-8)}`,
           conversationId: convId,
@@ -312,6 +335,175 @@ export async function getSocialInboxDataAction() {
         });
       }
       didMutate = true;
+    }
+
+    // Automatically backfill sent LINE OA delivery notifications & photos from Jobs so past system LINE messages appear in the chat thread
+    try {
+      const sentLineJobs = await prisma.job.findMany({
+        where: {
+          adminNotesJson: { contains: 'isDeliveryPhotoSent' },
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 80,
+        select: {
+          id: true,
+          customerId: true,
+          customerName: true,
+          customerPhone: true,
+          dropoffLocation: true,
+          deliveryProofImageUrl: true,
+          proofImageUrl: true,
+          adminNotesJson: true,
+          updatedAt: true,
+        },
+      });
+
+      const existingMsgIds = new Set(messages.map((m) => m.id));
+
+      for (const sj of sentLineJobs) {
+        const msgId = `msg_line_job_${sj.id}`;
+        if (existingMsgIds.has(msgId)) continue;
+
+        let meta: Record<string, any> = {};
+        if (sj.adminNotesJson) {
+          try {
+            meta = JSON.parse(sj.adminNotesJson) || {};
+          } catch {}
+        }
+        if (!meta.isDeliveryPhotoSent) continue;
+
+        const matchedCust =
+          (sj.customerId ? allCustomers.find((c) => c.id === sj.customerId) : null) ||
+          allCustomers.find(
+            (c) =>
+              c.name &&
+              sj.customerName &&
+              c.name.trim().toLowerCase() === sj.customerName.trim().toLowerCase() &&
+              c.lineId &&
+              /^U[0-9a-f]{32}$/i.test(c.lineId.trim())
+          ) ||
+          null;
+
+        const targetLineUserId = String(
+          meta.deliveryPhotoSentLineUserId ||
+            meta.customerLineId ||
+            matchedCust?.lineId ||
+            ''
+        ).trim();
+
+        if (!/^U[0-9a-f]{32}$/i.test(targetLineUserId)) continue;
+        // Skip if this was explicitly sent via WhatsApp and not LINE OA
+        if (meta.deliveryPhotoSentChannel && meta.deliveryPhotoSentChannel !== 'LINE OA') continue;
+
+        const lcProfile = lineContactById.get(targetLineUserId);
+        const sentAtIso =
+          meta.deliveryPhotoSentAt ||
+          meta.deliveredAt ||
+          sj.updatedAt.toISOString();
+
+        // Parse delivery proof photos
+        const photoUrls: string[] = [];
+        const pushPhotos = (raw?: string | null) => {
+          if (!raw) return;
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              for (const u of parsed) {
+                if (typeof u === 'string' && u.trim()) photoUrls.push(u.trim());
+              }
+              return;
+            }
+          } catch {}
+          if (typeof raw === 'string' && raw.trim()) photoUrls.push(raw.trim());
+        };
+        pushPhotos(sj.deliveryProofImageUrl);
+        if (photoUrls.length === 0) pushPhotos(sj.proofImageUrl);
+
+        const attachments: SocialMessageAttachment[] = Array.from(new Set(photoUrls))
+          .slice(0, 4)
+          .map((u, idx) => ({
+            id: `att_job_${sj.id}_${idx}`,
+            type: 'image' as const,
+            url: u,
+            name: `delivery_proof_${sj.id}_${idx + 1}.jpg`,
+          }));
+
+        const dropoffText = sj.dropoffLocation ? `\n📍 Location: ${sj.dropoffLocation}` : '';
+        const textBody =
+          meta.deliveryPhotoSentMessageText ||
+          `✨ Hello ${sj.customerName || matchedCust?.name || 'Valued Customer'},\nYour laundry order #${sj.id} has been delivered! 🧺🚚${dropoffText}\n\nThank you for choosing That Laundry Shop! 💚`;
+
+        let convIdx = conversations.findIndex(
+          (c) => c.channel === 'line' && c.externalContactId === targetLineUserId
+        );
+        let convId: string;
+
+        if (convIdx >= 0) {
+          convId = conversations[convIdx].id;
+          const prevConv = conversations[convIdx];
+          const shouldUpdatePreview =
+            prevConv.lastMessageText === 'Connected via LINE Official Account (@thatlaundryshop)' ||
+            new Date(sentAtIso).getTime() >= new Date(prevConv.lastMessageAt).getTime();
+
+          conversations[convIdx] = {
+            ...prevConv,
+            contactName:
+              lcProfile?.displayName ||
+              matchedCust?.name ||
+              sj.customerName ||
+              prevConv.contactName,
+            contactAvatar: lcProfile?.pictureUrl || prevConv.contactAvatar,
+            customerId: matchedCust?.id || prevConv.customerId || sj.customerId || null,
+            customerName: matchedCust?.name || prevConv.customerName || sj.customerName || null,
+            lastMessageText: shouldUpdatePreview ? textBody : prevConv.lastMessageText,
+            lastMessageAt: shouldUpdatePreview ? sentAtIso : prevConv.lastMessageAt,
+            lastMessageDirection: shouldUpdatePreview ? 'outbound' : prevConv.lastMessageDirection,
+            updatedAt: shouldUpdatePreview ? sentAtIso : prevConv.updatedAt,
+          };
+        } else {
+          convId = `conv_line_${targetLineUserId.slice(-10)}`;
+          const newConv: SocialConversation = {
+            id: convId,
+            channel: 'line',
+            externalContactId: targetLineUserId,
+            contactName: lcProfile?.displayName || matchedCust?.name || sj.customerName || 'LINE User',
+            contactPhone: matchedCust?.phone || sj.customerPhone || '',
+            contactAvatar: lcProfile?.pictureUrl,
+            contactHandle: '@thatlaundryshop',
+            customerId: matchedCust?.id || sj.customerId || null,
+            customerName: matchedCust?.name || sj.customerName || null,
+            customerMemberId: matchedCust?.memberId || null,
+            customerWalletBalance: matchedCust?.creditBalance || 0,
+            brand: (matchedCust?.brand as any) || 'that_laundry_shop',
+            status: 'open',
+            unreadCount: 0,
+            lastMessageText: textBody,
+            lastMessageAt: sentAtIso,
+            lastMessageDirection: 'outbound',
+            createdAt: sentAtIso,
+            updatedAt: sentAtIso,
+          };
+          conversations.push(newConv);
+          existingLineIds.add(targetLineUserId);
+        }
+
+        messages.push({
+          id: msgId,
+          conversationId: convId,
+          channel: 'line',
+          direction: 'outbound',
+          text: textBody,
+          attachments: attachments.length > 0 ? attachments : undefined,
+          senderName: meta.deliveryPhotoSentBy || 'LINE OA Bot',
+          status: 'delivered',
+          deliveryMethod: 'line_api',
+          createdAt: sentAtIso,
+        });
+        existingMsgIds.add(msgId);
+        didMutate = true;
+      }
+    } catch (backfillErr) {
+      console.warn('[getSocialInboxDataAction] LINE job backfill non-fatal error:', backfillErr);
     }
 
     // Seed starter multi-channel conversations if completely empty
@@ -486,10 +678,32 @@ export async function getSocialInboxDataAction() {
       return conv;
     });
 
-    // Sort conversations by lastMessageAt descending
-    conversations.sort(
-      (a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
-    );
+    // Sort conversations so threads with real messages always appear at the top, followed by CRM-linked contacts, then follower-only profiles
+    const msgCountByConvId = new Map<string, number>();
+    for (const m of messages) {
+      msgCountByConvId.set(m.conversationId, (msgCountByConvId.get(m.conversationId) || 0) + 1);
+    }
+    const hasRealConversationActivity = (c: SocialConversation): number => {
+      if ((msgCountByConvId.get(c.id) || 0) > 0) return 1;
+      if (
+        c.lastMessageText &&
+        c.lastMessageText !== 'Connected via LINE Official Account (@thatlaundryshop)' &&
+        c.lastMessageText !== '[Followed LINE OA]'
+      ) {
+        return 1;
+      }
+      return 0;
+    };
+
+    conversations.sort((a, b) => {
+      const aActive = hasRealConversationActivity(a);
+      const bActive = hasRealConversationActivity(b);
+      if (aActive !== bActive) return bActive - aActive;
+      const aCrm = a.customerId ? 1 : 0;
+      const bCrm = b.customerId ? 1 : 0;
+      if (!aActive && !bActive && aCrm !== bCrm) return bCrm - aCrm;
+      return new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime();
+    });
 
     if (didMutate) {
       await saveInboxStore(conversations, messages);
@@ -1335,6 +1549,112 @@ export async function recordInboundSocialMessageAction(input: {
   } catch (err: any) {
     console.error('[recordInboundSocialMessageAction] Error:', err);
     return { success: false, error: err?.message || 'Failed to record inbound message' };
+  }
+}
+
+/**
+ * Record an outbound message sent by system automation or external LINE OA notification (e.g., Delivery Proof via LINE)
+ * so that all system-to-customer LINE messages & photos appear inside the Omnichannel Social Inbox thread.
+ */
+export async function recordOutboundSocialMessageFromSystemAction(input: {
+  channel: SocialChannel;
+  externalContactId: string;
+  contactName?: string;
+  contactPhone?: string;
+  contactAvatar?: string;
+  customerId?: string | null;
+  text: string;
+  imageUrls?: string[];
+  senderName?: string;
+  messageId?: string;
+}) {
+  try {
+    const { conversations, messages } = await loadRawInboxStore();
+    const nowIso = new Date().toISOString();
+
+    let convIdx = conversations.findIndex(
+      (c) =>
+        c.channel === input.channel &&
+        (c.externalContactId === input.externalContactId ||
+          (input.customerId && c.customerId === input.customerId))
+    );
+
+    let conv: SocialConversation;
+    if (convIdx >= 0) {
+      conv = {
+        ...conversations[convIdx],
+        externalContactId: input.externalContactId || conversations[convIdx].externalContactId,
+        contactName: input.contactName || conversations[convIdx].contactName,
+        contactPhone: input.contactPhone || conversations[convIdx].contactPhone,
+        contactAvatar: input.contactAvatar || conversations[convIdx].contactAvatar,
+        customerId: input.customerId || conversations[convIdx].customerId,
+        lastMessageText: input.text,
+        lastMessageAt: nowIso,
+        lastMessageDirection: 'outbound',
+        status: 'open',
+        updatedAt: nowIso,
+      };
+      conversations.splice(convIdx, 1);
+    } else {
+      const convId =
+        input.channel === 'line'
+          ? `conv_line_${input.externalContactId.slice(-10)}`
+          : `conv_${input.channel}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      conv = {
+        id: convId,
+        channel: input.channel,
+        externalContactId: input.externalContactId,
+        contactName: input.contactName || input.externalContactId,
+        contactPhone: input.contactPhone || '',
+        contactAvatar: input.contactAvatar,
+        contactHandle: input.channel === 'line' ? '@thatlaundryshop' : input.externalContactId,
+        customerId: input.customerId || null,
+        status: 'open',
+        unreadCount: 0,
+        lastMessageText: input.text,
+        lastMessageAt: nowIso,
+        lastMessageDirection: 'outbound',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+    }
+
+    const attachments: SocialMessageAttachment[] = (input.imageUrls || []).map((url, idx) => ({
+      id: `att_sys_${Date.now()}_${idx}`,
+      type: 'image',
+      url,
+      name: `photo_${idx + 1}.jpg`,
+    }));
+
+    const msgId =
+      input.messageId || `msg_sys_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const existingMsgIdx = messages.findIndex((m) => m.id === msgId);
+
+    const outboundMsg: SocialMessage = {
+      id: msgId,
+      conversationId: conv.id,
+      channel: input.channel,
+      direction: 'outbound',
+      text: input.text,
+      attachments: attachments.length > 0 ? attachments : undefined,
+      senderName: input.senderName || 'LINE OA Bot',
+      status: 'delivered',
+      deliveryMethod: input.channel === 'line' ? 'line_api' : 'social_api',
+      createdAt: nowIso,
+    };
+
+    if (existingMsgIdx >= 0) {
+      messages[existingMsgIdx] = outboundMsg;
+    } else {
+      messages.push(outboundMsg);
+    }
+    conversations.unshift(conv);
+
+    await saveInboxStore(conversations, messages);
+    return { success: true, conversation: conv, message: outboundMsg };
+  } catch (err: any) {
+    console.warn('[recordOutboundSocialMessageFromSystemAction] Non-fatal error:', err);
+    return { success: false, error: err?.message };
   }
 }
 

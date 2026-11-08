@@ -488,6 +488,25 @@ export function AdminSocialInbox({
     });
   }, [conversations, channelFilter, statusFilter, searchQuery]);
 
+  // Open Official LINE OA Manager (chat.line.biz) in a Docked Companion Window & copy customer name for instant lookup
+  const openLineOfficialChatCompanion = (contactName?: string) => {
+    if (contactName && contactName !== 'LINE User') {
+      try {
+        navigator.clipboard.writeText(contactName);
+        toast.success(`Copied "${contactName}" — paste in LINE OA Chat search to view pre-webhook history`);
+      } catch {}
+    }
+    const width = 540;
+    const height = Math.min(900, window.screen.availHeight - 40);
+    const left = Math.max(0, window.screen.availWidth - width - 16);
+    const top = 20;
+    window.open(
+      'https://chat.line.biz/',
+      'tls_line_oa_companion',
+      `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+    );
+  };
+
   // Linked CRM Customer & Jobs for the Right Panel
   const linkedCustomer = useMemo(() => {
     if (!activeConversation) return null;
@@ -495,11 +514,29 @@ export function AdminSocialInbox({
       const found = customers.find((c) => c.id === activeConversation.customerId);
       if (found) return found;
     }
+    if (activeConversation.channel === 'line' && activeConversation.externalContactId) {
+      const byLineId = customers.find(
+        (c) => (c.lineId || '').trim() === activeConversation.externalContactId.trim()
+      );
+      if (byLineId) return byLineId;
+    }
     const pk = normalizePhoneKey(
       activeConversation.contactPhone || activeConversation.externalContactId
     );
     if (pk.length >= 8) {
-      return customers.find((c) => normalizePhoneKey(c.phone) === pk) || null;
+      const byPhone = customers.find((c) => normalizePhoneKey(c.phone) === pk);
+      if (byPhone) return byPhone;
+    }
+    if (activeConversation.contactName) {
+      const normName = activeConversation.contactName.trim().toLowerCase();
+      if (normName.length >= 2 && normName !== 'line user') {
+        const byName = customers.find(
+          (c) =>
+            c.name?.trim().toLowerCase() === normName ||
+            c.nickName?.trim().toLowerCase() === normName
+        );
+        if (byName) return byName;
+      }
     }
     return null;
   }, [activeConversation, customers]);
@@ -507,6 +544,14 @@ export function AdminSocialInbox({
   const customerJobs = useMemo(() => {
     if (!activeConversation) return [];
     const custId = linkedCustomer?.id || activeConversation.customerId;
+    const custNameNorm = (
+      linkedCustomer?.name ||
+      activeConversation.customerName ||
+      activeConversation.contactName ||
+      ''
+    )
+      .trim()
+      .toLowerCase();
     const pk = normalizePhoneKey(
       linkedCustomer?.phone ||
         activeConversation.contactPhone ||
@@ -517,6 +562,13 @@ export function AdminSocialInbox({
       .filter((j) => {
         if (custId && j.customerId === custId) return true;
         if (pk.length >= 8 && normalizePhoneKey(j.customerPhone) === pk) return true;
+        if (
+          custNameNorm.length >= 3 &&
+          custNameNorm !== 'line user' &&
+          j.customerName?.trim().toLowerCase() === custNameNorm
+        ) {
+          return true;
+        }
         return false;
       })
       .slice(0, 8);
@@ -1469,6 +1521,19 @@ export function AdminSocialInbox({
                     </>
                   )}
 
+                  {activeConversation.channel === 'line' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openLineOfficialChatCompanion(activeConversation.contactName)}
+                      className="h-8 px-2.5 text-[11px] font-bold border-green-300 bg-green-50 text-green-800 hover:bg-green-100 rounded-lg gap-1 cursor-pointer"
+                      title="Open Docked LINE Official Account Manager (chat.line.biz) Companion Window to view older pre-webhook chat history"
+                    >
+                      <AppWindow size={12} />
+                      <span>LINE OA Companion</span>
+                    </Button>
+                  )}
+
                   <Button
                     size="sm"
                     variant="outline"
@@ -1532,12 +1597,36 @@ export function AdminSocialInbox({
                 }`}
               >
                 {activeMessages.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400 space-y-2">
-                    <MessageCircle size={28} className="text-slate-300" />
-                    <p className="text-xs font-semibold">
-                      No messages yet in this conversation. Send a greeting, photo, or template
-                      below!
+                  <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500 space-y-3 max-w-md mx-auto">
+                    <MessageCircle size={30} className="text-slate-300" />
+                    <p className="text-xs font-bold text-slate-700">
+                      No platform messages recorded yet with {activeConversation.contactName}.
                     </p>
+                    {activeConversation.channel === 'line' ? (
+                      <div className="p-3.5 rounded-xl bg-white/95 border border-slate-200 shadow-2xs text-left space-y-2 text-[11px] text-slate-600">
+                        <p className="font-bold text-slate-800">
+                          💡 Why aren&apos;t older chat.line.biz messages shown here?
+                        </p>
+                        <p className="leading-relaxed">
+                          LINE&apos;s Official Messaging API delivers all <strong>new customer messages</strong>, <strong>replies sent from this hub</strong>, and <strong>automated LINE Delivery Notifications</strong> live in real time, but LINE does not allow third-party platforms to download past chat history typed directly inside the external <code className="px-1 py-0.5 bg-slate-100 rounded">chat.line.biz</code> app.
+                        </p>
+                        <div className="pt-1 flex flex-wrap items-center gap-2">
+                          <Button
+                            size="sm"
+                            type="button"
+                            onClick={() => openLineOfficialChatCompanion(activeConversation.contactName)}
+                            className="h-8 px-3 bg-[#06C755] hover:bg-[#05b34c] text-white font-black text-[11px] rounded-lg gap-1.5 cursor-pointer"
+                          >
+                            <AppWindow size={13} />
+                            <span>Open LINE OA Companion (chat.line.biz)</span>
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400">
+                        Send a greeting, photo, or quick laundry template below to start chatting!
+                      </p>
+                    )}
                   </div>
                 ) : (
                   activeMessages.map((msg) => {
