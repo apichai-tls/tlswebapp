@@ -763,6 +763,29 @@ export async function sendDeliveryProofViaLineAction(params: {
       } catch {}
     }
 
+    // Guard against jobLineIdFromNotes holding a corrupted shared LINE User ID (e.g. Nathan's UID on a non-Nathan order)
+    if (jobLineIdFromNotes && isValidLineUserId(jobLineIdFromNotes) && !params.overrideLineUserId) {
+      const targetNorm = normalizeHandle(customer?.name || job.customerName);
+      if (
+        jobLineIdFromNotes === "U81d5e33ad54c67eaa7a761fdfa549c77" &&
+        targetNorm &&
+        !targetNorm.includes("nathan")
+      ) {
+        jobLineIdFromNotes = "";
+      } else {
+        const sharedByNotes = await prisma.customer.findMany({
+          where: { lineId: jobLineIdFromNotes },
+          select: { name: true },
+        });
+        const distinctNotesNames = new Set(
+          sharedByNotes.map((p) => normalizeHandle(p.name)).filter(Boolean)
+        );
+        if (distinctNotesNames.size > 1) {
+          jobLineIdFromNotes = "";
+        }
+      }
+    }
+
     let lineUserId = (
       params.overrideLineUserId ||
       (isValidLineUserId(jobLineIdFromNotes) ? jobLineIdFromNotes : "") ||

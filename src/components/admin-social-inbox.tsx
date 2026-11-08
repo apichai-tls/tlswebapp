@@ -1302,10 +1302,36 @@ export function AdminSocialInbox({
                             {conv.contactName}
                           </p>
                           <span className="text-[10px] text-slate-400 shrink-0">
-                            {new Date(conv.lastMessageAt).toLocaleTimeString([], {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
+                            {(() => {
+                              if (
+                                conv.lastMessageText ===
+                                  'Connected via LINE Official Account (@thatlaundryshop)' ||
+                                conv.lastMessageAt === '2026-01-01T00:00:00.000Z'
+                              ) {
+                                return 'Follower';
+                              }
+                              const d = new Date(conv.lastMessageAt);
+                              if (isNaN(d.getTime())) return '';
+                              const now = new Date();
+                              const isToday =
+                                d.getFullYear() === now.getFullYear() &&
+                                d.getMonth() === now.getMonth() &&
+                                d.getDate() === now.getDate();
+                              if (isToday) {
+                                return d.toLocaleTimeString([], {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                });
+                              }
+                              return (
+                                d.toLocaleDateString([], { month: 'short', day: 'numeric' }) +
+                                ', ' +
+                                d.toLocaleTimeString([], {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })
+                              );
+                            })()}
                           </span>
                         </div>
 
