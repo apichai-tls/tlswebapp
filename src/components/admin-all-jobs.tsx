@@ -448,19 +448,49 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   );
   const [isSendingLineProof, setIsSendingLineProof] = useState(false);
   const [isSyncingLineFollowers, setIsSyncingLineFollowers] = useState(false);
+  const [lineTotalFollowersCount, setLineTotalFollowersCount] = useState<number>(0);
   const [isCopyingPhoto, setIsCopyingPhoto] = useState(false);
   const [lineOaContacts, setLineOaContacts] = useState<LineContactRecord[]>([]);
   const [selectedLineUserId, setSelectedLineUserId] = useState<string>("");
   const [lineContactSearch, setLineContactSearch] = useState<string>("");
 
+  // Automatic background sync for @thatlaundryshop LINE OA followers (on mount, periodic, and when dialog opens)
   useEffect(() => {
-    if (deliveryPhotoPreviewJobId) {
-      getLineOaContactsAction()
-        .then((res) => {
-          if (res.success) setLineOaContacts(res.contacts || []);
-        })
-        .catch(() => {});
-    } else {
+    let isCancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const fetchAndAutoSyncFollowers = async () => {
+      try {
+        const res = await getLineOaContactsAction();
+        if (isCancelled) return;
+        if (res.success) {
+          setLineOaContacts(res.contacts || []);
+          if (res.totalFollowersCount) {
+            setLineTotalFollowersCount(res.totalFollowersCount);
+          }
+          const stillSyncing = Boolean(res.isAutoSyncing || (res.remainingUnsyncedCount ?? 0) > 0);
+          setIsSyncingLineFollowers(stillSyncing);
+          if (stillSyncing) {
+            pollTimer = setTimeout(fetchAndAutoSyncFollowers, 2500);
+          }
+        }
+      } catch {
+        // silent
+      }
+    };
+
+    fetchAndAutoSyncFollowers();
+    const periodicTimer = setInterval(fetchAndAutoSyncFollowers, 120000);
+
+    return () => {
+      isCancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      clearInterval(periodicTimer);
+    };
+  }, [deliveryPhotoPreviewJobId]);
+
+  useEffect(() => {
+    if (!deliveryPhotoPreviewJobId) {
       setSelectedLineUserId("");
     }
   }, [deliveryPhotoPreviewJobId]);
@@ -5316,36 +5346,52 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       <div className="flex flex-col gap-2 pt-2 border-t border-slate-200/80 text-xs">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="text-slate-600 font-bold">
-                            Look up Customer ID from @thatlaundryshop Followers ({lineOaContacts.length} loaded):
+                            Look up Customer ID from @thatlaundryshop Followers ({lineOaContacts.length.toLocaleString()}
+                            {lineTotalFollowersCount > lineOaContacts.length ? ` / ${lineTotalFollowersCount.toLocaleString()}` : ""} loaded):
                           </span>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={isSyncingLineFollowers}
-                            onClick={async () => {
-                              setIsSyncingLineFollowers(true);
-                              try {
-                                const res = await syncLineOaFollowersAction(150);
-                                if (res.success) {
-                                  setLineOaContacts(res.contacts || []);
-                                  toast.success(
-                                    `Synced ${res.syncedCount} new LINE followers (${res.linkedCustomerCount} auto-matched to CRM customers)!`
-                                  );
-                                } else {
-                                  toast.error(res.error || "Failed to sync LINE followers");
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10.5px] font-bold border ${
+                                isSyncingLineFollowers
+                                  ? "bg-amber-50 text-amber-800 border-amber-200"
+                                  : "bg-emerald-50 text-emerald-800 border-emerald-200"
+                              }`}
+                            >
+                              <RefreshCw size={10} className={isSyncingLineFollowers ? "animate-spin text-amber-600" : "text-emerald-600"} />
+                              <span>{isSyncingLineFollowers ? "Auto-Syncing @thatlaundryshop..." : "Auto-Synced @thatlaundryshop"}</span>
+                            </span>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={isSyncingLineFollowers}
+                              onClick={async () => {
+                                setIsSyncingLineFollowers(true);
+                                try {
+                                  const res = await syncLineOaFollowersAction(400);
+                                  if (res.success) {
+                                    setLineOaContacts(res.contacts || []);
+                                    if (res.totalFollowersCount) setLineTotalFollowersCount(res.totalFollowersCount);
+                                    toast.success(
+                                      res.syncedCount > 0
+                                        ? `Synced ${res.syncedCount} new LINE followers (${res.linkedCustomerCount} auto-matched to CRM customers)!`
+                                        : `All ${res.contacts.length.toLocaleString()} @thatlaundryshop followers are up to date!`
+                                    );
+                                  } else {
+                                    toast.error(res.error || "Failed to sync LINE followers");
+                                  }
+                                } catch (err: any) {
+                                  toast.error(err?.message || "Sync failed");
+                                } finally {
+                                  setIsSyncingLineFollowers(false);
                                 }
-                              } catch (err: any) {
-                                toast.error(err?.message || "Sync failed");
-                              } finally {
-                                setIsSyncingLineFollowers(false);
-                              }
-                            }}
-                            className="h-7 px-2.5 text-[11px] font-bold border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50 cursor-pointer"
-                          >
-                            <RefreshCw size={11} className={`mr-1 ${isSyncingLineFollowers ? "animate-spin" : ""}`} />
-                            <span>{isSyncingLineFollowers ? "Syncing @thatlaundryshop..." : "Sync @thatlaundryshop Followers"}</span>
-                          </Button>
+                              }}
+                              className="h-7 px-2 text-[10.5px] font-bold border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer"
+                              title="Force immediate re-check of @thatlaundryshop followers"
+                            >
+                              <RefreshCw size={11} className={isSyncingLineFollowers ? "animate-spin" : ""} />
+                            </Button>
+                          </div>
                         </div>
 
                         <div className="flex flex-col sm:flex-row gap-2">

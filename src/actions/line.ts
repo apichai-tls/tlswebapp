@@ -200,14 +200,48 @@ function normalizeHandle(str?: string | null): string {
   return str.trim().toLowerCase().replace(/^@/, "");
 }
 
+// Background Auto-Sync state for @thatlaundryshop followers
+let isBackgroundFollowerSyncRunning = false;
+let lastFollowerListCheckAt = 0;
+let cachedTotalFollowerCount = 0;
+let cachedRemainingUnsyncedCount = 0;
+
+function ensureBackgroundLineFollowerSyncLoop(): void {
+  if (isBackgroundFollowerSyncRunning) return;
+  isBackgroundFollowerSyncRunning = true;
+  (async () => {
+    try {
+      let safetyIterations = 0;
+      while (safetyIterations < 40) {
+        safetyIterations++;
+        const res = await syncLineOaFollowersAction(400, true);
+        if (!res.success || (res.remainingUnsyncedCount ?? 0) <= 0 || res.syncedCount === 0) {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    } catch (err) {
+      console.warn("[LINE OA Auto-Sync] Background loop error:", err);
+    } finally {
+      isBackgroundFollowerSyncRunning = false;
+    }
+  })();
+}
+
 /**
  * Syncs existing followers directly from `@thatlaundryshop` via LINE's Verified Followers API
  * (`GET /v2/bot/followers/ids` + `GET /v2/bot/profile/{userId}`) and automatically links them to CRM customers!
  */
-export async function syncLineOaFollowersAction(maxToSync = 150): Promise<{
+export async function syncLineOaFollowersAction(
+  maxToSync = 400,
+  isInternalBackgroundCall = false
+): Promise<{
   success: boolean;
   syncedCount: number;
   linkedCustomerCount: number;
+  totalFollowersCount?: number;
+  remainingUnsyncedCount?: number;
+  isAutoSyncing?: boolean;
   contacts: LineContactRecord[];
   error?: string;
 }> {
@@ -234,19 +268,22 @@ export async function syncLineOaFollowersAction(maxToSync = 150): Promise<{
     }
     const existingById = new Map(existingContacts.map((c) => [c.userId, c]));
 
-    // Fetch ALL follower IDs across pages from LINE API (up to 5,000 followers)
+    // Fetch ALL follower IDs across pages from LINE API (up to 20,000 followers)
     const followerIds: string[] = [];
     let nextCursor: string | undefined = undefined;
     do {
       const page = await fetchLineFollowerIdsPage(settings.channelAccessToken, nextCursor, 1000);
       followerIds.push(...page.userIds);
       nextCursor = page.next;
-    } while (nextCursor && followerIds.length < 5000);
+    } while (nextCursor && followerIds.length < 20000);
 
-    // Fetch profiles for followers not yet in cache (up to maxToSync per batch so each click loads the next batch!)
-    const idsToFetch = followerIds
-      .filter((id) => !existingById.has(id))
-      .slice(0, maxToSync);
+    lastFollowerListCheckAt = Date.now();
+    cachedTotalFollowerCount = Math.max(followerIds.length, existingById.size);
+
+    const allUnsyncedIds = followerIds.filter((id) => !existingById.has(id));
+    const idsToFetch = allUnsyncedIds.slice(0, maxToSync);
+    const remainingAfterBatch = Math.max(0, allUnsyncedIds.length - idsToFetch.length);
+    cachedRemainingUnsyncedCount = remainingAfterBatch;
 
     const allCustomers = await prisma.customer.findMany({
       select: {
@@ -261,8 +298,8 @@ export async function syncLineOaFollowersAction(maxToSync = 150): Promise<{
     let linkedCustomerCount = 0;
     const nowIso = new Date().toISOString();
 
-    // Fetch in parallel batches of 15
-    const batchSize = 15;
+    // Fetch in fast parallel batches of 35
+    const batchSize = 35;
     for (let i = 0; i < idsToFetch.length; i += batchSize) {
       const slice = idsToFetch.slice(i, i + batchSize);
       const profiles = await Promise.all(
@@ -318,21 +355,30 @@ export async function syncLineOaFollowersAction(maxToSync = 150): Promise<{
       }
     }
 
-    const mergedContacts = Array.from(existingById.values()).slice(0, 5000);
-    await prisma.setting.upsert({
-      where: { key: "lineOaContacts" },
-      update: { value: JSON.stringify(mergedContacts) },
-      create: { key: "lineOaContacts", value: JSON.stringify(mergedContacts) },
-    });
+    const mergedContacts = Array.from(existingById.values()).slice(0, 20000);
+    if (idsToFetch.length > 0 || linkedCustomerCount > 0) {
+      await prisma.setting.upsert({
+        where: { key: "lineOaContacts" },
+        update: { value: JSON.stringify(mergedContacts) },
+        create: { key: "lineOaContacts", value: JSON.stringify(mergedContacts) },
+      });
+    }
 
     if (linkedCustomerCount > 0) {
       invalidateDbCache();
+    }
+
+    if (!isInternalBackgroundCall && remainingAfterBatch > 0) {
+      ensureBackgroundLineFollowerSyncLoop();
     }
 
     return {
       success: true,
       syncedCount: idsToFetch.length,
       linkedCustomerCount,
+      totalFollowersCount: cachedTotalFollowerCount,
+      remainingUnsyncedCount: remainingAfterBatch,
+      isAutoSyncing: remainingAfterBatch > 0 || isBackgroundFollowerSyncRunning,
       contacts: mergedContacts,
     };
   } catch (err: any) {
@@ -349,6 +395,9 @@ export async function syncLineOaFollowersAction(maxToSync = 150): Promise<{
 export async function getLineOaContactsAction(): Promise<{
   success: boolean;
   contacts: LineContactRecord[];
+  totalFollowersCount?: number;
+  remainingUnsyncedCount?: number;
+  isAutoSyncing?: boolean;
   error?: string;
 }> {
   try {
@@ -365,12 +414,18 @@ export async function getLineOaContactsAction(): Promise<{
       } catch {}
     }
 
-    // If contacts cache is empty on first load, automatically sync initial batch of followers from @thatlaundryshop!
+    // If contacts cache is empty on first load, sync initial batch immediately and trigger background auto-sync!
     if (contacts.length === 0) {
-      const syncRes = await syncLineOaFollowersAction(60);
+      const syncRes = await syncLineOaFollowersAction(200);
       if (syncRes.success && syncRes.contacts.length > 0) {
         contacts = syncRes.contacts;
       }
+    } else if (
+      cachedRemainingUnsyncedCount > 0 ||
+      Date.now() - lastFollowerListCheckAt > 45_000
+    ) {
+      // Automatically trigger background sync for any new or remaining @thatlaundryshop followers
+      ensureBackgroundLineFollowerSyncLoop();
     }
 
     if (contacts.length > 0) {
@@ -391,7 +446,13 @@ export async function getLineOaContactsAction(): Promise<{
       });
     }
 
-    return { success: true, contacts };
+    return {
+      success: true,
+      contacts,
+      totalFollowersCount: Math.max(cachedTotalFollowerCount, contacts.length),
+      remainingUnsyncedCount: cachedRemainingUnsyncedCount,
+      isAutoSyncing: isBackgroundFollowerSyncRunning || cachedRemainingUnsyncedCount > 0,
+    };
   } catch (err: any) {
     return {
       success: false,

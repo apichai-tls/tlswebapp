@@ -510,15 +510,29 @@ export function AdminSettings() {
       const res = await getLineOaContactsAction();
       if (res.success) {
         setLineContacts(res.contacts || []);
+        return Boolean(res.isAutoSyncing || (res.remainingUnsyncedCount ?? 0) > 0);
       }
     } catch {
       // ignore
     }
+    return false;
   }, []);
 
   useEffect(() => {
     if (activeSettingsTab === "all" || activeSettingsTab === "payments" || activeSettingsTab === "system") {
-      loadLineContacts();
+      let cancelled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const poll = async () => {
+        const stillSyncing = await loadLineContacts();
+        if (!cancelled && stillSyncing) {
+          timer = setTimeout(poll, 2500);
+        }
+      };
+      poll();
+      return () => {
+        cancelled = true;
+        if (timer) clearTimeout(timer);
+      };
     }
   }, [activeSettingsTab, loadLineContacts]);
 
