@@ -5,7 +5,7 @@ import path from "path";
 import { prisma } from "@/lib/prisma";
 import { invalidateDbCache } from "@/lib/db-cache";
 import { publishOrderEvent } from "@/lib/realtime-bus";
-import { formatJobDisplayId } from "@/lib/utils";
+import { formatJobDisplayId, isValidPhoneNumber } from "@/lib/utils";
 import {
   getLineBotInfo,
   getLineUserProfile,
@@ -197,7 +197,33 @@ export async function saveLineOaSettingsAction(params: {
 
 function normalizeHandle(str?: string | null): string {
   if (!str) return "";
-  return str.trim().toLowerCase().replace(/^@/, "");
+  const cleaned = str.trim().toLowerCase().replace(/^@+/, "").trim();
+  if (
+    !cleaned ||
+    cleaned.length < 2 ||
+    cleaned === "-" ||
+    cleaned === "--" ||
+    cleaned === "n/a" ||
+    cleaned === "na" ||
+    cleaned === "none" ||
+    cleaned === "null" ||
+    cleaned === "undefined" ||
+    cleaned === "line user" ||
+    !/[a-z0-9\u0E00-\u0E7F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/i.test(cleaned)
+  ) {
+    return "";
+  }
+  return cleaned;
+}
+
+function normalizeValidPhoneDigits(phone?: string | null): string {
+  if (!isValidPhoneNumber(phone)) return "";
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (digits.length < 8 || /^0+$/.test(digits)) return "";
+  if (digits.startsWith("66") && digits.length >= 10) {
+    return "0" + digits.slice(2);
+  }
+  return digits;
 }
 
 // Background Auto-Sync state for @thatlaundryshop followers
@@ -330,6 +356,11 @@ export async function syncLineOaFollowersAction(
           );
           if (nameMatches.length === 1) {
             matchedCust = nameMatches[0];
+          } else if (
+            nameMatches.length > 1 &&
+            new Set(nameMatches.map((c) => normalizeHandle(c.name)).filter(Boolean)).size === 1
+          ) {
+            matchedCust = nameMatches[0];
           }
         }
 
@@ -350,7 +381,7 @@ export async function syncLineOaFollowersAction(
           lastInteractionAt: nowIso,
           linkedCustomerId: matchedCust?.id || null,
           linkedCustomerName: matchedCust?.name || null,
-          linkedCustomerPhone: matchedCust?.phone || null,
+          linkedCustomerPhone: isValidPhoneNumber(matchedCust?.phone) ? matchedCust!.phone : null,
         });
       }
     }
@@ -434,14 +465,26 @@ export async function getLineOaContactsAction(): Promise<{
         where: { lineId: { in: userIds } },
         select: { id: true, name: true, phone: true, lineId: true },
       });
-      const byLineId = new Map(linkedCustomers.map((c) => [c.lineId, c]));
+      const byLineId = new Map<string, (typeof linkedCustomers)[number]>();
+      const lineIdCounts = new Map<string, Set<string>>();
+      for (const lc of linkedCustomers) {
+        if (!lc.lineId) continue;
+        const normName = normalizeHandle(lc.name);
+        if (!lineIdCounts.has(lc.lineId)) lineIdCounts.set(lc.lineId, new Set());
+        if (normName) lineIdCounts.get(lc.lineId)!.add(normName);
+        if (!byLineId.has(lc.lineId)) {
+          byLineId.set(lc.lineId, lc);
+        }
+      }
       contacts = contacts.map((c) => {
-        const match = byLineId.get(c.userId);
+        const uniqueNamesCount = lineIdCounts.get(c.userId)?.size ?? 0;
+        const match = uniqueNamesCount <= 1 ? byLineId.get(c.userId) : undefined;
+        const candidatePhone = match?.phone || c.linkedCustomerPhone || null;
         return {
           ...c,
           linkedCustomerId: match?.id || c.linkedCustomerId || null,
           linkedCustomerName: match?.name || c.linkedCustomerName || null,
-          linkedCustomerPhone: match?.phone || c.linkedCustomerPhone || null,
+          linkedCustomerPhone: isValidPhoneNumber(candidatePhone) ? candidatePhone : null,
         };
       });
     }
@@ -500,7 +543,7 @@ export async function linkLineUserToCustomerAction(params: {
                   ...c,
                   linkedCustomerId: updated.id,
                   linkedCustomerName: updated.name,
-                  linkedCustomerPhone: updated.phone,
+                  linkedCustomerPhone: isValidPhoneNumber(updated.phone) ? updated.phone : null,
                 }
               : c
           );
@@ -645,10 +688,60 @@ export async function sendDeliveryProofViaLineAction(params: {
       ? await prisma.customer.findUnique({ where: { id: job.customerId } })
       : null;
 
-    if (!customer && job.customerPhone) {
+    if (!customer && isValidPhoneNumber(job.customerPhone)) {
       customer = await prisma.customer.findFirst({
-        where: { phone: job.customerPhone },
+        where: { phone: job.customerPhone! },
       });
+    }
+
+    // If customer profile is a duplicate without lineId (e.g. second profile with same exact name),
+    // check if another CRM profile for the same customer name already has a valid LINE ID
+    const targetName = (customer?.name || job.customerName || "").trim();
+    if ((!customer || !isValidLineUserId(customer.lineId)) && targetName.length >= 2) {
+      const siblingWithLine = await prisma.customer.findFirst({
+        where: {
+          name: { equals: targetName, mode: "insensitive" },
+          lineId: { startsWith: "U" },
+        },
+      });
+      if (siblingWithLine && isValidLineUserId(siblingWithLine.lineId)) {
+        const otherCustomersWithSameLineId = await prisma.customer.findMany({
+          where: { lineId: siblingWithLine.lineId },
+          select: { name: true },
+        });
+        const distinctNames = new Set(
+          otherCustomersWithSameLineId.map((c) => normalizeHandle(c.name)).filter(Boolean)
+        );
+        if (distinctNames.size <= 1) {
+          if (customer) {
+            await prisma.customer.update({
+              where: { id: customer.id },
+              data: { lineId: siblingWithLine.lineId },
+            });
+            customer.lineId = siblingWithLine.lineId;
+          } else {
+            customer = siblingWithLine;
+          }
+        }
+      }
+    }
+
+    // Guard against any previously corrupted customer.lineId shared across different customer names
+    if (customer?.lineId && isValidLineUserId(customer.lineId) && !params.overrideLineUserId) {
+      const sharedProfiles = await prisma.customer.findMany({
+        where: { lineId: customer.lineId },
+        select: { id: true, name: true },
+      });
+      const distinctNames = new Set(
+        sharedProfiles.map((p) => normalizeHandle(p.name)).filter(Boolean)
+      );
+      if (distinctNames.size > 1) {
+        console.warn(
+          `[LINE OA] Refusing ambiguous shared lineId ${customer.lineId} across multiple customer names:`,
+          Array.from(distinctNames)
+        );
+        customer.lineId = null;
+      }
     }
 
     const brand = customer?.brand || "that_laundry_shop";
@@ -680,34 +773,32 @@ export async function sendDeliveryProofViaLineAction(params: {
 
     if (!isValidLineUserId(lineUserId)) {
       const contactsRes = await getLineOaContactsAction();
-      const normSavedLineHandle = (jobLineIdFromNotes || customer?.lineId || "")
-        .trim()
-        .toLowerCase()
-        .replace(/^@/, "");
-      const normCustomerName = (customer?.name || job.customerName || "")
-        .trim()
-        .toLowerCase();
+      const normSavedLineHandle = normalizeHandle(jobLineIdFromNotes || customer?.lineId);
+      const normCustomerName = normalizeHandle(customer?.name || job.customerName);
+      const validJobPhoneDigits = normalizeValidPhoneDigits(
+        job.customerPhone || customer?.phone
+      );
 
       const matchedContact =
         contactsRes.contacts.find(
           (c) =>
-            (customer && c.linkedCustomerId === customer.id) ||
-            (job.customerPhone &&
-              c.linkedCustomerPhone &&
-              c.linkedCustomerPhone.replace(/\D/g, "") ===
-                job.customerPhone.replace(/\D/g, ""))
+            (customer &&
+              c.linkedCustomerId === customer.id &&
+              (!c.linkedCustomerName ||
+                !normCustomerName ||
+                normalizeHandle(c.linkedCustomerName) === normCustomerName)) ||
+            (Boolean(validJobPhoneDigits) &&
+              normalizeValidPhoneDigits(c.linkedCustomerPhone) === validJobPhoneDigits)
         ) ||
         (normSavedLineHandle
           ? contactsRes.contacts.find(
-              (c) =>
-                c.displayName.trim().toLowerCase().replace(/^@/, "") ===
-                normSavedLineHandle
+              (c) => normalizeHandle(c.displayName) === normSavedLineHandle
             )
           : undefined) ||
         (normCustomerName
           ? (() => {
               const byName = contactsRes.contacts.filter(
-                (c) => c.displayName.trim().toLowerCase() === normCustomerName
+                (c) => normalizeHandle(c.displayName) === normCustomerName
               );
               return byName.length === 1 ? byName[0] : undefined;
             })()

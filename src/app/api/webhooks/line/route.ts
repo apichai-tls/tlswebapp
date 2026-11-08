@@ -36,7 +36,23 @@ function normalizeDigits(str?: string | null): string {
 
 function normalizeHandle(str?: string | null): string {
   if (!str) return "";
-  return str.trim().toLowerCase().replace(/^@/, "");
+  const cleaned = str.trim().toLowerCase().replace(/^@+/, "").trim();
+  if (
+    !cleaned ||
+    cleaned.length < 2 ||
+    cleaned === "-" ||
+    cleaned === "--" ||
+    cleaned === "n/a" ||
+    cleaned === "na" ||
+    cleaned === "none" ||
+    cleaned === "null" ||
+    cleaned === "undefined" ||
+    cleaned === "line user" ||
+    !/[a-z0-9\u0E00-\u0E7F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/i.test(cleaned)
+  ) {
+    return "";
+  }
+  return cleaned;
 }
 
 export async function POST(req: NextRequest) {
@@ -192,9 +208,12 @@ export async function POST(req: NextRequest) {
         linkedCustomerName:
           matchedCustomer?.name ||
           (existingIdx >= 0 ? contacts[existingIdx].linkedCustomerName : null),
-        linkedCustomerPhone:
-          matchedCustomer?.phone ||
-          (existingIdx >= 0 ? contacts[existingIdx].linkedCustomerPhone : null),
+        linkedCustomerPhone: (() => {
+          const cand =
+            matchedCustomer?.phone ||
+            (existingIdx >= 0 ? contacts[existingIdx].linkedCustomerPhone : null);
+          return normalizeDigits(cand).length >= 8 ? cand : null;
+        })(),
       };
 
       if (existingIdx >= 0) {

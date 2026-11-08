@@ -490,9 +490,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   }, [deliveryPhotoPreviewJobId]);
 
   useEffect(() => {
-    if (!deliveryPhotoPreviewJobId) {
-      setSelectedLineUserId("");
-    }
+    setSelectedLineUserId("");
+    setLineContactSearch("");
   }, [deliveryPhotoPreviewJobId]);
   
   const [reopenDialog, setReopenDialog] = useState<{
@@ -4971,20 +4970,30 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
               customerPhone: deliveryPhotoPreviewJob.customerPhone,
               customerName: deliveryPhotoPreviewJob.customerName,
             });
-            const customerLineId = bMeta.customerLineId || matchedCustomer?.lineId || "";
+            const cleanLineHandle = (s?: string | null) => {
+              if (!s) return "";
+              const v = s.trim().toLowerCase().replace(/^@+/, "").trim();
+              if (!v || v.length < 2 || v === "-" || v === "--" || v === "n/a" || v === "none" || v === "line user" || !/[a-z0-9\u0E00-\u0E7F]/i.test(v)) return "";
+              return v;
+            };
+            const siblingCustomerWithLine =
+              !matchedCustomer?.lineId && (matchedCustomer?.name || deliveryPhotoPreviewJob.customerName)
+                ? customers.find(
+                    (c) =>
+                      cleanLineHandle(c.name) === cleanLineHandle(matchedCustomer?.name || deliveryPhotoPreviewJob.customerName) &&
+                      /^U[0-9a-f]{32}$/i.test((c.lineId || "").trim())
+                  )
+                : undefined;
+            const customerLineId = bMeta.customerLineId || matchedCustomer?.lineId || siblingCustomerWithLine?.lineId || "";
             const isLinkedLineUserId = /^U[0-9a-f]{32}$/i.test(customerLineId.trim());
+            const normTargetLineHandle = cleanLineHandle(customerLineId);
+            const normTargetCustName = cleanLineHandle(matchedCustomer?.name || deliveryPhotoPreviewJob.customerName);
             const autoMatchedLineContact = !isLinkedLineUserId
               ? lineOaContacts.find(
                   (c) =>
                     (matchedCustomer && c.linkedCustomerId === matchedCustomer.id) ||
-                    (customerLineId &&
-                      c.displayName.trim().toLowerCase().replace(/^@/, "") ===
-                        customerLineId.trim().toLowerCase().replace(/^@/, "")) ||
-                    ((matchedCustomer?.name || deliveryPhotoPreviewJob.customerName) &&
-                      c.displayName.trim().toLowerCase() ===
-                        (matchedCustomer?.name || deliveryPhotoPreviewJob.customerName || "")
-                          .trim()
-                          .toLowerCase())
+                    (Boolean(normTargetLineHandle) && cleanLineHandle(c.displayName) === normTargetLineHandle) ||
+                    (Boolean(normTargetCustName) && cleanLineHandle(c.displayName) === normTargetCustName)
                 )
               : undefined;
             const effectiveLineUserId =
