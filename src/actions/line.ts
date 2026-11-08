@@ -750,6 +750,32 @@ export async function sendDeliveryProofViaLineAction(params: {
     );
     const httpsPhotos = resolvedPhotos.filter((u): u is string => Boolean(u));
 
+    const branch = job.branchId
+      ? await prisma.shopLocation.findUnique({ where: { id: job.branchId } }).catch(() => null)
+      : null;
+    const locationSignal = [
+      job.dropoffLocation || "",
+      job.pickupLocation || "",
+      (job as any).deliveryAddress || "",
+      customer?.defaultAddress || "",
+      branch?.name || "",
+      branch?.area || "",
+      job.branchId || "",
+    ].join(" ");
+    const dLat = Number((job as any).dropoffLat ?? (job as any).pickupLat ?? 0);
+    const dLng = Number((job as any).dropoffLng ?? (job as any).pickupLng ?? 0);
+    const isPattayaCoords =
+      dLat > 12.5 && dLat < 13.35 && dLng > 100.75 && dLng < 101.15;
+    const isPattayaLocation =
+      (branch?.area || "").toUpperCase() === "PTY" ||
+      isPattayaCoords ||
+      /pattaya|พัทยา|chonburi|ชลบุรี|jomtien|จอมเทียน|naklua|นาเกลือ|pratumnak|พระตำหนัก|banglamung|บางละมุง/i.test(
+        locationSignal
+      );
+    const googleReviewUrl = isPattayaLocation
+      ? "https://g.page/r/Ca87xY1AD8r3EBE/review"
+      : "https://g.page/r/CRQrSI5dp5a8EBE/review";
+
     const displayId = formatJobDisplayId(job.id);
     const customerDisplayName = job.customerName || customer?.name || "Valued Customer";
     const dropoffText = job.dropoffLocation ? `\n📍 Location: ${job.dropoffLocation}` : "";
@@ -758,7 +784,7 @@ export async function sendDeliveryProofViaLineAction(params: {
 
     const textMessage =
       params.customMessage?.trim() ||
-      `✨ Hello ${customerDisplayName},\nYour laundry order #${displayId} has been delivered! 🧺🚚${dropoffText}\n\nThank you for choosing ${shopBrandLabel}! 💚`;
+      `✨ Hello ${customerDisplayName},\nYour laundry order #${displayId} has been delivered! 🧺🚚${dropoffText}\n\nThank you for choosing ${shopBrandLabel}! 💚\nIf you are happy with our service, please give us an honest good review on Google:\n${googleReviewUrl}`;
 
     const messages: LineMessageObject[] = [
       {

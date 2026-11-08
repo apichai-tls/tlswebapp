@@ -5056,9 +5056,30 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                 formattedPhone = digits;
               }
 
+              const jobBranch = shopLocations.find((s) => s.id === deliveryPhotoPreviewJob.branchId);
+              const locSignal = [
+                deliveryPhotoPreviewJob.dropoffLocation || "",
+                deliveryPhotoPreviewJob.pickupLocation || "",
+                deliveryPhotoPreviewJob.deliveryAddress || "",
+                matchedCustomer?.defaultAddress || "",
+                jobBranch?.name || "",
+                jobBranch?.area || "",
+                deliveryPhotoPreviewJob.branchId || "",
+              ].join(" ");
+              const dLat = Number(deliveryPhotoPreviewJob.dropoffCoords?.lat || deliveryPhotoPreviewJob.pickupCoords?.lat || 0);
+              const dLng = Number(deliveryPhotoPreviewJob.dropoffCoords?.lng || deliveryPhotoPreviewJob.pickupCoords?.lng || 0);
+              const isPattayaCoords = dLat > 12.5 && dLat < 13.35 && dLng > 100.75 && dLng < 101.15;
+              const isPattayaOrder =
+                (jobBranch?.area || "").toUpperCase() === "PTY" ||
+                isPattayaCoords ||
+                /pattaya|พัทยา|chonburi|ชลบุรี|jomtien|จอมเทียน|naklua|นาเกลือ|pratumnak|พระตำหนัก|banglamung|บางละมุง/i.test(locSignal);
+              const googleReviewUrl = isPattayaOrder
+                ? "https://g.page/r/Ca87xY1AD8r3EBE/review"
+                : "https://g.page/r/CRQrSI5dp5a8EBE/review";
+
               const msg = `✨ Hello ${deliveryPhotoPreviewJob.customerName || "Valued Customer"},\nYour laundry order #${formatJobDisplayId(deliveryPhotoPreviewJob.id)} has been delivered! 🧺🚚${
                 deliveryPhotoPreviewJob.dropoffLocation ? `\n📍 Location: ${deliveryPhotoPreviewJob.dropoffLocation}` : ""
-              }\n\nThank you for choosing That Laundry Shop! 💚`;
+              }\n\nThank you for choosing That Laundry Shop! 💚\nIf you are happy with our service, please give us an honest good review on Google:\n${googleReviewUrl}`;
               const waUrl = formattedPhone
                 ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}`
                 : `https://wa.me/?text=${encodeURIComponent(msg)}`;
