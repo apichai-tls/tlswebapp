@@ -1015,7 +1015,12 @@ export async function sendSocialMessageAction(input: {
                 text: { body: outboundTextWithQuote },
               }),
             });
-            if (textRes.ok) status = 'delivered';
+            if (textRes.ok) {
+              status = 'delivered';
+            } else {
+              const errJson = await textRes.json().catch(() => ({}));
+              externalError = errJson?.error?.message || `Meta WhatsApp Cloud API HTTP ${textRes.status}`;
+            }
           }
 
           for (const httpsImg of resolvedImageUrls) {

@@ -155,7 +155,7 @@ export function AdminSocialInbox({
   const [replyingTo, setReplyingTo] = useState<SocialMessageReplyRef | null>(null);
   const [showTemplatesBar, setShowTemplatesBar] = useState(true);
   const [templateLang, setTemplateLang] = useState<'en' | 'th' | 'both'>('en');
-  const [openWaWebOnSend, setOpenWaWebOnSend] = useState(false);
+  const [openWaWebOnSend, setOpenWaWebOnSend] = useState(true);
   const [sendingMsg, setSendingMsg] = useState(false);
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
 
@@ -566,6 +566,17 @@ export function AdminSocialInbox({
       return;
     }
 
+    const formattedTargetPhone = formatPhoneForWhatsApp(waPhoneInput, waCountryCode);
+    const hasDirectApiConfigured =
+      (config?.whatsapp?.mode === 'cloud_api' &&
+        Boolean(config?.whatsapp?.phoneNumberId?.trim() && config?.whatsapp?.accessToken?.trim())) ||
+      (config?.whatsapp?.mode === 'gateway_api' && Boolean(config?.whatsapp?.gatewayUrl?.trim()));
+
+    // Open WhatsApp window synchronously BEFORE async server call so browser popup blocker never blocks it
+    if (launchTarget && launchTarget !== 'none' && formattedTargetPhone && !hasDirectApiConfigured) {
+      openWhatsAppBridgeWindow(formattedTargetPhone, waInitialMessage, launchTarget);
+    }
+
     try {
       setCreatingWaChat(true);
       const res = await createWhatsAppChatAction({
@@ -585,14 +596,6 @@ export function AdminSocialInbox({
         setIsNewWhatsAppOpen(false);
 
         toast.success(`WhatsApp chat ready with ${res.conversation.contactName}`);
-
-        if (launchTarget && launchTarget !== 'none') {
-          openWhatsAppBridgeWindow(
-            res.conversation.externalContactId,
-            waInitialMessage,
-            launchTarget
-          );
-        }
 
         // Reset modal fields
         setWaPhoneInput('');
@@ -664,6 +667,23 @@ export function AdminSocialInbox({
     const textToSend = composerText.trim();
     const replyRef = replyingTo || undefined;
 
+    const hasDirectWaApi =
+      (config?.whatsapp?.mode === 'cloud_api' &&
+        Boolean(config?.whatsapp?.phoneNumberId?.trim() && config?.whatsapp?.accessToken?.trim())) ||
+      (config?.whatsapp?.mode === 'gateway_api' && Boolean(config?.whatsapp?.gatewayUrl?.trim()));
+
+    // Open WhatsApp window synchronously BEFORE async server call so browser popup blocker never blocks it
+    if (
+      activeConversation.channel === 'whatsapp' &&
+      (forceWhatsAppTarget || (!hasDirectWaApi && openWaWebOnSend))
+    ) {
+      openWhatsAppBridgeWindow(
+        activeConversation.externalContactId || activeConversation.contactPhone || '',
+        textToSend,
+        forceWhatsAppTarget || config?.whatsapp?.launchTarget || 'companion_popup'
+      );
+    }
+
     try {
       setSendingMsg(true);
       setComposerText('');
@@ -683,17 +703,6 @@ export function AdminSocialInbox({
       if (res.success) {
         if (res.conversations) setConversations(res.conversations);
         if (res.messages) setMessages(res.messages);
-
-        if (
-          activeConversation.channel === 'whatsapp' &&
-          (forceWhatsAppTarget || openWaWebOnSend)
-        ) {
-          openWhatsAppBridgeWindow(
-            activeConversation.externalContactId || activeConversation.contactPhone || '',
-            textToSend,
-            forceWhatsAppTarget || config?.whatsapp?.launchTarget || 'companion_popup'
-          );
-        }
 
         if (res.message?.externalError) {
           toast.warning(`Saved to chat log (API note: ${res.message.externalError})`);
