@@ -303,10 +303,22 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     [shopLocations]
   );
 
+  // Helper to check if a task's order status is ready to be optimized in a rider's route
+  const isTaskReadyForRouteOptimization = React.useCallback((task: BoardTaskItem): boolean => {
+    const status = task.job?.status;
+    if (!status) return false;
+    if (task.legType === "delivery") {
+      return ["delivery", "washed"].includes(status) && !task.job.isStuck;
+    }
+    return ["pickup", "accepted"].includes(status);
+  }, []);
+
   // Helper to evaluate a rider's route distance & estimated time (driving + stop service time)
+  // Strictly optimizes ONLY tasks whose order status is ready
   const evaluateRiderTasksMetrics = React.useCallback(
     (rider: Rider, tasks: BoardTaskItem[]) => {
-      if (tasks.length === 0) {
+      const readyTasks = tasks.filter(isTaskReadyForRouteOptimization);
+      if (readyTasks.length === 0) {
         return {
           displayTasks: [] as BoardTaskItem[],
           optimizedDistanceKm: 0,
@@ -318,7 +330,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
         };
       }
 
-      const rawTasks = [...tasks].sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
+      const rawTasks = [...readyTasks].sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
       const riderOrigin = getRiderOriginCoords(rider);
       const optimized = optimizeRiderRoute(riderOrigin, rawTasks, riderOrigin);
 
@@ -370,12 +382,12 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
         googleMapsUrl: optimized.googleMapsUrl,
       };
     },
-    [getRiderOriginCoords, boardSortMode]
+    [getRiderOriginCoords, boardSortMode, isTaskReadyForRouteOptimization]
   );
 
   // Build all active tasks (both today and overdue) so we can show counts and filter cleanly
   const { activeBoardTasks, reportBoardTasks, todayTaskCount, allActiveTaskCount } = useMemo(() => {
-    let jobs = allJobs.filter(j => !["cancel", "completed", "delivered", "tba"].includes(j.status));
+    let jobs = allJobs.filter(j => !["cancel", "completed", "delivered", "tba", "pending"].includes(j.status));
 
     if (effectiveArea !== "ALL") {
       jobs = jobs.filter(j => {
@@ -416,11 +428,11 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
       const validPickupCoords = resolvedPickupCoords || resolvedDropoffCoords;
       const validDropoffCoords = resolvedDropoffCoords || resolvedPickupCoords;
 
-      // 1. Check active Pickup leg (only if pickup has NOT been completed yet)
+      // 1. Check active Pickup leg (strictly only when order status is ready for pickup: "pickup" / "accepted")
       if (j.type === "pickup" || j.type === "full_service") {
-        const isPickupActive = ["pending", "accepted", "pickup"].includes(j.status);
-        const isPickupDone = ["picked_up", "billing", "active", "ready_to_wash", "washed", "delivery", "completed", "cancel"].includes(j.status);
-        if (isPickupActive && !isPickupDone) {
+        const isPickupReady = ["accepted", "pickup"].includes(j.status);
+        const isPickupDone = ["picked_up", "billing", "process", "active", "ready_to_wash", "washed", "delivery", "completed", "cancel"].includes(j.status);
+        if (isPickupReady && !isPickupDone) {
           const sched = j.pickupScheduledAt ? new Date(j.pickupScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date(j.createdAt));
           if (sched <= todayEnd) {
             const assignedRiderId = j.pickupRiderId || j.riderId || null;
@@ -439,29 +451,31 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
         }
       }
 
-      // 2. Check active Delivery leg (only if delivery has NOT been completed yet and scheduled <= todayEnd)
+      // 2. Check active Delivery leg (strictly only when order status is ready for delivery: "delivery" / "washed")
       if (j.type === "delivery" || j.type === "full_service" || Boolean(j.deliveryRiderId)) {
+        const isWalkInSelfPickup =
+          ((j.type as string) === "in_store" || j.dropoffLocation === "Customer Pickup at Shop") &&
+          !j.deliveryRiderId;
+        if (isWalkInSelfPickup) return;
+
         let isDeliveredStage = false;
         if (j.status === "delivery" && j.adminNotesJson) {
           try {
             const parsed = JSON.parse(j.adminNotesJson);
-            if (parsed?.kanbanStage === "delivered") isDeliveredStage = true;
+            if (parsed?.kanbanStage === "delivered" || parsed?.isRiderDelivered === true || Boolean(parsed?.deliveredAt)) {
+              isDeliveredStage = true;
+            }
           } catch {}
         }
+        const hasDeliveryPhoto = Boolean(j.deliveryProofImageUrl && j.deliveryProofImageUrl !== "[]");
         const isDeliveryDone =
           ["delivered", "completed", "cancel"].includes(j.status) ||
           isDeliveredStage ||
+          hasDeliveryPhoto ||
           j.legs?.deliveryOutbound?.status === "completed";
-        const isPickupCompletedForFullService = ["picked_up", "billing", "active", "ready_to_wash", "washed", "delivery"].includes(j.status);
-        const isSameDayPreAssignedOrExpress =
-          ["pending", "accepted", "pickup"].includes(j.status) &&
-          (Boolean(j.deliveryRiderId) || Boolean(expressInfo?.isExpress));
-        const isDeliveryActive =
-          (j.type === "delivery"
-            ? ["pending", "accepted", "picked_up", "billing", "active", "ready_to_wash", "washed", "delivery"].includes(j.status)
-            : isPickupCompletedForFullService || isSameDayPreAssignedOrExpress) && !j.isStuck;
+        const isDeliveryReady = ["washed", "delivery"].includes(j.status) && !j.isStuck;
 
-        if (isDeliveryActive && !isDeliveryDone) {
+        if (isDeliveryReady && !isDeliveryDone) {
           const sched = j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date(j.createdAt));
           if (sched <= todayEnd) {
             const assignedRiderId = j.deliveryRiderId || null;
@@ -812,7 +826,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
       const origin: LatLng = getRiderOriginCoords(rider);
 
       const riderTasks = reportBoardTasks
-        .filter(t => t.riderId === rider.id)
+        .filter(t => t.riderId === rider.id && isTaskReadyForRouteOptimization(t))
         .map(t => {
           const custName = t.job.customerName || (t.job as any).customer?.name || 'Customer';
           const loc = t.targetLocation || '-';
@@ -871,7 +885,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
         })),
       };
     });
-  }, [filteredRiders, reportBoardTasks, shopLocations, getRiderOriginCoords]);
+  }, [filteredRiders, reportBoardTasks, shopLocations, getRiderOriginCoords, isTaskReadyForRouteOptimization]);
 
   const teamOptimizationTotals = useMemo(() => {
     let totalStops = 0;

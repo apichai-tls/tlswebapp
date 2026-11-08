@@ -1466,14 +1466,29 @@ export default function RiderPage() {
   // Optimize rider route from their live GPS coordinates (or assigned branch)
   const riderOrigin = activeRider?.currentLocation || (activeRider?.branchId ? shopLocations.find(s => s.id === activeRider.branchId)?.coords : null) || { lat: 13.736717, lng: 100.523186 };
 
+  // Strictly optimize only orders whose status is ready (not pending / billing / process)
+  const readyOptimizableJobs = useMemo(() => {
+    return effectiveMyJobs.filter((t) => {
+      if (t.legType === "delivery") {
+        return ["washed", "delivery"].includes(t.job.status) && !t.job.isStuck;
+      }
+      return ["pickup", "accepted"].includes(t.job.status);
+    });
+  }, [effectiveMyJobs]);
+
+  const nonReadyJobs = useMemo(() => {
+    const readyIds = new Set(readyOptimizableJobs.map((t) => t.taskId));
+    return effectiveMyJobs.filter((t) => !readyIds.has(t.taskId));
+  }, [effectiveMyJobs, readyOptimizableJobs]);
+
   const optimizedRouteResult = useMemo(() => {
-    return optimizeRiderRoute(riderOrigin, effectiveMyJobs);
-  }, [riderOrigin, effectiveMyJobs]);
+    return optimizeRiderRoute(riderOrigin, readyOptimizableJobs);
+  }, [riderOrigin, readyOptimizableJobs]);
 
   const chronologicalRouteMeta = useMemo(() => {
     let totalKm = 0;
     let prev = riderOrigin;
-    const items = effectiveMyJobs.map((task, idx) => {
+    const items = readyOptimizableJobs.map((task, idx) => {
       const coords = task.targetCoords || prev;
       const dist = calculateEstimatedDistanceKm(prev, coords);
       totalKm = Math.round((totalKm + dist) * 10) / 10;
@@ -1485,7 +1500,7 @@ export default function RiderPage() {
       };
     });
     return { items, totalDistanceKm: totalKm };
-  }, [riderOrigin, effectiveMyJobs]);
+  }, [riderOrigin, readyOptimizableJobs]);
 
   const routeSavedKm = useMemo(() => {
     return Math.max(0, Math.round((chronologicalRouteMeta.totalDistanceKm - optimizedRouteResult.totalDistanceKm) * 10) / 10);
@@ -1497,15 +1512,16 @@ export default function RiderPage() {
   }, [chronologicalRouteMeta.totalDistanceKm, routeSavedKm]);
 
   const displayActiveJobs: (RiderTask & { stopNumber?: number; distanceFromPrevKm?: number })[] = useMemo(() => {
-    if (routeSortMode === "optimized" && optimizedRouteResult.orderedTasks.length > 0) {
-      return optimizedRouteResult.orderedTasks.map((item) => ({
-        ...item.task,
-        stopNumber: item.stopNumber,
-        distanceFromPrevKm: item.distanceFromPrevKm,
-      }));
-    }
-    return chronologicalRouteMeta.items;
-  }, [routeSortMode, optimizedRouteResult, chronologicalRouteMeta]);
+    const orderedReady =
+      routeSortMode === "optimized" && optimizedRouteResult.orderedTasks.length > 0
+        ? optimizedRouteResult.orderedTasks.map((item) => ({
+            ...item.task,
+            stopNumber: item.stopNumber,
+            distanceFromPrevKm: item.distanceFromPrevKm,
+          }))
+        : chronologicalRouteMeta.items;
+    return [...orderedReady, ...nonReadyJobs];
+  }, [routeSortMode, optimizedRouteResult, chronologicalRouteMeta, nonReadyJobs]);
 
   const historyJobs = allTasks
     .filter(t => {
@@ -1776,7 +1792,7 @@ export default function RiderPage() {
                 >
                   {riders.map((r) => {
                     const count = jobs.filter(j =>
-                      (j.pickupRiderId === r.id && ["pending", "accepted", "pickup"].includes(j.status)) ||
+                      (j.pickupRiderId === r.id && ["accepted", "pickup"].includes(j.status)) ||
                       ((j.deliveryRiderId === r.id || (!j.deliveryRiderId && j.riderId === r.id)) && ["washed", "delivery"].includes(j.status) && !j.isStuck)
                     ).length;
                     const label = r.nickname ? `${r.nickname} (${r.name})` : r.name;
@@ -1977,7 +1993,7 @@ export default function RiderPage() {
               ) : (
                 <>
                   {/* Compact Route Optimizer Card (shown when 2+ active jobs) */}
-                  {effectiveMyJobs.length >= 2 && (
+                  {readyOptimizableJobs.length >= 2 && (
                     <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950 text-white p-3.5 rounded-2xl shadow-md border border-slate-800/90 space-y-2.5">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
@@ -1998,7 +2014,7 @@ export default function RiderPage() {
                               )}
                             </div>
                             <p className="text-[10.5px] text-slate-300 truncate">
-                              {effectiveMyJobs.length} stops • ~{routeSortMode === "optimized" ? optimizedRouteResult.totalDistanceKm : chronologicalRouteMeta.totalDistanceKm} km total
+                              {readyOptimizableJobs.length} stops • ~{routeSortMode === "optimized" ? optimizedRouteResult.totalDistanceKm : chronologicalRouteMeta.totalDistanceKm} km total
                               {routeSavedKm > 0 && routeSortMode === "optimized" ? ` (saves ${routeSavedKm} km)` : ""}
                             </p>
                           </div>
@@ -2059,7 +2075,7 @@ export default function RiderPage() {
                           <div className="flex items-center gap-1.5 truncate">
                             <span className="text-indigo-400">📍</span>
                             <span className="truncate">
-                              {displayActiveJobs.map((it, idx) => `#${it.stopNumber || idx + 1} ${(it.targetLocation?.split("(")[0]?.replace("⭐ ", "") || it.job.customerName || "Stop").slice(0, 10)}`).join(" ➔ ")}
+                              {displayActiveJobs.filter((it) => it.stopNumber !== undefined).map((it, idx) => `#${it.stopNumber || idx + 1} ${(it.targetLocation?.split("(")[0]?.replace("⭐ ", "") || it.job.customerName || "Stop").slice(0, 10)}`).join(" ➔ ")}
                             </span>
                           </div>
                           <span className="text-[10px] text-indigo-300 font-extrabold shrink-0 ml-2">
@@ -2069,7 +2085,7 @@ export default function RiderPage() {
 
                         {showRouteTimeline && (
                           <div className="px-2 pb-2 pt-1 space-y-1 border-t border-slate-800/70">
-                            {displayActiveJobs.map((item, idx) => (
+                            {displayActiveJobs.filter((item) => item.stopNumber !== undefined).map((item, idx) => (
                               <div key={item.taskId} className="flex items-center justify-between gap-2 text-[11px] bg-slate-900/90 px-2 py-1 rounded-lg border border-slate-800">
                                 <div className="flex items-center gap-1.5 min-w-0">
                                   <span className={`w-4 h-4 rounded-full text-[9.5px] font-black flex items-center justify-center shrink-0 ${
@@ -2104,7 +2120,7 @@ export default function RiderPage() {
                           className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white py-2.5 px-3 rounded-xl text-xs font-black transition-all shadow-sm shadow-emerald-950/40"
                         >
                           <Navigation size={14} className="fill-white" />
-                          <span>Start Full Route in Google Maps ({effectiveMyJobs.length} stops)</span>
+                          <span>Start Full Route in Google Maps ({readyOptimizableJobs.length} stops)</span>
                           <ExternalLink size={12} className="opacity-80" />
                         </a>
                       )}
