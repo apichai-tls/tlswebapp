@@ -426,7 +426,7 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
             targetCoords: j.pickupCoords,
           });
         }
-      } else if (j.status === "delivery" && (j.deliveryRiderId === selectedRider.id || (!j.deliveryRiderId && j.riderId === selectedRider.id))) {
+      } else if ((["delivery", "washed"].includes(j.status) || j.subStatus === "ready") && !j.isStuck && (j.deliveryRiderId === selectedRider.id || (!j.deliveryRiderId && j.riderId === selectedRider.id))) {
         if (j.dropoffCoords?.lat && j.dropoffCoords?.lng) {
           riderTasks.push({
             job: j,

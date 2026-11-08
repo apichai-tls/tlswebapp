@@ -26,6 +26,37 @@ export interface OptimizedRouteResult<T = any> {
 }
 
 /**
+ * Returns the Express priority tier for a route task:
+ * - 2: EXP 100% (Highest priority — customer paid +100% for fastest turnaround)
+ * - 1: EXP 50% / Express (High priority — customer paid +50% for faster turnaround)
+ * - 0: Standard order
+ */
+export function getTaskExpressPriorityTier(task: any): number {
+  if (!task) return 0;
+  if (typeof task.priorityTier === "number") return task.priorityTier;
+
+  if (task.expressInfo?.isExpress) {
+    return task.expressInfo.is100 ? 2 : 1;
+  }
+
+  const job = task.job || task;
+  const speed = String(job?.serviceSpeed || task?.serviceSpeed || "").toLowerCase();
+  const remark = String(job?.remark || task?.remark || task?.title || "");
+
+  if (speed === "express_100" || /express\s*100%|exp\s*100%/i.test(remark)) {
+    return 2;
+  }
+  if (
+    speed === "express_50" ||
+    /express\s*50%|exp\s*50%|express\s*\d+%/i.test(remark) ||
+    (speed && speed !== "standard" && speed.includes("express"))
+  ) {
+    return 1;
+  }
+  return 0;
+}
+
+/**
  * Great-circle distance between two points in km, adjusted by ~1.25 road winding factor
  */
 export function calculateEstimatedDistanceKm(p1: LatLng, p2: LatLng): number {
@@ -56,10 +87,11 @@ function hasNonZeroCoords(coords?: LatLng | null): coords is LatLng {
 
 /**
  * Optimizes a list of rider tasks from an origin point (rider live GPS or branch).
- * Solves the Traveling Salesperson Problem (TSP) using Nearest-Neighbor + 2-Opt local search,
- * while strictly guaranteeing that Pickup for an order precedes Delivery if both exist.
+ * Strictly prioritizes Express orders first (EXP 100% -> EXP 50% -> Standard)
+ * and solves the Traveling Salesperson Problem (TSP) within each priority tier
+ * using Nearest-Neighbor + 2-Opt local search while guaranteeing Pickup precedes Delivery.
  */
-export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; legType?: string; job?: { id: string } }>(
+export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; legType?: string; job?: { id: string; serviceSpeed?: string; remark?: string }; expressInfo?: { isExpress: boolean; is100: boolean } | null }>(
   origin: LatLng,
   tasks: T[],
   fallbackOriginCoords: LatLng = { lat: 13.736717, lng: 100.523186 }
@@ -75,33 +107,51 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
     };
   }
 
+  // Ensure if a job has both pickup and delivery in the route, the pickup inherits at least the delivery's priority tier
+  const jobMaxTier = new Map<string, number>();
+  for (const t of tasks) {
+    const tier = getTaskExpressPriorityTier(t);
+    const jid = t.job?.id;
+    if (jid) {
+      jobMaxTier.set(jid, Math.max(jobMaxTier.get(jid) ?? 0, tier));
+    }
+  }
+  const getEffectiveTier = (t: T): number => {
+    const base = getTaskExpressPriorityTier(t);
+    const jid = t.job?.id;
+    return jid ? Math.max(base, jobMaxTier.get(jid) ?? base) : base;
+  };
+
   // Partition tasks into those with valid coordinates vs missing coordinates
   const validTasks = tasks.filter((t) => hasNonZeroCoords(t.targetCoords));
-  const fallbackTasks = tasks.filter((t) => !hasNonZeroCoords(t.targetCoords));
+  const fallbackTasks = [...tasks.filter((t) => !hasNonZeroCoords(t.targetCoords))].sort(
+    (a, b) => getEffectiveTier(b) - getEffectiveTier(a)
+  );
 
   if (validTasks.length <= 1) {
     const single = validTasks[0];
     const dist = single ? calculateEstimatedDistanceKm(start, single.targetCoords!) : 0;
-    const items: OptimizedRouteItem<T>[] = single
-      ? [
-          {
-            task: single,
-            stopNumber: 1,
-            targetCoords: single.targetCoords!,
-            distanceFromPrevKm: dist,
-            cumulativeDistanceKm: dist,
-          },
-        ]
-      : [];
 
-    fallbackTasks.forEach((ft) => {
-      items.push({
-        task: ft,
-        stopNumber: items.length + 1,
-        targetCoords: single ? single.targetCoords! : start,
-        distanceFromPrevKm: 0,
-        cumulativeDistanceKm: dist,
-      });
+    // Combine single valid task and fallback tasks in priority order (EXP 100% -> EXP 50% -> Standard)
+    const combined = [...validTasks, ...fallbackTasks].sort(
+      (a, b) => getEffectiveTier(b) - getEffectiveTier(a)
+    );
+
+    let cumulative = 0;
+    let prevPos = start;
+    const items: OptimizedRouteItem<T>[] = combined.map((t, idx) => {
+      const hasCoords = hasNonZeroCoords(t.targetCoords);
+      const coords = hasCoords ? t.targetCoords! : prevPos;
+      const stepDist = hasCoords ? calculateEstimatedDistanceKm(prevPos, coords) : 0;
+      cumulative = Math.round((cumulative + stepDist) * 10) / 10;
+      prevPos = coords;
+      return {
+        task: t,
+        stopNumber: idx + 1,
+        targetCoords: coords,
+        distanceFromPrevKm: stepDist,
+        cumulativeDistanceKm: cumulative,
+      };
     });
 
     const gmUrl = single
@@ -116,35 +166,58 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
     };
   }
 
-  // Step 1: Nearest-Neighbor Heuristic from start point
+  // Step 1: Priority-Tiered Nearest-Neighbor Heuristic from start point
+  // Always serves the highest remaining Express tier (EXP 100% -> EXP 50% -> Standard) first
   const unvisited = [...validTasks];
   const route: T[] = [];
   let currentPos = start;
 
+  const isPickupSatisfied = (candidate: T, remaining: T[]): boolean => {
+    if (
+      candidate.legType === "delivery" &&
+      candidate.job?.id &&
+      remaining.some((u) => u.legType === "pickup" && u.job?.id === candidate.job?.id)
+    ) {
+      return false;
+    }
+    return true;
+  };
+
   while (unvisited.length > 0) {
+    // Find all eligible candidates whose pickup-before-delivery constraint is satisfied
+    const eligibleIndices: number[] = [];
+    for (let i = 0; i < unvisited.length; i++) {
+      if (isPickupSatisfied(unvisited[i], unvisited)) {
+        eligibleIndices.push(i);
+      }
+    }
+
+    const candidateIndices = eligibleIndices.length > 0 ? eligibleIndices : unvisited.map((_, idx) => idx);
+
+    // Determine the highest Express priority tier among eligible stops
+    let maxTier = -1;
+    for (const idx of candidateIndices) {
+      const tier = getEffectiveTier(unvisited[idx]);
+      if (tier > maxTier) maxTier = tier;
+    }
+
+    // Pick the closest stop within that highest priority tier
     let bestIdx = -1;
     let bestDist = Infinity;
 
-    for (let i = 0; i < unvisited.length; i++) {
-      const candidate = unvisited[i];
-      // Check precedence constraint: if candidate is delivery and its pickup is in unvisited, cannot visit delivery yet!
-      if (
-        candidate.legType === "delivery" &&
-        candidate.job?.id &&
-        unvisited.some((u) => u.legType === "pickup" && u.job?.id === candidate.job?.id)
-      ) {
-        continue;
-      }
+    for (const idx of candidateIndices) {
+      const candidate = unvisited[idx];
+      if (getEffectiveTier(candidate) !== maxTier) continue;
 
       const dist = calculateEstimatedDistanceKm(currentPos, candidate.targetCoords!);
       if (dist < bestDist) {
         bestDist = dist;
-        bestIdx = i;
+        bestIdx = idx;
       }
     }
 
     if (bestIdx === -1) {
-      bestIdx = 0;
+      bestIdx = candidateIndices[0] ?? 0;
     }
 
     const nextStop = unvisited.splice(bestIdx, 1)[0];
@@ -152,10 +225,15 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
     currentPos = nextStop.targetCoords!;
   }
 
-  // Step 2: 2-Opt local search refinement (uncross paths while respecting precedence)
-  function isPrecedenceValid(candidateRoute: T[]): boolean {
+  // Step 2: 2-Opt local search refinement (uncross paths within each priority tier while respecting precedence)
+  function isRouteValid(candidateRoute: T[]): boolean {
     const visitedJobPickups = new Set<string>();
-    for (const t of candidateRoute) {
+    for (let idx = 0; idx < candidateRoute.length; idx++) {
+      const t = candidateRoute[idx];
+      // Enforce Express priority order: higher priority tier must never be placed after a lower priority tier
+      if (idx > 0 && getEffectiveTier(t) > getEffectiveTier(candidateRoute[idx - 1])) {
+        return false;
+      }
       if (t.legType === "pickup" && t.job?.id) {
         visitedJobPickups.add(t.job.id);
       } else if (t.legType === "delivery" && t.job?.id) {
@@ -194,7 +272,7 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
           ...route.slice(k + 1),
         ];
 
-        if (isPrecedenceValid(candidate)) {
+        if (isRouteValid(candidate)) {
           const currentTotal = calculateRouteLength(route);
           const candidateTotal = calculateRouteLength(candidate);
           if (candidateTotal < currentTotal - 0.05) {
@@ -208,35 +286,37 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
     }
   }
 
+  // Insert any fallbackTasks (missing coordinates) at the end of their respective Express priority tier
+  const finalSequence: T[] = [];
+  if (fallbackTasks.length === 0) {
+    finalSequence.push(...route);
+  } else {
+    for (const tier of [2, 1, 0]) {
+      finalSequence.push(...route.filter((t) => getEffectiveTier(t) === tier));
+      finalSequence.push(...fallbackTasks.filter((t) => getEffectiveTier(t) === tier));
+    }
+  }
+
   // Build sequential metadata
   let cumulative = 0;
   let prevPos = start;
-  const orderedTasks: OptimizedRouteItem<T>[] = route.map((task, idx) => {
-    const distFromPrev = calculateEstimatedDistanceKm(prevPos, task.targetCoords!);
+  const orderedTasks: OptimizedRouteItem<T>[] = finalSequence.map((task, idx) => {
+    const hasCoords = hasNonZeroCoords(task.targetCoords);
+    const targetCoords = hasCoords ? task.targetCoords! : prevPos;
+    const distFromPrev = hasCoords ? calculateEstimatedDistanceKm(prevPos, targetCoords) : 0;
     cumulative += distFromPrev;
-    prevPos = task.targetCoords!;
+    prevPos = targetCoords;
 
     return {
       task,
       stopNumber: idx + 1,
-      targetCoords: task.targetCoords!,
+      targetCoords,
       distanceFromPrevKm: distFromPrev,
       cumulativeDistanceKm: Math.round(cumulative * 10) / 10,
     };
   });
 
-  // Append any tasks without valid coordinates so they are never lost from the column
   const totalDist = Math.round(cumulative * 10) / 10;
-  fallbackTasks.forEach((ft) => {
-    orderedTasks.push({
-      task: ft,
-      stopNumber: orderedTasks.length + 1,
-      targetCoords: prevPos,
-      distanceFromPrevKm: 0,
-      cumulativeDistanceKm: totalDist,
-    });
-  });
-
   const routeCoordinates: LatLng[] = [start, ...route.map((t) => t.targetCoords!)];
 
   const lastStop = route[route.length - 1];

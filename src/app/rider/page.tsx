@@ -68,7 +68,7 @@ import {
 import { toast } from "sonner";
 import Link from "next/link";
 import { useAuth } from "@/providers/auth-provider";
-import { optimizeRiderRoute, calculateEstimatedDistanceKm } from "@/lib/route-optimizer";
+import { optimizeRiderRoute, calculateEstimatedDistanceKm, getTaskExpressPriorityTier } from "@/lib/route-optimizer";
 
 // Framer Motion variants
 const pageVariants = {
@@ -1259,7 +1259,7 @@ export default function RiderPage() {
           job: j,
           legType: "delivery",
           isCompleted: isTerminal,
-          isActive: ["washed", "delivery"].includes(j.status),
+          isActive: ["washed", "delivery"].includes(j.status) || j.subStatus === "ready",
           scheduledAt: j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()),
           // For history: use actual deliveryOutbound completion time, fallback to job.completedAt, then scheduled times
           completedAt: isTerminal ? (
@@ -1303,7 +1303,11 @@ export default function RiderPage() {
       }
       return true;
     })
-    .sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
+    .sort((a, b) => {
+      const tierDiff = getTaskExpressPriorityTier(b) - getTaskExpressPriorityTier(a);
+      if (tierDiff !== 0) return tierDiff;
+      return a.scheduledAt.getTime() - b.scheduledAt.getTime();
+    });
 
   const effectiveMyJobs: RiderTask[] = useMemo(() => {
     if (!isDemoPreviewMode) return myJobs;
@@ -1470,7 +1474,7 @@ export default function RiderPage() {
   const readyOptimizableJobs = useMemo(() => {
     return effectiveMyJobs.filter((t) => {
       if (t.legType === "delivery") {
-        return ["washed", "delivery"].includes(t.job.status) && !t.job.isStuck;
+        return (["washed", "delivery"].includes(t.job.status) || t.job.subStatus === "ready") && !t.job.isStuck;
       }
       return ["pickup", "accepted"].includes(t.job.status);
     });

@@ -32,7 +32,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AdminTaskTracker } from "@/components/admin-task-tracker";
-import { optimizeRiderRoute, calculateEstimatedDistanceKm } from "@/lib/route-optimizer";
+import { optimizeRiderRoute, calculateEstimatedDistanceKm, getTaskExpressPriorityTier } from "@/lib/route-optimizer";
 
 import { Calendar, dateFnsLocalizer } from 'react-big-calendar';
 import withDragAndDrop from 'react-big-calendar/lib/addons/dragAndDrop';
@@ -308,7 +308,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     const status = task.job?.status;
     if (!status) return false;
     if (task.legType === "delivery") {
-      return ["delivery", "washed"].includes(status) && !task.job.isStuck;
+      return (["delivery", "washed"].includes(status) || task.job.subStatus === "ready") && !task.job.isStuck;
     }
     return ["pickup", "accepted"].includes(status);
   }, []);
@@ -330,7 +330,11 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
         };
       }
 
-      const rawTasks = [...readyTasks].sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
+      const rawTasks = [...readyTasks].sort((a, b) => {
+        const tierDiff = getTaskExpressPriorityTier(b) - getTaskExpressPriorityTier(a);
+        if (tierDiff !== 0) return tierDiff;
+        return a.scheduledAt.getTime() - b.scheduledAt.getTime();
+      });
       const riderOrigin = getRiderOriginCoords(rider);
       const optimized = optimizeRiderRoute(riderOrigin, rawTasks, riderOrigin);
 
@@ -473,7 +477,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
           isDeliveredStage ||
           hasDeliveryPhoto ||
           j.legs?.deliveryOutbound?.status === "completed";
-        const isDeliveryReady = ["washed", "delivery"].includes(j.status) && !j.isStuck;
+        const isDeliveryReady = (["washed", "delivery"].includes(j.status) || j.subStatus === "ready") && !j.isStuck;
 
         if (isDeliveryReady && !isDeliveryDone) {
           const sched = j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date(j.createdAt));
@@ -834,7 +838,8 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
             id: t.taskId,
             jobId: t.job.id,
             legType: t.legType,
-            job: { id: t.job.id },
+            job: t.job,
+            expressInfo: t.expressInfo,
             targetCoords: isValidLatLng(t.targetCoords) ? t.targetCoords : origin,
             title: `[${t.legType === 'pickup' ? 'รับผ้า' : 'ส่งผ้า'}] ${custName} (${loc})`,
             customerName: custName,
@@ -843,7 +848,11 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
           };
         });
 
-      const sortedChrono = [...riderTasks].sort((a, b) => a.scheduledTime.getTime() - b.scheduledTime.getTime());
+      const sortedChrono = [...riderTasks].sort((a, b) => {
+        const tierDiff = getTaskExpressPriorityTier(b) - getTaskExpressPriorityTier(a);
+        if (tierDiff !== 0) return tierDiff;
+        return a.scheduledTime.getTime() - b.scheduledTime.getTime();
+      });
       let chronologicalKm = 0;
       let prevChrono = origin;
       sortedChrono.forEach(t => {
