@@ -507,6 +507,13 @@ export function AdminSocialInbox({
     );
   };
 
+  // Helper to return a phone string only if it contains real digits (hides '-' or '--' placeholders)
+  const getDisplayPhone = (raw?: string | null): string => {
+    if (!raw) return '';
+    const cleaned = String(raw).trim();
+    return /\d{6,}/.test(cleaned) ? cleaned : '';
+  };
+
   // Linked CRM Customer & Jobs for the Right Panel
   const linkedCustomer = useMemo(() => {
     if (!activeConversation) return null;
@@ -558,21 +565,55 @@ export function AdminSocialInbox({
         activeConversation.externalContactId
     );
 
-    return jobs
-      .filter((j) => {
-        if (custId && j.customerId === custId) return true;
-        if (pk.length >= 8 && normalizePhoneKey(j.customerPhone) === pk) return true;
-        if (
-          custNameNorm.length >= 3 &&
-          custNameNorm !== 'line user' &&
-          j.customerName?.trim().toLowerCase() === custNameNorm
-        ) {
-          return true;
-        }
-        return false;
-      })
-      .slice(0, 8);
-  }, [activeConversation, linkedCustomer, jobs]);
+    const matched = jobs.filter((j) => {
+      if (custId && j.customerId === custId) return true;
+      if (pk.length >= 8 && normalizePhoneKey(j.customerPhone) === pk) return true;
+      if (
+        custNameNorm.length >= 3 &&
+        custNameNorm !== 'line user' &&
+        j.customerName?.trim().toLowerCase() === custNameNorm
+      ) {
+        return true;
+      }
+      return false;
+    });
+
+    const seenIds = new Set(matched.map((j) => String(j.id)));
+    const synthesizedFromChat: any[] = [];
+
+    // Also extract any orders referenced directly inside the active chat timeline (#2026xxxx)
+    for (let i = activeMessages.length - 1; i >= 0; i--) {
+      const msg = activeMessages[i];
+      const text = msg.text || '';
+      const orderMatches = Array.from(text.matchAll(/#(202\d{5,10})/g));
+      for (const m of orderMatches) {
+        const orderId = m[1];
+        if (seenIds.has(orderId)) continue;
+        seenIds.add(orderId);
+
+        const isDelivered = /delivered/i.test(text);
+        const isProcessing = /processing|picked up|in progress/i.test(text);
+        const locMatch = text.match(/Location:\s*([^\n]+)/i);
+        const amtMatch = text.match(/(?:฿|THB\s*)([\d,]+(?:\.\d{1,2})?)/i);
+        const firstImg = msg.attachments?.find((a) => a.type === 'image' && a.url)?.url;
+
+        synthesizedFromChat.push({
+          id: orderId,
+          customerId: custId || undefined,
+          customerName:
+            linkedCustomer?.name || activeConversation.customerName || activeConversation.contactName,
+          status: isDelivered ? 'delivered' : isProcessing ? 'processing' : 'completed',
+          serviceType: locMatch ? locMatch[1].trim() : 'Laundry Service',
+          dropoffLocation: locMatch ? locMatch[1].trim() : undefined,
+          totalPrice: amtMatch ? Number(amtMatch[1].replace(/,/g, '')) : undefined,
+          deliveryProofImageUrl: firstImg || undefined,
+          createdAt: msg.createdAt,
+        });
+      }
+    }
+
+    return [...matched, ...synthesizedFromChat].slice(0, 8);
+  }, [activeConversation, linkedCustomer, jobs, activeMessages]);
 
   // Filtered customers for WhatsApp modal picker
   const filteredWaCustomers = useMemo(() => {
@@ -941,7 +982,7 @@ export function AdminSocialInbox({
   }, [waPhoneInput, waCountryCode]);
 
   return (
-    <div className="flex-1 overflow-auto p-4 sm:p-6 lg:p-8 space-y-5 w-full">
+    <div className="flex-1 overflow-auto p-3 sm:p-4 lg:p-5 space-y-3.5 w-full">
       {/* Hidden File Input for Native Photo/Document Upload */}
       <input
         ref={fileInputRef}
@@ -959,59 +1000,55 @@ export function AdminSocialInbox({
       />
 
       {/* ================================================================ */}
-      {/* 1. OMNICHANNEL HERO BANNER & LIVE STATUS BAR                      */}
+      {/* 1. COMPACT OMNICHANNEL COMMAND HEADER & CHANNEL TABS              */}
       {/* ================================================================ */}
-      <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white p-5 sm:p-6 rounded-2xl shadow-xl relative overflow-hidden space-y-4">
-        <div className="absolute right-0 top-0 bottom-0 w-96 bg-radial from-emerald-500/20 via-transparent to-transparent pointer-events-none" />
+      <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white px-4 py-3.5 sm:px-5 sm:py-4 rounded-2xl shadow-lg border border-slate-800/80 relative overflow-hidden space-y-3">
+        <div className="absolute right-0 top-0 bottom-0 w-80 bg-radial from-emerald-500/15 via-transparent to-transparent pointer-events-none" />
 
-        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 relative z-10">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2.5 flex-wrap">
-              <span className="p-2 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
-                <MessageSquare size={22} className="text-emerald-300" />
-              </span>
-              <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white flex items-center gap-2 flex-wrap">
-                Omnichannel Live Chat Hub
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-black px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-200 border border-emerald-400/40">
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      liveConnected ? 'bg-emerald-400 animate-ping' : 'bg-amber-400'
-                    }`}
-                  />
-                  <span
-                    className={`w-2 h-2 rounded-full -ml-3.5 ${
-                      liveConnected ? 'bg-emerald-400' : 'bg-amber-400'
-                    }`}
-                  />
-                  <span>LIVE REAL-TIME SYNC {lastLiveSyncAt ? `• ${lastLiveSyncAt}` : ''}</span>
-                </span>
-              </h1>
+        {/* Top Row: Title + Live Sync Status + Action Buttons */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 relative z-10">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center shrink-0 shadow-inner">
+              <MessageSquare size={20} className="text-emerald-300" />
             </div>
-            <p className="text-xs sm:text-sm text-emerald-100/80 max-w-3xl leading-relaxed">
-              Live two-way messaging across WhatsApp, LINE Official Account (@thatlaundryshop &
-              @050ehvzb), Facebook Messenger, Instagram Direct, and Telegram. Supports instant
-              photo upload, clipboard paste (Ctrl+V), emojis, and docked WhatsApp companion window.
-            </p>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-base sm:text-lg font-black tracking-tight text-white">
+                  Omnichannel Live Chat Hub
+                </h1>
+                <span className="inline-flex items-center gap-1.5 text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 border border-emerald-400/30">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      liveConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                    }`}
+                  />
+                  <span>LIVE SYNC {lastLiveSyncAt ? `• ${lastLiveSyncAt}` : ''}</span>
+                </span>
+              </div>
+              <p className="text-[11px] text-emerald-100/75 truncate">
+                Official LINE OA (@thatlaundryshop) • WhatsApp • Messenger • Instagram • Telegram
+              </p>
+            </div>
           </div>
 
-          {/* Primary Action Buttons */}
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {/* Primary Action Toolbar */}
+          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
             <Button
               size="sm"
               onClick={() => setIsNewWhatsAppOpen(true)}
-              className="h-10 px-4 bg-[#25D366] hover:bg-[#1ebe5d] text-slate-950 font-black text-xs rounded-xl shadow-lg shadow-emerald-500/25 gap-2 cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98]"
+              className="h-8 px-3 bg-[#25D366] hover:bg-[#1ebe5d] text-slate-950 font-black text-xs rounded-xl shadow-sm gap-1.5 cursor-pointer transition-all"
             >
-              <Phone size={15} className="fill-slate-950" />
-              <span>+ New WhatsApp Chat (เปิดแชท WhatsApp)</span>
+              <Phone size={13} className="fill-slate-950" />
+              <span>+ New WhatsApp</span>
             </Button>
 
             <Button
               size="sm"
               onClick={() => setIsNewSocialOpen(true)}
-              className="h-10 px-3.5 bg-white/15 hover:bg-white/25 border border-white/20 text-white font-bold text-xs rounded-xl gap-1.5 cursor-pointer transition-all"
+              className="h-8 px-3 bg-white/12 hover:bg-white/20 border border-white/15 text-white font-bold text-xs rounded-xl gap-1.5 cursor-pointer transition-all"
             >
-              <Plus size={15} />
-              <span>+ New Social Chat</span>
+              <Plus size={13} />
+              <span>+ Social Chat</span>
             </Button>
 
             <Button
@@ -1019,24 +1056,24 @@ export function AdminSocialInbox({
               variant="outline"
               onClick={handleSyncLineFollowers}
               disabled={syncingLine}
-              className="h-10 px-3 bg-[#06C755]/20 hover:bg-[#06C755]/30 border-[#06C755]/40 text-emerald-200 font-bold text-xs rounded-xl gap-1.5 cursor-pointer"
+              className="h-8 px-2.5 bg-[#06C755]/20 hover:bg-[#06C755]/30 border-[#06C755]/40 text-emerald-200 font-bold text-xs rounded-xl gap-1.5 cursor-pointer"
               title="Sync followers & live messages from LINE Official Account"
             >
-              <RefreshCw size={14} className={syncingLine ? 'animate-spin' : ''} />
-              <span className="hidden sm:inline">Sync LINE OA</span>
+              <RefreshCw size={13} className={syncingLine ? 'animate-spin' : ''} />
+              <span>Sync LINE OA</span>
             </Button>
 
             <Button
               size="sm"
               variant="outline"
               onClick={() => setSoundEnabled(!soundEnabled)}
-              className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl gap-1.5 cursor-pointer"
+              className="h-8 w-8 p-0 bg-white/10 hover:bg-white/20 border-white/15 text-white rounded-xl cursor-pointer"
               title={soundEnabled ? 'Notification Sound ON' : 'Notification Sound Muted'}
             >
               {soundEnabled ? (
-                <Volume2 size={14} className="text-emerald-300" />
+                <Volume2 size={13} className="text-emerald-300" />
               ) : (
-                <VolumeX size={14} className="text-slate-400" />
+                <VolumeX size={13} className="text-slate-400" />
               )}
             </Button>
 
@@ -1044,23 +1081,23 @@ export function AdminSocialInbox({
               size="sm"
               variant="outline"
               onClick={() => setIsSettingsOpen(true)}
-              className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl gap-1.5 cursor-pointer"
+              className="h-8 px-2.5 bg-white/10 hover:bg-white/20 border-white/15 text-white font-bold text-xs rounded-xl gap-1.5 cursor-pointer"
               title="Configure Live API Keys, WhatsApp Bridge & Webhooks"
             >
-              <Settings size={14} />
-              <span className="hidden md:inline">Live Channels</span>
+              <Settings size={13} />
+              <span className="hidden sm:inline">Channels</span>
             </Button>
           </div>
         </div>
 
-        {/* Channel Filter Pills + Live Connection Status Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 relative z-10">
-          <div className="flex items-center gap-1.5 p-1 bg-white/10 backdrop-blur-md rounded-xl border border-white/15 w-fit max-w-full overflow-x-auto custom-scrollbar">
+        {/* Bottom Row: Channel Filter Tabs + Compact Live Health Indicators */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5 relative z-10">
+          <div className="flex items-center gap-1 p-1 bg-black/25 backdrop-blur-md rounded-xl border border-white/10 w-fit max-w-full overflow-x-auto custom-scrollbar">
             {(
               [
                 {
                   key: 'all',
-                  label: 'All Channels (ทั้งหมด)',
+                  label: 'All Channels',
                   count: stats.byChannel.all,
                   unread: stats.unreadByChannel.all,
                   dot: 'bg-white',
@@ -1106,9 +1143,9 @@ export function AdminSocialInbox({
                 key={tab.key}
                 type="button"
                 onClick={() => setChannelFilter(tab.key as any)}
-                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
+                className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1.5 cursor-pointer shrink-0 whitespace-nowrap ${
                   channelFilter === tab.key
-                    ? 'bg-white text-slate-900 shadow-sm'
+                    ? 'bg-white text-slate-900 shadow-xs'
                     : 'text-white/80 hover:text-white hover:bg-white/10'
                 }`}
               >
@@ -1118,24 +1155,24 @@ export function AdminSocialInbox({
                   className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
                     channelFilter === tab.key
                       ? 'bg-slate-900 text-white'
-                      : 'bg-white/20 text-white'
+                      : 'bg-white/15 text-white/90'
                   }`}
                 >
                   {tab.count}
                 </span>
                 {tab.unread > 0 && (
                   <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black animate-pulse">
-                    {tab.unread} new
+                    {tab.unread}
                   </span>
                 )}
               </button>
             ))}
           </div>
 
-          {/* Live Channel Health Pills */}
+          {/* Compact Live API Badges */}
           {liveStatuses && (
-            <div className="hidden 2xl:flex items-center gap-2 text-[10px]">
-              {(['line', 'whatsapp', 'facebook', 'instagram', 'telegram'] as const).map((ch) => {
+            <div className="hidden xl:flex items-center gap-1.5 text-[10px]">
+              {(['line', 'whatsapp'] as const).map((ch) => {
                 const st = liveStatuses[ch];
                 if (!st) return null;
                 return (
@@ -1143,7 +1180,7 @@ export function AdminSocialInbox({
                     key={ch}
                     type="button"
                     onClick={() => setIsSettingsOpen(true)}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-emerald-100 font-semibold cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/8 hover:bg-white/15 border border-white/10 text-emerald-100 font-semibold cursor-pointer whitespace-nowrap"
                     title={st.details || st.modeLabel}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
@@ -1162,13 +1199,13 @@ export function AdminSocialInbox({
       {/* ================================================================ */}
       {/* 2. MAIN 3-COLUMN OMNICHANNEL WORKSPACE                            */}
       {/* ================================================================ */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch min-h-[700px]">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-stretch">
         {/* -------------------------------------------------------------- */}
         {/* LEFT COLUMN (3 cols): CONVERSATION LIST                        */}
         {/* -------------------------------------------------------------- */}
-        <div className="lg:col-span-4 xl:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-2xs flex flex-col overflow-hidden h-[700px]">
+        <div className="lg:col-span-4 xl:col-span-3 bg-white rounded-2xl border border-slate-200/90 shadow-xs flex flex-col overflow-hidden h-[calc(100vh-195px)] min-h-[680px] max-h-[860px]">
           {/* Search & Status Tabs */}
-          <div className="p-3 border-b border-slate-100 space-y-2.5 bg-slate-50/50">
+          <div className="p-2.5 border-b border-slate-100 space-y-2 bg-slate-50/70">
             <div className="relative">
               <Search
                 size={14}
@@ -1178,19 +1215,19 @@ export function AdminSocialInbox({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search customer, +66 phone, LINE..."
-                className="pl-8 h-9 text-xs bg-white border-slate-200 rounded-xl"
+                className="pl-8 pr-7 h-8.5 text-xs bg-white border-slate-200/90 rounded-xl shadow-2xs"
               />
               {searchQuery && (
                 <button
                   onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                 >
                   <X size={13} />
                 </button>
               )}
             </div>
 
-            <div className="flex items-center justify-between gap-1">
+            <div className="grid grid-cols-4 gap-1 p-1 bg-slate-200/60 rounded-xl">
               {(
                 [
                   { id: 'all', label: 'All' },
@@ -1203,10 +1240,10 @@ export function AdminSocialInbox({
                   key={st.id}
                   type="button"
                   onClick={() => setStatusFilter(st.id)}
-                  className={`flex-1 py-1 px-2 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  className={`py-1 px-1.5 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer whitespace-nowrap truncate ${
                     statusFilter === st.id
                       ? 'bg-slate-900 text-white shadow-2xs'
-                      : 'text-slate-600 hover:bg-slate-200/60'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                   }`}
                 >
                   {st.label}
@@ -1245,37 +1282,37 @@ export function AdminSocialInbox({
             ) : (
               filteredConversations.map((conv) => {
                 const isSelected = conv.id === selectedConvId;
-                const chMeta = SOCIAL_CHANNEL_META[conv.channel] || SOCIAL_CHANNEL_META.whatsapp;
                 const chColors = getChannelColorClasses(conv.channel);
+                const validPhone = getDisplayPhone(conv.contactPhone);
 
                 return (
                   <div
                     key={conv.id}
                     onClick={() => setSelectedConvId(conv.id)}
-                    className={`p-3.5 cursor-pointer transition-all hover:bg-slate-50 relative ${
+                    className={`px-3 py-2.5 cursor-pointer transition-all hover:bg-slate-50/90 relative ${
                       isSelected
-                        ? 'bg-emerald-50/60 border-l-4 border-l-emerald-600'
+                        ? 'bg-emerald-50/70 border-l-[3px] border-l-emerald-600'
                         : conv.unreadCount > 0
                         ? 'bg-sky-50/40'
                         : ''
                     }`}
                   >
-                    <div className="flex items-start gap-3">
-                      {/* Avatar + Live Online Dot + Channel Badge */}
-                      <div className="relative shrink-0">
+                    <div className="flex items-start gap-2.5">
+                      {/* Avatar + Channel Micro-Badge */}
+                      <div className="relative shrink-0 mt-0.5">
                         {conv.contactAvatar ? (
                           <img
                             src={conv.contactAvatar}
                             alt={conv.contactName}
-                            className="w-10 h-10 rounded-full object-cover border border-slate-200"
+                            className="w-10 h-10 rounded-full object-cover border border-slate-200 shadow-2xs"
                           />
                         ) : (
-                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-700 to-slate-900 text-white font-black text-xs flex items-center justify-center">
+                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-700 to-slate-900 text-white font-black text-xs flex items-center justify-center shadow-2xs">
                             {(conv.contactName || 'C').slice(0, 2).toUpperCase()}
                           </div>
                         )}
                         <span
-                          className={`absolute -bottom-1 -right-1 px-1.5 py-0.2 rounded-full text-[8px] font-black uppercase shadow-xs ${chColors.badge}`}
+                          className={`absolute -bottom-0.5 -right-0.5 px-1.5 py-0.2 rounded-full text-[8px] font-black uppercase shadow-xs ring-1 ring-white ${chColors.badge}`}
                         >
                           {conv.channel === 'whatsapp'
                             ? 'WA'
@@ -1289,9 +1326,9 @@ export function AdminSocialInbox({
                         </span>
                       </div>
 
-                      {/* Name, Preview & Meta */}
+                      {/* Name, Preview & Compact Metadata */}
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-1">
+                        <div className="flex items-center justify-between gap-1.5">
                           <p
                             className={`text-xs truncate ${
                               conv.unreadCount > 0
@@ -1301,7 +1338,7 @@ export function AdminSocialInbox({
                           >
                             {conv.contactName}
                           </p>
-                          <span className="text-[10px] text-slate-400 shrink-0">
+                          <span className="text-[10px] font-medium text-slate-400 shrink-0">
                             {(() => {
                               if (
                                 conv.lastMessageText ===
@@ -1323,24 +1360,12 @@ export function AdminSocialInbox({
                                   minute: '2-digit',
                                 });
                               }
-                              return (
-                                d.toLocaleDateString([], { month: 'short', day: 'numeric' }) +
-                                ', ' +
-                                d.toLocaleTimeString([], {
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                })
-                              );
+                              return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
                             })()}
                           </span>
                         </div>
 
-                        {conv.contactPhone && (
-                          <p className="text-[10px] text-emerald-700 font-semibold truncate">
-                            {conv.contactPhone}
-                          </p>
-                        )}
-
+                        {/* Message Preview Line */}
                         <p
                           className={`text-[11px] truncate mt-0.5 ${
                             conv.unreadCount > 0
@@ -1354,19 +1379,20 @@ export function AdminSocialInbox({
                           {conv.lastMessageText}
                         </p>
 
-                        <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                          <span
-                            className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded-md ${chColors.lightBg}`}
-                          >
-                            {chMeta.shortLabel}
-                          </span>
+                        {/* Compact Bottom Row: Valid Phone + CRM Badge + Unread Count */}
+                        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                          {validPhone && (
+                            <span className="text-[10px] text-emerald-700 font-bold truncate max-w-[125px]">
+                              {validPhone}
+                            </span>
+                          )}
                           {conv.customerId && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-700">
-                              CRM Linked
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
+                              {conv.customerMemberId ? `#${conv.customerMemberId}` : 'CRM'}
                             </span>
                           )}
                           {conv.status === 'resolved' && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-500">
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-slate-100 text-slate-500">
                               Resolved
                             </span>
                           )}
@@ -1391,7 +1417,7 @@ export function AdminSocialInbox({
         <div
           className={`${
             showRightPanel ? 'lg:col-span-5 xl:col-span-6' : 'lg:col-span-8 xl:col-span-9'
-          } bg-white rounded-2xl border border-slate-200 shadow-2xs flex flex-col overflow-hidden h-[700px]`}
+          } bg-white rounded-2xl border border-slate-200/90 shadow-xs flex flex-col overflow-hidden h-[calc(100vh-195px)] min-h-[680px] max-h-[860px]`}
         >
           {!activeConversation ? (
             <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4 bg-slate-50/40">
@@ -1429,134 +1455,132 @@ export function AdminSocialInbox({
             </div>
           ) : (
             <>
-              {/* Active Chat Header */}
-              <div className="px-4 py-3 border-b border-slate-200 bg-white flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0">
+              {/* Active Chat Header — Clean Single-Row Toolbar */}
+              <div className="px-3.5 py-2.5 border-b border-slate-200/80 bg-white flex items-center justify-between gap-2 shrink-0">
+                {/* Left: Avatar + Contact Info */}
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
                   <div className="relative shrink-0">
                     {activeConversation.contactAvatar ? (
                       <img
                         src={activeConversation.contactAvatar}
                         alt={activeConversation.contactName}
-                        className="w-10 h-10 rounded-full object-cover border border-slate-200"
+                        className="w-9 h-9 rounded-full object-cover border border-slate-200 shadow-2xs"
                       />
                     ) : (
-                      <div className="w-10 h-10 rounded-full bg-slate-900 text-white font-black text-xs flex items-center justify-center">
+                      <div className="w-9 h-9 rounded-full bg-slate-900 text-white font-black text-xs flex items-center justify-center shadow-2xs">
                         {(activeConversation.contactName || 'C').slice(0, 2).toUpperCase()}
                       </div>
                     )}
                     <span
-                      className="w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white absolute bottom-0 right-0"
+                      className="w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white absolute -bottom-0.5 -right-0.5"
                       title="Live Channel Active"
                     />
                   </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h3 className="text-sm font-black text-slate-900 truncate">
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <h3 className="text-sm font-black text-slate-900 truncate max-w-[180px] sm:max-w-[240px]">
                         {activeConversation.contactName}
                       </h3>
                       <span
-                        className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                        className={`text-[9px] font-black px-2 py-0.5 rounded-full shrink-0 ${
                           getChannelColorClasses(activeConversation.channel).badge
                         }`}
                       >
-                        {SOCIAL_CHANNEL_META[activeConversation.channel].label}
+                        {SOCIAL_CHANNEL_META[activeConversation.channel].shortLabel}
                       </span>
+                      {activeConversation.customerMemberId && (
+                        <span className="font-mono text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200/70 px-1.5 py-0.2 rounded-md font-bold shrink-0">
+                          #{activeConversation.customerMemberId}
+                        </span>
+                      )}
                       {liveStatuses?.[activeConversation.channel] && (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                          <Radio size={10} className="text-emerald-600 animate-pulse" />
+                        <span className="hidden xl:inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/80 shrink-0">
+                          <Radio size={9} className="text-emerald-600 animate-pulse" />
                           <span>{liveStatuses[activeConversation.channel].modeLabel}</span>
                         </span>
                       )}
                     </div>
 
-                    <div className="flex items-center gap-3 text-[11px] text-slate-500 mt-0.5 flex-wrap">
-                      {(activeConversation.contactPhone ||
-                        activeConversation.channel === 'whatsapp') && (
+                    <div className="flex items-center gap-2.5 text-[10px] text-slate-500 mt-0.5 truncate">
+                      {(() => {
+                        const headerPhone =
+                          getDisplayPhone(activeConversation.contactPhone) ||
+                          getDisplayPhone(linkedCustomer?.phone) ||
+                          (activeConversation.channel === 'whatsapp'
+                            ? getDisplayPhone(`+${activeConversation.externalContactId}`)
+                            : '');
+                        if (!headerPhone) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(headerPhone);
+                              toast.success(`Copied ${headerPhone}`);
+                            }}
+                            className="inline-flex items-center gap-1 text-emerald-700 font-bold hover:underline cursor-pointer shrink-0"
+                            title="Click to copy phone number"
+                          >
+                            <Phone size={10} />
+                            <span>{headerPhone}</span>
+                            <Copy size={9} />
+                          </button>
+                        );
+                      })()}
+                      {activeConversation.channel === 'line' && (
                         <button
                           type="button"
                           onClick={() => {
-                            const ph =
-                              activeConversation.contactPhone ||
-                              activeConversation.externalContactId;
-                            navigator.clipboard.writeText(ph);
-                            toast.success(`Copied ${ph}`);
+                            navigator.clipboard.writeText(activeConversation.externalContactId);
+                            toast.success('Copied LINE ID');
                           }}
-                          className="inline-flex items-center gap-1 text-emerald-700 font-bold hover:underline cursor-pointer"
-                          title="Click to copy phone number"
+                          className="text-[10px] text-slate-400 hover:text-slate-700 font-mono truncate cursor-pointer"
+                          title="Click to copy LINE User ID"
                         >
-                          <Phone size={11} />
-                          <span>
-                            {activeConversation.contactPhone ||
-                              `+${activeConversation.externalContactId}`}
-                          </span>
-                          <Copy size={10} />
+                          UID: {activeConversation.externalContactId.slice(0, 10)}…
                         </button>
-                      )}
-                      {activeConversation.channel === 'line' && (
-                        <span className="text-[10px] text-green-700 font-bold">
-                          LINE ID: {activeConversation.externalContactId.slice(0, 10)}...
-                        </span>
-                      )}
-                      {activeConversation.customerMemberId && (
-                        <span className="font-mono text-[10px] bg-indigo-50 text-indigo-700 px-1.5 py-0.2 rounded font-bold">
-                          Member #{activeConversation.customerMemberId}
-                        </span>
                       )}
                     </div>
                   </div>
                 </div>
 
-                {/* Chat Header Action Buttons */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {(activeConversation.channel === 'whatsapp' ||
-                    activeConversation.contactPhone) && (
-                    <>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          openWhatsAppBridgeWindow(
-                            activeConversation.contactPhone || activeConversation.externalContactId,
-                            composerText,
-                            'companion_popup'
-                          )
-                        }
-                        className="h-8 px-2.5 text-[11px] font-bold border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 rounded-lg gap-1 cursor-pointer"
-                        title="Open Docked WhatsApp Web Companion Window right beside this screen"
-                      >
-                        <AppWindow size={12} />
-                        <span>WhatsApp Companion</span>
-                      </Button>
-
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          openWhatsAppBridgeWindow(
-                            activeConversation.contactPhone || activeConversation.externalContactId,
-                            composerText,
-                            'native_app'
-                          )
-                        }
-                        className="h-8 px-2 text-[11px] font-bold border-emerald-200 text-emerald-700 hover:bg-emerald-50 rounded-lg gap-1 cursor-pointer"
-                        title="Launch installed WhatsApp Desktop / Mobile App directly (whatsapp://)"
-                      >
-                        <Smartphone size={12} />
-                        <span className="hidden xl:inline">App</span>
-                      </Button>
-                    </>
-                  )}
-
+                {/* Right: Compact Non-Wrapping Action Toolbar */}
+                <div className="flex items-center gap-1 shrink-0">
                   {activeConversation.channel === 'line' && (
                     <Button
                       size="sm"
                       variant="outline"
                       onClick={() => openLineOfficialChatCompanion(activeConversation.contactName)}
-                      className="h-8 px-2.5 text-[11px] font-bold border-green-300 bg-green-50 text-green-800 hover:bg-green-100 rounded-lg gap-1 cursor-pointer"
-                      title="Open Docked LINE Official Account Manager (chat.line.biz) Companion Window to view older pre-webhook chat history"
+                      className="h-7.5 px-2.5 text-[11px] font-bold border-emerald-300 bg-emerald-50/80 text-emerald-800 hover:bg-emerald-100 rounded-lg gap-1 cursor-pointer whitespace-nowrap"
+                      title="Open Official LINE OA Manager (chat.line.biz) Companion Window"
                     >
                       <AppWindow size={12} />
-                      <span>LINE OA Companion</span>
+                      <span className="hidden sm:inline">LINE OA Chat</span>
+                    </Button>
+                  )}
+
+                  {(activeConversation.channel === 'whatsapp' ||
+                    Boolean(
+                      getDisplayPhone(activeConversation.contactPhone) ||
+                        getDisplayPhone(linkedCustomer?.phone)
+                    )) && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        openWhatsAppBridgeWindow(
+                          getDisplayPhone(activeConversation.contactPhone) ||
+                            getDisplayPhone(linkedCustomer?.phone) ||
+                            activeConversation.externalContactId,
+                          composerText,
+                          'companion_popup'
+                        )
+                      }
+                      className="h-7.5 px-2.5 text-[11px] font-bold border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50 rounded-lg gap-1 cursor-pointer whitespace-nowrap"
+                      title="Open Docked WhatsApp Web Companion Window"
+                    >
+                      <Phone size={11} />
+                      <span className="hidden md:inline">WhatsApp</span>
                     </Button>
                   )}
 
@@ -1564,25 +1588,25 @@ export function AdminSocialInbox({
                     size="sm"
                     variant="outline"
                     onClick={handleSimulateInboundReply}
-                    className="h-8 px-2.5 text-[11px] font-bold border-slate-200 text-slate-600 hover:bg-slate-100 rounded-lg gap-1 cursor-pointer"
-                    title="Test live incoming message & sound notification"
+                    className="h-7.5 px-2 text-[11px] font-bold border-slate-200 text-slate-600 hover:bg-slate-100 rounded-lg gap-1 cursor-pointer whitespace-nowrap"
+                    title="Simulate incoming customer message"
                   >
                     <Zap size={12} className="text-amber-500" />
-                    <span className="hidden sm:inline">Test Live Reply</span>
+                    <span className="hidden 2xl:inline">Test Reply</span>
                   </Button>
 
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={handleToggleResolved}
-                    className={`h-8 px-2.5 text-[11px] font-bold rounded-lg gap-1 cursor-pointer ${
+                    className={`h-7.5 px-2.5 text-[11px] font-bold rounded-lg gap-1 cursor-pointer whitespace-nowrap ${
                       activeConversation.status === 'resolved'
                         ? 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700'
                         : 'border-slate-200 text-slate-700 hover:bg-slate-100'
                     }`}
                   >
                     <CheckCircle2 size={12} />
-                    <span>
+                    <span className="hidden sm:inline">
                       {activeConversation.status === 'resolved' ? 'Resolved' : 'Resolve'}
                     </span>
                   </Button>
@@ -1591,18 +1615,18 @@ export function AdminSocialInbox({
                     size="sm"
                     variant="ghost"
                     onClick={() => handleDeleteConversation(activeConversation.id)}
-                    className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600 rounded-lg cursor-pointer"
+                    className="h-7.5 w-7.5 p-0 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
                     title="Delete conversation"
                   >
-                    <Trash2 size={14} />
+                    <Trash2 size={13} />
                   </Button>
 
                   <Button
                     size="sm"
                     variant="ghost"
                     onClick={() => setShowRightPanel(!showRightPanel)}
-                    className="h-8 px-2 text-[11px] font-bold text-slate-500 hover:text-slate-800 rounded-lg hidden lg:flex"
-                    title="Toggle Customer CRM & Orders Sidebar"
+                    className="h-7.5 w-7.5 p-0 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg hidden lg:flex items-center justify-center cursor-pointer"
+                    title="Toggle Customer 360° & Orders Sidebar"
                   >
                     <ChevronRight
                       size={15}
@@ -1612,31 +1636,33 @@ export function AdminSocialInbox({
                 </div>
               </div>
 
-              {/* Chat Messages Timeline (Native App Wallpaper Feel) */}
+              {/* Chat Messages Timeline */}
               <div
-                className={`flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar ${
+                className={`flex-1 overflow-y-auto px-4 py-3.5 space-y-3 custom-scrollbar ${
                   activeConversation.channel === 'whatsapp'
-                    ? 'bg-[#efeae2]/60'
+                    ? 'bg-[#f4f1ea]'
                     : activeConversation.channel === 'line'
-                    ? 'bg-[#7494c0]/15'
-                    : 'bg-slate-50/70'
+                    ? 'bg-gradient-to-b from-[#eef3f9] to-[#f5f7fb]'
+                    : 'bg-slate-50/80'
                 }`}
               >
                 {activeMessages.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500 space-y-3 max-w-md mx-auto">
-                    <MessageCircle size={30} className="text-slate-300" />
+                    <div className="w-12 h-12 rounded-2xl bg-white shadow-2xs border border-slate-200/80 flex items-center justify-center text-slate-400">
+                      <MessageCircle size={24} />
+                    </div>
                     <p className="text-xs font-bold text-slate-700">
-                      No platform messages recorded yet with {activeConversation.contactName}.
+                      No messages recorded in this thread yet with {activeConversation.contactName}.
                     </p>
                     {activeConversation.channel === 'line' ? (
-                      <div className="p-3.5 rounded-xl bg-white/95 border border-slate-200 shadow-2xs text-left space-y-2 text-[11px] text-slate-600">
+                      <div className="p-3.5 rounded-xl bg-white border border-slate-200/90 shadow-2xs text-left space-y-2 text-[11px] text-slate-600">
                         <p className="font-bold text-slate-800">
-                          💡 Why aren&apos;t older chat.line.biz messages shown here?
+                          💡 Looking for older chat.line.biz messages?
                         </p>
                         <p className="leading-relaxed">
-                          LINE&apos;s Official Messaging API delivers all <strong>new customer messages</strong>, <strong>replies sent from this hub</strong>, and <strong>automated LINE Delivery Notifications</strong> live in real time, but LINE does not allow third-party platforms to download past chat history typed directly inside the external <code className="px-1 py-0.5 bg-slate-100 rounded">chat.line.biz</code> app.
+                          All <strong>new customer messages</strong>, <strong>replies sent from this hub</strong>, and <strong>LINE Delivery Notifications</strong> sync here live in real time. To view historical messages typed manually inside LINE&apos;s web console prior to webhook activation, open the docked companion below:
                         </p>
-                        <div className="pt-1 flex flex-wrap items-center gap-2">
+                        <div className="pt-1">
                           <Button
                             size="sm"
                             type="button"
@@ -1644,7 +1670,7 @@ export function AdminSocialInbox({
                             className="h-8 px-3 bg-[#06C755] hover:bg-[#05b34c] text-white font-black text-[11px] rounded-lg gap-1.5 cursor-pointer"
                           >
                             <AppWindow size={13} />
-                            <span>Open LINE OA Companion (chat.line.biz)</span>
+                            <span>Open Official LINE OA Companion</span>
                           </Button>
                         </div>
                       </div>
@@ -1655,182 +1681,230 @@ export function AdminSocialInbox({
                     )}
                   </div>
                 ) : (
-                  activeMessages.map((msg) => {
+                  activeMessages.map((msg, msgIdx) => {
                     const isOutbound = msg.direction === 'outbound';
-                    return (
-                      <div
-                        key={msg.id}
-                        className={`group flex flex-col ${
-                          isOutbound ? 'items-end' : 'items-start'
-                        }`}
-                      >
-                        <div className="flex items-center gap-1.5 mb-1 px-1">
-                          <span className="text-[10px] font-bold text-slate-500">
-                            {isOutbound
-                              ? msg.senderName || 'Staff'
-                              : activeConversation.contactName}
-                          </span>
-                          <span className="text-[10px] text-slate-400">
-                            {new Date(msg.createdAt).toLocaleTimeString([], {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </span>
+                    const msgDateObj = new Date(msg.createdAt);
+                    const prevDateObj =
+                      msgIdx > 0 ? new Date(activeMessages[msgIdx - 1].createdAt) : null;
+                    const showDateDivider =
+                      !prevDateObj ||
+                      msgDateObj.toDateString() !== prevDateObj.toDateString();
 
-                          {/* Hover Quick Actions: Reply & Copy */}
-                          <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 ml-1">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setReplyingTo({
-                                  messageId: msg.id,
-                                  senderName: isOutbound
-                                    ? msg.senderName || 'Staff'
-                                    : activeConversation.contactName,
-                                  text: msg.text,
-                                })
-                              }
-                              className="p-0.5 rounded hover:bg-slate-200 text-slate-500 hover:text-slate-800 cursor-pointer"
-                              title="Reply to this message"
-                            >
-                              <Reply size={11} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                navigator.clipboard.writeText(msg.text || '');
-                                toast.success('Copied message text');
-                              }}
-                              className="p-0.5 rounded hover:bg-slate-200 text-slate-500 hover:text-slate-800 cursor-pointer"
-                              title="Copy message text"
-                            >
-                              <Copy size={10} />
-                            </button>
+                    const imageAttachments = (msg.attachments || []).filter(
+                      (a) => a.type === 'image' && a.url
+                    );
+                    const fileAttachments = (msg.attachments || []).filter(
+                      (a) => a.type !== 'image' && a.url
+                    );
+
+                    return (
+                      <React.Fragment key={msg.id}>
+                        {showDateDivider && !isNaN(msgDateObj.getTime()) && (
+                          <div className="flex items-center justify-center my-2">
+                            <span className="px-3 py-0.5 rounded-full bg-slate-900/8 text-slate-600 text-[10px] font-bold tracking-wide shadow-2xs backdrop-blur-xs">
+                              {msgDateObj.toLocaleDateString([], {
+                                weekday: 'short',
+                                month: 'short',
+                                day: 'numeric',
+                              })}
+                            </span>
                           </div>
-                        </div>
+                        )}
 
                         <div
-                          className={`max-w-[82%] sm:max-w-[75%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-xs whitespace-pre-wrap ${
-                            isOutbound
-                              ? activeConversation.channel === 'whatsapp'
-                                ? 'bg-[#d9fdd3] text-slate-900 border border-emerald-200/80 rounded-tr-xs'
-                                : activeConversation.channel === 'line'
-                                ? 'bg-[#06C755] text-white rounded-tr-xs'
-                                : 'bg-indigo-600 text-white rounded-tr-xs'
-                              : 'bg-white text-slate-800 border border-slate-200 rounded-tl-xs'
+                          className={`group flex flex-col ${
+                            isOutbound ? 'items-end' : 'items-start'
                           }`}
                         >
-                          {/* Quoted Reply Block if present */}
-                          {msg.replyTo && (
-                            <div
-                              className={`mb-2 px-2.5 py-1.5 rounded-lg border-l-4 text-[10px] ${
-                                isOutbound && activeConversation.channel !== 'whatsapp'
-                                  ? 'bg-black/15 border-white/70 text-white/90'
-                                  : 'bg-slate-100 border-emerald-500 text-slate-600'
-                              }`}
-                            >
-                              <p className="font-black">{msg.replyTo.senderName}</p>
-                              <p className="truncate opacity-90">{msg.replyTo.text}</p>
+                          {/* Sender & Timestamp Header */}
+                          <div className="flex items-center gap-1.5 mb-1 px-1">
+                            <span className="text-[10px] font-bold text-slate-600">
+                              {isOutbound
+                                ? msg.senderName || 'That Laundry Shop'
+                                : activeConversation.contactName}
+                            </span>
+                            <span className="text-[10px] text-slate-400">
+                              {msgDateObj.toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+
+                            {/* Hover Quick Actions: Reply & Copy */}
+                            <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 ml-1">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setReplyingTo({
+                                    messageId: msg.id,
+                                    senderName: isOutbound
+                                      ? msg.senderName || 'Staff'
+                                      : activeConversation.contactName,
+                                    text: msg.text,
+                                  })
+                                }
+                                className="p-0.5 rounded hover:bg-slate-200/80 text-slate-500 hover:text-slate-800 cursor-pointer"
+                                title="Reply to this message"
+                              >
+                                <Reply size={11} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(msg.text || '');
+                                  toast.success('Copied message text');
+                                }}
+                                className="p-0.5 rounded hover:bg-slate-200/80 text-slate-500 hover:text-slate-800 cursor-pointer"
+                                title="Copy message text"
+                              >
+                                <Copy size={10} />
+                              </button>
                             </div>
-                          )}
+                          </div>
 
-                          {msg.text}
+                          {/* Message Bubble — High-Contrast Official LINE OA / WhatsApp Styling */}
+                          <div
+                            className={`max-w-[85%] sm:max-w-[74%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed shadow-xs whitespace-pre-wrap break-words ${
+                              isOutbound
+                                ? activeConversation.channel === 'whatsapp'
+                                  ? 'bg-[#d9fdd3] text-slate-900 border border-emerald-300/70 rounded-tr-xs'
+                                  : activeConversation.channel === 'line'
+                                  ? 'bg-[#e5f9ed] text-slate-900 border border-[#a8e6c1] rounded-tr-xs'
+                                  : 'bg-indigo-600 text-white rounded-tr-xs'
+                                : 'bg-white text-slate-900 border border-slate-200/90 rounded-tl-xs'
+                            }`}
+                          >
+                            {/* Quoted Reply Block if present */}
+                            {msg.replyTo && (
+                              <div
+                                className={`mb-2 px-2.5 py-1.5 rounded-lg border-l-4 text-[10px] ${
+                                  isOutbound &&
+                                  activeConversation.channel !== 'whatsapp' &&
+                                  activeConversation.channel !== 'line'
+                                    ? 'bg-black/15 border-white/70 text-white/90'
+                                    : 'bg-white/70 border-emerald-500 text-slate-600'
+                                }`}
+                              >
+                                <p className="font-black">{msg.replyTo.senderName}</p>
+                                <p className="truncate opacity-90">{msg.replyTo.text}</p>
+                              </div>
+                            )}
 
-                          {msg.attachments && msg.attachments.length > 0 && (
-                            <div className="mt-2 space-y-1.5">
-                              {msg.attachments.map((att, idx) =>
-                                att.type === 'image' && att.url ? (
+                            {msg.text && <div className="text-[12.5px] leading-relaxed">{msg.text}</div>}
+
+                            {/* Clean Responsive Photo Grid for Image Attachments */}
+                            {imageAttachments.length > 0 && (
+                              <div
+                                className={`${msg.text ? 'mt-2.5' : ''} ${
+                                  imageAttachments.length >= 2
+                                    ? 'grid grid-cols-2 gap-1.5 max-w-md'
+                                    : 'inline-block'
+                                }`}
+                              >
+                                {imageAttachments.map((att, idx) => (
                                   <div
                                     key={idx}
                                     onClick={() => setLightboxImageUrl(att.url || null)}
-                                    className="relative group/img cursor-pointer overflow-hidden rounded-xl border border-black/10 inline-block"
+                                    className="relative group/img cursor-pointer overflow-hidden rounded-xl border border-black/10 bg-slate-100 shadow-2xs"
                                   >
                                     <img
                                       src={att.url}
                                       alt={att.name || 'Attachment'}
-                                      className="max-h-52 w-auto object-cover transition-transform group-hover/img:scale-[1.02]"
+                                      className={
+                                        imageAttachments.length >= 2
+                                          ? 'w-full h-40 sm:h-44 object-cover transition-transform duration-200 group-hover/img:scale-[1.03]'
+                                          : 'max-h-60 w-auto object-cover transition-transform duration-200 group-hover/img:scale-[1.02]'
+                                      }
                                     />
-                                    <span className="absolute bottom-1.5 right-1.5 bg-black/60 text-white text-[9px] font-bold px-2 py-0.5 rounded-md opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center gap-1">
+                                    <span className="absolute bottom-1.5 right-1.5 bg-slate-900/75 backdrop-blur-xs text-white text-[9px] font-bold px-2 py-0.5 rounded-md opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center gap-1">
                                       <Eye size={10} /> View Full
                                     </span>
                                   </div>
-                                ) : att.url ? (
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Other Non-Image File Attachments */}
+                            {fileAttachments.length > 0 && (
+                              <div className="mt-2 space-y-1">
+                                {fileAttachments.map((att, idx) => (
                                   <a
                                     key={idx}
                                     href={att.url}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/10 text-[11px] font-bold underline"
+                                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 text-[11px] font-bold underline"
                                   >
                                     <Paperclip size={12} />
                                     <span>{att.name || 'Download Attachment'}</span>
                                   </a>
-                                ) : null
-                              )}
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {isOutbound && (
+                            <div className="flex items-center gap-1 mt-1 px-1 text-[9px] text-slate-500 font-semibold">
+                              <CheckCheck size={11} className="text-emerald-600" />
+                              <span>
+                                {msg.deliveryMethod === 'line_api'
+                                  ? 'Delivered Live via LINE OA API'
+                                  : msg.deliveryMethod === 'whatsapp_cloud_api'
+                                  ? 'Delivered Live via WhatsApp Cloud API'
+                                  : msg.deliveryMethod === 'whatsapp_gateway_api'
+                                  ? 'Delivered Live via WhatsApp Gateway'
+                                  : msg.deliveryMethod === 'meta_graph_api'
+                                  ? 'Delivered Live via Meta Graph API'
+                                  : msg.deliveryMethod === 'telegram_bot_api'
+                                  ? 'Delivered Live via Telegram Bot API'
+                                  : msg.deliveryMethod === 'whatsapp_web_bridge'
+                                  ? 'Sent • WhatsApp Bridge Active'
+                                  : 'Delivered'}
+                              </span>
                             </div>
                           )}
                         </div>
-
-                        {isOutbound && (
-                          <div className="flex items-center gap-1 mt-0.5 px-1 text-[9px] text-slate-500 font-semibold">
-                            <CheckCheck size={12} className="text-sky-500" />
-                            <span>
-                              {msg.deliveryMethod === 'line_api'
-                                ? 'Delivered Live via LINE OA API'
-                                : msg.deliveryMethod === 'whatsapp_cloud_api'
-                                ? 'Delivered Live via WhatsApp Cloud API'
-                                : msg.deliveryMethod === 'whatsapp_gateway_api'
-                                ? 'Delivered Live via WhatsApp Gateway'
-                                : msg.deliveryMethod === 'meta_graph_api'
-                                ? 'Delivered Live via Meta Graph API'
-                                : msg.deliveryMethod === 'telegram_bot_api'
-                                ? 'Delivered Live via Telegram Bot API'
-                                : msg.deliveryMethod === 'whatsapp_web_bridge'
-                                ? 'Sent • WhatsApp Bridge Active'
-                                : 'Delivered'}
-                            </span>
-                          </div>
-                        )}
-                      </div>
+                      </React.Fragment>
                     );
                   })
                 )}
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Quick Laundry Templates Bar */}
+              {/* Compact Quick Laundry Templates Strip */}
               {showTemplatesBar && (
-                <div className="px-3 py-2 bg-slate-100/80 border-t border-slate-200 space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 flex items-center gap-1">
-                      <Sparkles size={11} className="text-amber-500" /> Quick Laundry Templates
-                    </span>
-                    <div className="flex items-center gap-1">
-                      {(['en', 'th', 'both'] as const).map((lng) => (
-                        <button
-                          key={lng}
-                          type="button"
-                          onClick={() => setTemplateLang(lng)}
-                          className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase cursor-pointer ${
-                            templateLang === lng
-                              ? 'bg-slate-800 text-white'
-                              : 'text-slate-500 hover:bg-slate-200'
-                          }`}
-                        >
-                          {lng === 'both' ? 'TH+EN' : lng.toUpperCase()}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 custom-scrollbar">
+                <div className="px-3 py-1.5 bg-slate-50/95 border-t border-slate-200/80 flex items-center gap-2 shrink-0">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 flex items-center gap-1 shrink-0">
+                    <Sparkles size={11} className="text-amber-500" />
+                    <span className="hidden sm:inline">Templates</span>
+                  </span>
+
+                  <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 flex-1 custom-scrollbar">
                     {DEFAULT_QUICK_TEMPLATES.map((tpl) => (
                       <button
                         key={tpl.id}
                         type="button"
                         onClick={() => handleApplyTemplate(tpl)}
-                        className="px-2.5 py-1 rounded-lg bg-white hover:bg-emerald-50 border border-slate-200 hover:border-emerald-300 text-[11px] font-bold text-slate-700 shrink-0 transition-all cursor-pointer shadow-2xs"
+                        className="px-2.5 py-1 rounded-lg bg-white hover:bg-emerald-50 border border-slate-200/90 hover:border-emerald-300 text-[10px] font-bold text-slate-700 shrink-0 transition-all cursor-pointer shadow-2xs whitespace-nowrap"
                       >
-                        {tpl.title} ({tpl.titleTh})
+                        {tpl.title}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-0.5 bg-slate-200/70 p-0.5 rounded-lg shrink-0">
+                    {(['en', 'th', 'both'] as const).map((lng) => (
+                      <button
+                        key={lng}
+                        type="button"
+                        onClick={() => setTemplateLang(lng)}
+                        className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase cursor-pointer ${
+                          templateLang === lng
+                            ? 'bg-slate-900 text-white shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {lng === 'both' ? 'TH+EN' : lng.toUpperCase()}
                       </button>
                     ))}
                   </div>
@@ -1839,9 +1913,9 @@ export function AdminSocialInbox({
 
               {/* Replying-To Quote Preview Bar */}
               {replyingTo && (
-                <div className="px-3 py-2 bg-emerald-50/90 border-t border-emerald-200 flex items-center justify-between gap-2">
+                <div className="px-3 py-1.5 bg-emerald-50/90 border-t border-emerald-200 flex items-center justify-between gap-2 shrink-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <Reply size={14} className="text-emerald-600 shrink-0" />
+                    <Reply size={13} className="text-emerald-600 shrink-0" />
                     <div className="text-xs min-w-0">
                       <span className="font-black text-emerald-900 mr-1.5">
                         Replying to {replyingTo.senderName}:
@@ -1863,7 +1937,7 @@ export function AdminSocialInbox({
 
               {/* Staged Uploaded Photos / Attachments Preview Bar */}
               {stagedAttachments.length > 0 && (
-                <div className="px-3 py-2 bg-indigo-50/70 border-t border-indigo-200 flex items-center gap-2 overflow-x-auto">
+                <div className="px-3 py-2 bg-indigo-50/70 border-t border-indigo-200 flex items-center gap-2 overflow-x-auto shrink-0">
                   {stagedAttachments.map((att, idx) => (
                     <div
                       key={idx}
@@ -1873,10 +1947,10 @@ export function AdminSocialInbox({
                         <img
                           src={att.url}
                           alt={att.name || 'Preview'}
-                          className="w-12 h-12 rounded-lg object-cover"
+                          className="w-10 h-10 rounded-lg object-cover"
                         />
                       ) : (
-                        <Paperclip size={16} className="text-indigo-600" />
+                        <Paperclip size={15} className="text-indigo-600" />
                       )}
                       <span className="text-[11px] font-bold text-slate-700 max-w-[120px] truncate">
                         {att.name || 'Photo'}
@@ -1897,13 +1971,13 @@ export function AdminSocialInbox({
 
               {/* Optional Image URL Input Strip */}
               {showAttachmentInput && (
-                <div className="px-3 py-2 bg-sky-50/70 border-t border-sky-200 flex items-center gap-2">
+                <div className="px-3 py-1.5 bg-sky-50/70 border-t border-sky-200 flex items-center gap-2 shrink-0">
                   <ImageIcon size={14} className="text-sky-600 shrink-0" />
                   <Input
                     value={attachmentUrl}
                     onChange={(e) => setAttachmentUrl(e.target.value)}
-                    placeholder="Or paste an image URL (https://...)..."
-                    className="h-8 text-xs bg-white rounded-lg flex-1"
+                    placeholder="Paste an image URL (https://...)..."
+                    className="h-7.5 text-xs bg-white rounded-lg flex-1"
                   />
                   <Button
                     size="sm"
@@ -1921,13 +1995,13 @@ export function AdminSocialInbox({
 
               {/* Emoji Picker Popover Strip */}
               {showEmojiPicker && (
-                <div className="px-3 py-2 bg-white border-t border-slate-200 flex flex-wrap items-center gap-1.5">
+                <div className="px-3 py-1.5 bg-white border-t border-slate-200 flex flex-wrap items-center gap-1 shrink-0">
                   {QUICK_EMOJIS.map((em) => (
                     <button
                       key={em}
                       type="button"
                       onClick={() => setComposerText((prev) => `${prev}${em}`)}
-                      className="w-8 h-8 rounded-lg hover:bg-slate-100 text-base flex items-center justify-center transition-transform hover:scale-110 cursor-pointer"
+                      className="w-7.5 h-7.5 rounded-lg hover:bg-slate-100 text-base flex items-center justify-center transition-transform hover:scale-110 cursor-pointer"
                     >
                       {em}
                     </button>
@@ -1936,8 +2010,8 @@ export function AdminSocialInbox({
               )}
 
               {/* Message Composer Footer */}
-              <div className="p-3 bg-white border-t border-slate-200 space-y-2">
-                <div className="flex items-end gap-1.5">
+              <div className="p-2.5 bg-white border-t border-slate-200/90 space-y-1.5 shrink-0">
+                <div className="flex items-center gap-1.5">
                   {/* Upload Photo/File from Computer */}
                   <Button
                     type="button"
@@ -1945,13 +2019,13 @@ export function AdminSocialInbox({
                     variant="outline"
                     disabled={uploadingFile}
                     onClick={() => fileInputRef.current?.click()}
-                    className="h-10 w-10 p-0 rounded-xl border-slate-200 text-slate-600 hover:text-emerald-700 hover:border-emerald-300 shrink-0 cursor-pointer"
+                    className="h-9.5 w-9.5 p-0 rounded-xl border-slate-200 text-slate-600 hover:text-emerald-700 hover:border-emerald-300 shrink-0 cursor-pointer"
                     title="Upload photo or slip from computer (or paste screenshot with Ctrl+V)"
                   >
                     {uploadingFile ? (
                       <RefreshCw size={15} className="animate-spin text-emerald-600" />
                     ) : (
-                      <Upload size={16} />
+                      <Upload size={15} />
                     )}
                   </Button>
 
@@ -1961,14 +2035,14 @@ export function AdminSocialInbox({
                     size="sm"
                     variant="outline"
                     onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                    className={`h-10 w-10 p-0 rounded-xl border-slate-200 shrink-0 cursor-pointer ${
+                    className={`h-9.5 w-9.5 p-0 rounded-xl border-slate-200 shrink-0 cursor-pointer ${
                       showEmojiPicker
                         ? 'bg-amber-50 border-amber-300 text-amber-600'
                         : 'text-slate-500 hover:text-slate-800'
                     }`}
                     title="Insert Emoji"
                   >
-                    <Smile size={16} />
+                    <Smile size={15} />
                   </Button>
 
                   {/* Paste Image Link Toggle */}
@@ -1977,10 +2051,10 @@ export function AdminSocialInbox({
                     size="sm"
                     variant="outline"
                     onClick={() => setShowAttachmentInput(!showAttachmentInput)}
-                    className="h-10 w-10 p-0 rounded-xl border-slate-200 text-slate-500 hover:text-slate-800 shrink-0 cursor-pointer hidden sm:flex"
+                    className="h-9.5 w-9.5 p-0 rounded-xl border-slate-200 text-slate-500 hover:text-slate-800 shrink-0 cursor-pointer hidden sm:flex"
                     title="Attach image via URL"
                   >
-                    <ImageIcon size={16} />
+                    <ImageIcon size={15} />
                   </Button>
 
                   <textarea
@@ -1993,11 +2067,11 @@ export function AdminSocialInbox({
                         handleSendMessage();
                       }
                     }}
-                    rows={2}
+                    rows={1}
                     placeholder={`Message ${activeConversation.contactName} via ${
                       SOCIAL_CHANNEL_META[activeConversation.channel].shortLabel
                     }... (Enter to send • Ctrl+V to paste photo)`}
-                    className="flex-1 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white p-2.5 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none"
+                    className="flex-1 min-h-[38px] max-h-24 rounded-xl border border-slate-200 bg-slate-50/90 focus:bg-white px-3 py-2 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none"
                   />
 
                   {activeConversation.channel === 'whatsapp' && (
@@ -2011,11 +2085,11 @@ export function AdminSocialInbox({
                           stagedAttachments.length === 0 &&
                           !attachmentUrl.trim())
                       }
-                      className="h-10 px-3 bg-[#25D366] hover:bg-[#1ebe5d] text-slate-950 font-black text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer shadow-sm"
+                      className="h-9.5 px-3 bg-[#25D366] hover:bg-[#1ebe5d] text-slate-950 font-black text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer shadow-2xs"
                       title="Send & Open in Docked WhatsApp Live Window"
                     >
-                      <AppWindow size={14} />
-                      <span className="hidden sm:inline">Send & WhatsApp</span>
+                      <AppWindow size={13} />
+                      <span className="hidden sm:inline">Send & WA</span>
                     </Button>
                   )}
 
@@ -2029,9 +2103,9 @@ export function AdminSocialInbox({
                         stagedAttachments.length === 0 &&
                         !attachmentUrl.trim())
                     }
-                    className="h-10 px-4 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer"
+                    className="h-9.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white font-bold text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer shadow-2xs"
                   >
-                    <Send size={14} />
+                    <Send size={13} />
                     <span>Send</span>
                   </Button>
                 </div>
@@ -2045,9 +2119,7 @@ export function AdminSocialInbox({
                         onChange={(e) => setOpenWaWebOnSend(e.target.checked)}
                         className="rounded border-slate-300"
                       />
-                      <span>
-                        Auto-sync message to Docked WhatsApp Companion Window on Enter
-                      </span>
+                      <span>Auto-sync to Docked WhatsApp Companion on Enter</span>
                     </label>
                     <div className="flex items-center gap-2">
                       <button
@@ -2061,7 +2133,7 @@ export function AdminSocialInbox({
                         }
                         className="text-emerald-700 font-bold hover:underline cursor-pointer"
                       >
-                        Open Companion Popup
+                        Companion Popup
                       </button>
                       <span>•</span>
                       <button
@@ -2075,7 +2147,7 @@ export function AdminSocialInbox({
                         }
                         className="text-emerald-700 font-bold hover:underline cursor-pointer"
                       >
-                        Open Desktop/Mobile App
+                        Desktop/Mobile App
                       </button>
                     </div>
                   </div>
@@ -2089,8 +2161,8 @@ export function AdminSocialInbox({
         {/* RIGHT COLUMN (3 cols): CUSTOMER 360° CRM & LAUNDRY ORDERS       */}
         {/* -------------------------------------------------------------- */}
         {showRightPanel && (
-          <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-2xs flex flex-col overflow-hidden h-[700px]">
-            <div className="p-3.5 border-b border-slate-100 bg-slate-50/60 flex items-center justify-between">
+          <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-200/90 shadow-xs flex flex-col overflow-hidden h-[calc(100vh-195px)] min-h-[680px] max-h-[860px]">
+            <div className="px-3.5 py-3 border-b border-slate-100 bg-slate-50/70 flex items-center justify-between shrink-0">
               <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
                 <UserCheck size={15} className="text-indigo-600" />
                 <span>Customer 360° & Orders</span>
@@ -2100,7 +2172,7 @@ export function AdminSocialInbox({
                   size="sm"
                   variant="outline"
                   onClick={() => setIsLinkCustomerOpen(true)}
-                  className="h-7 px-2 text-[10px] font-bold rounded-lg gap-1 cursor-pointer"
+                  className="h-7 px-2 text-[10px] font-bold rounded-lg gap-1 cursor-pointer bg-white"
                 >
                   <Link2 size={11} />
                   <span>{linkedCustomer ? 'Change Link' : 'Link CRM'}</span>
@@ -2108,7 +2180,7 @@ export function AdminSocialInbox({
               )}
             </div>
 
-            <div className="flex-1 overflow-y-auto p-3.5 space-y-4 custom-scrollbar">
+            <div className="flex-1 overflow-y-auto p-3.5 space-y-3.5 custom-scrollbar">
               {!activeConversation ? (
                 <p className="text-xs text-slate-400 text-center py-8">
                   Select a conversation to view customer profile and active laundry orders.
@@ -2117,31 +2189,32 @@ export function AdminSocialInbox({
                 <>
                   {/* Customer Profile Card */}
                   {linkedCustomer ? (
-                    <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-3.5 space-y-2.5">
+                    <div className="rounded-xl border border-indigo-100 bg-gradient-to-br from-indigo-50/60 via-white to-indigo-50/30 p-3.5 space-y-2.5 shadow-2xs">
                       <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <span className="text-[10px] font-black uppercase tracking-wider text-indigo-600">
+                        <div className="min-w-0">
+                          <span className="text-[9px] font-black uppercase tracking-wider text-indigo-600 block">
                             Verified CRM Member
                           </span>
-                          <h4 className="text-sm font-black text-slate-900">
+                          <h4 className="text-sm font-black text-slate-900 truncate">
                             {linkedCustomer.name}
                           </h4>
                           {linkedCustomer.nickName && (
-                            <p className="text-[11px] text-slate-500 font-semibold">
+                            <p className="text-[11px] text-slate-500 font-semibold truncate">
                               Nickname: {linkedCustomer.nickName}
                             </p>
                           )}
                         </div>
                         {linkedCustomer.memberId && (
-                          <Badge className="bg-indigo-600 text-white text-[10px] font-mono">
+                          <Badge className="bg-indigo-600 text-white text-[10px] font-mono shrink-0">
                             #{linkedCustomer.memberId}
                           </Badge>
                         )}
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2 pt-1">
-                        <div className="bg-white rounded-lg p-2 border border-indigo-100/80">
-                          <span className="text-[9px] font-bold uppercase text-slate-400 block">
+                      {/* Wallet & Full Non-Truncated Phone */}
+                      <div className="grid grid-cols-1 gap-1.5 pt-0.5">
+                        <div className="flex items-center justify-between bg-white rounded-lg px-2.5 py-2 border border-indigo-100/80">
+                          <span className="text-[10px] font-bold uppercase text-slate-400">
                             Wallet Balance
                           </span>
                           <span className="text-xs font-black text-emerald-700">
@@ -2151,13 +2224,36 @@ export function AdminSocialInbox({
                             ).toLocaleString()}
                           </span>
                         </div>
-                        <div className="bg-white rounded-lg p-2 border border-indigo-100/80">
-                          <span className="text-[9px] font-bold uppercase text-slate-400 block">
+
+                        <div className="flex items-center justify-between bg-white rounded-lg px-2.5 py-2 border border-indigo-100/80 gap-2">
+                          <span className="text-[10px] font-bold uppercase text-slate-400 shrink-0">
                             Phone
                           </span>
-                          <span className="text-[11px] font-bold text-slate-800 truncate block">
-                            {linkedCustomer.phone || '-'}
-                          </span>
+                          {getDisplayPhone(linkedCustomer.phone) ||
+                          getDisplayPhone(activeConversation.contactPhone) ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const ph =
+                                  getDisplayPhone(linkedCustomer.phone) ||
+                                  getDisplayPhone(activeConversation.contactPhone);
+                                navigator.clipboard.writeText(ph);
+                                toast.success(`Copied ${ph}`);
+                              }}
+                              className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-800 hover:text-emerald-700 cursor-pointer"
+                              title="Click to copy phone"
+                            >
+                              <span>
+                                {getDisplayPhone(linkedCustomer.phone) ||
+                                  getDisplayPhone(activeConversation.contactPhone)}
+                              </span>
+                              <Copy size={10} className="text-slate-400" />
+                            </button>
+                          ) : (
+                            <span className="text-[11px] font-semibold text-slate-400">
+                              Not provided
+                            </span>
+                          )}
                         </div>
                       </div>
 
@@ -2165,7 +2261,7 @@ export function AdminSocialInbox({
                         <Button
                           size="sm"
                           onClick={() => onCreateJobForCustomer(linkedCustomer)}
-                          className="w-full h-8 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] rounded-lg gap-1.5 cursor-pointer"
+                          className="w-full h-8.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] rounded-lg gap-1.5 cursor-pointer shadow-2xs"
                         >
                           <Plus size={13} />
                           <span>+ Create Laundry Job for Customer</span>
@@ -2183,7 +2279,7 @@ export function AdminSocialInbox({
                         size="sm"
                         variant="outline"
                         onClick={() => setIsLinkCustomerOpen(true)}
-                        className="h-8 px-3 text-xs font-bold rounded-lg gap-1.5 cursor-pointer"
+                        className="h-8 px-3 text-xs font-bold rounded-lg gap-1.5 cursor-pointer bg-white"
                       >
                         <Link2 size={13} />
                         <span>Link to CRM Customer</span>
@@ -2197,16 +2293,34 @@ export function AdminSocialInbox({
                       Live App Launchers
                     </span>
                     <div className="grid grid-cols-1 gap-1.5">
-                      {(activeConversation.contactPhone ||
-                        activeConversation.channel === 'whatsapp' ||
-                        linkedCustomer?.phone) && (
+                      {activeConversation.channel === 'line' && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openLineOfficialChatCompanion(activeConversation.contactName)
+                          }
+                          className="flex items-center justify-between px-3 py-2 rounded-xl border border-[#06C755]/40 bg-[#06C755]/10 hover:bg-[#06C755]/15 text-xs font-bold text-emerald-950 transition-colors cursor-pointer"
+                        >
+                          <span className="flex items-center gap-2">
+                            <AppWindow size={13} className="text-[#06C755]" />
+                            <span>Official LINE OA Chat Companion</span>
+                          </span>
+                          <ExternalLink size={12} className="text-emerald-700" />
+                        </button>
+                      )}
+
+                      {(Boolean(
+                        getDisplayPhone(activeConversation.contactPhone) ||
+                          getDisplayPhone(linkedCustomer?.phone)
+                      ) ||
+                        activeConversation.channel === 'whatsapp') && (
                         <>
                           <button
                             type="button"
                             onClick={() =>
                               openWhatsAppBridgeWindow(
-                                activeConversation.contactPhone ||
-                                  linkedCustomer?.phone ||
+                                getDisplayPhone(activeConversation.contactPhone) ||
+                                  getDisplayPhone(linkedCustomer?.phone) ||
                                   activeConversation.externalContactId,
                                 composerText,
                                 'companion_popup'
@@ -2225,8 +2339,8 @@ export function AdminSocialInbox({
                             type="button"
                             onClick={() =>
                               openWhatsAppBridgeWindow(
-                                activeConversation.contactPhone ||
-                                  linkedCustomer?.phone ||
+                                getDisplayPhone(activeConversation.contactPhone) ||
+                                  getDisplayPhone(linkedCustomer?.phone) ||
                                   activeConversation.externalContactId,
                                 composerText,
                                 'native_app'
@@ -2266,7 +2380,7 @@ export function AdminSocialInbox({
                           return (
                             <div
                               key={job.id}
-                              className="p-2.5 rounded-xl border border-slate-200 bg-slate-50/60 hover:bg-white transition-all space-y-1.5"
+                              className="p-2.5 rounded-xl border border-slate-200/90 bg-slate-50/70 hover:bg-white transition-all space-y-1.5 shadow-2xs"
                             >
                               <div className="flex items-center justify-between gap-1">
                                 <span
@@ -2277,23 +2391,29 @@ export function AdminSocialInbox({
                                 </span>
                                 <Badge
                                   variant="outline"
-                                  className="text-[9px] font-bold uppercase px-1.5 py-0"
+                                  className={`text-[9px] font-bold uppercase px-1.5 py-0 ${
+                                    job.status === 'delivered' || job.status === 'completed'
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                      : 'bg-amber-50 text-amber-700 border-amber-200'
+                                  }`}
                                 >
                                   {job.status}
                                 </Badge>
                               </div>
-                              <div className="flex items-center justify-between text-[11px] text-slate-600">
+                              <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600">
                                 <span className="truncate">{job.serviceType || 'Laundry'}</span>
-                                <span className="font-black text-slate-900">
-                                  ฿{Number(job.totalPrice || 0).toLocaleString()}
-                                </span>
+                                {job.totalPrice !== undefined && Number(job.totalPrice) > 0 && (
+                                  <span className="font-black text-slate-900 shrink-0">
+                                    ฿{Number(job.totalPrice).toLocaleString()}
+                                  </span>
+                                )}
                               </div>
-                              <div className="grid grid-cols-1 gap-1">
+                              <div className="grid grid-cols-1 gap-1 pt-0.5">
                                 <Button
                                   size="sm"
                                   variant="outline"
                                   onClick={() => handleInsertJobStatus(job, hasProofPhoto)}
-                                  className="w-full h-7 text-[10px] font-bold rounded-lg gap-1 border-slate-200 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-300 cursor-pointer"
+                                  className="w-full h-7 text-[10px] font-bold rounded-lg gap-1 bg-white border-slate-200 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-300 cursor-pointer"
                                 >
                                   <Send size={10} />
                                   <span>
