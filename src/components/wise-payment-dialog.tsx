@@ -45,6 +45,7 @@ interface WisePaymentDialogProps {
     amount: number;
     channel: string;
     senderName?: string;
+    job?: any;
   }) => void;
 }
 
@@ -177,6 +178,7 @@ export function WisePaymentDialog({
             amount: paidAmt,
             channel: "Wise",
             senderName: sender,
+            job: res.job,
           });
         }
       } else if (isManual) {
@@ -211,7 +213,7 @@ export function WisePaymentDialog({
     if (pollTimerRef.current) clearInterval(pollTimerRef.current);
 
     try {
-      await recordWiseJobPaymentAction({
+      const recRes = await recordWiseJobPaymentAction({
         jobId: job.id,
         paidAmount,
         senderName,
@@ -228,6 +230,7 @@ export function WisePaymentDialog({
           amount: paidAmount,
           channel: "Wise",
           senderName,
+          job: recRes?.job,
         });
       }
     } catch {
@@ -240,6 +243,9 @@ export function WisePaymentDialog({
       });
     }
   };
+
+  const checkWiseFnRef = useRef(handleCheckWisePayment);
+  checkWiseFnRef.current = handleCheckWisePayment;
 
   // Start polling when dialog opens
   useEffect(() => {
@@ -256,11 +262,11 @@ export function WisePaymentDialog({
       return;
     }
 
-    handleCheckWisePayment(false);
+    checkWiseFnRef.current(false);
 
     pollTimerRef.current = setInterval(() => {
-      handleCheckWisePayment(false);
-    }, 4000);
+      checkWiseFnRef.current(false);
+    }, 3000);
 
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);

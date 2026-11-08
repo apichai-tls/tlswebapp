@@ -6873,6 +6873,35 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         </DialogContent>
       </Dialog>
 
+      {/* Wise International Payment Dialog */}
+      <WisePaymentDialog
+        isOpen={!!wisePaymentJob}
+        onClose={() => setWisePaymentJob(null)}
+        job={wisePaymentJob}
+        customAmount={wisePaymentJob?.totalAmount ?? undefined}
+        onPaymentSuccess={async (paidInfo) => {
+          if (wisePaymentJob) {
+            const { api, refreshDb } = await import("@/lib/api");
+            if (paidInfo.job) {
+              api.applyServerJob(paidInfo.job);
+            } else {
+              await api.fetchAndApplyJob(wisePaymentJob.id);
+            }
+            jobStore.notify();
+            const all = jobStore.getSnapshot();
+            const updated = all.find((j) => j.id === wisePaymentJob.id);
+            if (updated) {
+              setLatestJob(updated);
+            }
+            setIsDraftPreview(false);
+            setShowReceipt(true);
+            playAudioFeedback("success");
+            await refreshDb();
+          }
+          setWisePaymentJob(null);
+        }}
+      />
+
       {/* Beam Online Payment Dialog */}
       <OnlinePaymentDialog
         isOpen={!!onlinePaymentJob}

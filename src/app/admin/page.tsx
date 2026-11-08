@@ -28,6 +28,7 @@ import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, 
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { WisePaymentDialog } from "@/components/wise-payment-dialog";
+import { checkWiseJobPaymentStatusAction } from "@/actions/wise";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
 import { AutoRecurringWorker } from "@/components/auto-recurring-worker";
 import {
@@ -3057,6 +3058,67 @@ function AdminPageContent() {
     fee,
     dialogDiscountAmount
   ]);
+
+  // Keep open Edit Order Dialog in sync if job becomes PAID in background (e.g. via Wise / Beam poller)
+  useEffect(() => {
+    if (!dialogOpen || !editingJobId || !isPaidJob) return;
+    setPaymentMethod("paid");
+    const latest = jobStore.getSnapshot().find((j) => j.id === editingJobId);
+    if (latest) {
+      if (latest.paymentChannel) setPaymentChannel(latest.paymentChannel);
+      if (originalJobRef.current && originalJobRef.current.id === editingJobId) {
+        originalJobRef.current = JSON.parse(JSON.stringify(latest));
+      }
+    }
+  }, [dialogOpen, editingJobId, isPaidJob]);
+
+  // Auto-poll Wise API while Edit Order Dialog is open with Wise selected (even if QR popup is closed)
+  useEffect(() => {
+    if (!dialogOpen || !editingJobId || isPaidJob || isCancelledJob) return;
+    if (dialogTotal <= 0 || !paymentChannel?.toLowerCase().includes("wise")) return;
+    if (wisePaymentJob) return; // WisePaymentDialog already polls every 3s while open
+
+    let cancelled = false;
+    const pollWiseForDialogJob = async () => {
+      if (cancelled) return;
+      try {
+        const res = await checkWiseJobPaymentStatusAction({
+          jobId: editingJobId,
+          expectedAmount: dialogTotal,
+        });
+        if (cancelled || !res.success || !res.isPaid) return;
+
+        const sender = res.matchedTransfer?.senderName || "Wise Customer";
+        toast.success(`🎉 ยืนยันการชำระเงิน Wise สำเร็จ! (${sender})`);
+        setPaymentMethod("paid");
+        setPaymentChannel("Wise");
+        if (res.job) {
+          const { job: applied } = api.applyServerJob(res.job);
+          if (originalJobRef.current && originalJobRef.current.id === editingJobId) {
+            originalJobRef.current = JSON.parse(JSON.stringify(applied));
+          }
+        } else {
+          const fetched = await api.fetchAndApplyJob(editingJobId);
+          if (fetched && originalJobRef.current && originalJobRef.current.id === editingJobId) {
+            originalJobRef.current = JSON.parse(JSON.stringify(fetched));
+          }
+        }
+        jobStore.notify();
+        await refreshDb();
+        setIsDraftPreview(false);
+        setIsPaymentEvent(true);
+        setShowReceipt(true);
+      } catch {}
+    };
+
+    const initialTimer = setTimeout(pollWiseForDialogJob, 1500);
+    const interval = setInterval(pollWiseForDialogJob, 5000);
+    return () => {
+      cancelled = true;
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
+  }, [dialogOpen, editingJobId, isPaidJob, isCancelledJob, dialogTotal, paymentChannel, wisePaymentJob]);
 
   const handleEditFullJob = (job: Job) => {
     setSaveError(null);
@@ -12647,15 +12709,20 @@ function AdminPageContent() {
           if (wisePaymentJob) {
             setPaymentMethod("paid");
             setPaymentChannel("Wise");
-            api.optimisticUpdate(wisePaymentJob.id, {
-              isPaid: true,
-              isShopPaid: true,
-              paymentChannel: paidInfo.channel || "Wise",
-              paymentMethod: "transfer",
-            } as any);
+            if (paidInfo.job) {
+              const { job: applied } = api.applyServerJob(paidInfo.job);
+              if (originalJobRef.current && originalJobRef.current.id === wisePaymentJob.id) {
+                originalJobRef.current = JSON.parse(JSON.stringify(applied));
+              }
+            } else {
+              const fetched = await api.fetchAndApplyJob(wisePaymentJob.id);
+              if (fetched && originalJobRef.current && originalJobRef.current.id === wisePaymentJob.id) {
+                originalJobRef.current = JSON.parse(JSON.stringify(fetched));
+              }
+            }
             jobStore.notify();
             await refreshDb();
-            const current = jobs.find(j => j.id === wisePaymentJob.id) || activeJob;
+            const current = jobStore.getSnapshot().find(j => j.id === wisePaymentJob.id) || jobs.find(j => j.id === wisePaymentJob.id) || activeJob;
             if (current) {
               setEditingJobId(current.id);
               setIsDraftPreview(false);

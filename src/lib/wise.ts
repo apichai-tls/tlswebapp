@@ -35,6 +35,7 @@ export interface WiseActivityItem {
   rawAmount: string;
   status: string;
   createdOn: string;
+  updatedOn?: string;
   resourceId?: string;
   isIncoming: boolean;
   reference?: string;
@@ -191,6 +192,7 @@ export async function fetchWiseActivities(
       rawAmount: stripHtml(item.primaryAmount || ""),
       status: item.status || "UNKNOWN",
       createdOn: item.createdOn,
+      updatedOn: item.updatedOn || item.createdOn,
       resourceId: item.resource?.id ? String(item.resource.id) : undefined,
       isIncoming: parsed.isIncoming,
     };

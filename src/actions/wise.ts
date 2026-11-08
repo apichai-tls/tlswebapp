@@ -356,6 +356,17 @@ export async function recordWiseJobPaymentAction(params: {
  * Poll Wise API for a matching incoming transfer for a specific Job and auto-confirm if found.
  * Protects against re-using a transfer that was already linked to another Job.
  */
+function doesWiseSenderMatchCustomer(senderName?: string | null, customerName?: string | null): boolean {
+  const s = (senderName || '').toLowerCase().replace(/[^a-z0-9\u0E00-\u0E7F\s]/gi, ' ').trim();
+  const c = (customerName || '').toLowerCase().replace(/[^a-z0-9\u0E00-\u0E7F\s]/gi, ' ').trim();
+  if (!s || !c) return false;
+  if (s.includes(c) || c.includes(s)) return true;
+  const sTokens = s.split(/\s+/).filter((t) => t.length >= 3);
+  const cTokens = c.split(/\s+/).filter((t) => t.length >= 3 && !['khun', 'mr', 'mrs', 'ms', 'miss', 'dr'].includes(t));
+  if (sTokens.length === 0 || cTokens.length === 0) return false;
+  return cTokens.some((ct) => sTokens.includes(ct));
+}
+
 export async function checkWiseJobPaymentStatusAction(params: {
   jobId: string;
   expectedAmount: number;
@@ -363,6 +374,7 @@ export async function checkWiseJobPaymentStatusAction(params: {
 }): Promise<{
   success: boolean;
   isPaid: boolean;
+  job?: any;
   matchedTransfer?: WiseActivityItem;
   activities?: WiseActivityItem[];
   error?: string;
@@ -371,23 +383,16 @@ export async function checkWiseJobPaymentStatusAction(params: {
     const { jobId, expectedAmount } = params;
     const job = await prisma.job.findUnique({
       where: { id: jobId },
-      select: {
-        id: true,
-        billNo: true,
-        isPaid: true,
-        isShopPaid: true,
-        paymentChannel: true,
-        totalAmount: true,
-      },
     });
 
-    const txRes = await getWiseRecentTransactionsAction(15);
+    const txRes = await getWiseRecentTransactionsAction(20);
     const activities = txRes.activities || [];
 
-    if (job?.isPaid) {
+    if (job?.isPaid && job?.isShopPaid) {
       return {
         success: true,
         isPaid: true,
+        job,
         activities,
       };
     }
@@ -401,13 +406,22 @@ export async function checkWiseJobPaymentStatusAction(params: {
       };
     }
 
-    // Find all Wise chargeIds already claimed by any paid Wise job in the last 7 days
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const targetAmount = Number(expectedAmount) > 0 ? Number(expectedAmount) : (Number(job?.totalAmount) || 0);
+    if (targetAmount <= 0) {
+      return {
+        success: true,
+        isPaid: false,
+        activities,
+      };
+    }
+
+    // Find all Wise chargeIds already claimed by any paid Wise job in the last 14 days
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
     const recentWiseJobs = await prisma.job.findMany({
       where: {
         isPaid: true,
         paymentChannel: { contains: 'Wise', mode: 'insensitive' },
-        updatedAt: { gte: sevenDaysAgo },
+        updatedAt: { gte: fourteenDaysAgo },
       },
       select: {
         id: true,
@@ -437,7 +451,8 @@ export async function checkWiseJobPaymentStatusAction(params: {
     const jobIdShort = jobIdClean.slice(0, 8);
     const billNoClean = (job?.billNo || '').trim().toUpperCase();
     const billNoHyphen = billNoClean.replace(/\//g, '-');
-    const thirtyMinsAgoMs = Date.now() - 30 * 60 * 1000;
+    const twelveHoursAgoMs = Date.now() - 12 * 60 * 60 * 1000;
+    const jobCreatedMs = job?.createdAt ? new Date(job.createdAt).getTime() - 15 * 60 * 1000 : twelveHoursAgoMs;
 
     // Look for an unclaimed COMPLETED incoming transfer
     const matching = activities.find((act) => {
@@ -445,10 +460,10 @@ export async function checkWiseJobPaymentStatusAction(params: {
       const transferId = act.resourceId || act.id;
       if (claimedTransferIds.has(String(transferId))) return false;
 
-      const amountMatches = Math.abs(act.amount - expectedAmount) < 1;
+      const amountMatches = Math.abs(act.amount - targetAmount) < 1;
       if (!amountMatches) return false;
 
-      // Check if reference explicitly matches this order's ID or Bill No
+      // 1. Check if reference explicitly matches this order's ID or Bill No
       const refUpper = (act.reference || '').trim().toUpperCase();
       if (
         refUpper &&
@@ -460,13 +475,22 @@ export async function checkWiseJobPaymentStatusAction(params: {
         return true;
       }
 
-      // Otherwise only auto-match by amount if the transfer arrived within the last 30 minutes
-      const createdMs = act.createdOn ? new Date(act.createdOn).getTime() : 0;
-      return createdMs >= thirtyMinsAgoMs;
+      // 2. Check if sender name matches the job's customer name
+      if (doesWiseSenderMatchCustomer(act.senderName, job?.customerName)) {
+        return true;
+      }
+
+      // 3. Auto-match by exact amount if transfer completed within the last 12 hours and after job creation
+      const completedMs = act.updatedOn
+        ? new Date(act.updatedOn).getTime()
+        : act.createdOn
+        ? new Date(act.createdOn).getTime()
+        : 0;
+      return completedMs >= twelveHoursAgoMs && completedMs >= jobCreatedMs;
     });
 
     if (matching) {
-      await recordWiseJobPaymentAction({
+      const recRes = await recordWiseJobPaymentAction({
         jobId,
         paidAmount: matching.amount,
         senderName: matching.senderName,
@@ -479,6 +503,7 @@ export async function checkWiseJobPaymentStatusAction(params: {
       return {
         success: true,
         isPaid: true,
+        job: recRes.job,
         matchedTransfer: matching,
         activities,
       };
@@ -498,6 +523,142 @@ export async function checkWiseJobPaymentStatusAction(params: {
   }
 }
 
+/**
+ * Background batch sync: checks all recent unpaid orders against incoming Wise transfers
+ * so orders automatically mark as PAID even when the Wise dialog is closed.
+ */
+export async function syncAllPendingWiseJobsAction(): Promise<{
+  success: boolean;
+  paidJobs: Array<{ jobId: string; amount: number; senderName: string; job?: any }>;
+}> {
+  try {
+    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const candidateJobs = await prisma.job.findMany({
+      where: {
+        isPaid: false,
+        status: { notIn: ['cancel', 'return'] },
+        totalAmount: { gt: 0 },
+        updatedAt: { gte: twoDaysAgo },
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 40,
+    });
+
+    if (candidateJobs.length === 0) {
+      return { success: true, paidJobs: [] };
+    }
+
+    const txRes = await getWiseRecentTransactionsAction(20);
+    const activities = (txRes.activities || []).filter(
+      (a) => a.isIncoming && a.status === 'COMPLETED' && a.amount > 0
+    );
+    if (!txRes.success || activities.length === 0) {
+      return { success: true, paidJobs: [] };
+    }
+
+    // Find all Wise transfer IDs already claimed in the last 14 days
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+    const recentPaidWiseJobs = await prisma.job.findMany({
+      where: {
+        isPaid: true,
+        paymentChannel: { contains: 'Wise', mode: 'insensitive' },
+        updatedAt: { gte: fourteenDaysAgo },
+      },
+      select: { id: true, adminNotesJson: true },
+    });
+
+    const claimedTransferIds = new Set<string>();
+    for (const rj of recentPaidWiseJobs) {
+      if (rj.adminNotesJson) {
+        try {
+          const parsed = JSON.parse(rj.adminNotesJson);
+          if (Array.isArray(parsed?.payments)) {
+            for (const p of parsed.payments) {
+              if (p?.chargeId && String(p.chargeId).startsWith('WISE-')) {
+                claimedTransferIds.add(String(p.chargeId).replace(/^WISE-/, ''));
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    const twelveHoursAgoMs = Date.now() - 12 * 60 * 60 * 1000;
+    const paidJobs: Array<{ jobId: string; amount: number; senderName: string; job?: any }> = [];
+
+    // Sort candidate jobs so explicit 'Wise' channel jobs are matched first
+    const sortedJobs = [...candidateJobs].sort((a, b) => {
+      const aWise = (a.paymentChannel || '').toLowerCase().includes('wise') ? 0 : 1;
+      const bWise = (b.paymentChannel || '').toLowerCase().includes('wise') ? 0 : 1;
+      return aWise - bWise;
+    });
+
+    for (const job of sortedJobs) {
+      const expectedAmount = Number(job.totalAmount) || 0;
+      if (expectedAmount <= 0) continue;
+
+      const isWiseChannel = (job.paymentChannel || '').toLowerCase().includes('wise');
+      const jobIdClean = job.id.trim().toUpperCase();
+      const jobIdShort = jobIdClean.slice(0, 8);
+      const billNoClean = (job.billNo || '').trim().toUpperCase();
+      const billNoHyphen = billNoClean.replace(/\//g, '-');
+      const jobCreatedMs = job.createdAt ? new Date(job.createdAt).getTime() - 15 * 60 * 1000 : twelveHoursAgoMs;
+
+      const matching = activities.find((act) => {
+        const transferId = String(act.resourceId || act.id);
+        if (claimedTransferIds.has(transferId)) return false;
+        if (Math.abs(act.amount - expectedAmount) >= 1) return false;
+
+        const completedMs = act.updatedOn
+          ? new Date(act.updatedOn).getTime()
+          : act.createdOn
+          ? new Date(act.createdOn).getTime()
+          : 0;
+        if (completedMs < jobCreatedMs) return false;
+
+        const refUpper = (act.reference || '').trim().toUpperCase();
+        const refMatches =
+          Boolean(refUpper) &&
+          (refUpper.includes(jobIdClean) ||
+            refUpper.includes(jobIdShort) ||
+            (Boolean(billNoClean) && refUpper.includes(billNoClean)) ||
+            (Boolean(billNoHyphen) && refUpper.includes(billNoHyphen)));
+        const nameMatches = doesWiseSenderMatchCustomer(act.senderName, job.customerName);
+
+        if (refMatches || nameMatches) return true;
+        if (isWiseChannel && completedMs >= twelveHoursAgoMs) return true;
+        return false;
+      });
+
+      if (matching) {
+        const transferId = String(matching.resourceId || matching.id);
+        claimedTransferIds.add(transferId);
+        const recRes = await recordWiseJobPaymentAction({
+          jobId: job.id,
+          paidAmount: matching.amount,
+          senderName: matching.senderName,
+          transferId,
+          reference: matching.reference,
+          sourceCurrency: matching.sourceCurrency,
+          sourceValue: matching.sourceValue,
+        });
+        if (recRes.success) {
+          paidJobs.push({
+            jobId: job.id,
+            amount: matching.amount,
+            senderName: matching.senderName,
+            job: recRes.job,
+          });
+        }
+      }
+    }
+
+    return { success: true, paidJobs };
+  } catch (err) {
+    console.warn('[syncAllPendingWiseJobsAction] Error:', err);
+    return { success: false, paidJobs: [] };
+  }
+}
 /**
  * Save Wise API credentials in DB
  */

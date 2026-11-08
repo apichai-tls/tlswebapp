@@ -9,6 +9,8 @@ import { generateThermalReceiptImage, uploadReceiptImage } from "@/lib/thermal-c
 import { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } from "@/lib/a5-canvas-generator";
 import { isJobFullyPaid, cleanProformaNumber, computeCartHash } from "@/lib/utils";
 import { checkJobOnlinePaymentStatusAction } from "@/actions/online-payment";
+import { checkWiseJobPaymentStatusAction, syncAllPendingWiseJobsAction } from "@/actions/wise";
+import { toast } from "sonner";
 import { claimAutoReceiptGenerationAction } from "@/actions/db";
 
 /**
@@ -27,6 +29,7 @@ export function AutoReceiptWorker() {
   const processingRef = useRef<Set<string>>(new Set());
   const completedRef = useRef<Set<string>>(new Set());
   const lastBeamCheckMap = useRef<Map<string, number>>(new Map());
+  const lastWiseBatchSyncRef = useRef<number>(0);
   const isWorkingRef = useRef(false);
   const instanceJitterMsRef = useRef<number>(Math.floor(Math.random() * 10000));
 
@@ -71,17 +74,66 @@ export function AutoReceiptWorker() {
           if (res.success && res.isPaid) {
             console.log(`[AutoReceiptWorker] ✔ Detected online payment for Job #${unpaidBeamJob.id} via background poller`);
             const { api, refreshDb } = await import("@/lib/api");
-            api.optimisticUpdate(unpaidBeamJob.id, {
-              isPaid: true,
-              isShopPaid: true,
-              paymentChannel: res.paymentChannel || unpaidBeamJob.paymentChannel,
-            } as any);
+            await api.fetchAndApplyJob(unpaidBeamJob.id);
             jobStore.notify();
             await refreshDb();
           }
         }).catch((err) => {
           console.warn(`[AutoReceiptWorker] Background check failed for Job #${unpaidBeamJob.id}:`, err);
         });
+      }
+
+      // 0B. Auto-check and synchronize unpaid Wise jobs in the background (even when Wise dialog is closed)
+      const unpaidWiseJob = jobs.find((job) => {
+        if (!job.id || job.id === "DRAFT" || job.isPaid || job.isShopPaid) return false;
+        if (['cancel', 'return', 'completed'].includes(job.status)) return false;
+        const channel = (job.paymentChannel || "").toLowerCase();
+        if (!channel.includes("wise")) return false;
+        const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
+        if (now - jobUpdatedTime > 24 * 60 * 60 * 1000) return false;
+        const lastCheck = lastBeamCheckMap.current.get(`wise_${job.id}`) || 0;
+        return (now - lastCheck) > 8000; // check every 8s per active Wise job
+      });
+
+      if (unpaidWiseJob) {
+        lastBeamCheckMap.current.set(`wise_${unpaidWiseJob.id}`, now);
+        checkWiseJobPaymentStatusAction({
+          jobId: unpaidWiseJob.id,
+          expectedAmount: Number(unpaidWiseJob.totalAmount) || 0,
+        }).then(async (res) => {
+          if (res.success && res.isPaid) {
+            console.log(`[AutoReceiptWorker] ✔ Detected Wise payment for Job #${unpaidWiseJob.id} via background poller`);
+            const { api, refreshDb } = await import("@/lib/api");
+            if (res.job) {
+              api.applyServerJob(res.job);
+            } else {
+              await api.fetchAndApplyJob(unpaidWiseJob.id);
+            }
+            jobStore.notify();
+            await refreshDb();
+            toast.success(`🎉 Wise Payment Synced: Order #${unpaidWiseJob.id} marked as PAID!`);
+          }
+        }).catch((err) => {
+          console.warn(`[AutoReceiptWorker] Wise background check failed for Job #${unpaidWiseJob.id}:`, err);
+        });
+      } else if (now - lastWiseBatchSyncRef.current > 15000) {
+        // Also run batch Wise sync every 15s to catch Wise transfers for any recent unpaid order
+        lastWiseBatchSyncRef.current = now;
+        syncAllPendingWiseJobsAction().then(async (res) => {
+          if (res.success && res.paidJobs && res.paidJobs.length > 0) {
+            const { api, refreshDb } = await import("@/lib/api");
+            for (const pj of res.paidJobs) {
+              if (pj.job) {
+                api.applyServerJob(pj.job);
+              } else {
+                await api.fetchAndApplyJob(pj.jobId);
+              }
+              toast.success(`🎉 Wise Payment Synced: ฿${pj.amount.toFixed(2)} from ${pj.senderName} (Order #${pj.jobId})`);
+            }
+            jobStore.notify();
+            await refreshDb();
+          }
+        }).catch(() => {});
       }
 
       // 1. Find newly paid jobs (specifically from Beam or recent cashier checkout) missing receipt image
