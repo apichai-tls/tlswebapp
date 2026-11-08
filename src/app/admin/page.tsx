@@ -436,7 +436,12 @@ function AdminPageContent() {
   dialogOpenRef.current = dialogOpen;
   const editingJobIdRef = useRef(editingJobId);
   editingJobIdRef.current = editingJobId;
-  const activeJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+  const originalJobRef = useRef<Job | null>(null);
+  const activeJob = editingJobId
+    ? (jobs.find(j => j.id === editingJobId) ||
+       jobStore.getSnapshot().find(j => j.id === editingJobId) ||
+       (originalJobRef.current?.id === editingJobId ? originalJobRef.current : null))
+    : null;
   const [showJobLogs, setShowJobLogs] = useState(false);
   const [modalLayoutCols, setModalLayoutCols] = useState<"4" | "2">("4");
   const [isDetailLoading, setIsDetailLoading] = useState(false);
@@ -1127,7 +1132,6 @@ function AdminPageContent() {
   const billUploaderRef = useRef<MultiImageUploaderRef>(null);
   const pickupUploaderRef = useRef<MultiImageUploaderRef>(null);
   const deliveryUploaderRef = useRef<MultiImageUploaderRef>(null);
-  const originalJobRef = useRef<Job | null>(null);
 
   const handleLogout = async () => {
     await logout();
@@ -1186,12 +1190,12 @@ function AdminPageContent() {
 
 
   const isPaidJob = editingJobId ? (() => {
-    const j = jobs.find(job => job.id === editingJobId) || jobStore.getSnapshot().find(job => job.id === editingJobId);
+    const j = activeJob;
     if (isRewashJob || isRewashOrNoChargeJob(j)) return false;
     return isJobFullyPaid(j);
   })() : false;
   const isCancelledJob = Boolean(editingJobId && (() => {
-    const j = jobs.find(job => job.id === editingJobId) || jobStore.getSnapshot().find(job => job.id === editingJobId);
+    const j = activeJob;
     return j?.status === "cancel" || (j?.status as string) === "cancelled";
   })());
   const isPricingLocked = isPaidJob;
@@ -1516,7 +1520,7 @@ function AdminPageContent() {
   const isCurrentJobBillSent = useMemo(() => {
     if (isRewashJob) return true;
     if (!editingJobId) return false;
-    const currentJob = jobs.find(j => j.id === editingJobId);
+    const currentJob = activeJob;
     if (isRewashOrNoChargeJob(currentJob)) return true;
     if (!currentJob?.adminNotesJson) return false;
     try {
@@ -1525,7 +1529,7 @@ function AdminPageContent() {
     } catch {
       return false;
     }
-  }, [jobs, editingJobId, isRewashJob]);
+  }, [activeJob, editingJobId, isRewashJob]);
 
   // CSO can only unlock jobs whose payment was recorded today or yesterday (Thailand time UTC+7)
   // Admin / Superadmin / Accounting can unlock any paid job without time limit
@@ -1848,10 +1852,10 @@ function AdminPageContent() {
           .reduce((s, sp) => s + (Number(sp.amount) || 0), 0) * 100
       ) / 100;
     }
-    const existingJobObj = editingJobId ? jobs.find((j) => j.id === editingJobId) : null;
+    const existingJobObj = editingJobId ? activeJob : null;
     const existingPaid = existingJobObj ? getJobPaymentBreakdown(existingJobObj).totalPaid : 0;
     return Math.max(0, Math.round((dialogTotal - existingPaid) * 100) / 100);
-  }, [isDialogCashChannel, paymentChannel, splitPayments, dialogTotal, editingJobId, jobs]);
+  }, [isDialogCashChannel, paymentChannel, splitPayments, dialogTotal, editingJobId, activeJob]);
 
   const parsedDialogCashReceived = useMemo(() => {
     if (!dialogReceivedCash || !dialogReceivedCash.trim()) return NaN;
@@ -1867,7 +1871,7 @@ function AdminPageContent() {
 
   const paidJobCashInfo = useMemo(() => {
     if (!editingJobId) return null;
-    const j = jobs.find((item) => item.id === editingJobId);
+    const j = activeJob;
     if (!j?.adminNotesJson) return null;
     try {
       const parsed = JSON.parse(j.adminNotesJson);
@@ -3122,6 +3126,37 @@ function AdminPageContent() {
 
   const handleEditFullJob = (job: Job) => {
     setSaveError(null);
+    if (job?.id) {
+      const isAlreadyInStore = jobStore.getSnapshot().some((j) => j.id === job.id);
+      if (isAlreadyInStore) {
+        api.applyServerJob(job);
+      }
+      fetch(`/api/jobs/${encodeURIComponent(job.id)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((fresh) => {
+          if (!fresh || editingJobIdRef.current !== job.id) return;
+          if (jobStore.getSnapshot().some((j) => j.id === job.id)) {
+            api.applyServerJob(fresh);
+          }
+          const orig = originalJobRef.current as any;
+          if (orig) {
+            const paidChanged =
+              Boolean(fresh.isPaid) !== Boolean(orig.isPaid) ||
+              Boolean(fresh.isShopPaid) !== Boolean(orig.isShopPaid);
+            orig.isPaid = Boolean(fresh.isPaid);
+            orig.isShopPaid = Boolean(fresh.isShopPaid);
+            if (fresh.paymentChannel !== undefined) orig.paymentChannel = fresh.paymentChannel;
+            if (fresh.adminNotesJson !== undefined) orig.adminNotesJson = fresh.adminNotesJson;
+            if (fresh.billNo !== undefined) orig.billNo = fresh.billNo;
+            if (paidChanged) {
+              setPaymentMethod(fresh.isPaid ? "paid" : "unpaid");
+              setShopPaymentMethod(fresh.isShopPaid ? "paid" : "unpaid");
+              if (fresh.paymentChannel) setPaymentChannel(fresh.paymentChannel);
+            }
+          }
+        })
+        .catch(() => {});
+    }
     originalJobRef.current = JSON.parse(JSON.stringify(job));
     editingJobIdRef.current = job.id;
     setEditingJobId(job.id);
@@ -10660,24 +10695,24 @@ function AdminPageContent() {
                                   <span className={`text-[8.5px] font-black px-1.5 py-0.2 rounded border ${
                                     isRewashJob
                                       ? 'bg-cyan-950/90 text-cyan-300 border-cyan-600/70 shadow-sm'
-                                      : isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
+                                      : isPaidJob || Boolean(activeJob?.isShopPaid)
                                         ? 'bg-emerald-950/90 text-emerald-400 border-emerald-700/70 shadow-sm' 
                                         : 'bg-amber-950/90 text-amber-400 border-amber-700/70'
                                   }`}>
-                                    {isRewashJob ? '✓ REWASH ฿0' : (isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false) ? '✓ PAID' : 'UNPAID')}
+                                    {isRewashJob ? '✓ REWASH ฿0' : (isPaidJob || Boolean(activeJob?.isShopPaid) ? '✓ PAID' : 'UNPAID')}
                                   </span>
                                 </div>
                                 <div className="flex items-center mt-1">
                                   <span className={`text-[10px] ${
                                     isRewashJob
                                       ? 'font-black text-cyan-300'
-                                      : isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
+                                      : isPaidJob || Boolean(activeJob?.isShopPaid)
                                         ? 'font-black text-emerald-400' 
                                         : 'font-medium text-slate-400'
                                   }`}>
                                     {isRewashJob
                                       ? (currentLanguage === "en" ? "✓ No Charge (Ready to Close)" : "✓ เคลมฟรี ฿0 (ปิดงานได้ทันที)")
-                                      : isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
+                                      : isPaidJob || Boolean(activeJob?.isShopPaid)
                                         ? '✓ Paid via POS' 
                                         : isCancelledJob
                                           ? (currentLanguage === "en" ? "Cancelled Order" : "งานถูกยกเลิก (Cancel)")
