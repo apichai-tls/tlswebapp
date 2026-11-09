@@ -226,11 +226,18 @@ function normalizeValidPhoneDigits(phone?: string | null): string {
   return digits;
 }
 
-// Background Auto-Sync state for @thatlaundryshop followers
+// Background Auto-Sync state & fast in-memory cache for @thatlaundryshop followers
 let isBackgroundFollowerSyncRunning = false;
 let lastFollowerListCheckAt = 0;
 let cachedTotalFollowerCount = 0;
 let cachedRemainingUnsyncedCount = 0;
+let cachedEnrichedContacts: LineContactRecord[] | null = null;
+let cachedEnrichedContactsAt = 0;
+
+export async function invalidateLineContactsCacheAction(): Promise<void> {
+  cachedEnrichedContacts = null;
+  cachedEnrichedContactsAt = 0;
+}
 
 function ensureBackgroundLineFollowerSyncLoop(): void {
   if (isBackgroundFollowerSyncRunning) return;
@@ -240,11 +247,11 @@ function ensureBackgroundLineFollowerSyncLoop(): void {
       let safetyIterations = 0;
       while (safetyIterations < 40) {
         safetyIterations++;
-        const res = await syncLineOaFollowersAction(400, true);
+        const res = await syncLineOaFollowersAction(500, true);
         if (!res.success || (res.remainingUnsyncedCount ?? 0) <= 0 || res.syncedCount === 0) {
           break;
         }
-        await new Promise((r) => setTimeout(r, 250));
+        await new Promise((r) => setTimeout(r, 80));
       }
     } catch (err) {
       console.warn("[LINE OA Auto-Sync] Background loop error:", err);
@@ -311,6 +318,21 @@ export async function syncLineOaFollowersAction(
     const remainingAfterBatch = Math.max(0, allUnsyncedIds.length - idsToFetch.length);
     cachedRemainingUnsyncedCount = remainingAfterBatch;
 
+    // Fast path: if all followers are already synced in lineOaContacts, return immediately without re-querying or rewriting DB!
+    if (idsToFetch.length === 0) {
+      cachedEnrichedContacts = existingContacts;
+      cachedEnrichedContactsAt = Date.now();
+      return {
+        success: true,
+        syncedCount: 0,
+        linkedCustomerCount: 0,
+        totalFollowersCount: cachedTotalFollowerCount,
+        remainingUnsyncedCount: 0,
+        isAutoSyncing: false,
+        contacts: existingContacts,
+      };
+    }
+
     const allCustomers = await prisma.customer.findMany({
       select: {
         id: true,
@@ -324,8 +346,8 @@ export async function syncLineOaFollowersAction(
     let linkedCustomerCount = 0;
     const nowIso = new Date().toISOString();
 
-    // Fetch in fast parallel batches of 35
-    const batchSize = 35;
+    // Fetch in fast parallel batches of 60
+    const batchSize = 60;
     for (let i = 0; i < idsToFetch.length; i += batchSize) {
       const slice = idsToFetch.slice(i, i + batchSize);
       const profiles = await Promise.all(
@@ -365,10 +387,12 @@ export async function syncLineOaFollowersAction(
         }
 
         if (matchedCust && matchedCust.lineId !== prof.userId) {
-          await prisma.customer.update({
-            where: { id: matchedCust.id },
-            data: { lineId: prof.userId },
-          });
+          prisma.customer
+            .update({
+              where: { id: matchedCust.id },
+              data: { lineId: prof.userId },
+            })
+            .catch(() => {});
           matchedCust.lineId = prof.userId;
           linkedCustomerCount++;
         }
@@ -393,6 +417,8 @@ export async function syncLineOaFollowersAction(
         update: { value: JSON.stringify(mergedContacts) },
         create: { key: "lineOaContacts", value: JSON.stringify(mergedContacts) },
       });
+      cachedEnrichedContacts = mergedContacts;
+      cachedEnrichedContactsAt = Date.now();
     }
 
     if (linkedCustomerCount > 0) {
@@ -432,6 +458,23 @@ export async function getLineOaContactsAction(): Promise<{
   error?: string;
 }> {
   try {
+    // Fast path: return in-memory enriched contacts immediately (< 1ms) if fresh and not actively syncing
+    if (
+      cachedEnrichedContacts &&
+      cachedEnrichedContacts.length > 0 &&
+      !isBackgroundFollowerSyncRunning &&
+      cachedRemainingUnsyncedCount === 0 &&
+      Date.now() - cachedEnrichedContactsAt < 5 * 60 * 1000
+    ) {
+      return {
+        success: true,
+        contacts: cachedEnrichedContacts,
+        totalFollowersCount: Math.max(cachedTotalFollowerCount, cachedEnrichedContacts.length),
+        remainingUnsyncedCount: 0,
+        isAutoSyncing: false,
+      };
+    }
+
     const row = await prisma.setting.findUnique({
       where: { key: "lineOaContacts" },
     });
@@ -447,15 +490,15 @@ export async function getLineOaContactsAction(): Promise<{
 
     // If contacts cache is empty on first load, sync initial batch immediately and trigger background auto-sync!
     if (contacts.length === 0) {
-      const syncRes = await syncLineOaFollowersAction(200);
+      const syncRes = await syncLineOaFollowersAction(300);
       if (syncRes.success && syncRes.contacts.length > 0) {
         contacts = syncRes.contacts;
       }
     } else if (
       cachedRemainingUnsyncedCount > 0 ||
-      Date.now() - lastFollowerListCheckAt > 45_000
+      (lastFollowerListCheckAt > 0 && Date.now() - lastFollowerListCheckAt > 6 * 60 * 60 * 1000)
     ) {
-      // Automatically trigger background sync for any new or remaining @thatlaundryshop followers
+      // Only background-check for unsynced followers if remaining > 0 or once every 6 hours (new followers arrive live via webhook)
       ensureBackgroundLineFollowerSyncLoop();
     }
 
@@ -488,6 +531,9 @@ export async function getLineOaContactsAction(): Promise<{
         };
       });
     }
+
+    cachedEnrichedContacts = contacts;
+    cachedEnrichedContactsAt = Date.now();
 
     return {
       success: true,
@@ -552,6 +598,8 @@ export async function linkLineUserToCustomerAction(params: {
             update: { value: JSON.stringify(next) },
             create: { key: "lineOaContacts", value: JSON.stringify(next) },
           });
+          cachedEnrichedContacts = next;
+          cachedEnrichedContactsAt = Date.now();
         }
       }
     } catch {}

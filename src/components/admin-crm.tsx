@@ -1152,13 +1152,40 @@ export function AdminCRM({
     });
     const rawJobs = Array.from(jobMap.values());
 
-    // 2. Get all top-up transactions for this customer from allTopUpTxs
-    const customerTopups = allTopUpTxs.filter(tx => {
+    // 2. Get all top-up transactions for this customer from allTopUpTxs (excluding pending/failed/reversal and duplicate Beam PaymentLink requests)
+    const rawCustomerTopups = allTopUpTxs.filter(tx => {
       const matchId = (tx.memberId && tx.memberId === custId) ||
                       (tx.Customer?.id && tx.Customer.id === custId);
       const matchPhone = tx.Customer?.phone && custPhoneNorm && custPhoneNorm.length >= 8 && 
                          normPhone(tx.Customer.phone) === custPhoneNorm;
-      return matchId || matchPhone;
+      if (!matchId && !matchPhone) return false;
+      const st = String(tx.status || "COMPLETED").toUpperCase();
+      if (st === "PENDING" || st === "FAILED" || st === "CANCELLED" || st === "REJECTED") return false;
+      if (String(tx.id || "").toUpperCase().startsWith("REV-")) return false;
+      let meta: any = {};
+      try { meta = JSON.parse(tx.description || "{}"); } catch {}
+      if (meta.originalTxId || /reversal/i.test(meta.reason || "")) return false;
+      return true;
+    });
+
+    const customerTopups = rawCustomerTopups.filter((tx, idx, arr) => {
+      let meta: any = {};
+      try { meta = JSON.parse(tx.description || "{}"); } catch {}
+      const hasBal = tx.balanceAfter != null || meta.balanceAfter != null;
+      if (!hasBal && meta.paymentLinkId) {
+        const txTime = new Date(tx.createdAt).getTime();
+        const totalCred = Number(meta.totalCredit) || Number(tx.totalCredit) || Number(tx.amount) || 0;
+        const hasCompletedTwin = arr.some((other, oIdx) => {
+          if (oIdx === idx) return false;
+          let oMeta: any = {};
+          try { oMeta = JSON.parse(other.description || "{}"); } catch {}
+          const oCred = Number(oMeta.totalCredit) || Number(other.totalCredit) || Number(other.amount) || 0;
+          const oHasBal = other.balanceAfter != null || oMeta.balanceAfter != null;
+          return oHasBal && Math.abs(oCred - totalCred) < 0.01 && Math.abs(new Date(other.createdAt).getTime() - txTime) < 3600000;
+        });
+        if (hasCompletedTwin) return false;
+      }
+      return true;
     }).map(tx => {
       let meta: any = {};
       try { meta = JSON.parse(tx.description || "{}"); } catch {}

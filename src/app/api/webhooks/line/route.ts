@@ -8,7 +8,7 @@ import {
   verifyLineWebhookSignature,
   type LineContactRecord,
 } from "@/lib/line";
-import { getStoredLineOaSettings } from "@/actions/line";
+import { getStoredLineOaSettings, invalidateLineContactsCacheAction } from "@/actions/line";
 import { recordInboundSocialMessageAction } from "@/actions/social-inbox";
 import { SocialMessageAttachment } from "@/types/social-inbox";
 
@@ -282,13 +282,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Keep up to 500 recent LINE OA contacts so staff can search any customer by name/photo
-    const trimmedContacts = contacts.slice(0, 500);
+    // Keep up to 20,000 synced LINE OA contacts (never truncate synced followers back to 500!)
+    const trimmedContacts = contacts.slice(0, 20000);
     await prisma.setting.upsert({
       where: { key: "lineOaContacts" },
       update: { value: JSON.stringify(trimmedContacts) },
       create: { key: "lineOaContacts", value: JSON.stringify(trimmedContacts) },
     });
+    await invalidateLineContactsCacheAction();
 
     if (didUpdateCustomer) {
       invalidateDbCache();

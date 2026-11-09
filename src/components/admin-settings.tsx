@@ -519,13 +519,14 @@ export function AdminSettings() {
   }, []);
 
   useEffect(() => {
+    if (lineContacts.length > 0) return;
     if (activeSettingsTab === "all" || activeSettingsTab === "payments" || activeSettingsTab === "system") {
       let cancelled = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
       const poll = async () => {
         const stillSyncing = await loadLineContacts();
         if (!cancelled && stillSyncing) {
-          timer = setTimeout(poll, 2500);
+          timer = setTimeout(poll, 3000);
         }
       };
       poll();
@@ -534,7 +535,7 @@ export function AdminSettings() {
         if (timer) clearTimeout(timer);
       };
     }
-  }, [activeSettingsTab, loadLineContacts]);
+  }, [activeSettingsTab, lineContacts.length, loadLineContacts]);
 
   const handleTestLineConnection = async () => {
     setIsLoadingLineApi(true);
@@ -2048,11 +2049,13 @@ export function AdminSettings() {
                     onClick={async () => {
                       setIsLoadingLineApi(true);
                       try {
-                        const res = await syncLineOaFollowersAction(150);
+                        const res = await syncLineOaFollowersAction(500);
                         if (res.success) {
                           setLineContacts(res.contacts || []);
                           toast.success(
-                            `Synced ${res.syncedCount} followers from @thatlaundryshop (${res.linkedCustomerCount} auto-linked to CRM)!`
+                            res.syncedCount > 0
+                              ? `Synced ${res.syncedCount} new followers from @thatlaundryshop (${res.linkedCustomerCount} auto-linked to CRM)!`
+                              : `All ${res.contacts.length.toLocaleString()} @thatlaundryshop followers are already synced & up to date!`
                           );
                         } else {
                           toast.error(res.error || "Sync failed");

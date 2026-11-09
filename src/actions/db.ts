@@ -2294,13 +2294,19 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
       let walletDeductedAt: string | undefined = undefined;
 
       const ch = (j.paymentChannel || '').toLowerCase();
-      const jobTotal = Number(j.totalAmount) || 0;
+      const jobTotal = Number(j.totalAmount) || Number(j.fee) || 0;
       if (jobTotal > 0 && (ch.includes('deduct') || ch.includes('member') || ch.includes('credit') || ch.includes('wallet'))) {
+        const jobTimes = [j.createdAt, j.updatedAt, j.completedAt, j.csoPaidAt, j.shopPaidAt]
+          .filter(Boolean)
+          .map((t: any) => new Date(t).getTime());
         const matchedLog = parsedAdjustDeductions.find(
           l =>
             !l.used &&
             Math.abs(l.amount - jobTotal) < 0.01 &&
-            Math.abs(l.createdAt.getTime() - j.createdAt.getTime()) < 48 * 3600 * 1000
+            ((j.walletBalanceAfter != null &&
+              l.balanceAfter != null &&
+              Math.abs(Number(j.walletBalanceAfter) - l.balanceAfter) < 0.01) ||
+              jobTimes.some(t => Math.abs(l.createdAt.getTime() - t) < 14 * 24 * 3600 * 1000))
         );
         if (matchedLog) {
           matchedLog.used = true;
@@ -2334,6 +2340,8 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
         updatedAt: j.updatedAt.toISOString(),
         scheduledAt: j.scheduledAt ? j.scheduledAt.toISOString() : undefined,
         completedAt: j.completedAt ? j.completedAt.toISOString() : undefined,
+        csoPaidAt: j.csoPaidAt ? j.csoPaidAt.toISOString() : undefined,
+        shopPaidAt: j.shopPaidAt ? j.shopPaidAt.toISOString() : undefined,
       };
     });
   } catch (error: any) {
@@ -2370,7 +2378,19 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
       }),
       prisma.job.findMany({
         where: { customerId },
-        select: { id: true, billNo: true, totalAmount: true, createdAt: true, paymentChannel: true }
+        select: {
+          id: true,
+          billNo: true,
+          totalAmount: true,
+          fee: true,
+          createdAt: true,
+          updatedAt: true,
+          completedAt: true,
+          csoPaidAt: true,
+          shopPaidAt: true,
+          paymentChannel: true,
+          walletBalanceAfter: true,
+        }
       }),
       prisma.transaction.findMany({
         where: { memberId: customerId },
@@ -2426,15 +2446,15 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
             const fromVal = Number(d.creditBalance.from ?? 0);
             const toVal = Number(d.creditBalance.to ?? 0);
             if (fromVal === 0 && toVal > 0) {
-              // Skip if this update coincides with a Top-up transaction (within 60s)
-              if (customerTopups.some(t => Math.abs(t.createdAt.getTime() - alTime) < 60000)) {
+              // Skip if this update coincides with a Top-up transaction (within 1 hour)
+              if (customerTopups.some(t => Math.abs(t.createdAt.getTime() - alTime) < 3600000)) {
                 continue;
               }
-              // Skip if already captured by a WalletTransaction or ADJUST ActivityLog near this timestamp
+              // Skip if already captured by a WalletTransaction or ADJUST ActivityLog
               const isDupUpdate =
-                wtList.some(wt => Math.abs(wt.createdAt.getTime() - alTime) < 60000 && Math.abs(Number(wt.amount || wt.balanceAfter || 0) - toVal) < 0.01) ||
-                actLogs.some(other => other.id !== al.id && other.action === 'ADJUST' && Math.abs(other.createdAt.getTime() - alTime) < 60000) ||
-                results.some(r => Math.abs(new Date(r.createdAt).getTime() - alTime) < 60000 && Math.abs(r.totalAmount - toVal) < 0.01);
+                wtList.some(wt => Math.abs(Number(wt.amount || wt.balanceAfter || 0) - toVal) < 0.01) ||
+                actLogs.some(other => other.id !== al.id && other.action === 'ADJUST' && Math.abs(other.createdAt.getTime() - alTime) < 3600000) ||
+                results.some(r => Math.abs(r.totalAmount - toVal) < 0.01);
 
               if (!isDupUpdate) {
                 const actorLabel = al.userName || 'System';
@@ -2481,33 +2501,51 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
           continue;
         }
 
-        // 2. Skip if it coincides with a Top-up transaction (within 60s)
-        if (isAdd && customerTopups.some(t => Math.abs(t.createdAt.getTime() - alTime) < 60000)) {
+        // 2. Skip if it coincides with a Top-up transaction (within 5 minutes)
+        if (isAdd && customerTopups.some(t => Math.abs(t.createdAt.getTime() - alTime) < 300000)) {
           continue;
         }
 
-        // 3. Skip if it is a deduction matching an existing Job with Deduct Member (within 48 hours)
-        if (!isAdd && customerJobs.some(j => 
-          Math.abs(j.createdAt.getTime() - alTime) < 48 * 3600 * 1000 &&
-          Math.abs(Number(j.totalAmount) - adjAmount) < 0.01 &&
-          (j.paymentChannel || '').toLowerCase().includes('deduct')
-        )) {
+        // 3. Skip if it is a deduction matching an existing Job with Deduct Member (by balanceAfter snapshot or within 14 days of job lifecycle timestamps)
+        if (
+          !isAdd &&
+          customerJobs.some(j => {
+            const ch = (j.paymentChannel || '').toLowerCase();
+            if (!ch.includes('deduct') && !ch.includes('member') && !ch.includes('credit') && !ch.includes('wallet')) {
+              return false;
+            }
+            const jobAmt = Number(j.totalAmount) || Number(j.fee) || 0;
+            if (Math.abs(jobAmt - adjAmount) >= 0.01) return false;
+            if (
+              d.balanceAfter != null &&
+              j.walletBalanceAfter != null &&
+              Math.abs(Number(d.balanceAfter) - Number(j.walletBalanceAfter)) < 0.01
+            ) {
+              return true;
+            }
+            const windowMs = 14 * 24 * 3600 * 1000;
+            const jobTimes = [j.createdAt, j.updatedAt, j.completedAt, j.csoPaidAt, j.shopPaidAt]
+              .filter(Boolean)
+              .map((t: any) => new Date(t).getTime());
+            return jobTimes.some(t => Math.abs(t - alTime) < windowMs);
+          })
+        ) {
           continue;
         }
 
-        // 4. Skip if it matches a WalletTransaction DEDUCT (POS Payment)
+        // 4. Skip if it matches a WalletTransaction DEDUCT (POS Payment) within 14 days
         if (!isAdd && wtList.some(wt => 
           (wt.type === 'DEDUCT' || wt.referenceType === 'job') &&
           Math.abs(Number(wt.amount) - adjAmount) < 0.01 &&
-          Math.abs(wt.createdAt.getTime() - alTime) < 48 * 3600 * 1000
+          Math.abs(wt.createdAt.getTime() - alTime) < 14 * 24 * 3600 * 1000
         )) {
           continue;
         }
 
-        // 5. Check if already captured by WalletTransaction in results
+        // 5. Check if already captured by WalletTransaction or earlier ActivityLog in results
         const isDuplicate = results.some(r => 
-          Math.abs(new Date(r.createdAt).getTime() - alTime) < 15000 &&
-          Math.abs(r.totalAmount - adjAmount) < 0.01
+          (Math.abs(new Date(r.createdAt).getTime() - alTime) < 60000 && Math.abs(r.totalAmount - adjAmount) < 0.01) ||
+          (d.balanceAfter != null && r.balanceAfter != null && Math.abs(Number(d.balanceAfter) - Number(r.balanceAfter)) < 0.01 && Math.abs(r.totalAmount - adjAmount) < 0.01)
         );
 
         if (!isDuplicate) {

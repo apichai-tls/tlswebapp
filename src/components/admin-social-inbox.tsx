@@ -33,6 +33,7 @@ import {
   Smartphone,
   Eye,
   Upload,
+  QrCode,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -77,7 +78,11 @@ import {
   saveSocialChannelConfigAction,
   pollLiveChannelUpdatesAction,
   checkChannelsLiveStatusAction,
+  startWhatsAppQrPairingAction,
+  getWhatsAppQrStatusAction,
+  disconnectWhatsAppQrAction,
 } from '@/actions/social-inbox';
+import type { WhatsAppQrState } from '@/lib/whatsapp-qr-manager';
 import { syncLineOaFollowersAction } from '@/actions/line';
 
 const QUICK_EMOJIS = [
@@ -189,6 +194,8 @@ export function AdminSocialInbox({
   // Modal 4: Channel Settings & Webhook Configuration
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [waQrState, setWaQrState] = useState<WhatsAppQrState | null>(null);
+  const [loadingWaQr, setLoadingWaQr] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -257,10 +264,14 @@ export function AdminSocialInbox({
         if (!silent) setLoading(true);
         else setRefreshing(true);
 
-        const [res, healthRes] = await Promise.all([
+        const [res, healthRes, qrRes] = await Promise.all([
           getSocialInboxDataAction(),
           checkChannelsLiveStatusAction().catch(() => null),
+          getWhatsAppQrStatusAction().catch(() => null),
         ]);
+        if (qrRes?.success && qrRes.state) {
+          setWaQrState(qrRes.state);
+        }
 
         if (healthRes?.success && healthRes.statuses) {
           setLiveStatuses(healthRes.statuses);
@@ -761,6 +772,7 @@ export function AdminSocialInbox({
     const replyRef = replyingTo || undefined;
 
     const hasDirectWaApi =
+      waQrState?.status === 'connected' ||
       (config?.whatsapp?.mode === 'cloud_api' &&
         Boolean(config?.whatsapp?.phoneNumberId?.trim() && config?.whatsapp?.accessToken?.trim())) ||
       (config?.whatsapp?.mode === 'gateway_api' && Boolean(config?.whatsapp?.gatewayUrl?.trim()));
@@ -897,10 +909,12 @@ export function AdminSocialInbox({
   const handleSyncLineFollowers = async () => {
     try {
       setSyncingLine(true);
-      const res = await syncLineOaFollowersAction(100);
+      const res = await syncLineOaFollowersAction(500);
       if (res.success) {
         toast.success(
-          `Synced ${res.contacts.length} LINE OA contacts (${res.linkedCustomerCount} newly linked to CRM)`
+          res.syncedCount > 0
+            ? `Synced ${res.syncedCount} new LINE OA followers (${res.linkedCustomerCount} newly linked to CRM)`
+            : `All ${res.contacts.length.toLocaleString()} LINE OA contacts are already synced & up to date!`
         );
         await loadInbox(true);
       } else {
@@ -954,6 +968,71 @@ export function AdminSocialInbox({
         setSelectedConvId(res.conversations?.[0]?.id || null);
       }
       toast.success('Conversation deleted');
+    }
+  };
+
+  // Poll WhatsApp QR Status every 2s while Settings dialog is open
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+    let cancelled = false;
+    const checkQr = async () => {
+      try {
+        const res = await getWhatsAppQrStatusAction();
+        if (!cancelled && res.success && res.state) {
+          setWaQrState((prev) => {
+            if (prev?.status !== 'connected' && res.state.status === 'connected') {
+              toast.success(`WhatsApp Linked Successfully: ${res.state.connectedName || ''} (${res.state.connectedPhone || ''})`);
+              checkChannelsLiveStatusAction().then((h) => {
+                if (h?.success) setLiveStatuses(h.statuses);
+              }).catch(() => {});
+            }
+            return res.state;
+          });
+        }
+      } catch {}
+    };
+    checkQr();
+    const timer = setInterval(checkQr, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [isSettingsOpen]);
+
+  const handleStartWhatsAppQr = async (resetAuth = false) => {
+    try {
+      setLoadingWaQr(true);
+      const res = await startWhatsAppQrPairingAction(resetAuth);
+      if (res.success && res.state) {
+        setWaQrState(res.state);
+        if (res.state.status === 'connected') {
+          toast.success(`Connected to WhatsApp (${res.state.connectedPhone || ''})`);
+        } else {
+          toast.info('Generating WhatsApp QR Code... Scan with your phone in a moment!');
+        }
+      }
+    } catch (e: any) {
+      toast.error('Failed to start WhatsApp QR: ' + e.message);
+    } finally {
+      setLoadingWaQr(false);
+    }
+  };
+
+  const handleDisconnectWhatsAppQr = async () => {
+    if (!window.confirm('Disconnect current WhatsApp linked device?')) return;
+    try {
+      setLoadingWaQr(true);
+      const res = await disconnectWhatsAppQrAction();
+      if (res.success && res.state) {
+        setWaQrState(res.state);
+        toast.success('WhatsApp device disconnected');
+        const healthRes = await checkChannelsLiveStatusAction().catch(() => null);
+        if (healthRes?.success) setLiveStatuses(healthRes.statuses);
+      }
+    } catch (e: any) {
+      toast.error('Disconnect failed: ' + e.message);
+    } finally {
+      setLoadingWaQr(false);
     }
   };
 
@@ -1040,6 +1119,30 @@ export function AdminSocialInbox({
             >
               <Phone size={13} className="fill-slate-950" />
               <span>+ New WhatsApp</span>
+            </Button>
+
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setIsSettingsOpen(true);
+                if (!waQrState || waQrState.status === 'disconnected') {
+                  handleStartWhatsAppQr(false);
+                }
+              }}
+              className={`h-8 px-2.5 font-bold text-xs rounded-xl gap-1.5 cursor-pointer ${
+                waQrState?.status === 'connected'
+                  ? 'bg-emerald-500/25 hover:bg-emerald-500/35 border-emerald-400/50 text-emerald-100'
+                  : 'bg-white/12 hover:bg-white/20 border-white/20 text-white'
+              }`}
+              title="Link shop WhatsApp via QR Code (Free 100% 2-Way Live Sync)"
+            >
+              <QrCode size={13} className="text-[#25D366]" />
+              <span>
+                {waQrState?.status === 'connected'
+                  ? `WA Linked (${waQrState.connectedPhone || 'Live'})`
+                  : 'Link WhatsApp QR'}
+              </span>
             </Button>
 
             <Button
@@ -2848,8 +2951,110 @@ export function AdminSocialInbox({
                     1. WhatsApp Live Integration
                   </span>
                   <Badge className="bg-[#25D366] text-slate-950 font-black">
-                    {liveStatuses?.whatsapp?.modeLabel || 'Live Active'}
+                    {waQrState?.status === 'connected'
+                      ? `QR Linked: ${waQrState.connectedPhone || 'Active'}`
+                      : liveStatuses?.whatsapp?.modeLabel || 'Live Active'}
                   </Badge>
+                </div>
+
+                {/* Built-in Direct WhatsApp QR Link (Free 100% 2-Way Live Sync) */}
+                <div className="p-3.5 rounded-xl bg-white border border-emerald-200 shadow-2xs space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <QrCode size={15} className="text-emerald-600" />
+                        <span className="font-black text-slate-900 text-xs">
+                          Direct WhatsApp QR Link (สแกน QR ผูกเบอร์ร้าน — ฟรี 100%)
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        เปิดแอป WhatsApp ในมือถือร้าน → <strong>Linked Devices (อุปกรณ์ที่เชื่อมต่อ)</strong> → <strong>Link a Device</strong> แล้วสแกน QR ด้านล่าง ข้อความเข้า-ออกและรูปภาพจะซิงค์สดอัตโนมัติ!
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      {waQrState?.status === 'connected' ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={loadingWaQr}
+                          onClick={handleDisconnectWhatsAppQr}
+                          className="h-8 px-3 text-[11px] font-bold text-rose-600 border-rose-200 hover:bg-rose-50 rounded-lg cursor-pointer"
+                        >
+                          Disconnect
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={loadingWaQr}
+                          onClick={() => handleStartWhatsAppQr(true)}
+                          className="h-8 px-3 bg-[#25D366] hover:bg-[#1ebe5d] text-slate-950 font-black text-[11px] rounded-lg gap-1.5 cursor-pointer"
+                        >
+                          <RefreshCw size={12} className={loadingWaQr ? 'animate-spin' : ''} />
+                          <span>
+                            {waQrState?.status === 'qr_ready'
+                              ? 'Refresh QR Code'
+                              : 'Generate QR Code'}
+                          </span>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {waQrState?.status === 'connected' && (
+                    <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-between text-emerald-900">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                        <div>
+                          <p className="font-black text-xs">
+                            Connected: {waQrState.connectedName || 'WhatsApp Business'}{' '}
+                            {waQrState.connectedPhone ? `(${waQrState.connectedPhone})` : ''}
+                          </p>
+                          <p className="text-[10px] text-emerald-700">
+                            2-Way Live Sync Active — ทั้งข้อความที่ลูกค้าทักมา และข้อความที่แอดมินตอบทั้งบนเว็บ/ในมือถือจะซิงค์เข้าหน้านี้ทันที
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {waQrState?.status === 'connecting' && !waQrState.qrDataUrl && (
+                    <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center gap-2 text-slate-600 text-xs font-bold">
+                      <RefreshCw size={14} className="animate-spin text-emerald-600" />
+                      <span>กำลังสร้าง QR Code สำหรับเชื่อมต่อ WhatsApp... รอสักครู่ครับ</span>
+                    </div>
+                  )}
+
+                  {waQrState?.qrDataUrl && waQrState.status !== 'connected' && (
+                    <div className="flex flex-col sm:flex-row items-center gap-4 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                      <div className="p-2 bg-white rounded-xl border border-slate-200 shadow-xs shrink-0">
+                        <img
+                          src={waQrState.qrDataUrl}
+                          alt="WhatsApp Link QR Code"
+                          className="w-48 h-48 object-contain"
+                        />
+                      </div>
+                      <div className="space-y-2 text-[11px] text-slate-600">
+                        <p className="font-black text-slate-900 text-xs">
+                          วิธีสแกนเชื่อมต่อ (ทำครั้งเดียว):
+                        </p>
+                        <ol className="list-decimal list-inside space-y-1">
+                          <li>เปิดแอป <strong>WhatsApp</strong> หรือ <strong>WhatsApp Business</strong> บนมือถือ</li>
+                          <li>กดเมนูมุมขวาบน (หรือ Settings) → เลือก <strong>Linked Devices (อุปกรณ์ที่เชื่อมต่อ)</strong></li>
+                          <li>กดปุ่ม <strong>Link a Device (เชื่อมต่ออุปกรณ์)</strong></li>
+                          <li>นำกล้องมาสแกน QR Code นี้ เมื่อสแกนสำเร็จสถานะจะเปลี่ยนเป็นสีเขียวทันที!</li>
+                        </ol>
+                      </div>
+                    </div>
+                  )}
+
+                  {waQrState?.lastError && (
+                    <p className="text-[11px] text-rose-600 font-semibold">
+                      ⚠️ {waQrState.lastError}
+                    </p>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

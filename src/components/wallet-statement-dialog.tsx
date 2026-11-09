@@ -116,11 +116,33 @@ export function WalletStatementDialog({
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [isExportingPng, setIsExportingPng] = useState(false);
 
-  // Filter out internal REJECTED rows so the customer statement only shows valid transactions
+  // Filter out internal REJECTED rows (and their explicit reversal/unlock counterparts) so the customer statement only shows valid transactions
   const validLedger = useMemo(() => {
-    const filtered = (ledger || []).filter(
-      (tx) => tx.approvalStatus !== "REJECTED"
-    );
+    const raw = ledger || [];
+    const rejectedItems = raw.filter((tx) => tx.approvalStatus === "REJECTED");
+    const usedRejectedIds = new Set<string>();
+
+    const filtered = raw.filter((tx) => {
+      if (tx.approvalStatus === "REJECTED") return false;
+      const pkg = String(tx.packageName || tx.reason || "");
+      const isReversalOrUnlock =
+        /reversal for rejected/i.test(pkg) ||
+        /unlock paid/i.test(pkg);
+      if (isReversalOrUnlock && rejectedItems.length > 0) {
+        const oppDir = tx.direction === "CREDIT" ? "DEBIT" : "CREDIT";
+        const matchedRej = rejectedItems.find(
+          (r) =>
+            !usedRejectedIds.has(r.id) &&
+            r.direction === oppDir &&
+            Math.abs(Number(r.amount || 0) - Number(tx.amount || 0)) < 0.01
+        );
+        if (matchedRej) {
+          usedRejectedIds.add(matchedRej.id);
+          return false;
+        }
+      }
+      return true;
+    });
     return [...filtered].sort((a, b) => {
       const tA = new Date(a.createdAt).getTime();
       const tB = new Date(b.createdAt).getTime();

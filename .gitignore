@@ -50,5 +50,6 @@ test-results/
 test_log.ts
 public/uploads/
 storage/uploads/
+storage/whatsapp-auth/
 backups/
 scripts/clone_test_to_local.js

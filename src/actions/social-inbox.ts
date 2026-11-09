@@ -30,6 +30,13 @@ import {
   LineContactRecord,
 } from '@/lib/line';
 import { getStoredLineOaSettings } from '@/actions/line';
+import {
+  getWhatsAppQrStatus,
+  startWhatsAppQrConnection,
+  disconnectWhatsAppQrSession,
+  sendDirectWhatsAppQrMessage,
+  type WhatsAppQrState,
+} from '@/lib/whatsapp-qr-manager';
 
 import { PrismaClient } from '@prisma/client';
 
@@ -1199,8 +1206,23 @@ export async function createWhatsAppChatAction(input: {
       let deliveryMethod: SocialMessage['deliveryMethod'] = 'whatsapp_web_bridge';
       let status: SocialMessage['status'] = 'sent';
 
-      // If WhatsApp Cloud API is configured, attempt direct Cloud API dispatch
+      // Priority 0: If Direct WhatsApp QR Link (Linked Devices) is connected, send directly!
+      const waQr = getWhatsAppQrStatus();
+      if (waQr.status === 'connected') {
+        const qrSendRes = await sendDirectWhatsAppQrMessage({
+          phone: e164Phone,
+          countryCode,
+          text: msgText,
+        });
+        if (qrSendRes.ok) {
+          deliveryMethod = 'whatsapp_gateway_api';
+          status = 'delivered';
+        }
+      }
+
+      // If WhatsApp Cloud API is configured and not already sent via QR, attempt direct Cloud API dispatch
       if (
+        status !== 'delivered' &&
         config.whatsapp.mode === 'cloud_api' &&
         config.whatsapp.phoneNumberId &&
         config.whatsapp.accessToken
@@ -1533,8 +1555,26 @@ export async function sendSocialMessageAction(input: {
       whatsappWebUrl = buildWhatsAppWebUrl(targetPhone, waBody, cc);
       whatsappProtocolUrl = buildWhatsAppProtocolUrl(targetPhone, waBody, cc);
 
+      // Mode 0: Built-in Direct WhatsApp QR Link (Linked Devices — 100% Free & 2-Way Sync)
+      const waQr = getWhatsAppQrStatus();
+      if (waQr.status === 'connected') {
+        const qrRes = await sendDirectWhatsAppQrMessage({
+          phone: targetPhone,
+          countryCode: cc,
+          text: outboundTextWithQuote,
+          attachments,
+        });
+        if (qrRes.ok) {
+          deliveryMethod = 'whatsapp_gateway_api';
+          status = 'delivered';
+        } else {
+          externalError = qrRes.error;
+        }
+      }
+
       // Mode A: Official Meta WhatsApp Business Cloud API
       if (
+        status !== 'delivered' &&
         config.whatsapp.mode === 'cloud_api' &&
         config.whatsapp.phoneNumberId &&
         config.whatsapp.accessToken
@@ -1626,8 +1666,8 @@ export async function sendSocialMessageAction(input: {
           status = 'delivered';
         }
       }
-      // Mode C: Live WhatsApp Web / Native App Bridge
-      else {
+      // Mode C: Live WhatsApp Web / Native App Bridge (only if not already delivered via Direct QR)
+      else if (status !== 'delivered') {
         deliveryMethod = 'whatsapp_web_bridge';
         status = 'delivered';
       }
@@ -2359,23 +2399,30 @@ export async function checkChannelsLiveStatusAction(): Promise<{
   const { config } = await loadRawInboxStore();
   const lineSettings = await getStoredLineOaSettings('that_laundry_shop');
 
+  const waQr = getWhatsAppQrStatus();
+  const isWaQrConnected = waQr.status === 'connected';
+
   const statuses: Record<SocialChannel, SocialChannelLiveStatus> = {
     whatsapp: {
       channel: 'whatsapp',
       connected: true,
-      modeLabel:
-        config.whatsapp.mode === 'cloud_api' && config.whatsapp.accessToken
-          ? 'Live Cloud API'
-          : config.whatsapp.mode === 'gateway_api' && config.whatsapp.gatewayUrl
-          ? 'Live QR Gateway API'
-          : 'Live App & Web Bridge',
-      accountName: config.whatsapp.businessPhoneNumber || '+66 WhatsApp Direct',
-      details:
-        config.whatsapp.mode === 'cloud_api' && config.whatsapp.accessToken
-          ? 'Connected to Meta WhatsApp Cloud API'
-          : config.whatsapp.mode === 'gateway_api' && config.whatsapp.gatewayUrl
-          ? `Connected to Gateway (${config.whatsapp.gatewayUrl})`
-          : 'Instant Click-to-Chat, Companion Window & Native WhatsApp App active',
+      modeLabel: isWaQrConnected
+        ? 'Direct QR Connected'
+        : config.whatsapp.mode === 'cloud_api' && config.whatsapp.accessToken
+        ? 'Live Cloud API'
+        : config.whatsapp.mode === 'gateway_api' && config.whatsapp.gatewayUrl
+        ? 'Live QR Gateway API'
+        : 'Live App & Web Bridge',
+      accountName: isWaQrConnected
+        ? `${waQr.connectedName || 'WhatsApp'} (${waQr.connectedPhone || ''})`
+        : config.whatsapp.businessPhoneNumber || '+66 WhatsApp Direct',
+      details: isWaQrConnected
+        ? 'Direct Linked Device Active (Free 100% • 2-Way Live Sync)'
+        : config.whatsapp.mode === 'cloud_api' && config.whatsapp.accessToken
+        ? 'Connected to Meta WhatsApp Cloud API'
+        : config.whatsapp.mode === 'gateway_api' && config.whatsapp.gatewayUrl
+        ? `Connected to Gateway (${config.whatsapp.gatewayUrl})`
+        : 'Instant Click-to-Chat, Companion Window & Native WhatsApp App active',
       lastCheckedAt: nowIso,
     },
     line: {
@@ -2461,4 +2508,40 @@ export async function checkChannelsLiveStatusAction(): Promise<{
     success: true,
     statuses,
   };
+}
+
+/**
+ * Start or refresh Direct WhatsApp QR Code pairing (Linked Devices — Free 100%)
+ */
+export async function startWhatsAppQrPairingAction(resetAuth = false): Promise<{
+  success: boolean;
+  state: WhatsAppQrState;
+}> {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  const state = await startWhatsAppQrConnection(resetAuth);
+  return { success: true, state };
+}
+
+/**
+ * Get current Direct WhatsApp QR Code connection status
+ */
+export async function getWhatsAppQrStatusAction(): Promise<{
+  success: boolean;
+  state: WhatsAppQrState;
+}> {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  const state = getWhatsAppQrStatus();
+  return { success: true, state };
+}
+
+/**
+ * Disconnect Direct WhatsApp QR session and clear saved credentials
+ */
+export async function disconnectWhatsAppQrAction(): Promise<{
+  success: boolean;
+  state: WhatsAppQrState;
+}> {
+  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  const state = await disconnectWhatsAppQrSession(true);
+  return { success: true, state };
 }

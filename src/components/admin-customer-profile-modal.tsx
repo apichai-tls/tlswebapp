@@ -374,8 +374,42 @@ export function AdminCustomerProfileModal({
   const unifiedLedger = useMemo(() => {
     if (!customer) return [];
 
-    // 1. Process Top-ups from Transaction table
-    const topups = (topUpTxs || []).map((tx: any) => {
+    // 1. Process Top-ups from Transaction table (filtering out pending/failed/reversal and duplicate Beam PaymentLink request rows)
+    const rawValidTopups = (topUpTxs || []).filter((tx: any) => {
+      const st = String(tx.status || "COMPLETED").toUpperCase();
+      if (st === "PENDING" || st === "FAILED" || st === "CANCELLED" || st === "REJECTED") return false;
+      if (String(tx.id || "").toUpperCase().startsWith("REV-")) return false;
+      let meta: any = {};
+      try { meta = JSON.parse(tx.description || "{}"); } catch {}
+      if (meta.originalTxId || /reversal/i.test(meta.reason || "")) return false;
+      return true;
+    });
+
+    const topups = rawValidTopups.filter((tx: any, idx: number, arr: any[]) => {
+      let meta: any = {};
+      try { meta = JSON.parse(tx.description || "{}"); } catch {}
+      const hasBal = tx.balanceAfter != null || meta.balanceAfter != null;
+      if (!hasBal && meta.paymentLinkId) {
+        const txTime = new Date(tx.createdAt).getTime();
+        const totalCred = Number(meta.totalCredit) || Number(tx.totalCredit) || Number(tx.amount) || 0;
+        const hasCompletedTwin =
+          arr.some((other, oIdx) => {
+            if (oIdx === idx) return false;
+            let oMeta: any = {};
+            try { oMeta = JSON.parse(other.description || "{}"); } catch {}
+            const oCred = Number(oMeta.totalCredit) || Number(other.totalCredit) || Number(other.amount) || 0;
+            const oHasBal = other.balanceAfter != null || oMeta.balanceAfter != null;
+            return oHasBal && Math.abs(oCred - totalCred) < 0.01 && Math.abs(new Date(other.createdAt).getTime() - txTime) < 3600000;
+          }) ||
+          (walletTxs || []).some((wt: any) =>
+            wt.type === "TOPUP" &&
+            ((wt.reason && wt.reason.includes(meta.paymentLinkId)) ||
+              (Math.abs(Number(wt.amount || 0) - totalCred) < 0.01 && Math.abs(new Date(wt.createdAt).getTime() - txTime) < 3600000))
+          );
+        if (hasCompletedTwin) return false;
+      }
+      return true;
+    }).map((tx: any) => {
       let meta: any = {};
       try { meta = JSON.parse(tx.description || "{}"); } catch {}
       const totalCredit = Number(meta.totalCredit) || Number(tx.totalCredit) || Number(tx.amount) || 0;
@@ -416,17 +450,17 @@ export function AdminCustomerProfileModal({
       if (wt.referenceId) handledJobIds.add(wt.referenceId);
       if (wt.reason) {
         const match = wt.reason.match(/#([A-Za-z0-9\/\-_]+)/);
-        if (match) handledJobIds.add(match[1]);
+        if (match && match[1] !== "--" && match[1] !== "-") handledJobIds.add(match[1]);
       }
       if (wt.type === "TOPUP" && wt.referenceId) handledTopupReceipts.add(wt.referenceId);
 
       let matchedJob = null;
       if (wt.referenceId) {
-        matchedJob = customerJobs.find((j: any) => j.id === wt.referenceId || j.billNo === wt.referenceId || j.ticketNo === wt.referenceId);
+        matchedJob = customerJobs.find((j: any) => j.id === wt.referenceId || (j.billNo && j.billNo !== "--" && j.billNo !== "-" && j.billNo === wt.referenceId) || j.ticketNo === wt.referenceId);
       }
       if (!matchedJob && wt.reason) {
         const m = wt.reason.match(/#([A-Za-z0-9\/\-_]+)/);
-        if (m) {
+        if (m && m[1] !== "--" && m[1] !== "-") {
           matchedJob = customerJobs.find((j: any) => j.id === m[1] || j.billNo === m[1] || j.ticketNo === m[1]);
         }
       }
@@ -461,7 +495,7 @@ export function AdminCustomerProfileModal({
           : null;
         if (!matchedTopup) {
           matchedTopup = topups.find((t: any) =>
-            Math.abs(t.createdAt.getTime() - w.createdAt.getTime()) < 60000 && t.amount === w.amount
+            Math.abs(t.createdAt.getTime() - w.createdAt.getTime()) < 300000 && Math.abs(t.amount - w.amount) < 0.01
           );
         }
         if (matchedTopup) {
@@ -478,35 +512,7 @@ export function AdminCustomerProfileModal({
       return true;
     });
 
-    // 3. Process Jobs paid via member wallet that aren't in WalletTransaction
-    const orderDeducts = (customerJobs || []).filter((j: any) => {
-      if (handledJobIds.has(j.id) || (j.billNo && handledJobIds.has(j.billNo)) || (j.ticketNo && handledJobIds.has(j.ticketNo))) {
-        return false;
-      }
-      const ch = (j.paymentChannel || j.paymentMethod || "").toLowerCase();
-      const isMember = Boolean(customer?.isMember || customer?.memberId) && !ch.includes("hq") && (ch.includes("deduct") || ch.includes("member") || ch.includes("credit") || ch.includes("wallet"));
-      return isMember;
-    }).map((j: any) => ({
-      id: `job-deduct-${j.id}`,
-      createdAt: new Date(j.walletDeductedAt || j.createdAt),
-      type: "DEDUCT",
-      direction: "DEBIT" as const,
-      amount: Number(j.totalAmount || j.fee || 0),
-      paidAmount: Number(j.totalAmount || j.fee || 0),
-      bonusAmount: 0,
-      packageName: `Order Payment #${j.billNo || j.ticketNo || j.id}`,
-      paymentChannel: j.paymentChannel || "Deduct Member",
-      slipImageUrl: null,
-      receiptData: null,
-      balanceBefore: j.walletBalanceBefore != null ? Number(j.walletBalanceBefore) : null,
-      balanceAfter: j.walletBalanceAfter != null ? Number(j.walletBalanceAfter) : null,
-      approvalStatus: j.isPaid ? "APPROVED" : "PENDING",
-      source: "JobDeduct",
-      referenceId: j.id,
-      job: j,
-    }));
-
-    // 4. Process Manual Adjustments from customerAdjustments
+    // 3. Process Manual Adjustments from customerAdjustments
     const handledAdjIds = new Set(wts.map((w: any) => w.id));
     const manualAdjustments = (customerAdjustments || []).filter((adj: any) => !handledAdjIds.has(adj.id)).map((adj: any) => {
       const isAdd = adj.adjustMode === "add";
@@ -529,6 +535,56 @@ export function AdminCustomerProfileModal({
         approvalStatus: adj.approvalStatus || "APPROVED",
         source: "ManualAdjustment",
         referenceId: adj.id,
+      };
+    });
+
+    // 4. Process Jobs paid via member wallet that aren't in WalletTransaction or ManualAdjustment
+    const orderDeducts = (customerJobs || []).filter((j: any) => {
+      if (j.status === "cancel" || j.status === "cancelled") return false;
+      const amt = Number(j.totalAmount || j.fee || 0);
+      if (amt <= 0) return false;
+      if (!j.isPaid && j.walletBalanceAfter == null) return false;
+      const cleanBillNo = j.billNo && j.billNo !== "--" && j.billNo !== "-" ? j.billNo : null;
+      const cleanTicketNo = j.ticketNo && j.ticketNo !== "--" && j.ticketNo !== "-" ? j.ticketNo : null;
+      if (handledJobIds.has(j.id) || (cleanBillNo && handledJobIds.has(cleanBillNo)) || (cleanTicketNo && handledJobIds.has(cleanTicketNo))) {
+        return false;
+      }
+      if (
+        j.walletBalanceAfter != null &&
+        [...nonDuplicateWts, ...manualAdjustments].some(
+          (tx: any) =>
+            tx.direction === "DEBIT" &&
+            Math.abs(tx.amount - amt) < 0.01 &&
+            tx.balanceAfter != null &&
+            Math.abs(tx.balanceAfter - Number(j.walletBalanceAfter)) < 0.01
+        )
+      ) {
+        return false;
+      }
+      const ch = (j.paymentChannel || j.paymentMethod || "").toLowerCase();
+      const isMember = Boolean(customer?.isMember || customer?.memberId) && !ch.includes("hq") && (ch.includes("deduct") || ch.includes("member") || ch.includes("credit") || ch.includes("wallet"));
+      return isMember;
+    }).map((j: any) => {
+      const paidAtRaw = j.walletDeductedAt || j.csoPaidAt || j.shopPaidAt || j.updatedAt || j.completedAt;
+      return {
+        id: `job-deduct-${j.id}`,
+        createdAt: new Date(j.walletDeductedAt || j.createdAt),
+        paidAtCandidate: paidAtRaw ? new Date(paidAtRaw) : null,
+        type: "DEDUCT",
+        direction: "DEBIT" as const,
+        amount: Number(j.totalAmount || j.fee || 0),
+        paidAmount: Number(j.totalAmount || j.fee || 0),
+        bonusAmount: 0,
+        packageName: `Order Payment #${(j.billNo && j.billNo !== "--" && j.billNo !== "-" ? j.billNo : null) || j.ticketNo || j.id}`,
+        paymentChannel: j.paymentChannel || "Deduct Member",
+        slipImageUrl: null,
+        receiptData: null,
+        balanceBefore: j.walletBalanceBefore != null ? Number(j.walletBalanceBefore) : null,
+        balanceAfter: j.walletBalanceAfter != null ? Number(j.walletBalanceAfter) : null,
+        approvalStatus: j.isPaid ? "APPROVED" : "PENDING",
+        source: "JobDeduct",
+        referenceId: j.id,
+        job: j,
       };
     });
 
@@ -565,6 +621,29 @@ export function AdminCustomerProfileModal({
       }
     });
 
+    // Align JobDeduct timestamp to payment timestamp when the job was created before a CREDIT (TOPUP / ADJUST_ADD) event that funded it
+    const creditEvents = allEvents.filter((e: any) => e.direction === "CREDIT" && e.balanceAfter != null);
+    allEvents.forEach((it: any) => {
+      if (it.source === "JobDeduct" && it.effectiveBalBefore != null) {
+        const matchingCredit = creditEvents.find((c: any) => {
+          if (c.createdAt.getTime() <= it.createdAt.getTime()) return false;
+          if (c.createdAt.getTime() - it.createdAt.getTime() > 14 * 24 * 3600 * 1000) return false;
+          if (Math.abs(c.balanceAfter - it.effectiveBalBefore) < 0.01) return true;
+          const paidMs = it.paidAtCandidate ? it.paidAtCandidate.getTime() : 0;
+          if (paidMs > c.createdAt.getTime() && it.effectiveBalBefore >= c.amount) return true;
+          return false;
+        });
+        if (matchingCredit) {
+          const candidateMs = it.paidAtCandidate ? it.paidAtCandidate.getTime() : 0;
+          if (candidateMs > matchingCredit.createdAt.getTime()) {
+            it.createdAt = new Date(candidateMs);
+          } else {
+            it.createdAt = new Date(matchingCredit.createdAt.getTime() + 1000);
+          }
+        }
+      }
+    });
+
     // Determine earliest known wallet ledger timestamp (events with balance snapshots or explicit topup/wallet/adjust records)
     const earliestKnownWalletTime = allEvents.reduce((min: number | null, cur: any) => {
       const hasKnownWalletRecord =
@@ -591,31 +670,60 @@ export function AdminCustomerProfileModal({
       }
     });
 
+    // Sort by balance chain BEFORE inferring opening balance
+    const chainSort = (a: any, b: any) => {
+      if (!a.isPreWalletHistory && !b.isPreWalletHistory && Math.abs(a.createdAt.getTime() - b.createdAt.getTime()) < 14 * 24 * 3600 * 1000) {
+        if (a.balanceAfter != null && b.effectiveBalBefore != null && Math.abs(a.balanceAfter - b.effectiveBalBefore) < 0.01) return -1;
+        if (b.balanceAfter != null && a.effectiveBalBefore != null && Math.abs(b.balanceAfter - a.effectiveBalBefore) < 0.01) return 1;
+      }
+      return a.createdAt.getTime() - b.createdAt.getTime();
+    };
+    allEvents.sort(chainSort);
+
     // Check if earliest wallet-era event started with an opening balance
     const hasOpening = allEvents.some(e => e.type === "OPENING_BALANCE");
     const walletEraEvents = allEvents.filter(e => !e.isPreWalletHistory);
     if (!hasOpening && walletEraEvents.length > 0) {
-      const earliestOverall = walletEraEvents.reduce((min: any, cur: any) => {
-        return !min || cur.createdAt.getTime() < min.createdAt.getTime() ? cur : min;
-      }, null);
-
-      const earliestWithKnownBal = walletEraEvents.reduce((min: any, cur: any) => {
-        if (cur.effectiveBalBefore != null && !isNaN(cur.effectiveBalBefore)) {
-          if (!min || cur.createdAt.getTime() < min.createdAt.getTime()) return cur;
-        }
-        return min;
-      }, null);
+      const earliestOverall = walletEraEvents[0];
+      const earliestWithKnownBal = walletEraEvents.find(
+        (cur: any) => cur.effectiveBalBefore != null && !isNaN(cur.effectiveBalBefore)
+      );
 
       if (earliestWithKnownBal) {
-        const priorNetChange = walletEraEvents.reduce((sum: number, cur: any) => {
-          if (cur === earliestWithKnownBal) return sum;
-          if (cur.createdAt.getTime() < earliestWithKnownBal.createdAt.getTime() && cur.approvalStatus !== "REJECTED") {
+        const idx = walletEraEvents.indexOf(earliestWithKnownBal);
+        const priorNetChange = walletEraEvents.slice(0, idx).reduce((sum: number, cur: any) => {
+          if (cur.approvalStatus !== "REJECTED") {
             return sum + (cur.direction === "CREDIT" ? Number(cur.amount || 0) : -Number(cur.amount || 0));
           }
           return sum;
         }, 0);
 
-        const inferredOpeningBal = Math.round((Number(earliestWithKnownBal.effectiveBalBefore) - priorNetChange) * 100) / 100;
+        let inferredOpeningBal = Math.round((Number(earliestWithKnownBal.effectiveBalBefore) - priorNetChange) * 100) / 100;
+
+        // Handle early-September 0-start TOPUP followed by silent QuickBooks opening balance import
+        if (
+          inferredOpeningBal === 0 &&
+          earliestWithKnownBal.direction === "CREDIT" &&
+          walletEraEvents.length > idx + 1
+        ) {
+          const nextWithKnown = walletEraEvents.slice(idx + 1).find((e: any) => e.effectiveBalBefore != null && !isNaN(e.effectiveBalBefore));
+          if (nextWithKnown && nextWithKnown.source === "JobDeduct") {
+            const nextIdx = walletEraEvents.indexOf(nextWithKnown);
+            const netBeforeNext = walletEraEvents.slice(0, nextIdx).reduce((sum: number, cur: any) => {
+              if (cur.approvalStatus !== "REJECTED") {
+                return sum + (cur.direction === "CREDIT" ? Number(cur.amount || 0) : -Number(cur.amount || 0));
+              }
+              return sum;
+            }, 0);
+            const gapOpening = Math.round((Number(nextWithKnown.effectiveBalBefore) - netBeforeNext) * 100) / 100;
+            if (gapOpening > 0) {
+              inferredOpeningBal = gapOpening;
+              earliestWithKnownBal.balanceBefore = gapOpening;
+              earliestWithKnownBal.effectiveBalBefore = gapOpening;
+              earliestWithKnownBal.balanceAfter = gapOpening + Number(earliestWithKnownBal.amount || 0);
+            }
+          }
+        }
 
         if (inferredOpeningBal > 0) {
           const baseTime = earliestOverall ? earliestOverall.createdAt.getTime() : earliestWithKnownBal.createdAt.getTime();
@@ -642,14 +750,8 @@ export function AdminCustomerProfileModal({
       }
     }
 
-    // Chain comparator
-    allEvents.sort((a: any, b: any) => {
-      if (!a.isPreWalletHistory && !b.isPreWalletHistory && Math.abs(a.createdAt.getTime() - b.createdAt.getTime()) < 48 * 3600 * 1000) {
-        if (a.balanceAfter != null && b.effectiveBalBefore != null && a.balanceAfter === b.effectiveBalBefore) return -1;
-        if (b.balanceAfter != null && a.effectiveBalBefore != null && b.balanceAfter === a.effectiveBalBefore) return 1;
-      }
-      return a.createdAt.getTime() - b.createdAt.getTime();
-    });
+    // Re-run chain comparator after potential opening balance insertion
+    allEvents.sort(chainSort);
 
     // Compute running balance forward
     let runningBal = 0;

@@ -454,7 +454,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const [selectedLineUserId, setSelectedLineUserId] = useState<string>("");
   const [lineContactSearch, setLineContactSearch] = useState<string>("");
 
-  // Automatic background sync for @thatlaundryshop LINE OA followers (on mount, periodic, and when dialog opens)
+  // Load cached @thatlaundryshop LINE OA followers once on mount (instant when opening photo dialog)
   useEffect(() => {
     let isCancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -471,7 +471,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           const stillSyncing = Boolean(res.isAutoSyncing || (res.remainingUnsyncedCount ?? 0) > 0);
           setIsSyncingLineFollowers(stillSyncing);
           if (stillSyncing) {
-            pollTimer = setTimeout(fetchAndAutoSyncFollowers, 2500);
+            pollTimer = setTimeout(fetchAndAutoSyncFollowers, 3000);
           }
         }
       } catch {
@@ -480,14 +480,12 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     };
 
     fetchAndAutoSyncFollowers();
-    const periodicTimer = setInterval(fetchAndAutoSyncFollowers, 120000);
 
     return () => {
       isCancelled = true;
       if (pollTimer) clearTimeout(pollTimer);
-      clearInterval(periodicTimer);
     };
-  }, [deliveryPhotoPreviewJobId]);
+  }, []);
 
   useEffect(() => {
     setSelectedLineUserId("");
