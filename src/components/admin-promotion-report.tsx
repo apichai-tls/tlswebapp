@@ -50,7 +50,7 @@ export function AdminPromotionReport() {
 
   // Filter States
   const [campaigns, setCampaigns] = useState<any[]>([]);
-  const [selectedCampaignId, setSelectedCampaignId] = useState<string>("promo_wif120_nov26");
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string>("promo_shoe100_oct26");
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [activeTab, setActiveTab] = useState<"redeemed" | "issued">("redeemed");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -86,13 +86,16 @@ export function AdminPromotionReport() {
     redeemedList: [],
   });
 
-  // Load Campaigns
+  // Load Campaigns (excluding 11.11 WIF120 which has its own top-level Marketing Campaign view)
   useEffect(() => {
     getPromotionCampaignsAction().then((res) => {
       if (res.success && res.campaigns) {
-        setCampaigns(res.campaigns);
-        if (res.campaigns.length > 0 && !res.campaigns.some(c => c.id === selectedCampaignId)) {
-          setSelectedCampaignId(res.campaigns[0].id);
+        const voucherOnly = res.campaigns.filter(
+          (c: any) => c.id !== "promo_wif120_nov26" && (c.instantRule?.promoCode || "").toUpperCase() !== "WIF120"
+        );
+        setCampaigns(voucherOnly);
+        if (voucherOnly.length > 0 && !voucherOnly.some((c: any) => c.id === selectedCampaignId)) {
+          setSelectedCampaignId(voucherOnly[0].id);
         }
       }
     });
@@ -137,7 +140,10 @@ export function AdminPromotionReport() {
       const updated = { ...campaign, enabled: !campaign.enabled };
       const res = await savePromotionCampaignAction(updated);
       if (res.success && res.campaigns) {
-        setCampaigns(res.campaigns);
+        const voucherOnly = res.campaigns.filter(
+          (c: any) => c.id !== "promo_wif120_nov26" && (c.instantRule?.promoCode || "").toUpperCase() !== "WIF120"
+        );
+        setCampaigns(voucherOnly);
         toast.success(`เปลี่ยนสถานะแคมเปญ "${campaign.name}" เป็น ${updated.enabled ? "เปิดใช้งาน" : "ปิดใช้งาน"} เรียบร้อย`);
       } else {
         toast.error(res.error || "ไม่สามารถเปลี่ยนสถานะแคมเปญได้");

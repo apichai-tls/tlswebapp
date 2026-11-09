@@ -75,8 +75,8 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
   // Job view details modal
   const [selectedJobForView, setSelectedJobForView] = useState<any | null>(null);
 
-  // Active Campaign Selector State
-  const [selectedCampaign, setSelectedCampaign] = useState<"voucher_campaigns" | "topup_4000_1000" | "order_9_9">("voucher_campaigns");
+  // Active Campaign Selector State (11.11 placed at the very top as default)
+  const [selectedCampaign, setSelectedCampaign] = useState<"order_11_11" | "voucher_campaigns" | "topup_4000_1000" | "order_9_9">("order_11_11");
 
   // Wallet Transactions State for Top-Up Campaign
   const [walletTransactions, setWalletTransactions] = useState<any[]>([]);
@@ -211,6 +211,11 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
         if (code !== "FREEDELIVERY" || fee > 0) return false;
       }
 
+      // Separate Campaign 11.11 (WIF120) from Order 9.9
+      const is1111Promo = code === "WIF120" || code.startsWith("WIF120") || code.includes("11.11") || code.includes("1111");
+      if (selectedCampaign === "order_11_11" && !is1111Promo) return false;
+      if (selectedCampaign === "order_9_9" && is1111Promo) return false;
+
       return true;
     });
 
@@ -322,6 +327,40 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
 
       const dateObj = job.createdAt ? new Date(job.createdAt) : new Date();
 
+      // Calculate Wash/Iron Kg (or Kilo items Kg) from job.items / job.itemsJson
+      let rawItems: any[] = [];
+      if (Array.isArray(job.items) && job.items.length > 0) {
+        rawItems = job.items;
+      } else if (typeof (job as any).itemsJson === "string" && (job as any).itemsJson.trim()) {
+        try {
+          const parsed = JSON.parse((job as any).itemsJson);
+          if (Array.isArray(parsed)) rawItems = parsed;
+        } catch {}
+      }
+      let washIronKg = 0;
+      let fallbackKiloKg = 0;
+      for (const it of rawItems) {
+        const qty = Number(it.quantity) || 0;
+        const sid = String(it.serviceId || it.id || "").toUpperCase();
+        const nameUpper = String(it.name || "").toUpperCase();
+        const nameEnUpper = String(it.nameEn || "").toUpperCase();
+        const catUpper = String(it.category || "").toUpperCase();
+        const unitLower = String(it.unit || "").toLowerCase();
+        if (
+          sid === "KIL-WIR-002" ||
+          nameUpper.includes("WASH/IRON") ||
+          nameEnUpper.includes("WASH/IRON") ||
+          nameUpper.includes("WASH IRON") ||
+          nameUpper.includes("ซักอบรีด")
+        ) {
+          washIronKg += qty;
+        }
+        if (catUpper === "KILO" || unitLower === "kg" || sid.startsWith("KIL-")) {
+          fallbackKiloKg += qty;
+        }
+      }
+      const orderKg = Math.round((washIronKg > 0 ? washIronKg : fallbackKiloKg) * 100) / 100;
+
       return {
         job,
         jobId: job.id,
@@ -335,6 +374,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
         distance,
         pickupDistance,
         deliveryDistance,
+        orderKg,
         laundryAmount,
         originalFee,
         promoCode: code,
@@ -386,6 +426,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
     let totalDeliveryComm = 0;
     let totalNetFeeCollected = 0;
     let totalNetMargin = 0;
+    let totalKg = 0;
     let freeCount = 0;
     let partialCount = 0;
 
@@ -394,6 +435,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
     filteredOrderList.forEach(item => {
       totalDiscount += item.discountAmount;
       totalLaundrySales += item.laundryAmount;
+      totalKg += item.orderKg || 0;
       totalRiderCommission += item.totalRiderComm;
       totalPickupComm += item.pickupCommission;
       totalDeliveryComm += item.deliveryCommission;
@@ -420,6 +462,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
       code: string;
       campaignType: "ALL" | "DELIVERY";
       orderCount: number;
+      totalKg: number;
       totalDistance: number;
       originalFee: number;
       discountGiven: number;
@@ -440,6 +483,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
           code: item.promoCode,
           campaignType: item.campaignType,
           orderCount: 0,
+          totalKg: 0,
           totalDistance: 0,
           originalFee: 0,
           discountGiven: 0,
@@ -456,6 +500,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
       }
 
       grp.orderCount += 1;
+      grp.totalKg += item.orderKg || 0;
       grp.totalDistance += item.distance;
       grp.originalFee += item.originalFee;
       grp.discountGiven += item.discountAmount;
@@ -477,6 +522,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
       code: g.code,
       campaignType: g.campaignType,
       orderCount: g.orderCount,
+      totalKg: g.totalKg,
       totalDistance: g.totalDistance,
       originalFee: g.originalFee,
       discountGiven: g.discountGiven,
@@ -502,6 +548,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
         totalNetFeeCollected,
         totalNetMargin,
         orderCount,
+        totalKg,
         avgDiscount,
         newCustomerCount,
         freeCount,
@@ -512,7 +559,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
       orderList: filteredOrderList,
       availableCodes
     };
-  }, [filteredJobs, customers, riders, promoStatusFilter, promoTypeFilter, promoCodeFilter, promoSearchQuery]);
+  }, [filteredJobs, customers, riders, promoStatusFilter, promoTypeFilter, promoCodeFilter, promoSearchQuery, selectedCampaign]);
 
   // Topup 4000+1000 Campaign Data Calculations
   const topupReportData = useMemo(() => {
@@ -639,7 +686,9 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
     let csvContent = "\uFEFF"; // UTF-8 BOM for Thai character compatibility in Excel
     let filename = selectedCampaign === "topup_4000_1000"
       ? `marketing_topup_campaign_4000_1000_${format(new Date(), "yyyyMMdd")}.csv`
-      : `marketing_promo_${format(new Date(), "yyyyMMdd")}.csv`;
+      : selectedCampaign === "order_11_11"
+      ? `marketing_promo_11_11_WIF120_${format(new Date(), "yyyyMMdd")}.csv`
+      : `marketing_promo_9_9_${format(new Date(), "yyyyMMdd")}.csv`;
 
     if (selectedCampaign === "topup_4000_1000") {
       csvContent += "Top-up Campaign Performance Report (แคมเปญเติมเงิน 4,000 แถม 1,000)\n";
@@ -670,24 +719,27 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
         csvContent += `"${t.referenceId || t.id}","${t.createdAt ? format(new Date(t.createdAt), "dd/MM/yyyy HH:mm") : "-"}","${(t.customerName || "").replace(/"/g, '""')}","${t.customerMemberId || "-"}","${t.customerPhone || "-"}","${branchName}","${(t.packageName || "").replace(/"/g, '""')}",${cash.toFixed(2)},${(Number(t.bonusAmount) || 0).toFixed(2)},${(Number(t.amount) || 0).toFixed(2)},${(Number(t.balanceBefore) || 0).toFixed(2)},${(Number(t.balanceAfter) || 0).toFixed(2)},"${t.paymentChannel || "-"}","${(t.createdByName || "").replace(/"/g, '""')}","${t.approvalStatus || "-"}","${t.slipImageUrl || ""}"\n`;
       });
     } else {
-      csvContent += "Promo Code Performance Report\n";
+      csvContent += selectedCampaign === "order_11_11"
+        ? "11.11 Campaign Performance Report (Wash Iron Fold 120 THB/Kg - WIF120)\n"
+        : "Promo Code Performance Report (Order 9.9 & Order Discounts)\n";
       csvContent += `Branch,${selectedBranch === "all" ? "All Branches" : (shops.find(s => s.id === selectedBranch)?.name || selectedBranch)}\n`;
       csvContent += `Date Range,${dateRange}\n`;
+      csvContent += `Total Weight (Kg),${promoReportData.kpis.totalKg.toFixed(2)}\n`;
       csvContent += `Generated At,${format(new Date(), "yyyy-MM-dd HH:mm:ss")}\n\n`;
 
       csvContent += "=== 1. PROMOTION MATRIX SUMMARY ===\n";
-      csvContent += "Promo Code,Campaign Type,Orders,Total Distance (km),Original Fee,Discount Given,Net Fee Collected,Laundry Sales,Rider Commission,Net Margin,New Customers,First Used,Last Used\n";
+      csvContent += "Promo Code,Campaign Type,Orders,Total Weight (Kg),Total Distance (km),Original Fee,Discount Given,Net Fee Collected,Laundry Sales,Rider Commission,Net Margin,New Customers,First Used,Last Used\n";
       
       promoReportData.codeSummaries.forEach(s => {
-        csvContent += `"${s.code}","${s.campaignType}",${s.orderCount},${s.totalDistance.toFixed(1)},${s.originalFee.toFixed(2)},${s.discountGiven.toFixed(2)},${s.netFeeCollected.toFixed(2)},${s.laundrySales.toFixed(2)},${s.riderCommission.toFixed(2)},${s.netMargin.toFixed(2)},${s.newCustomerCount},"${s.firstUsedStr}","${s.lastUsedStr}"\n`;
+        csvContent += `"${s.code}","${s.campaignType}",${s.orderCount},${s.totalKg.toFixed(2)},${s.totalDistance.toFixed(1)},${s.originalFee.toFixed(2)},${s.discountGiven.toFixed(2)},${s.netFeeCollected.toFixed(2)},${s.laundrySales.toFixed(2)},${s.riderCommission.toFixed(2)},${s.netMargin.toFixed(2)},${s.newCustomerCount},"${s.firstUsedStr}","${s.lastUsedStr}"\n`;
       });
 
       csvContent += "\n=== 2. DETAILED ORDER LOG ===\n";
-      csvContent += "Order ID,Date,Customer Name,Customer Phone,Customer Badges,Distance (km),Laundry Sales,Original Delivery Fee,Promo Code,Discount Given,Net Fee Collected,Bill Total,Pickup Rider,Pickup Comm,Delivery Rider,Delivery Comm,Total Rider Comm,Net Margin,Payment Channel,Paid Status\n";
+      csvContent += "Order ID,Date,Customer Name,Customer Phone,Customer Badges,Weight (Kg),Distance (km),Laundry Sales,Original Delivery Fee,Promo Code,Discount Given,Net Fee Collected,Bill Total,Pickup Rider,Pickup Comm,Delivery Rider,Delivery Comm,Total Rider Comm,Net Margin,Payment Channel,Paid Status\n";
 
       promoReportData.orderList.forEach(o => {
         const custBadges = o.customerBadges.join("/") || "Standard";
-        csvContent += `"${o.jobId}","${o.dateStr}","${(o.customerName || "").replace(/"/g, '""')}","${o.customerPhone || ""}","${custBadges}",${o.distance.toFixed(1)},${o.laundryAmount.toFixed(2)},${o.originalFee.toFixed(2)},"${o.promoCode}",${o.discountAmount.toFixed(2)},${o.netFee.toFixed(2)},${o.billTotal.toFixed(2)},"${(o.pickupRiderName || "").replace(/"/g, '""')}",${o.pickupCommission.toFixed(2)},"${(o.deliveryRiderName || "").replace(/"/g, '""')}",${o.deliveryCommission.toFixed(2)},${o.totalRiderComm.toFixed(2)},${o.netMargin.toFixed(2)},"${o.paymentChannel}","${o.isPaid ? 'Paid' : 'Unpaid'}"\n`;
+        csvContent += `"${o.jobId}","${o.dateStr}","${(o.customerName || "").replace(/"/g, '""')}","${o.customerPhone || ""}","${custBadges}",${(o.orderKg || 0).toFixed(2)},${o.distance.toFixed(1)},${o.laundryAmount.toFixed(2)},${o.originalFee.toFixed(2)},"${o.promoCode}",${o.discountAmount.toFixed(2)},${o.netFee.toFixed(2)},${o.billTotal.toFixed(2)},"${(o.pickupRiderName || "").replace(/"/g, '""')}",${o.pickupCommission.toFixed(2)},"${(o.deliveryRiderName || "").replace(/"/g, '""')}",${o.deliveryCommission.toFixed(2)},${o.totalRiderComm.toFixed(2)},${o.netMargin.toFixed(2)},"${o.paymentChannel}","${o.isPaid ? 'Paid' : 'Unpaid'}"\n`;
       });
     }
 
@@ -906,9 +958,13 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                 <div className="mt-1 flex items-center gap-2">
                   <select
                     value={selectedCampaign}
-                    onChange={(e) => setSelectedCampaign(e.target.value as any)}
+                    onChange={(e) => {
+                      setSelectedCampaign(e.target.value as any);
+                      setPromoCodeFilter("all");
+                    }}
                     className="text-xs sm:text-sm font-black text-slate-800 dark:text-slate-100 bg-slate-100/80 dark:bg-slate-800 hover:bg-slate-200/60 dark:hover:bg-slate-750 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 outline-none cursor-pointer transition-colors shadow-xs"
                   >
+                    <option value="order_11_11">🔥 Order 11.11 Promo: Wash Iron Fold 120฿/Kg (ขั้นต่ำ 4 Kg - WIF120)</option>
                     <option value="voucher_campaigns">🎟️ Voucher Campaigns: แคมเปญแจกวอยเชอร์ (Promotion Engine & Performance)</option>
                     <option value="topup_4000_1000">💳 Topup Promo: แคมเปญเติมเงิน 4,000 แถม 1,000 (05/10 - 09/10/2026)</option>
                     <option value="order_9_9">🏷️ Order Promo: โค้ดส่วนลด 9.9 & วอยเชอร์ออเดอร์ (Order Discounts)</option>
@@ -950,6 +1006,29 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                   >
                     <RefreshCw size={14} className={isLoadingWalletTxs ? "animate-spin text-indigo-600" : ""} />
                   </button>
+                </>
+              ) : selectedCampaign === "order_11_11" ? (
+                <>
+                  <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
+                    <CalendarDays size={13} className="text-rose-500" />
+                    <span>ระยะเวลาแคมเปญ: <strong className="text-slate-800 dark:text-slate-200">01/11/2026 - 11/11/2026</strong></span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setDateRange("custom");
+                      setCustomStartDate("2026-11-01");
+                      setCustomEndDate("2026-11-11");
+                    }}
+                    className="text-[11px] font-bold text-rose-600 dark:text-rose-400 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/60 dark:hover:bg-rose-900/60 border border-rose-200/80 dark:border-rose-800 rounded-xl px-3 py-1.5 transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                    title="กรองเฉพาะช่วงวันที่ 01/11 - 11/11/2026"
+                  >
+                    <Sparkles size={12} />
+                    <span>ล็อคช่วงแคมเปญ (01-11 พ.ย.)</span>
+                  </button>
+                  <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
+                    <Tag size={13} className="text-indigo-500" />
+                    <span>โค้ด: <strong className="text-slate-800 dark:text-slate-200 font-mono">WIF120</strong> (120฿/Kg • ขั้นต่ำ 4 Kg)</span>
+                  </div>
                 </>
               ) : (
                 <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
@@ -1545,24 +1624,31 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
               </p>
             </div>
 
-            {/* 6. Total Promo Orders */}
+            {/* 6. Total Promo Orders & Weight (Kg) */}
             <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-4.5 relative overflow-hidden">
               <div className="absolute top-0 right-0 p-3 opacity-5 pointer-events-none">
                 <Package size={70} className="text-blue-600" />
               </div>
               <div className="flex justify-between items-start">
                 <div>
-                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Promo Orders (ออเดอร์)</span>
-                  <h3 className="text-xl font-black text-slate-800 dark:text-slate-100 mt-1">
-                    {promoReportData.kpis.orderCount}
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                    {selectedCampaign === "order_11_11" ? "Orders & Weight (ออเดอร์ / นน.ผ้า)" : "Promo Orders (ออเดอร์)"}
+                  </span>
+                  <h3 className="text-xl font-black text-slate-800 dark:text-slate-100 mt-1 flex items-baseline gap-1.5">
+                    <span>{promoReportData.kpis.orderCount}</span>
+                    <span className="text-xs font-bold text-blue-600 dark:text-blue-400">
+                      ({promoReportData.kpis.totalKg.toFixed(2)} Kg)
+                    </span>
                   </h3>
                 </div>
                 <span className="p-1.5 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[10px] font-bold">
-                  Orders
+                  {selectedCampaign === "order_11_11" ? "Kg / Bills" : "Orders"}
                 </span>
               </div>
               <p className="text-[10px] text-slate-400 mt-3 font-semibold">
-                {promoReportData.kpis.uniqueCodesCount} distinct active codes
+                {promoReportData.kpis.orderCount > 0
+                  ? `เฉลี่ย ${(promoReportData.kpis.totalKg / promoReportData.kpis.orderCount).toFixed(2)} Kg/ออเดอร์`
+                  : `${promoReportData.kpis.uniqueCodesCount} distinct active codes`}
               </p>
             </div>
           </div>
@@ -1659,6 +1745,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                       <th className="py-3 px-3">Promo Code</th>
                       <th className="py-3 px-2 text-center">ประเภท (Type)</th>
                       <th className="py-3 px-2 text-center">ออเดอร์ (Orders)</th>
+                      <th className="py-3 px-2 text-right">น้ำหนักรวม (Total Kg)</th>
                       <th className="py-3 px-2 text-right">ระยะทางรวม (Distance)</th>
                       <th className="py-3 px-3 text-right">ค่าส่งเดิม (Orig. Fee)</th>
                       <th className="py-3 px-3 text-right">ส่วนลดที่ให้ (Discount)</th>
@@ -1696,6 +1783,11 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                         {/* Orders */}
                         <td className="py-3 px-2 text-center font-black text-slate-850 dark:text-slate-100">
                           {sum.orderCount}
+                        </td>
+
+                        {/* Total Kg */}
+                        <td className="py-3 px-2 text-right font-mono font-bold text-blue-600 dark:text-blue-400">
+                          {sum.totalKg > 0 ? `${sum.totalKg.toFixed(2)} Kg` : "-"}
                         </td>
 
                         {/* Distance */}
@@ -1769,6 +1861,9 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                       <td className="py-3 px-2 text-center text-indigo-600 dark:text-indigo-400">
                         {promoReportData.kpis.orderCount}
                       </td>
+                      <td className="py-3 px-2 text-right font-mono text-blue-600 dark:text-blue-400">
+                        {promoReportData.kpis.totalKg.toFixed(2)} Kg
+                      </td>
                       <td className="py-3 px-2 text-right font-mono text-slate-500">
                         {promoReportData.codeSummaries.reduce((a, b) => a + b.totalDistance, 0).toFixed(1)} km
                       </td>
@@ -1838,6 +1933,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                       <th className="py-3 px-3">Order ID</th>
                       <th className="py-3 px-3">วันที่/เวลา (Date/Time)</th>
                       <th className="py-3 px-3">ลูกค้า (Customer)</th>
+                      <th className="py-3 px-2 text-right">น้ำหนักผ้า (Kg)</th>
                       <th className="py-3 px-2 text-center">ระยะทาง (Distance)</th>
                       <th className="py-3 px-3 text-right">ยอดงานซัก (Laundry)</th>
                       <th className="py-3 px-3 text-right">ค่าส่งเดิม (Orig. Fee)</th>
@@ -1897,6 +1993,11 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                               {item.customerPhone}
                             </span>
                           </div>
+                        </td>
+
+                        {/* Weight (Kg) */}
+                        <td className="py-3 px-2 text-right font-mono font-bold text-blue-600 dark:text-blue-400">
+                          {item.orderKg > 0 ? `${item.orderKg.toFixed(2)} Kg` : "-"}
                         </td>
 
                         {/* Distance */}
@@ -2002,6 +2103,47 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-slate-300 dark:border-slate-700 font-black text-slate-900 dark:text-slate-100 bg-slate-50/80 dark:bg-slate-900/80">
+                      <td className="py-3 px-3 uppercase text-[11px]" colSpan={3}>
+                        รวมทั้งหมด ({promoReportData.orderList.length} ออเดอร์) / Total
+                      </td>
+                      <td className="py-3 px-2 text-right font-mono text-blue-600 dark:text-blue-400">
+                        {promoReportData.kpis.totalKg.toFixed(2)} Kg
+                      </td>
+                      <td className="py-3 px-2 text-center font-mono text-slate-500">
+                        {promoReportData.orderList.reduce((acc, o) => acc + o.distance, 0).toFixed(1)} km
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono text-indigo-650 dark:text-indigo-400">
+                        ฿{promoReportData.kpis.totalLaundrySales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono text-slate-500">
+                        ฿{promoReportData.orderList.reduce((acc, o) => acc + o.originalFee, 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-3 px-3 text-center font-mono text-rose-600 dark:text-rose-400">
+                        -฿{promoReportData.kpis.totalDiscount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono">
+                        ฿{promoReportData.kpis.totalNetFeeCollected.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono text-slate-900 dark:text-slate-100">
+                        ฿{promoReportData.orderList.reduce((acc, o) => acc + o.billTotal, 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-3 px-3 text-center font-mono text-rose-600 dark:text-rose-400" colSpan={2}>
+                        Rider Comm: ฿{promoReportData.kpis.totalRiderCommission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono">
+                        <span className={`px-2 py-0.5 rounded text-[11px] ${
+                          promoReportData.kpis.totalNetMargin >= 0
+                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300"
+                            : "bg-rose-100 text-rose-800 dark:bg-rose-900/60 dark:text-rose-300"
+                        }`}>
+                          ฿{promoReportData.kpis.totalNetMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </td>
+                      <td className="py-3 px-3 text-center text-slate-400 text-[10px]">-</td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             ) : (
