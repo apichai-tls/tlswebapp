@@ -25,6 +25,13 @@ interface GlobalWhatsAppSingleton {
   replacedByAnotherInstance: boolean;
   resolvedAuthDir: string | null;
   backupTimer: ReturnType<typeof setTimeout> | null;
+  cachedWaVersion: [number, number, number] | null;
+  cachedCredsMeta: {
+    hasCreds: boolean;
+    connectedPhone: string | null;
+    connectedName: string | null;
+    checkedAt: number;
+  } | null;
 }
 
 const DB_AUTH_BACKUP_KEY = 'whatsapp_baileys_auth_backup';
@@ -51,6 +58,8 @@ function getSingleton(): GlobalWhatsAppSingleton {
       replacedByAnotherInstance: false,
       resolvedAuthDir: null,
       backupTimer: null,
+      cachedWaVersion: null,
+      cachedCredsMeta: null,
     };
   }
   return globalForWa.__tlsWhatsAppQrSingleton;
@@ -85,18 +94,18 @@ async function resolveWritableAuthDir(): Promise<string> {
   }
 }
 
-async function restoreAuthDirFromDbIfNeeded(authDir: string): Promise<boolean> {
+async function restoreAuthDirFromDbIfNeeded(authDir: string, forceFromDb = false): Promise<boolean> {
   try {
     const credsPath = path.join(authDir, 'creds.json');
-    if (fs.existsSync(credsPath)) {
+    if (!forceFromDb && fs.existsSync(credsPath)) {
       return true;
     }
     const row = await prisma.setting.findUnique({ where: { key: DB_AUTH_BACKUP_KEY } });
-    if (!row?.value) return false;
+    if (!row?.value) return fs.existsSync(credsPath);
 
     const filesMap = JSON.parse(row.value) as Record<string, string>;
     if (!filesMap || typeof filesMap !== 'object' || !filesMap['creds.json']) {
-      return false;
+      return fs.existsSync(credsPath);
     }
 
     await fs.promises.mkdir(authDir, { recursive: true });
@@ -111,9 +120,13 @@ async function restoreAuthDirFromDbIfNeeded(authDir: string): Promise<boolean> {
   }
 }
 
-function scheduleBackupAuthDirToDb(authDir: string): void {
+function scheduleBackupAuthDirToDb(authDir: string, delayMs = 45000): void {
   const s = getSingleton();
   if (s.backupTimer) {
+    if (delayMs > 5000) {
+      // Already scheduled; don't reset or spam DB writes on every message ratchet update
+      return;
+    }
     clearTimeout(s.backupTimer);
   }
   s.backupTimer = setTimeout(async () => {
@@ -140,11 +153,12 @@ function scheduleBackupAuthDirToDb(authDir: string): void {
     } catch (err) {
       console.warn('[WhatsApp QR Bridge] Failed to backup auth to DB:', err);
     }
-  }, 1500);
+  }, delayMs);
 }
 
 async function clearAuthFromDiskAndDb(): Promise<void> {
   const s = getSingleton();
+  s.cachedCredsMeta = null;
   const candidates = [
     s.resolvedAuthDir,
     path.resolve(process.cwd(), 'storage', 'whatsapp-auth'),
@@ -199,30 +213,52 @@ async function readSavedCredsMetadata(): Promise<{
   connectedPhone: string | null;
   connectedName: string | null;
 }> {
+  const s = getSingleton();
+  if (s.cachedCredsMeta && Date.now() - s.cachedCredsMeta.checkedAt < 300_000) {
+    return s.cachedCredsMeta;
+  }
   try {
     const authDir = await resolveWritableAuthDir();
-    await restoreAuthDirFromDbIfNeeded(authDir);
+    await restoreAuthDirFromDbIfNeeded(authDir, false);
     const credsPath = path.join(authDir, 'creds.json');
     if (!fs.existsSync(credsPath)) {
-      return { hasCreds: false, connectedPhone: null, connectedName: null };
+      s.cachedCredsMeta = {
+        hasCreds: false,
+        connectedPhone: null,
+        connectedName: null,
+        checkedAt: Date.now(),
+      };
+      return s.cachedCredsMeta;
     }
     const raw = await fs.promises.readFile(credsPath, 'utf8');
     const parsed = JSON.parse(raw);
     const meId = parsed?.me?.id || '';
     const meLid = parsed?.me?.lid || '';
     if (!meId && !parsed?.registered) {
-      return { hasCreds: false, connectedPhone: null, connectedName: null };
+      s.cachedCredsMeta = {
+        hasCreds: false,
+        connectedPhone: null,
+        connectedName: null,
+        checkedAt: Date.now(),
+      };
+      return s.cachedCredsMeta;
     }
     const phoneDigits = extractPhoneDigitsFromJid(meId, meLid);
     const connectedPhone = phoneDigits ? `+${phoneDigits}` : meId || null;
     const connectedName = parsed?.me?.name || parsed?.me?.verifiedName || 'That Laundry Shop';
-    return { hasCreds: true, connectedPhone, connectedName };
+    s.cachedCredsMeta = {
+      hasCreds: true,
+      connectedPhone,
+      connectedName,
+      checkedAt: Date.now(),
+    };
+    return s.cachedCredsMeta;
   } catch {
     return { hasCreds: false, connectedPhone: null, connectedName: null };
   }
 }
 
-export async function getWhatsAppQrStatusAsync(): Promise<WhatsAppQrState> {
+export async function getWhatsAppQrStatusAsync(allowAutoStart = false): Promise<WhatsAppQrState> {
   const s = getSingleton();
   if (s.state.status === 'connected' && s.sock) {
     return { ...s.state };
@@ -233,7 +269,14 @@ export async function getWhatsAppQrStatusAsync(): Promise<WhatsAppQrState> {
 
   const meta = await readSavedCredsMetadata();
   if (meta.hasCreds) {
-    if (!s.replacedByAnotherInstance && s.state.status === 'disconnected' && !s.startingPromise) {
+    if (
+      allowAutoStart &&
+      !s.autoStartChecked &&
+      !s.replacedByAnotherInstance &&
+      s.state.status === 'disconnected' &&
+      !s.startingPromise
+    ) {
+      s.autoStartChecked = true;
       startWhatsAppQrConnection(false).catch(() => {});
     }
     return {
@@ -246,10 +289,13 @@ export async function getWhatsAppQrStatusAsync(): Promise<WhatsAppQrState> {
     };
   }
 
-  return getWhatsAppQrStatus();
+  return { ...s.state };
 }
 
-export async function startWhatsAppQrConnection(resetAuth = false): Promise<WhatsAppQrState> {
+export async function startWhatsAppQrConnection(
+  resetAuth = false,
+  forceRefreshFromDb = false
+): Promise<WhatsAppQrState> {
   const s = getSingleton();
 
   if (resetAuth) {
@@ -278,16 +324,22 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
 
       const authDir = await resolveWritableAuthDir();
       if (!resetAuth) {
-        await restoreAuthDirFromDbIfNeeded(authDir);
+        await restoreAuthDirFromDbIfNeeded(authDir, forceRefreshFromDb);
       }
 
       const { state: authState, saveCreds } = await useMultiFileAuthState(authDir);
 
-      let version: [number, number, number] | undefined = undefined;
-      if (typeof fetchLatestBaileysVersion === 'function') {
+      let version: [number, number, number] | undefined = s.cachedWaVersion || undefined;
+      if (!version && typeof fetchLatestBaileysVersion === 'function') {
         try {
-          const vRes = await fetchLatestBaileysVersion();
-          if (vRes?.version) version = vRes.version;
+          const vRes = await Promise.race([
+            fetchLatestBaileysVersion(),
+            new Promise<null>((r) => setTimeout(() => r(null), 1200)),
+          ]);
+          if (vRes?.version) {
+            version = vRes.version;
+            s.cachedWaVersion = vRes.version;
+          }
         } catch {}
       }
 
@@ -356,6 +408,12 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
           const displayName = sock.user?.name || sock.user?.verifiedName || 'That Laundry Shop';
 
           s.replacedByAnotherInstance = false;
+          s.cachedCredsMeta = {
+            hasCreds: true,
+            connectedPhone: displayPhone,
+            connectedName: displayName,
+            checkedAt: Date.now(),
+          };
           s.state = {
             status: 'connected',
             qrDataUrl: null,
@@ -364,7 +422,7 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
             lastError: null,
             updatedAt: new Date().toISOString(),
           };
-          scheduleBackupAuthDirToDb(authDir);
+          scheduleBackupAuthDirToDb(authDir, 2000);
           console.log(`[WhatsApp QR Bridge] Connected as ${displayName} (${displayPhone})`);
         }
 
@@ -597,18 +655,18 @@ async function ensureWhatsAppQrReadyForSend(timeoutMs = 12000): Promise<boolean>
     return false;
   }
 
+  const wasReplaced = s.replacedByAnotherInstance;
   s.replacedByAnotherInstance = false;
   if (!s.startingPromise && (!s.sock || s.state.status !== 'connected')) {
-    startWhatsAppQrConnection(false).catch(() => {});
+    startWhatsAppQrConnection(false, wasReplaced).catch(() => {});
   }
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (s.state.status === 'connected' && s.sock) {
-      await new Promise((r) => setTimeout(r, 250));
-      return Boolean(s.sock);
+      return true;
     }
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 50));
   }
 
   return Boolean(s.state.status === 'connected' && s.sock);

@@ -12464,6 +12464,8 @@ function AdminPageContent() {
               onCreateJobForCustomer={(cust) => {
                 stableHandleCreateNewJob();
               }}
+              onCreateOrderFromCalculator={handleCreateOrderFromCalculator}
+              onNavigateToPois={() => handleTabChange("pois")}
             />
           )}
 

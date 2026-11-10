@@ -34,7 +34,9 @@ import {
   Eye,
   Upload,
   QrCode,
+  Calculator,
 } from 'lucide-react';
+import AdminFeeCalculator, { type CalculatorOrderPayload } from '@/components/admin-fee-calculator';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -119,6 +121,8 @@ interface AdminSocialInboxProps {
   shops?: any[];
   onCreateJobForCustomer?: (customer: any) => void;
   onEditJob?: (job: any) => void;
+  onCreateOrderFromCalculator?: (payload: CalculatorOrderPayload) => void;
+  onNavigateToPois?: () => void;
 }
 
 export function AdminSocialInbox({
@@ -128,6 +132,8 @@ export function AdminSocialInbox({
   shops = [],
   onCreateJobForCustomer,
   onEditJob,
+  onCreateOrderFromCalculator,
+  onNavigateToPois,
 }: AdminSocialInboxProps) {
   const [conversations, setConversations] = useState<SocialConversation[]>([]);
   const [messages, setMessages] = useState<SocialMessage[]>([]);
@@ -196,6 +202,7 @@ export function AdminSocialInbox({
   const [savingSettings, setSavingSettings] = useState(false);
   const [waQrState, setWaQrState] = useState<WhatsAppQrState | null>(null);
   const [loadingWaQr, setLoadingWaQr] = useState(false);
+  const [isDistanceCalOpen, setIsDistanceCalOpen] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -321,9 +328,6 @@ export function AdminSocialInbox({
       try {
         const res = await pollLiveChannelUpdatesAction();
         if (res.success && res.conversations && res.messages) {
-          if ((res as any).waQrState) {
-            setWaQrState((res as any).waQrState);
-          }
           setLiveConnected(true);
           setLastLiveSyncAt(
             new Date().toLocaleTimeString([], {
@@ -354,7 +358,11 @@ export function AdminSocialInbox({
           prevInboundMsgCountRef.current = newInboundMsgs.length;
 
           setConversations(res.conversations);
-          setMessages(res.messages);
+          setMessages((prev) => {
+            const inFlightOptimistic = prev.filter((m) => m.id.startsWith('optimistic_'));
+            if (inFlightOptimistic.length === 0) return res.messages;
+            return [...res.messages, ...inFlightOptimistic];
+          });
         }
       } catch {
         setLiveConnected(false);
@@ -795,14 +803,54 @@ export function AdminSocialInbox({
       );
     }
 
+    const nowIso = new Date().toISOString();
+    const tempMsgId = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const optimisticMsg: SocialMessage = {
+      id: tempMsgId,
+      conversationId: activeConversation.id,
+      channel: activeConversation.channel,
+      direction: 'outbound',
+      text: textToSend || (allAttachments.length > 0 ? '📷 [Sent Photo / Attachment]' : ''),
+      attachments: allAttachments.length > 0 ? allAttachments : undefined,
+      replyTo: replyRef,
+      senderName: currentUser?.name || 'Staff',
+      senderId: currentUser?.id,
+      status: 'delivered',
+      deliveryMethod:
+        activeConversation.channel === 'whatsapp' && hasDirectWaApi
+          ? 'whatsapp_gateway_api'
+          : activeConversation.channel === 'line'
+          ? 'line_api'
+          : 'social_api',
+      createdAt: nowIso,
+    };
+
     try {
-      setSendingMsg(true);
       setComposerText('');
       setStagedAttachments([]);
       setAttachmentUrl('');
       setShowAttachmentInput(false);
       setShowEmojiPicker(false);
       setReplyingTo(null);
+
+      // Optimistic UI update: show message bubble in 0ms without waiting for server round-trip
+      setMessages((prev) => [...prev, optimisticMsg]);
+      setConversations((prev) => {
+        const idx = prev.findIndex((c) => c.id === activeConversation.id);
+        if (idx === -1) return prev;
+        const updated: SocialConversation = {
+          ...prev[idx],
+          lastMessageText: optimisticMsg.text,
+          lastMessageAt: nowIso,
+          lastMessageDirection: 'outbound',
+          unreadCount: 0,
+          updatedAt: nowIso,
+        };
+        const next = [...prev];
+        next.splice(idx, 1);
+        next.unshift(updated);
+        return next;
+      });
 
       const res = await sendSocialMessageAction({
         conversationId: activeConversation.id,
@@ -813,17 +861,28 @@ export function AdminSocialInbox({
 
       if (res.success) {
         if (res.conversations) setConversations(res.conversations);
-        if (res.messages) setMessages(res.messages);
+        if (res.messages) {
+          setMessages((prev) => {
+            const otherOptimistic = prev.filter(
+              (m) => m.id.startsWith('optimistic_') && m.id !== tempMsgId
+            );
+            return [...res.messages, ...otherOptimistic];
+          });
+        } else {
+          setMessages((prev) => prev.filter((m) => m.id !== tempMsgId));
+        }
 
         if (res.message?.externalError) {
           toast.warning(`Saved to chat log (API note: ${res.message.externalError})`);
         }
       } else {
+        setMessages((prev) => prev.filter((m) => m.id !== tempMsgId));
         setComposerText(textToSend);
         setStagedAttachments(allAttachments);
         toast.error(res.error || 'Failed to send message');
       }
     } catch (e: any) {
+      setMessages((prev) => prev.filter((m) => m.id !== tempMsgId));
       setComposerText(textToSend);
       toast.error('Error sending message: ' + e.message);
     } finally {
@@ -1176,6 +1235,16 @@ export function AdminSocialInbox({
             >
               <Plus size={13} />
               <span>+ Social Chat</span>
+            </Button>
+
+            <Button
+              size="sm"
+              onClick={() => setIsDistanceCalOpen(true)}
+              className="h-8 px-3 bg-indigo-500/30 hover:bg-indigo-500/45 border border-indigo-400/50 text-indigo-100 font-black text-xs rounded-xl gap-1.5 cursor-pointer transition-all shadow-2xs"
+              title="Open Distance & Delivery Fee Calculator"
+            >
+              <Calculator size={13} className="text-indigo-200" />
+              <span>Distance Cal</span>
             </Button>
 
             <Button
@@ -2184,6 +2253,19 @@ export function AdminSocialInbox({
                     <ImageIcon size={15} />
                   </Button>
 
+                  {/* Quick Distance Calculator Toggle */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setIsDistanceCalOpen(true)}
+                    className="h-9.5 px-2.5 rounded-xl border-indigo-200 bg-indigo-50/70 text-indigo-700 hover:bg-indigo-100 font-bold text-[11px] gap-1 shrink-0 cursor-pointer"
+                    title="Calculate pickup/delivery distance & insert fee quote into chat"
+                  >
+                    <Calculator size={14} />
+                    <span className="hidden md:inline">Distance Cal</span>
+                  </Button>
+
                   <textarea
                     value={composerText}
                     onChange={(e) => setComposerText(e.target.value)}
@@ -2424,9 +2506,20 @@ export function AdminSocialInbox({
                   {/* Quick Channel Actions */}
                   <div className="space-y-1.5">
                     <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                      Live App Launchers
+                      Tools & Live App Launchers
                     </span>
                     <div className="grid grid-cols-1 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setIsDistanceCalOpen(true)}
+                        className="flex items-center justify-between px-3 py-2 rounded-xl border border-indigo-200 bg-indigo-50/80 hover:bg-indigo-100 text-xs font-bold text-indigo-900 transition-colors cursor-pointer shadow-2xs"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Calculator size={13} className="text-indigo-600" />
+                          <span>Distance & Delivery Fee Calculator</span>
+                        </span>
+                        <ChevronRight size={13} className="text-indigo-600" />
+                      </button>
                       {activeConversation.channel === 'line' && (
                         <button
                           type="button"
@@ -3393,6 +3486,42 @@ export function AdminSocialInbox({
               Save Live Channel Settings
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* ================================================================ */}
+      {/* MODAL 5: EMBEDDED DISTANCE & DELIVERY FEE CALCULATOR             */}
+      {/* ================================================================ */}
+      <Dialog open={isDistanceCalOpen} onOpenChange={setIsDistanceCalOpen}>
+        <DialogContent className="sm:max-w-[95vw] lg:max-w-6xl p-0 rounded-2xl overflow-hidden border-slate-200 bg-slate-50">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Distance & Delivery Fee Calculator</DialogTitle>
+          </DialogHeader>
+          {isDistanceCalOpen && (
+            <AdminFeeCalculator
+              embeddedModal
+              onNavigateToPois={
+                onNavigateToPois
+                  ? () => {
+                      setIsDistanceCalOpen(false);
+                      onNavigateToPois();
+                    }
+                  : undefined
+              }
+              onCreateOrder={
+                onCreateOrderFromCalculator
+                  ? (payload) => {
+                      setIsDistanceCalOpen(false);
+                      onCreateOrderFromCalculator(payload);
+                    }
+                  : undefined
+              }
+              onInsertQuoteToChat={(quoteText) => {
+                setComposerText((prev) => (prev.trim() ? `${prev.trim()}\n\n${quoteText}` : quoteText));
+                setIsDistanceCalOpen(false);
+                toast.success('Inserted delivery fee quote into chat composer!');
+              }}
+            />
+          )}
         </DialogContent>
       </Dialog>
     </div>

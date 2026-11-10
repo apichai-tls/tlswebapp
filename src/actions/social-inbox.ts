@@ -1510,18 +1510,21 @@ export async function sendSocialMessageAction(input: {
   replyTo?: SocialMessageReplyRef;
 }) {
   try {
-    const authUser = await assertServerActionAuthorized({
-      requireWrite: true,
-      forbidRoles: ['rider'],
-    });
-
     const text = (input.text || '').trim();
     const attachments = input.attachments || [];
     if (!text && attachments.length === 0) {
       return { success: false, error: 'Message cannot be empty.' };
     }
 
-    const { conversations, messages, config } = await loadRawInboxStore();
+    const [authUser, { conversations, messages, config }, waQr] = await Promise.all([
+      assertServerActionAuthorized({
+        requireWrite: true,
+        forbidRoles: ['rider'],
+      }),
+      loadRawInboxStore(),
+      getWhatsAppQrStatusAsync(false),
+    ]);
+
     const convIdx = conversations.findIndex((c) => c.id === input.conversationId);
     if (convIdx === -1) {
       return { success: false, error: 'Conversation not found.' };
@@ -1536,13 +1539,18 @@ export async function sendSocialMessageAction(input: {
         ? `↩️ "${input.replyTo.text.slice(0, 80)}${input.replyTo.text.length > 80 ? '...' : ''}"\n${text}`
         : text;
 
-    // Resolve public HTTPS URLs for any image attachments so external APIs (LINE, Meta, Telegram, WhatsApp) can fetch them
+    const hasQrLinked =
+      conv.channel === 'whatsapp' && (waQr.status === 'connected' || waQr.status === 'connecting');
+
+    // Resolve public HTTPS URLs for any image attachments only when needed by external HTTP APIs (skip for direct WhatsApp QR which sends raw buffer directly)
     const resolvedImageUrls: string[] = [];
-    for (const att of attachments) {
-      if (att.type === 'image' && att.url) {
-        const httpsUrl = await resolvePublicHttpsImageUrl(att.url);
-        if (httpsUrl) {
-          resolvedImageUrls.push(httpsUrl);
+    if (!hasQrLinked && attachments.length > 0) {
+      for (const att of attachments) {
+        if (att.type === 'image' && att.url) {
+          const httpsUrl = await resolvePublicHttpsImageUrl(att.url);
+          if (httpsUrl) {
+            resolvedImageUrls.push(httpsUrl);
+          }
         }
       }
     }
@@ -1553,6 +1561,7 @@ export async function sendSocialMessageAction(input: {
     let whatsappUrl: string | undefined;
     let whatsappWebUrl: string | undefined;
     let whatsappProtocolUrl: string | undefined;
+    let pendingWaQrPromise: Promise<{ ok: boolean; error?: string }> | null = null;
 
     // 1. Real LINE OA API Delivery (@thatlaundryshop & @050ehvzb)
     if (conv.channel === 'line') {
@@ -1603,22 +1612,16 @@ export async function sendSocialMessageAction(input: {
       whatsappProtocolUrl = buildWhatsAppProtocolUrl(targetPhone, waBody, cc);
 
       // Mode 0: Built-in Direct WhatsApp QR Link (Linked Devices — 100% Free & 2-Way Sync)
-      const waQr = await getWhatsAppQrStatusAsync();
-      const hasQrLinked = waQr.status === 'connected' || waQr.status === 'connecting';
       if (hasQrLinked) {
         deliveryMethod = 'whatsapp_gateway_api';
-        const qrRes = await sendDirectWhatsAppQrMessage({
+        status = 'delivered';
+        // Launch WhatsApp socket send concurrently with DB save below for minimum latency
+        pendingWaQrPromise = sendDirectWhatsAppQrMessage({
           phone: targetPhone,
           countryCode: cc,
           text: outboundTextWithQuote,
           attachments,
         });
-        if (qrRes.ok) {
-          status = 'delivered';
-        } else {
-          status = 'failed';
-          externalError = qrRes.error;
-        }
       }
 
       // Mode A: Official Meta WhatsApp Business Cloud API
@@ -1866,7 +1869,19 @@ export async function sendSocialMessageAction(input: {
     conversations.splice(convIdx, 1);
     conversations.unshift(updatedConv);
 
-    await saveInboxStore(conversations, messages);
+    if (pendingWaQrPromise) {
+      const [qrRes] = await Promise.all([
+        pendingWaQrPromise,
+        saveInboxStore(conversations, messages),
+      ]);
+      if (!qrRes.ok) {
+        newMsg.status = 'failed';
+        newMsg.externalError = qrRes.error;
+        await saveInboxStore(conversations, messages);
+      }
+    } else {
+      await saveInboxStore(conversations, messages);
+    }
 
     return {
       success: true,
@@ -2425,13 +2440,10 @@ export async function pollLiveChannelUpdatesAction() {
       await saveInboxStore(conversations, messages);
     }
 
-    const waQrState = await getWhatsAppQrStatusAsync();
-
     return {
       success: true,
       conversations,
       messages,
-      waQrState,
       serverTime: new Date().toISOString(),
     };
   } catch (err: any) {
@@ -2586,7 +2598,7 @@ export async function getWhatsAppQrStatusAction(): Promise<{
   state: WhatsAppQrState;
 }> {
   await assertServerActionAuthorized({ forbidRoles: ['rider'] });
-  const state = await getWhatsAppQrStatusAsync();
+  const state = await getWhatsAppQrStatusAsync(true);
   return { success: true, state };
 }
 

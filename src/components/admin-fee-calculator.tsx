@@ -52,9 +52,16 @@ export interface CalculatorOrderPayload {
 interface AdminFeeCalculatorProps {
   onNavigateToPois?: () => void;
   onCreateOrder?: (payload: CalculatorOrderPayload) => void;
+  onInsertQuoteToChat?: (quoteText: string) => void;
+  embeddedModal?: boolean;
 }
 
-export default function AdminFeeCalculator({ onNavigateToPois, onCreateOrder }: AdminFeeCalculatorProps = {}) {
+export default function AdminFeeCalculator({
+  onNavigateToPois,
+  onCreateOrder,
+  onInsertQuoteToChat,
+  embeddedModal = false,
+}: AdminFeeCalculatorProps = {}) {
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
@@ -201,7 +208,7 @@ export default function AdminFeeCalculator({ onNavigateToPois, onCreateOrder }: 
     setDeliveryDist(0);
   };
 
-  const handleCopyQuote = () => {
+  const buildQuoteText = () => {
     const lines = [
       `🧺 Delivery Fee Quote — ${activeShop?.name || "That Laundry Shop"}`,
       pickupLoc && isPickup ? `📍 Pickup: ${pickupLoc.name} (${billablePickupKm.toFixed(1)} km billable)` : null,
@@ -210,8 +217,11 @@ export default function AdminFeeCalculator({ onNavigateToPois, onCreateOrder }: 
       `💳 Rate Tier: ${isVip ? "VIP (฿4/km)" : "Standard (฿10/km, Min ฿30)"}`,
       `💰 Total Delivery Fee: ฿${fee.toLocaleString()}`,
     ].filter(Boolean);
+    return lines.join("\n");
+  };
 
-    navigator.clipboard.writeText(lines.join("\n"));
+  const handleCopyQuote = () => {
+    navigator.clipboard.writeText(buildQuoteText());
     setCopiedQuote(true);
     toast.success("Delivery fee quote copied to clipboard!");
     setTimeout(() => setCopiedQuote(false), 2000);
@@ -258,7 +268,13 @@ export default function AdminFeeCalculator({ onNavigateToPois, onCreateOrder }: 
   }
 
   return (
-    <div className="w-full bg-slate-50/70 p-4 lg:p-5 flex flex-col min-h-0 lg:h-[calc(100vh-4rem)] lg:max-h-[calc(100vh-4rem)] overflow-y-auto lg:overflow-hidden">
+    <div
+      className={
+        embeddedModal
+          ? "w-full bg-slate-50/70 p-3 sm:p-4 flex flex-col min-h-0 h-[82vh] max-h-[82vh] overflow-y-auto lg:overflow-hidden rounded-2xl"
+          : "w-full bg-slate-50/70 p-4 lg:p-5 flex flex-col min-h-0 lg:h-[calc(100vh-4rem)] lg:max-h-[calc(100vh-4rem)] overflow-y-auto lg:overflow-hidden"
+      }
+    >
       {/* Top Header Bar */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 shrink-0">
         <div className="flex items-center gap-3.5">
@@ -278,7 +294,7 @@ export default function AdminFeeCalculator({ onNavigateToPois, onCreateOrder }: 
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {(pickupLoc || deliveryLoc) && (
             <Button
               type="button"
@@ -299,6 +315,17 @@ export default function AdminFeeCalculator({ onNavigateToPois, onCreateOrder }: 
             {copiedQuote ? <Check size={13.5} className="mr-1.5 text-emerald-600" /> : <Copy size={13.5} className="mr-1.5" />}
             {copiedQuote ? "Quote Copied!" : "Copy Fee Quote"}
           </Button>
+          {onInsertQuoteToChat && (
+            <Button
+              type="button"
+              onClick={() => onInsertQuoteToChat(buildQuoteText())}
+              disabled={!(pickupLoc || deliveryLoc)}
+              className="h-9 px-4 text-xs font-extrabold bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-sm shadow-indigo-600/20 cursor-pointer disabled:opacity-50"
+            >
+              <Sparkles size={13.5} className="mr-1.5" />
+              Insert Quote to Chat {pickupLoc || deliveryLoc ? `(฿${fee.toLocaleString()})` : ""}
+            </Button>
+          )}
           {onCreateOrder && (
             <Button
               type="button"
