@@ -25,6 +25,14 @@ import { getWiseLiveBalancesAction, getWiseRecentTransactionsAction, testWiseApi
 import type { WiseBalanceItem, WiseActivityItem } from "@/lib/wise";
 import { testLineOaConnectionAction, saveLineOaSettingsAction, getLineOaContactsAction, syncLineOaFollowersAction } from "@/actions/line";
 import type { LineContactRecord } from "@/lib/line";
+import { getSupplyPermissionsAction, saveSupplyPermissionsAction } from "@/actions/db";
+import {
+  SUPPLY_PERMISSION_ROLES,
+  DEFAULT_SUPPLY_ROLE_PERMISSIONS,
+  normalizeSupplyPermissionsMap,
+  type SupplyPermissionsMap,
+  type SupplyRolePermissionEntry,
+} from "@/types/supply-order";
 
 export function AdminSettings() {
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
@@ -40,8 +48,12 @@ export function AdminSettings() {
   const [customItems, setCustomItems] = useState<PriceListItem[]>([]);
   const [catalogSearch, setCatalogSearch] = useState("");
   const [showGoogleApiKey, setShowGoogleApiKey] = useState(false);
-  const [activeSettingsTab, setActiveSettingsTab] = useState<"all" | "pricing" | "branches" | "payments" | "pos" | "system">("all");
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"all" | "pricing" | "branches" | "payments" | "pos" | "permissions" | "system">("all");
   const [settingsSearch, setSettingsSearch] = useState("");
+
+  // Order Supplies Role Permissions State
+  const [supplyPermissions, setSupplyPermissions] = useState<SupplyPermissionsMap>(DEFAULT_SUPPLY_ROLE_PERMISSIONS);
+  const [savingSupplyPerms, setSavingSupplyPerms] = useState(false);
 
   const [isShopModalOpen, setIsShopModalOpen] = useState(false);
   const [editingShop, setEditingShop] = useState<ShopLocation | null>(null);
@@ -313,12 +325,70 @@ export function AdminSettings() {
     }
   }, [systemSettings, shopLocations]);
 
-  // Initial check of cash drawer hardware pairing on component mount
+  // Initial check of cash drawer hardware pairing & supply permissions on component mount
   useEffect(() => {
     getCashDrawerStatus().then(status => {
       setDrawerStatus(status);
     }).catch(() => {});
+
+    getSupplyPermissionsAction().then(res => {
+      if (res?.permissions) {
+        setSupplyPermissions(normalizeSupplyPermissionsMap(res.permissions));
+      }
+    }).catch(() => {});
   }, []);
+
+  const handleToggleSupplyPermission = (
+    roleKey: string,
+    field: keyof SupplyRolePermissionEntry
+  ) => {
+    setSupplyPermissions(prev => {
+      const current = prev[roleKey] || {
+        canProcessOrder: false,
+        canCreateItem: false,
+        canMakeOrder: false,
+        canRequestOrder: false,
+      };
+      return {
+        ...prev,
+        [roleKey]: {
+          ...current,
+          [field]: !current[field],
+        },
+      };
+    });
+  };
+
+  const handleSaveSupplyPermissions = async () => {
+    setSavingSupplyPerms(true);
+    try {
+      const res = await saveSupplyPermissionsAction(supplyPermissions);
+      if (res.success && res.permissions) {
+        setSupplyPermissions(res.permissions);
+        toast.success("บันทึกการตั้งค่า Permission สำหรับเมนู Order Supplies เรียบร้อยแล้ว");
+      } else {
+        toast.error(res.error || "บันทึกการตั้งค่า Permission ไม่สำเร็จ");
+      }
+    } catch (err: any) {
+      toast.error("เกิดข้อผิดพลาด: " + (err?.message || "Unknown error"));
+    } finally {
+      setSavingSupplyPerms(false);
+    }
+  };
+
+  const handleResetDefaultSupplyPermissions = async () => {
+    const defaults = normalizeSupplyPermissionsMap(DEFAULT_SUPPLY_ROLE_PERMISSIONS);
+    setSupplyPermissions(defaults);
+    setSavingSupplyPerms(true);
+    try {
+      const res = await saveSupplyPermissionsAction(defaults);
+      if (res.success) {
+        toast.success("รีเซ็ตสิทธิ์ Order Supplies เป็นค่ามาตรฐาน (CSO=Processing, Marketing=Create Item, Branch Manager=Make & Request Order) เรียบร้อยแล้ว");
+      }
+    } catch {} finally {
+      setSavingSupplyPerms(false);
+    }
+  };
 
   const handlePairDrawer = async () => {
     setIsPairingDrawer(true);
@@ -1035,6 +1105,7 @@ export function AdminSettings() {
             { id: "branches", label: "Branches", icon: Store, count: shopLocations.length },
             { id: "payments", label: "Payments & VAT", icon: CreditCard, count: paymentChannels.length },
             { id: "pos", label: "POS & Hardware", icon: Printer, count: null },
+            { id: "permissions", label: "Order Supplies Permissions", icon: ShieldCheck, count: null },
             { id: "system", label: "System & API", icon: Key, count: null },
           ].map(tab => {
             const Icon = tab.icon;
@@ -2365,6 +2436,188 @@ export function AdminSettings() {
                     </div>
                   </label>
                 </div>
+              </div>
+            </div>
+          </div>
+        )
+      )}
+
+      {/* ========================================================================= */}
+      {/* SECTION 4.5: ORDER SUPPLIES ROLE PERMISSIONS                              */}
+      {/* ========================================================================= */}
+      {(activeSettingsTab === "all" || activeSettingsTab === "permissions" || activeSettingsTab === "system") && (
+        (!settingsSearch || "permission role order supplies detergent cso marketing branch manager processing create item make request".includes(settingsSearch.toLowerCase())) && (
+          <div className="space-y-6 animate-in fade-in duration-300">
+            <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-600 to-sky-500 text-white flex items-center justify-center shadow-md shadow-indigo-500/20">
+                    <ShieldCheck size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">
+                        Order Supplies Role Permissions (กำหนดสิทธิ์การใช้งานเมนู Order Supplies)
+                      </h3>
+                      <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800">
+                        Role-Based Access Control
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 font-medium mt-0.5">
+                      กำหนดสิทธิ์แยกตามตำแหน่ง (CSO, Marketing, Branch Manager ฯลฯ) สำหรับการจัดการออเดอร์อุปกรณ์และน้ำยาซักรีด
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleResetDefaultSupplyPermissions}
+                    disabled={savingSupplyPerms}
+                    className="h-9 px-3 rounded-xl text-xs font-bold text-slate-600 border-slate-200 hover:bg-slate-100 gap-1.5 cursor-pointer"
+                  >
+                    <RotateCcw size={13} />
+                    <span>ค่าเริ่มต้น (Reset Default)</span>
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleSaveSupplyPermissions}
+                    disabled={savingSupplyPerms}
+                    className="h-9 px-4 rounded-xl text-xs font-extrabold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm gap-1.5 cursor-pointer"
+                  >
+                    <Save size={14} />
+                    <span>{savingSupplyPerms ? "กำลังบันทึก..." : "Save Permissions (บันทึกสิทธิ์)"}</span>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Permission Legend Pills */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="p-3 rounded-2xl bg-sky-50/70 border border-sky-200/80 space-y-1">
+                  <div className="text-xs font-black text-sky-900 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-sky-600" />
+                    <span>1. Processing Order</span>
+                  </div>
+                  <p className="text-[11px] text-sky-800/80 leading-relaxed">
+                    อนุมัติออเดอร์ (Approve), สั่งซื้อกับซัพพลายเออร์ (Processing), จัดส่ง (Dispatched) และดูออเดอร์ทุกสาขา (เช่น <strong>CSO</strong>)
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-purple-50/70 border border-purple-200/80 space-y-1">
+                  <div className="text-xs font-black text-purple-900 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-purple-600" />
+                    <span>2. Create Item</span>
+                  </div>
+                  <p className="text-[11px] text-purple-800/80 leading-relaxed">
+                    เข้าถึงแท็บ Catalog เพื่อเพิ่ม/แก้ไข/ลบรายการสินค้า และเปิด-ปิดสถานะพร้อมสั่งซื้อ (เช่น <strong>Marketing</strong>)
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200/80 space-y-1">
+                  <div className="text-xs font-black text-emerald-900 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-600" />
+                    <span>3. Make Order</span>
+                  </div>
+                  <p className="text-[11px] text-emerald-800/80 leading-relaxed">
+                    กดเลือกสั่งเบิกน้ำยาและอุปกรณ์ที่มีอยู่ใน Catalog มาตรฐานของสาขา (เช่น <strong>Branch Manager</strong>)
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-amber-50/70 border border-amber-200/80 space-y-1">
+                  <div className="text-xs font-black text-amber-900 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-600" />
+                    <span>4. Request Order</span>
+                  </div>
+                  <p className="text-[11px] text-amber-800/80 leading-relaxed">
+                    ส่งคำขอสั่งซื้ออุปกรณ์พิเศษนอกเหนือจากใน Catalog (+ Request Custom Item) (เช่น <strong>Branch Manager</strong>)
+                  </p>
+                </div>
+              </div>
+
+              {/* Permissions Matrix Table */}
+              <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-black uppercase tracking-wider text-slate-500">
+                      <th className="py-3.5 px-4 min-w-[220px]">Role / ตำแหน่ง</th>
+                      <th className="py-3.5 px-3 text-center min-w-[135px]">
+                        <span className="text-sky-700">Processing Order</span>
+                        <span className="block text-[9px] font-semibold text-slate-400 normal-case">ดำเนินการจัดซื้อ/จัดส่ง</span>
+                      </th>
+                      <th className="py-3.5 px-3 text-center min-w-[135px]">
+                        <span className="text-purple-700">Create Item</span>
+                        <span className="block text-[9px] font-semibold text-slate-400 normal-case">เพิ่ม/แก้ไขสินค้าใน Catalog</span>
+                      </th>
+                      <th className="py-3.5 px-3 text-center min-w-[135px]">
+                        <span className="text-emerald-700">Make Order</span>
+                        <span className="block text-[9px] font-semibold text-slate-400 normal-case">สั่งเบิกจาก Catalog</span>
+                      </th>
+                      <th className="py-3.5 px-3 text-center min-w-[135px]">
+                        <span className="text-amber-700">Request Order</span>
+                        <span className="block text-[9px] font-semibold text-slate-400 normal-case">ขอสั่งซื้อรายการพิเศษ</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {SUPPLY_PERMISSION_ROLES.map(roleMeta => {
+                      const entry = supplyPermissions[roleMeta.role] || DEFAULT_SUPPLY_ROLE_PERMISSIONS[roleMeta.role] || {
+                        canProcessOrder: false,
+                        canCreateItem: false,
+                        canMakeOrder: false,
+                        canRequestOrder: false,
+                      };
+                      const isSuper = roleMeta.role === "admin";
+                      return (
+                        <tr key={roleMeta.role} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center gap-2">
+                              <span className="font-black text-slate-900 text-xs">{roleMeta.label}</span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 uppercase">
+                                {roleMeta.role}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-500 font-medium mt-0.5">{roleMeta.labelTh}</div>
+                            <div className="text-[10px] text-slate-400 mt-0.5">{roleMeta.description}</div>
+                          </td>
+
+                          {(
+                            [
+                              { key: "canProcessOrder", activeBg: "bg-sky-600", ring: "ring-sky-500/20" },
+                              { key: "canCreateItem", activeBg: "bg-purple-600", ring: "ring-purple-500/20" },
+                              { key: "canMakeOrder", activeBg: "bg-emerald-600", ring: "ring-emerald-500/20" },
+                              { key: "canRequestOrder", activeBg: "bg-amber-500", ring: "ring-amber-500/20" },
+                            ] as const
+                          ).map(col => {
+                            const checked = isSuper ? true : Boolean(entry[col.key]);
+                            return (
+                              <td key={col.key} className="py-3.5 px-3 text-center">
+                                <button
+                                  type="button"
+                                  disabled={isSuper}
+                                  onClick={() => handleToggleSupplyPermission(roleMeta.role, col.key)}
+                                  className={
+                                    "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all " +
+                                    (isSuper
+                                      ? "bg-slate-900 text-white opacity-80 cursor-not-allowed"
+                                      : checked
+                                      ? col.activeBg + " text-white shadow-xs ring-4 " + col.ring + " cursor-pointer"
+                                      : "bg-slate-100 text-slate-400 hover:bg-slate-200/80 hover:text-slate-600 cursor-pointer")
+                                  }
+                                >
+                                  {checked ? <Check size={13} /> : <X size={13} />}
+                                  <span>{checked ? "Allowed" : "Disabled"}</span>
+                                </button>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>

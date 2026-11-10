@@ -158,10 +158,33 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
         try { parsedUrls = JSON.parse(parsedUrls); } catch {}
       }
       const urls = Array.isArray(parsedUrls) ? parsedUrls : [parsedUrls];
-      deliveryPhotoUrls = urls.filter((u): u is string => typeof u === "string" && Boolean(u.trim()));
+      const billPhotoSet = new Set(billPhotos.map((b) => b.trim()));
+      deliveryPhotoUrls = urls.filter((u): u is string => {
+        if (typeof u !== "string" || !u.trim()) return false;
+        const lower = u.trim().toLowerCase();
+        if (
+          lower.includes("/bills/") ||
+          lower.includes("/bills-") ||
+          lower.includes("subtype=bills") ||
+          lower.includes("proforma-") ||
+          lower.includes("receipt-") ||
+          billPhotoSet.has(u.trim())
+        ) {
+          return false;
+        }
+        return true;
+      });
     } catch {
       if (typeof job.deliveryProofImageUrl === "string" && job.deliveryProofImageUrl.trim()) {
-        deliveryPhotoUrls = [job.deliveryProofImageUrl.trim()];
+        const lower = job.deliveryProofImageUrl.trim().toLowerCase();
+        if (
+          !lower.includes("/bills/") &&
+          !lower.includes("/bills-") &&
+          !lower.includes("proforma-") &&
+          !lower.includes("receipt-")
+        ) {
+          deliveryPhotoUrls = [job.deliveryProofImageUrl.trim()];
+        }
       }
     }
   }
@@ -587,7 +610,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       ...patch,
       notes,
     };
-    if (payments.length > 0 || Array.isArray(baseObj.payments)) {
+    if (!("payments" in patch) && (payments.length > 0 || Array.isArray(baseObj.payments))) {
       finalObj.payments = payments;
     }
     return JSON.stringify(finalObj);
@@ -845,6 +868,77 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         actorDetails
       );
       toast.success(`Order #${formatJobDisplayId(job.id)}: Cash ฿${amountFmt} collected from ${riderLabel}`);
+
+      // Immediately generate & attach REC image in the background when rider cash is collected
+      const targetJobId = job.id;
+      Promise.resolve().then(async () => {
+        try {
+          let itemsArr: any[] = [];
+          try {
+            if (Array.isArray(job.items)) {
+              itemsArr = job.items;
+            } else if (typeof job.items === "string") {
+              itemsArr = JSON.parse(job.items);
+            } else if ((job as any).itemsJson) {
+              itemsArr = JSON.parse((job as any).itemsJson);
+            }
+          } catch {}
+          const hasLaundryItems = itemsArr.some(
+            (item: any) => item.category !== "PACKAGE" && !String(item.name || "").toLowerCase().includes("package")
+          );
+          if (!hasLaundryItems) return;
+
+          const receiptFilename = `receipt-${targetJobId}.png`;
+          const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
+          const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+          clearReceiptCaptureLock(receiptFilename);
+          if (!markReceiptCaptureStarted(receiptFilename)) return;
+
+          const currentJob = jobStore.getSnapshot().find((j) => j.id === targetJobId) || job;
+          const activeShop = shopLocations.find((s) => s.id === currentJob.branchId) || shopLocations[0];
+          const recData = formatJobToReceiptData({
+            ...currentJob,
+            isPaid: true,
+            isShopPaid: true,
+            adminNotesJson: updatedAdminNotesJson,
+          } as any);
+          recData.isDraft = false;
+          recData.isPaid = true;
+          recData.autoCapture = true;
+
+          const isA5 = settingsStore.getSnapshot()?.receiptPaperSize === "A5";
+          const recBlob = isA5
+            ? await generateA5ReceiptImage(recData, activeShop)
+            : await generateThermalReceiptImage(recData, activeShop);
+          if (!recBlob) {
+            clearReceiptCaptureLock(receiptFilename);
+            return;
+          }
+          const recUrl = await uploadReceiptImage(recBlob, targetJobId, receiptFilename);
+          if (!recUrl) {
+            clearReceiptCaptureLock(receiptFilename);
+            return;
+          }
+
+          let existingBills: string[] = [];
+          try {
+            const latestJob = jobStore.getSnapshot().find((j) => j.id === targetJobId) || currentJob;
+            if (latestJob.billImageUrl) {
+              const parsed = JSON.parse(latestJob.billImageUrl);
+              existingBills = Array.isArray(parsed) ? parsed : [parsed];
+            }
+          } catch {}
+          const cleanFiltered = existingBills.filter((u: string) => !u.includes(receiptFilename) && !u.includes("/receipt-"));
+          const mergedBills = Array.from(new Set([recUrl, ...cleanFiltered]));
+          await jobStore.updateJobDetails(
+            targetJobId,
+            { billImageUrl: JSON.stringify(mergedBills) } as any,
+            actorDetails
+          );
+        } catch (recErr) {
+          console.warn(`[CollectRiderCash] Failed to auto-generate receipt for Job #${targetJobId}:`, recErr);
+        }
+      });
     } catch (err: any) {
       toast.error(err.message || "Failed to record cash collection");
     }

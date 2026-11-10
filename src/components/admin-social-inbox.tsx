@@ -857,11 +857,29 @@ export function AdminSocialInbox({
     if (includePhoto) {
       const rawProof = job.deliveryProofImageUrl || job.proofImageUrl;
       if (rawProof) {
-        let firstPhoto = rawProof;
+        let firstPhoto = '';
+        const isNotBillPhoto = (u: string) => {
+          const lower = u.trim().toLowerCase();
+          return (
+            Boolean(lower) &&
+            !lower.includes('/bills/') &&
+            !lower.includes('/bills-') &&
+            !lower.includes('proforma-') &&
+            !lower.includes('receipt-')
+          );
+        };
         try {
           const parsed = JSON.parse(rawProof);
-          if (Array.isArray(parsed) && parsed[0]) firstPhoto = parsed[0];
-        } catch {}
+          if (Array.isArray(parsed)) {
+            firstPhoto = parsed.find((u) => typeof u === 'string' && isNotBillPhoto(u)) || '';
+          } else if (typeof parsed === 'string' && isNotBillPhoto(parsed)) {
+            firstPhoto = parsed;
+          }
+        } catch {
+          if (typeof rawProof === 'string' && isNotBillPhoto(rawProof)) {
+            firstPhoto = rawProof;
+          }
+        }
         if (typeof firstPhoto === 'string' && firstPhoto.trim()) {
           setStagedAttachments((prev) => [
             ...prev,

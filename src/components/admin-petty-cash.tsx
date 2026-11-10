@@ -1201,7 +1201,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       if (res.success) {
         toast.success(
           rejectActionType === "REJECT"
-            ? "ปฏิเสธรายการและคืนยอดเงินสดย่อยกลับเข้าคงเหลือเรียบร้อยแล้ว"
+            ? "ปฏิเสธรายการ คืนยอดเงินสดย่อยกลับเข้าคงเหลือ และเปิด Task ติดตามงานเรียบร้อยแล้ว"
             : "ยกเลิกรายการ (Void) และปรับปรุงยอดคงเหลือเรียบร้อยแล้ว"
         );
         setRejectModalOpen(false);
@@ -2563,8 +2563,22 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                           </div>
                         )}
                         {tx.rejectReason && (
-                          <div className="text-[10px] text-rose-600 font-semibold mt-1 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
-                            Reason (เหตุผล): {tx.rejectReason}
+                          <div className="text-[10px] text-rose-600 font-semibold mt-1 bg-rose-50 px-2 py-1 rounded border border-rose-200 flex flex-wrap items-center justify-between gap-1.5">
+                            <span>
+                              Reason (เหตุผล): {tx.rejectReason.replace(/\s*\[Task:\s*[^\]]+\]/gi, "")}
+                            </span>
+                            {/\[Task:\s*([^\]]+)\]/i.test(tx.rejectReason) && (
+                              <a
+                                href="#tasks"
+                                onClick={() => {
+                                  window.location.hash = "tasks";
+                                }}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-600 text-white text-[9.5px] font-bold hover:bg-rose-700 transition-colors"
+                                title="คลิกเพื่อไปยังหน้า Tasks"
+                              >
+                                📋 Task Opened (เปิด Task แล้ว)
+                              </a>
+                            )}
                           </div>
                         )}
                       </td>
@@ -3323,31 +3337,18 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
               />
             </div>
 
-            {/* Row 5: Vendor & Invoice No. (for Expenses) */}
+            {/* Row 5: Invoice No. (for Expenses) */}
             {txMode === "EXPENSE" && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label className="text-[11px] font-bold text-slate-700">
-                    {EXPENSE_DOC_TYPE_CONFIG[expenseDocType].vendorLabel}
-                  </Label>
-                  <Input
-                    value={formVendorName}
-                    onChange={(e) => setFormVendorName(e.target.value)}
-                    placeholder={EXPENSE_DOC_TYPE_CONFIG[expenseDocType].vendorPlaceholder}
-                    className="h-8 rounded-xl text-xs"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-[11px] font-bold text-slate-700">
-                    {EXPENSE_DOC_TYPE_CONFIG[expenseDocType].invoiceLabel}
-                  </Label>
-                  <Input
-                    value={formInvoiceNo}
-                    onChange={(e) => setFormInvoiceNo(e.target.value)}
-                    placeholder={EXPENSE_DOC_TYPE_CONFIG[expenseDocType].invoicePlaceholder}
-                    className="h-8 rounded-xl text-xs font-mono"
-                  />
-                </div>
+              <div className="space-y-1">
+                <Label className="text-[11px] font-bold text-slate-700">
+                  {EXPENSE_DOC_TYPE_CONFIG[expenseDocType].invoiceLabel}
+                </Label>
+                <Input
+                  value={formInvoiceNo}
+                  onChange={(e) => setFormInvoiceNo(e.target.value)}
+                  placeholder={EXPENSE_DOC_TYPE_CONFIG[expenseDocType].invoicePlaceholder}
+                  className="h-8 rounded-xl text-xs font-mono"
+                />
               </div>
             )}
 
@@ -3626,7 +3627,9 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 : "Void Transaction (ยกเลิกรายการ)"}
             </DialogTitle>
             <DialogDescription className="text-xs text-slate-500">
-              The amount will be automatically restored to the holder&apos;s balance (ระบบจะปรับคืนยอดเงินกลับเข้ากระเป๋าของผู้ถืออัตโนมัติ)
+              {rejectActionType === "REJECT"
+                ? "The amount will be automatically refunded to the holder's balance and a follow-up Task will be opened (ระบบจะคืนยอดเงินกลับเข้าวงเงินของผู้ถืออัตโนมัติ และเปิด Task แจ้งเตือนทันที)"
+                : "The amount will be automatically restored to the holder's balance (ระบบจะปรับคืนยอดเงินกลับเข้ากระเป๋าของผู้ถืออัตโนมัติ)"}
             </DialogDescription>
           </DialogHeader>
 

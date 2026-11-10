@@ -181,6 +181,7 @@ const MENU_PERMISSIONS = [
   { id: "activity-logs", label: "Activity Logs" },
   { id: "settings", label: "Settings" },
   { id: "users", label: "Manage Users" },
+  { id: "supplies", label: "Order Supplies" },
 ];
 
 export const ACTION_PERMISSIONS = [

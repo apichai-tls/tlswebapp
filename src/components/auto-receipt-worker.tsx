@@ -23,11 +23,12 @@ import { claimAutoReceiptGenerationAction } from "@/actions/db";
  */
 export function AutoReceiptWorker() {
   const { user } = useAuth();
-  const isAreaRestricted = Boolean(user && user.role !== 'admin' && user.area && user.area !== 'ALL');
-  const userArea = (user?.area && user.area !== 'ALL') ? user.area.toUpperCase() : null;
+  const userRef = useRef(user);
+  userRef.current = user;
 
   const processingRef = useRef<Set<string>>(new Set());
   const completedRef = useRef<Set<string>>(new Set());
+  const retryCooldownRef = useRef<Map<string, number>>(new Map());
   const lastBeamCheckMap = useRef<Map<string, number>>(new Map());
   const lastWiseBatchSyncRef = useRef<number>(0);
   const isWorkingRef = useRef(false);
@@ -38,6 +39,16 @@ export function AutoReceiptWorker() {
     const processQueue = async () => {
       if (isWorkingRef.current || typeof document === "undefined") return;
 
+      const currentUser = userRef.current;
+      if (!currentUser) return;
+
+      const isBranchRestricted = Boolean(
+        currentUser.role !== "admin" &&
+          ((currentUser.area && currentUser.area !== "ALL") ||
+            (currentUser.branchId && currentUser.branchId !== "all"))
+      );
+      const userArea = (currentUser.area && currentUser.area !== "ALL") ? currentUser.area.toUpperCase() : null;
+
       const jobs = jobStore.getSnapshot();
       if (!jobs || jobs.length === 0) return;
 
@@ -46,17 +57,18 @@ export function AutoReceiptWorker() {
       const isA5 = systemSettings?.receiptPaperSize === "A5";
 
       const now = Date.now();
-      const MAX_JOB_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours window: NEVER touch historical jobs!
+      const MAX_JOB_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours window for proforma & active pollers
+      const MAX_RECEIPT_JOB_AGE_MS = 36 * 60 * 60 * 1000; // 36 hours window for paid jobs (covers overnight/weekend Beam & Wise payments)
 
       // 0. Auto-check and synchronize unpaid Beam / Gateway jobs in the background (within 2h window)
       const unpaidBeamJob = jobs.find((job) => {
         if (!job.id || job.id === "DRAFT" || job.isPaid || job.isShopPaid) return false;
         if (['cancel', 'return', 'completed'].includes(job.status)) return false;
-        if (isAreaRestricted && shopLocations.length > 0) {
-          const allowedIds = getUserAssignedBranchIds(user, shopLocations);
+        if (isBranchRestricted && shopLocations.length > 0) {
+          const allowedIds = getUserAssignedBranchIds(currentUser, shopLocations);
           if (!job.branchId || !allowedIds.includes(job.branchId)) return false;
         }
-        if ((false as boolean) && isAreaRestricted && userArea) {
+        if ((false as boolean) && isBranchRestricted && userArea) {
           const jobShop = shopLocations.find((s) => s.id === job.branchId);
           if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) return false;
         }
@@ -142,6 +154,8 @@ export function AutoReceiptWorker() {
         if (processingRef.current.has(job.id)) return false;
         const receiptKey = `receipt_${job.id}_${job.updatedAt || ""}`;
         if (completedRef.current.has(receiptKey)) return false;
+        const cooldownUntil = retryCooldownRef.current.get(receiptKey) || 0;
+        if (now < cooldownUntil) return false;
 
         // Skip cancelled or returned jobs immediately
         if (['cancel', 'return'].includes(job.status)) {
@@ -149,11 +163,11 @@ export function AutoReceiptWorker() {
           return false;
         }
 
-        if (isAreaRestricted && shopLocations.length > 0) {
-          const allowedIds = getUserAssignedBranchIds(user, shopLocations);
+        if (isBranchRestricted && shopLocations.length > 0) {
+          const allowedIds = getUserAssignedBranchIds(currentUser, shopLocations);
           if (!job.branchId || !allowedIds.includes(job.branchId)) return false;
         }
-        if ((false as boolean) && isAreaRestricted && userArea) {
+        if ((false as boolean) && isBranchRestricted && userArea) {
           const jobShop = shopLocations.find((s) => s.id === job.branchId);
           if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) {
             completedRef.current.add(receiptKey);
@@ -161,13 +175,17 @@ export function AutoReceiptWorker() {
           }
         }
 
-        // Only process jobs updated or paid recently (within the last 2 hours)
+        // Only process jobs updated or paid recently (within the last 36 hours to cover overnight online payments)
         const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
-        const jobPaidTime = (job as any).shopPaidAt
+        const rawPaidTime = (job as any).shopPaidAt
           ? new Date((job as any).shopPaidAt).getTime()
           : jobUpdatedTime;
+        // If shopPaidAt was rolled forward to next-day 09:00 (post-19:00 Beam cutoff), use jobUpdatedTime for elapsed checks
+        const effectivePaidEventTime = (rawPaidTime > now + 60000 && jobUpdatedTime > 0)
+          ? jobUpdatedTime
+          : rawPaidTime;
 
-        if (now - jobPaidTime > MAX_JOB_AGE_MS && now - jobUpdatedTime > MAX_JOB_AGE_MS) {
+        if (now - effectivePaidEventTime > MAX_RECEIPT_JOB_AGE_MS && now - jobUpdatedTime > MAX_RECEIPT_JOB_AGE_MS) {
           completedRef.current.add(receiptKey);
           return false;
         }
@@ -182,14 +200,16 @@ export function AutoReceiptWorker() {
         const channel = (job.paymentChannel || "").toLowerCase();
         const isOnlineGateway = channel.includes("beam") || channel.includes("gateway") || channel.includes("wise");
         let isOwnerTab = false;
-        if (user?.name) {
-          const currentUserName = user.name.trim().toLowerCase();
+        if (currentUser?.name) {
+          const currentUserName = currentUser.name.trim().toLowerCase();
           if (job.createdBy && job.createdBy.trim().toLowerCase() === currentUserName) {
             isOwnerTab = true;
           } else if ((job as any).adminNotesJson) {
             try {
               const parsedNotes = JSON.parse((job as any).adminNotesJson);
               if (parsedNotes?.billSentBy && String(parsedNotes.billSentBy).trim().toLowerCase() === currentUserName) {
+                isOwnerTab = true;
+              } else if (parsedNotes?.shopPaidBy && String(parsedNotes.shopPaidBy).trim().toLowerCase() === currentUserName) {
                 isOwnerTab = true;
               }
             } catch {}
@@ -198,7 +218,7 @@ export function AutoReceiptWorker() {
         const minWaitMs = isOnlineGateway
           ? (isOwnerTab ? 1500 : 8000 + instanceJitterMsRef.current)
           : (isOwnerTab ? 20000 : 25000 + instanceJitterMsRef.current);
-        if ((now - jobPaidTime) < minWaitMs) return false;
+        if ((now - effectivePaidEventTime) < minWaitMs) return false;
 
         // Guard: Job must have actual laundry items (excluding PACKAGE top-ups) to auto-generate receipt!
         // Delivery booking fees alone or package top-ups without clothes must NOT generate a receipt!
@@ -242,6 +262,7 @@ export function AutoReceiptWorker() {
 
       if (pendingPaidJob) {
         const jobId = pendingPaidJob.id;
+        const receiptKey = `receipt_${jobId}_${pendingPaidJob.updatedAt || ""}`;
         const filename = `receipt-${jobId}.png`;
         if (!markReceiptCaptureStarted(filename)) return;
 
@@ -251,7 +272,9 @@ export function AutoReceiptWorker() {
         try {
           const claimRes = await claimAutoReceiptGenerationAction(jobId, filename);
           if (!claimRes?.claimed) {
-            completedRef.current.add(`receipt_${jobId}_${pendingPaidJob.updatedAt || ""}`);
+            // Another tab is currently generating or user is not authorized for this branch;
+            // set a 25s retry cooldown instead of permanently marking completed so we retry if the other tab fails.
+            retryCooldownRef.current.set(receiptKey, Date.now() + 25000);
             clearReceiptCaptureLock(filename);
             return;
           }
@@ -266,6 +289,7 @@ export function AutoReceiptWorker() {
             ? await generateA5ReceiptImage(receiptData, activeShop)
             : await generateThermalReceiptImage(receiptData, activeShop);
 
+          let attachedSuccessfully = false;
           if (blob) {
             const publicUrl = await uploadReceiptImage(blob, jobId, filename);
 
@@ -293,6 +317,7 @@ export function AutoReceiptWorker() {
                 systemActorName,
               } as any);
 
+              attachedSuccessfully = true;
               console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached receipt image for Job #${jobId} as ${systemActorName}`);
             } else {
               clearReceiptCaptureLock(filename);
@@ -301,12 +326,17 @@ export function AutoReceiptWorker() {
             clearReceiptCaptureLock(filename);
           }
 
-          if (completedRef.current.size > 500) {
-            completedRef.current.clear();
+          if (attachedSuccessfully) {
+            if (completedRef.current.size > 500) {
+              completedRef.current.clear();
+            }
+            completedRef.current.add(receiptKey);
+          } else {
+            retryCooldownRef.current.set(receiptKey, Date.now() + 25000);
           }
-          completedRef.current.add(`receipt_${jobId}_${pendingPaidJob.updatedAt || ""}`);
         } catch (err) {
           clearReceiptCaptureLock(filename);
+          retryCooldownRef.current.set(receiptKey, Date.now() + 25000);
           console.warn(`[AutoReceiptWorker] Failed to auto-generate receipt for Job #${jobId}:`, err);
         } finally {
           processingRef.current.delete(jobId);
@@ -324,17 +354,19 @@ export function AutoReceiptWorker() {
         const rev = (job as any).proformaRevision != null ? Number((job as any).proformaRevision) : 0;
         const proformaKey = `proforma_${job.id}_${rawPf}_rev${rev}_${job.updatedAt || ""}`;
         if (completedRef.current.has(proformaKey)) return false;
+        const pfCooldownUntil = retryCooldownRef.current.get(proformaKey) || 0;
+        if (now < pfCooldownUntil) return false;
 
         if (['cancel', 'return'].includes(job.status)) {
           completedRef.current.add(proformaKey);
           return false;
         }
 
-        if (isAreaRestricted && shopLocations.length > 0) {
-          const allowedIds = getUserAssignedBranchIds(user, shopLocations);
+        if (isBranchRestricted && shopLocations.length > 0) {
+          const allowedIds = getUserAssignedBranchIds(currentUser, shopLocations);
           if (!job.branchId || !allowedIds.includes(job.branchId)) return false;
         }
-        if ((false as boolean) && isAreaRestricted && userArea) {
+        if ((false as boolean) && isBranchRestricted && userArea) {
           const jobShop = shopLocations.find((s) => s.id === job.branchId);
           if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) {
             completedRef.current.add(proformaKey);
@@ -398,6 +430,7 @@ export function AutoReceiptWorker() {
         const jobId = pendingProformaJob.id;
         const cleanPf = cleanProformaNumber((pendingProformaJob as any).proformaNumber || (pendingProformaJob as any).proformaReceiptNumber)!;
         const rev = (pendingProformaJob as any).proformaRevision != null ? Number((pendingProformaJob as any).proformaRevision) : 0;
+        const proformaKey = `proforma_${jobId}_${cleanPf}_rev${rev}_${pendingProformaJob.updatedAt || ""}`;
         const filename = `proforma-${cleanPf}-rev${rev}.png`;
         if (!markReceiptCaptureStarted(filename)) return;
 
@@ -407,7 +440,7 @@ export function AutoReceiptWorker() {
         try {
           const claimRes = await claimAutoReceiptGenerationAction(jobId, filename);
           if (!claimRes?.claimed) {
-            completedRef.current.add(`proforma_${jobId}_${cleanPf}_rev${rev}_${pendingProformaJob.updatedAt || ""}`);
+            retryCooldownRef.current.set(proformaKey, Date.now() + 25000);
             clearReceiptCaptureLock(filename);
             return;
           }
@@ -444,6 +477,7 @@ export function AutoReceiptWorker() {
             ? await generateA5ReceiptImage(proformaData, activeShop)
             : await generateThermalReceiptImage(proformaData, activeShop);
 
+          let attachedPfSuccessfully = false;
           if (blob) {
             const publicUrl = await uploadReceiptImage(blob, jobId, filename);
 
@@ -481,6 +515,7 @@ export function AutoReceiptWorker() {
                 systemActorName: "System (Auto-Proforma)",
               } as any);
 
+              attachedPfSuccessfully = true;
               console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached missing proforma image (${filename}) for Job #${jobId}`);
             } else {
               clearReceiptCaptureLock(filename);
@@ -489,12 +524,17 @@ export function AutoReceiptWorker() {
             clearReceiptCaptureLock(filename);
           }
 
-          if (completedRef.current.size > 500) {
-            completedRef.current.clear();
+          if (attachedPfSuccessfully) {
+            if (completedRef.current.size > 500) {
+              completedRef.current.clear();
+            }
+            completedRef.current.add(proformaKey);
+          } else {
+            retryCooldownRef.current.set(proformaKey, Date.now() + 25000);
           }
-          completedRef.current.add(`proforma_${jobId}_${cleanPf}_rev${rev}_${pendingProformaJob.updatedAt || ""}`);
         } catch (err) {
           clearReceiptCaptureLock(filename);
+          retryCooldownRef.current.set(proformaKey, Date.now() + 25000);
           console.warn(`[AutoReceiptWorker] Failed to auto-generate proforma for Job #${jobId}:`, err);
         } finally {
           processingRef.current.delete(jobId);

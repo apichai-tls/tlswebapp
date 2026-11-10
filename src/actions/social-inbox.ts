@@ -885,11 +885,17 @@ export async function getSocialInboxDataAction() {
           }
         };
 
-        // 1. Bill / Proforma Sent on LINE OA
+        // 1. Bill / Proforma Sent on LINE OA (ONLY digital proforma/receipt, NEVER shop paper bill photos /bills/)
         if (meta.isBillSent && meta.billSentAt && meta.contactChannel === 'line') {
           const billMsgId = `msg_line_bill_${sj.id}`;
           if (!existingMsgIds.has(billMsgId)) {
-            const billPhotos = parseJsonImageUrls(sj.billImageUrl);
+            const billPhotos = parseJsonImageUrls(sj.billImageUrl).filter((u) => {
+              const lower = u.toLowerCase();
+              if (lower.includes('/bills/') || lower.includes('/bills-') || lower.includes('subtype=bills')) {
+                return false;
+              }
+              return lower.includes('proforma-') || lower.includes('receipt-');
+            });
             const billAttachments: SocialMessageAttachment[] = billPhotos
               .slice(0, 4)
               .map((u, idx) => ({
@@ -914,20 +920,50 @@ export async function getSocialInboxDataAction() {
             });
             existingMsgIds.add(billMsgId);
             didMutate = true;
+          } else {
+            // Sanitize any previously synced bill message so shop paper bill photos (/bills/) are removed
+            const existingBillMsg = messages.find((m) => m.id === billMsgId);
+            if (existingBillMsg && Array.isArray(existingBillMsg.attachments)) {
+              const cleanedAtt = existingBillMsg.attachments.filter((a) => {
+                const lower = (a.url || '').toLowerCase();
+                if (lower.includes('/bills/') || lower.includes('/bills-') || lower.includes('subtype=bills')) {
+                  return false;
+                }
+                return lower.includes('proforma-') || lower.includes('receipt-');
+              });
+              if (cleanedAtt.length !== existingBillMsg.attachments.length) {
+                existingBillMsg.attachments = cleanedAtt.length > 0 ? cleanedAtt : undefined;
+                didMutate = true;
+              }
+            }
           }
         }
 
-        // 2. Delivery Proof & Completion Message Sent on LINE OA
+        // 2. Delivery Proof & Completion Message Sent on LINE OA (exclude any bill/proforma/receipt photos)
         if (
           meta.isDeliveryPhotoSent &&
           (!meta.deliveryPhotoSentChannel || meta.deliveryPhotoSentChannel === 'LINE OA')
         ) {
           const delivMsgId = `msg_line_job_${sj.id}`;
+          const rawBillSet = new Set(parseJsonImageUrls(sj.billImageUrl));
           if (!existingMsgIds.has(delivMsgId)) {
             const delivPhotos = [
               ...parseJsonImageUrls(sj.deliveryProofImageUrl),
               ...parseJsonImageUrls(sj.proofImageUrl),
-            ];
+            ].filter((u) => {
+              const lower = u.toLowerCase();
+              if (
+                lower.includes('/bills/') ||
+                lower.includes('/bills-') ||
+                lower.includes('subtype=bills') ||
+                lower.includes('proforma-') ||
+                lower.includes('receipt-') ||
+                rawBillSet.has(u)
+              ) {
+                return false;
+              }
+              return true;
+            });
             const uniqueDelivPhotos = Array.from(new Set(delivPhotos));
             const delivAttachments: SocialMessageAttachment[] = uniqueDelivPhotos
               .slice(0, 4)

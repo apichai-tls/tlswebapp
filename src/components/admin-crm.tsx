@@ -26,6 +26,7 @@ import {
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ReportsWalletApprovals } from "@/components/reports-wallet-approvals";
 import { AdminRecurringOrders } from "@/components/admin-recurring-orders";
+import { AdminCrmVendors } from "@/components/admin-crm-vendors";
 import { getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, normalizePhone, matchCustomerSearch, formatBaht } from "@/lib/utils";
@@ -173,7 +174,7 @@ export function AdminCRM({
   onViewJob 
 }: { 
   onTopUp?: (customer?: Customer) => void;
-  onViewJob?: (job: any) => void;
+  onViewJob?: (job: any, walletTx?: any) => void;
 } = {}) {
   const { user } = useAuth();
   const customers = useCustomers();
@@ -224,7 +225,8 @@ export function AdminCRM({
   }, []);
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "expired_wallets" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "recurring_orders">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "expired_wallets" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "recurring_orders" | "vendors">("all");
+  const canViewVendors = isAdmin || ["cso", "marketing", "accounting"].includes(String(user?.role || "").toLowerCase());
   const [selectedBrand, setSelectedBrand] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [viewLayout, setViewLayout] = useState<"table" | "grid">("table");
@@ -1458,7 +1460,7 @@ export function AdminCRM({
 
         <div className="flex items-center gap-2 flex-wrap">
           {/* Table vs Card Grid Switcher */}
-          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "topup_history" && (
+          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "topup_history" && activeTab !== "vendors" && activeTab !== "recurring_orders" && (
             <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200/80">
               <button
                 type="button"
@@ -1885,65 +1887,102 @@ export function AdminCRM({
         {/* Bottom Row: Brand, Branch, Sort & Quick Search Input */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-2 border-t border-slate-100">
           <div className="flex flex-wrap items-center gap-2">
-            {/* Brand Segmented Control */}
+            {/* Brand & Vendors Segmented Control */}
             <div className="inline-flex items-center p-0.5 bg-slate-100/90 rounded-xl border border-slate-200/60">
               <button
                 type="button"
-                onClick={() => { setSelectedBrand("all"); setCurrentPage(1); }}
+                onClick={() => {
+                  setSelectedBrand("all");
+                  if (activeTab === "vendors") setActiveTab("all");
+                  setCurrentPage(1);
+                }}
                 className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                  selectedBrand === "all" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                  selectedBrand === "all" && activeTab !== "vendors"
+                    ? "bg-white text-slate-900 shadow-2xs"
+                    : "text-slate-500 hover:text-slate-800"
                 }`}
               >
                 All Brands ({brandStats.all})
               </button>
               <button
                 type="button"
-                onClick={() => { setSelectedBrand("that_laundry_shop"); setCurrentPage(1); }}
+                onClick={() => {
+                  setSelectedBrand("that_laundry_shop");
+                  if (activeTab === "vendors") setActiveTab("all");
+                  setCurrentPage(1);
+                }}
                 className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                  selectedBrand === "that_laundry_shop" ? "bg-white text-indigo-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                  selectedBrand === "that_laundry_shop" && activeTab !== "vendors"
+                    ? "bg-white text-indigo-700 shadow-2xs"
+                    : "text-slate-500 hover:text-slate-800"
                 }`}
               >
                 TLS ({brandStats.tls})
               </button>
               <button
                 type="button"
-                onClick={() => { setSelectedBrand("noname_laundry"); setCurrentPage(1); }}
+                onClick={() => {
+                  setSelectedBrand("noname_laundry");
+                  if (activeTab === "vendors") setActiveTab("all");
+                  setCurrentPage(1);
+                }}
                 className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                  selectedBrand === "noname_laundry" ? "bg-white text-amber-800 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                  selectedBrand === "noname_laundry" && activeTab !== "vendors"
+                    ? "bg-white text-amber-800 shadow-2xs"
+                    : "text-slate-500 hover:text-slate-800"
                 }`}
               >
                 Noname ({brandStats.noname})
               </button>
+              {canViewVendors && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab("vendors");
+                    setCurrentPage(1);
+                  }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                    activeTab === "vendors"
+                      ? "bg-teal-600 text-white shadow-2xs"
+                      : "text-teal-700 hover:text-teal-900 hover:bg-white/60"
+                  }`}
+                >
+                  <Truck size={12} className={activeTab === "vendors" ? "text-white" : "text-teal-600"} />
+                  <span>Vendors</span>
+                </button>
+              )}
             </div>
 
             {/* Branch Filter Selector */}
-            <div className="relative">
-              <select
-                value={selectedBranch}
-                onChange={(e) => {
-                  setSelectedBranch(e.target.value);
-                  setCurrentPage(1);
-                }}
-                className="h-8.5 pl-8 pr-7 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer shadow-2xs transition-all appearance-none"
-              >
-                <option value="all">All Branches</option>
-                <option value="ONLINE">🌐 Online</option>
-                {shops.map((s) => {
-                  const cleanName = getCleanBranchName(s.name);
-                  return (
-                    <option key={s.id} value={s.id}>
-                      📍 {cleanName}
-                    </option>
-                  );
-                })}
-                <option value="unassigned">⚠️ Unassigned</option>
-              </select>
-              <Store size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-              <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-            </div>
+            {activeTab !== "vendors" && (
+              <div className="relative">
+                <select
+                  value={selectedBranch}
+                  onChange={(e) => {
+                    setSelectedBranch(e.target.value);
+                    setCurrentPage(1);
+                  }}
+                  className="h-8.5 pl-8 pr-7 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer shadow-2xs transition-all appearance-none"
+                >
+                  <option value="all">All Branches</option>
+                  <option value="ONLINE">🌐 Online</option>
+                  {shops.map((s) => {
+                    const cleanName = getCleanBranchName(s.name);
+                    return (
+                      <option key={s.id} value={s.id}>
+                        📍 {cleanName}
+                      </option>
+                    );
+                  })}
+                  <option value="unassigned">⚠️ Unassigned</option>
+                </select>
+                <Store size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              </div>
+            )}
 
             {/* Sort By Selector */}
-            {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "topup_history" && (
+            {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "topup_history" && activeTab !== "vendors" && activeTab !== "recurring_orders" && (
               <div className="relative">
                 <select
                   value={sortBy}
@@ -1966,7 +2005,7 @@ export function AdminCRM({
           </div>
 
           {/* Quick Search */}
-          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && (
+          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "vendors" && activeTab !== "recurring_orders" && (
             <div className="relative w-full sm:w-80 md:w-96">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
               <Input 
@@ -2799,6 +2838,10 @@ export function AdminCRM({
               initialSelectedCustomer={recurringModalCustomer}
               onCloseModal={() => setRecurringModalCustomer(null)}
             />
+          </div>
+        ) : activeTab === "vendors" ? (
+          <div className={`p-4 sm:p-5 ${screenFit === "fit" ? "flex-1 min-h-0 overflow-y-auto custom-scrollbar" : ""}`}>
+            <AdminCrmVendors currentUser={user} />
           </div>
         ) : activeTab === "wallet_approvals" ? (
           <div className={`p-1 ${screenFit === "fit" ? "flex-1 min-h-0 overflow-y-auto custom-scrollbar" : ""}`}>
@@ -3689,7 +3732,7 @@ export function AdminCRM({
         )}
 
         {/* Pagination Controls */}
-        {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && totalItems > 0 && (
+        {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "vendors" && activeTab !== "recurring_orders" && totalItems > 0 && (
           <div className={`shrink-0 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/60 ${screenFit === "fit" ? "px-4 sm:px-6 py-2" : "px-6 py-4"}`}>
             <div className="flex items-center gap-4 text-xs font-semibold text-slate-500">
               <span>

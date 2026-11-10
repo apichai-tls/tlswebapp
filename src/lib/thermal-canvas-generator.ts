@@ -3,6 +3,7 @@ import type { ReceiptData, ShopInfo } from "@/components/thermal-receipt-dialog"
 import { ensureReceiptFontsLoaded } from "@/lib/receipt-font-loader";
 import { getTransportFeeBreakdown, safeCeil, roundGrandTotal, findMatchingCustomer, formatReceiptCustomerPhone } from "@/lib/utils";
 import { customerStore } from "@/lib/store";
+import { getClientAuthHeaders } from "@/lib/api";
 
 
 
@@ -258,7 +259,7 @@ export async function uploadReceiptImage(blob: Blob, entityId: string, filename:
     try {
       const signRes = await fetch("/api/upload-url", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getClientAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           entityType: "job",
           entityId: entityId || "unknown",
@@ -293,7 +294,11 @@ export async function uploadReceiptImage(blob: Blob, entityId: string, filename:
     formData.append("entityType", "jobs");
     formData.append("entityId", entityId || "unknown");
     formData.append("subType", "proofs");
-    const res = await fetch("/api/upload-local", { method: "POST", body: formData });
+    const res = await fetch("/api/upload-local", {
+      method: "POST",
+      headers: getClientAuthHeaders(),
+      body: formData,
+    });
     const data = await res.json();
     if (data.success && data.publicUrl) return filename.startsWith("receipt-") ? `${data.publicUrl}?v=${Date.now()}` : data.publicUrl;
   } catch (localErr) {

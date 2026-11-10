@@ -614,9 +614,36 @@ export async function linkLineUserToCustomerAction(params: {
   }
 }
 
+function isBillOrInternalPhotoUrl(url: string, billImageUrlRaw?: string | null): boolean {
+  const lower = (url || "").trim().toLowerCase();
+  if (!lower) return true;
+  if (
+    lower.includes("/bills/") ||
+    lower.includes("/bills-") ||
+    lower.includes("subtype=bills") ||
+    lower.includes("proforma-") ||
+    lower.includes("receipt-")
+  ) {
+    return true;
+  }
+  if (billImageUrlRaw) {
+    try {
+      const parsed = JSON.parse(billImageUrlRaw);
+      const billList = Array.isArray(parsed) ? parsed : [parsed];
+      if (billList.some((b) => typeof b === "string" && b.trim() === url.trim())) {
+        return true;
+      }
+    } catch {
+      if (billImageUrlRaw.trim() === url.trim()) return true;
+    }
+  }
+  return false;
+}
+
 function parseJobDeliveryPhotos(job: {
   deliveryProofImageUrl?: string | null;
   proofImageUrl?: string | null;
+  billImageUrl?: string | null;
   adminNotesJson?: string | null;
 }): string[] {
   const urls: string[] = [];
@@ -626,12 +653,14 @@ function parseJobDeliveryPhotos(job: {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         for (const u of parsed) {
-          if (typeof u === "string" && u.trim()) urls.push(u.trim());
+          if (typeof u === "string" && u.trim() && !isBillOrInternalPhotoUrl(u.trim(), job.billImageUrl)) {
+            urls.push(u.trim());
+          }
         }
         return;
       }
     } catch {}
-    if (typeof raw === "string" && raw.trim()) {
+    if (typeof raw === "string" && raw.trim() && !isBillOrInternalPhotoUrl(raw.trim(), job.billImageUrl)) {
       urls.push(raw.trim());
     }
   };

@@ -1558,12 +1558,12 @@ export default function BillingPage() {
             href="/admin#supplies"
             whileHover={{ x: 2 }}
             className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
-            title="Order Detergent & Supplies"
+            title="Order Supplies"
           >
             <Droplets size={isSidebarCollapsed ? 22 : 18} className="shrink-0 text-sky-500" />
             {!isSidebarCollapsed && (
               <span className="truncate flex items-center justify-between flex-1">
-                <span>Order Detergent</span>
+                <span>Order Supplies</span>
               </span>
             )}
           </motion.a>
@@ -1955,7 +1955,7 @@ export default function BillingPage() {
                   className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50 cursor-pointer"
                 >
                   <Droplets size={18} className="text-sky-500" />
-                  <span>Order Detergent & Supplies</span>
+                  <span>Order Supplies</span>
                 </a>
 
                 {hasAccess("calculator") && (

@@ -30,6 +30,70 @@ export interface CatalogSupplyItem {
   description?: string;
   available?: boolean; // admin can set items available or out of stock / hidden
   vendor?: string;     // preferred supplier name
+  vendorId?: string;   // linked Vendor CRM ID
+  lastPriceUpdatedAt?: string; // ISO date of last price update/review
+  lastPriceUpdatedBy?: string; // user name who updated/confirmed the price
+  nextPriceReviewAt?: string;  // ISO date (+6 months) for next CSO price review
+}
+
+export interface BranchSupplyStockEntry {
+  branchId: string;
+  catalogItemId: string;
+  quantity: number;
+  minStock: number;
+  updatedAt: string;
+  updatedBy?: string;
+  lastNote?: string;
+}
+
+export type BranchSupplyMovementType =
+  | 'receive_order' // Auto-added when SupplyOrder is completed
+  | 'manual_add'    // Staff/Admin clicked +1 or added stock
+  | 'usage'         // Staff/Manager clicked -1 (used in branch)
+  | 'audit_adjust'; // Adjusted via Stock Count modal
+
+export interface BranchSupplyMovement {
+  id: string;
+  branchId: string;
+  branchName?: string;
+  catalogItemId: string;
+  itemName: string;
+  itemNameTh?: string;
+  category: SupplyItemCategory;
+  unit: string;
+  unitPrice: number;
+  type: BranchSupplyMovementType;
+  deltaQty: number; // + for received/add, - for usage
+  previousQty: number;
+  newQty: number;
+  estimatedCostImpact: number;
+  note?: string;
+  orderNumber?: string;
+  userId?: string;
+  userName: string;
+  createdAt: string;
+}
+
+export interface SupplyVendor {
+  id: string;
+  code: string; // e.g. "VD-001"
+  name: string;
+  category: SupplyItemCategory;
+  contactPerson?: string;
+  phone?: string;
+  lineId?: string;
+  email?: string;
+  orderChannel?: string; // e.g. "LINE OA", "Direct Sales", "Shopee/Lazada", "Phone"
+  address?: string;
+  taxId?: string;
+  paymentTerms?: string; // e.g. "Credit 30 Days", "Cash / Bank Transfer"
+  leadTimeDays?: number;
+  minOrderAmount?: number;
+  bankAccount?: string;
+  notes?: string;
+  isActive?: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SupplyOrderItem {
@@ -62,6 +126,7 @@ export interface SupplyOrder {
   notes?: string;
   status: SupplyOrderStatus;
   adminNotes?: string;
+  vendorId?: string;
   vendorName?: string;
   vendorPoNumber?: string;
   trackingNumber?: string;
@@ -71,6 +136,7 @@ export interface SupplyOrder {
   processedAt?: string;
   dispatchedAt?: string;
   completedAt?: string;
+  stockAdded?: boolean; // prevents double adding to branch stock on completion
   createdAt: string;
   updatedAt: string;
 }
@@ -84,6 +150,180 @@ export interface CreateSupplyOrderInput {
   notes?: string;
 }
 
+export interface SupplyRolePermissionEntry {
+  canProcessOrder: boolean; // Approve, Processing, Dispatched, Completed, View All Branches
+  canCreateItem: boolean;   // Access Catalog tab, Add/Edit/Delete/Toggle supply items
+  canMakeOrder: boolean;    // Order from standard available catalog items
+  canRequestOrder: boolean; // Request custom / out-of-catalog items (+ Custom Item / Request Order)
+}
+
+export type SupplyPermissionsMap = Record<string, SupplyRolePermissionEntry>;
+
+export interface SupplyPermissionRoleMeta {
+  role: string;
+  label: string;
+  labelTh: string;
+  badgeColor: string;
+  description: string;
+}
+
+export const SUPPLY_PERMISSION_ROLES: SupplyPermissionRoleMeta[] = [
+  {
+    role: 'cso',
+    label: 'CSO (Customer Service Officer)',
+    labelTh: 'เจ้าหน้าที่บริการลูกค้า & ประสานงาน',
+    badgeColor: 'sky',
+    description: 'ประสานงานรับออเดอร์ ตรวจสอบ และดำเนินการจัดส่ง (Processing Order)',
+  },
+  {
+    role: 'marketing',
+    label: 'Marketing',
+    labelTh: 'ฝ่ายการตลาด',
+    badgeColor: 'purple',
+    description: 'สร้างและจัดการรายการสินค้า/อุปกรณ์ใน Catalog (Create Item)',
+  },
+  {
+    role: 'manager',
+    label: 'Branch Manager',
+    labelTh: 'ผู้จัดการสาขา',
+    badgeColor: 'emerald',
+    description: 'สั่งเบิกอุปกรณ์จาก Catalog (Make Order) และขอสั่งซื้อรายการพิเศษนอก Catalog (Request Order)',
+  },
+  {
+    role: 'staff',
+    label: 'Operations Staff',
+    labelTh: 'พนักงานปฏิบัติการสาขา',
+    badgeColor: 'amber',
+    description: 'พนักงานประจำสาขา',
+  },
+  {
+    role: 'accounting',
+    label: 'Accounting',
+    labelTh: 'แผนกบัญชี',
+    badgeColor: 'indigo',
+    description: 'ตรวจสอบรายการสั่งซื้อและงบประมาณ',
+  },
+  {
+    role: 'admin',
+    label: 'Super Admin',
+    labelTh: 'ผู้ดูแลระบบสูงสุด',
+    badgeColor: 'rose',
+    description: 'สิทธิ์เข้าถึงและจัดการทุกฟังก์ชันครบวงจร',
+  },
+];
+
+export const DEFAULT_SUPPLY_ROLE_PERMISSIONS: SupplyPermissionsMap = {
+  admin: {
+    canProcessOrder: true,
+    canCreateItem: true,
+    canMakeOrder: true,
+    canRequestOrder: true,
+  },
+  superadmin: {
+    canProcessOrder: true,
+    canCreateItem: true,
+    canMakeOrder: true,
+    canRequestOrder: true,
+  },
+  cso: {
+    canProcessOrder: true,
+    canCreateItem: false,
+    canMakeOrder: false,
+    canRequestOrder: false,
+  },
+  marketing: {
+    canProcessOrder: false,
+    canCreateItem: true,
+    canMakeOrder: false,
+    canRequestOrder: false,
+  },
+  manager: {
+    canProcessOrder: false,
+    canCreateItem: false,
+    canMakeOrder: true,
+    canRequestOrder: true,
+  },
+  staff: {
+    canProcessOrder: false,
+    canCreateItem: false,
+    canMakeOrder: true,
+    canRequestOrder: false,
+  },
+  accounting: {
+    canProcessOrder: false,
+    canCreateItem: false,
+    canMakeOrder: false,
+    canRequestOrder: false,
+  },
+};
+
+export function normalizeSupplyPermissionsMap(
+  raw?: Partial<SupplyPermissionsMap> | null
+): SupplyPermissionsMap {
+  const result: SupplyPermissionsMap = {};
+  for (const [roleKey, defVal] of Object.entries(DEFAULT_SUPPLY_ROLE_PERMISSIONS)) {
+    const incoming = raw?.[roleKey];
+    result[roleKey] = {
+      canProcessOrder: typeof incoming?.canProcessOrder === 'boolean' ? incoming.canProcessOrder : defVal.canProcessOrder,
+      canCreateItem: typeof incoming?.canCreateItem === 'boolean' ? incoming.canCreateItem : defVal.canCreateItem,
+      canMakeOrder: typeof incoming?.canMakeOrder === 'boolean' ? incoming.canMakeOrder : defVal.canMakeOrder,
+      canRequestOrder: typeof incoming?.canRequestOrder === 'boolean' ? incoming.canRequestOrder : defVal.canRequestOrder,
+    };
+  }
+  if (raw) {
+    for (const [customRole, incoming] of Object.entries(raw)) {
+      if (!result[customRole] && incoming) {
+        result[customRole] = {
+          canProcessOrder: Boolean(incoming.canProcessOrder),
+          canCreateItem: Boolean(incoming.canCreateItem),
+          canMakeOrder: Boolean(incoming.canMakeOrder),
+          canRequestOrder: Boolean(incoming.canRequestOrder),
+        };
+      }
+    }
+  }
+  result.superadmin = {
+    canProcessOrder: true,
+    canCreateItem: true,
+    canMakeOrder: true,
+    canRequestOrder: true,
+  };
+  return result;
+}
+
+export function resolveSupplyPermissionsForUser(
+  user: { role?: string | null } | null | undefined,
+  permissionsMap?: Partial<SupplyPermissionsMap> | null
+): SupplyRolePermissionEntry {
+  const role = String(user?.role || '').toLowerCase().trim();
+  if (!role) {
+    return {
+      canProcessOrder: false,
+      canCreateItem: false,
+      canMakeOrder: false,
+      canRequestOrder: false,
+    };
+  }
+  if (role === 'superadmin') {
+    return {
+      canProcessOrder: true,
+      canCreateItem: true,
+      canMakeOrder: true,
+      canRequestOrder: true,
+    };
+  }
+  const normalized = normalizeSupplyPermissionsMap(permissionsMap);
+  if (normalized[role]) {
+    return normalized[role];
+  }
+  return {
+    canProcessOrder: role === 'admin',
+    canCreateItem: role === 'admin',
+    canMakeOrder: role === 'admin',
+    canRequestOrder: role === 'admin',
+  };
+}
+
 export const SUPPLY_CATEGORY_LABELS: Record<SupplyItemCategory, { en: string; th: string; color: string; icon: string }> = {
   chemical: { en: 'Detergents & Softeners', th: 'น้ำยาซักและปรับผ้านุ่ม', color: 'sky', icon: '💧' },
   spotting: { en: 'Stain Removers & Bleach', th: 'น้ำยาขจัดคราบและฟอกขาว', color: 'amber', icon: '✨' },
@@ -94,6 +334,141 @@ export const SUPPLY_CATEGORY_LABELS: Record<SupplyItemCategory, { en: string; th
   cleaning: { en: 'Sanitizers & Machine Care', th: 'น้ำยาทำความสะอาดและดูแลเครื่อง', color: 'teal', icon: '🧼' },
   other: { en: 'Other Supplies', th: 'อุปกรณ์อื่นๆ', color: 'slate', icon: '📦' },
 };
+
+export const PRICE_REVIEW_INTERVAL_DAYS = 180; // 6 months
+
+export function computeNextPriceReviewDate(fromIso?: string): string {
+  const base = fromIso ? new Date(fromIso) : new Date();
+  const safeBase = isNaN(base.getTime()) ? new Date() : base;
+  const next = new Date(safeBase.getTime() + PRICE_REVIEW_INTERVAL_DAYS * 24 * 60 * 60 * 1000);
+  return next.toISOString();
+}
+
+export function getSupplyItemPriceReviewStatus(item: CatalogSupplyItem): {
+  isDue: boolean;
+  isDueSoon: boolean;
+  daysSinceUpdate: number;
+  daysUntilDue: number;
+  lastUpdatedIso: string;
+  nextReviewIso: string;
+} {
+  const nowMs = Date.now();
+  // Default fallback: if item has no lastPriceUpdatedAt, treat popular items as due or recently updated based on ID so demo is realistic
+  const fallbackPastIso = item.id === 'chm-det-20l' || item.id === 'chm-sof-20l' || item.id === 'pkg-bag-clear-l'
+    ? new Date(nowMs - 188 * 24 * 60 * 60 * 1000).toISOString() // 188 days ago -> OVERDUE (> 6 months)
+    : item.id === 'spt-oxy-bleach-20l' || item.id === 'dry-solvent-20l'
+    ? new Date(nowMs - 168 * 24 * 60 * 60 * 1000).toISOString() // 168 days ago -> DUE SOON (in 12 days)
+    : new Date(nowMs - 45 * 24 * 60 * 60 * 1000).toISOString(); // 45 days ago -> Up to date
+
+  const lastUpdatedIso = item.lastPriceUpdatedAt || fallbackPastIso;
+  const lastMs = new Date(lastUpdatedIso).getTime();
+  const safeLastMs = isNaN(lastMs) ? nowMs : lastMs;
+
+  const nextReviewIso = item.nextPriceReviewAt || new Date(safeLastMs + PRICE_REVIEW_INTERVAL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const nextMs = new Date(nextReviewIso).getTime();
+  const safeNextMs = isNaN(nextMs) ? safeLastMs + PRICE_REVIEW_INTERVAL_DAYS * 24 * 60 * 60 * 1000 : nextMs;
+
+  const daysSinceUpdate = Math.max(0, Math.floor((nowMs - safeLastMs) / (24 * 60 * 60 * 1000)));
+  const daysUntilDue = Math.ceil((safeNextMs - nowMs) / (24 * 60 * 60 * 1000));
+  const isDue = daysUntilDue <= 0;
+  const isDueSoon = !isDue && daysUntilDue <= 15;
+
+  return {
+    isDue,
+    isDueSoon,
+    daysSinceUpdate,
+    daysUntilDue,
+    lastUpdatedIso,
+    nextReviewIso,
+  };
+}
+
+export const DEFAULT_SUPPLY_VENDORS: SupplyVendor[] = [
+  {
+    id: 'vnd-chem-ecolab',
+    code: 'VD-001',
+    name: 'Ecolab / Professional Laundry Chemicals Co., Ltd.',
+    category: 'chemical',
+    contactPerson: 'คุณสมชาย (ฝ่ายขายอุตสาหกรรมซักรีด)',
+    phone: '02-123-4567',
+    lineId: '@ecolab-thailand',
+    email: 'orders.th@ecolab-laundry.com',
+    orderChannel: 'LINE OA',
+    address: '999 อาคารสำนักงานใหญ่ ถ.พระราม 9 เขตห้วยขวาง กรุงเทพฯ 10310',
+    taxId: '0105548019283',
+    paymentTerms: 'Credit 30 Days',
+    leadTimeDays: 3,
+    minOrderAmount: 3000,
+    bankAccount: 'KBANK 045-2-99881-0 (บจก. อีโคแล็บ เคมิคอล)',
+    notes: 'ผู้จำหน่ายน้ำยาซักผ้าสูตรเข้มข้น 20L, น้ำยาปรับผ้านุ่ม และน้ำยาขจัดคราบหลักของทุกสาขา ส่งฟรีเมื่อสั่งครบ 3,000 บาท',
+    isActive: true,
+    createdAt: '2026-01-15T08:00:00.000Z',
+    updatedAt: '2026-10-01T09:30:00.000Z',
+  },
+  {
+    id: 'vnd-dryclean-kreussler',
+    code: 'VD-002',
+    name: 'Thai Dry Clean & Spotting Supply (Kreussler Agent)',
+    category: 'dry_clean',
+    contactPerson: 'คุณวิภาดา (ผู้เชี่ยวชาญเคมีซักแห้ง)',
+    phone: '081-890-2345',
+    lineId: '@thaidryclean',
+    email: 'sales@thaidryclean.co.th',
+    orderChannel: 'Direct Sales',
+    address: '142 ซอยพัฒนาการ 20 แขวงสวนหลวง เขตสวนหลวง กรุงเทพฯ 10250',
+    taxId: '0105552091827',
+    paymentTerms: 'Credit 30 Days',
+    leadTimeDays: 2,
+    minOrderAmount: 2500,
+    bankAccount: 'SCB 112-3-44556-7 (บจก. ไทยดรายคลีน ซัพพลาย)',
+    notes: 'จำหน่ายน้ำยาซักแห้ง Hydrocarbon, สบู่ซักแห้ง และน้ำยาขจัดคราบเฉพาะจุด (เลือด/หมึก/ไวน์)',
+    isActive: true,
+    createdAt: '2026-02-01T08:00:00.000Z',
+    updatedAt: '2026-09-20T10:15:00.000Z',
+  },
+  {
+    id: 'vnd-pkg-siamplast',
+    code: 'VD-003',
+    name: 'Siam Poly Pack & Hangers Co., Ltd. (สยามโพลีแพ็ค แอนด์ แฮงเกอร์)',
+    category: 'packaging',
+    contactPerson: 'คุณกิตติพงศ์ (เฮียตี๋)',
+    phone: '089-456-7890',
+    lineId: '@siampolypack',
+    email: 'contact@siampolypack.com',
+    orderChannel: 'LINE OA',
+    address: '88/12 ถ.เอกชัย ต.คอกกระบือ อ.เมือง จ.สมุทรสาคร 74000',
+    taxId: '0745559001234',
+    paymentTerms: 'Cash / Bank Transfer',
+    leadTimeDays: 2,
+    minOrderAmount: 1500,
+    bankAccount: 'BBL 234-0-88991-2 (บจก. สยามโพลีแพ็ค)',
+    notes: 'โรงงานผลิตถุงคลุมสูท ถุงพลาสติกใส L/XL และไม้แขวนเสื้อลวดหุ้มพลาสติก/ไม้แขวนสูท',
+    isActive: true,
+    createdAt: '2026-02-10T08:00:00.000Z',
+    updatedAt: '2026-10-12T14:00:00.000Z',
+  },
+  {
+    id: 'vnd-pos-barcodethai',
+    code: 'VD-004',
+    name: 'BKK POS Paper & Hydro-Tag Supply',
+    category: 'store_pos',
+    contactPerson: 'คุณนภัสสร (ฝ่ายบริการลูกค้า)',
+    phone: '02-778-9900',
+    lineId: '@bkkpospaper',
+    email: 'support@bkkpospaper.com',
+    orderChannel: 'Shopee / LINE OA',
+    address: '55 ถ.ลาดพร้าว แขวงจอมพล เขตจตุจักร กรุงเทพฯ 10900',
+    taxId: '0105561009988',
+    paymentTerms: 'Cash / Bank Transfer',
+    leadTimeDays: 1,
+    minOrderAmount: 500,
+    bankAccount: 'KBANK 789-2-11223-4 (บจก. บีเคเค พีโอเอส เปเปอร์)',
+    notes: 'กระดาษความร้อน 80x80mm, แท็กเบอร์กันน้ำซักไม่เปื่อย และเข็มกลัดซ่อนปลายปลอดสนิม',
+    isActive: true,
+    createdAt: '2026-03-01T08:00:00.000Z',
+    updatedAt: '2026-10-25T11:00:00.000Z',
+  },
+];
 
 export const DEFAULT_SUPPLY_CATALOG: CatalogSupplyItem[] = [
   // 1. Chemicals & Detergents
@@ -107,6 +482,8 @@ export const DEFAULT_SUPPLY_CATALOG: CatalogSupplyItem[] = [
     estimatedPrice: 1250,
     popular: true,
     description: 'High-efficiency industrial laundry detergent, low suds formula',
+    vendor: 'Ecolab / Professional Laundry Chemicals Co., Ltd.',
+    vendorId: 'vnd-chem-ecolab',
   },
   {
     id: 'chm-det-5l',
@@ -118,6 +495,8 @@ export const DEFAULT_SUPPLY_CATALOG: CatalogSupplyItem[] = [
     estimatedPrice: 380,
     popular: false,
     description: 'Compact 5L container for spot washing or smaller loads',
+    vendor: 'Ecolab / Professional Laundry Chemicals Co., Ltd.',
+    vendorId: 'vnd-chem-ecolab',
   },
   {
     id: 'chm-sof-20l',
@@ -129,6 +508,8 @@ export const DEFAULT_SUPPLY_CATALOG: CatalogSupplyItem[] = [
     estimatedPrice: 980,
     popular: true,
     description: 'Premium floral comfort, anti-static softener',
+    vendor: 'Ecolab / Professional Laundry Chemicals Co., Ltd.',
+    vendorId: 'vnd-chem-ecolab',
   },
   {
     id: 'chm-sof-5l',

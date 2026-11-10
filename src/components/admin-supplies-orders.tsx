@@ -36,6 +36,12 @@ import {
   XCircle,
   Lock,
   Store,
+  BarChart3,
+  Download,
+  TrendingUp,
+  ArrowDownRight,
+  ArrowUpRight,
+  History,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -57,6 +63,14 @@ import {
   DEFAULT_SUPPLY_CATALOG,
   CatalogSupplyItem,
   SUPPLY_CATEGORY_LABELS,
+  SupplyPermissionsMap,
+  DEFAULT_SUPPLY_ROLE_PERMISSIONS,
+  resolveSupplyPermissionsForUser,
+  BranchSupplyStockEntry,
+  BranchSupplyMovement,
+  SupplyVendor,
+  DEFAULT_SUPPLY_VENDORS,
+  getSupplyItemPriceReviewStatus,
 } from '@/types/supply-order';
 import {
   getSupplyOrdersAction,
@@ -68,6 +82,13 @@ import {
   toggleSupplyItemAvailabilityAction,
   deleteSupplyCatalogItemAction,
   resetSupplyCatalogAction,
+  getSupplyPermissionsAction,
+  getBranchSupplyStockAction,
+  updateBranchSupplyStockAction,
+  getBranchSupplyMovementsAction,
+  getSupplyVendorsAction,
+  reviewSupplyItemPriceAction,
+  triggerSupplyPriceReviewReminderAction,
 } from '@/actions/db';
 
 interface AdminSuppliesOrdersProps {
@@ -77,9 +98,22 @@ interface AdminSuppliesOrdersProps {
 
 export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOrdersProps) {
   const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'superadmin';
+  const [supplyPermissions, setSupplyPermissions] = useState<SupplyPermissionsMap>(DEFAULT_SUPPLY_ROLE_PERMISSIONS);
 
-  // Navigation sub-tab: 'orders' | 'catalog'
-  const [viewTab, setViewTab] = useState<'orders' | 'catalog'>('orders');
+  const perms = useMemo(
+    () => resolveSupplyPermissionsForUser(currentUser, supplyPermissions),
+    [currentUser, supplyPermissions]
+  );
+
+  const canProcessOrder = isAdmin || perms.canProcessOrder;
+  const canCreateItem = isAdmin || perms.canCreateItem;
+  const canMakeOrder = isAdmin || perms.canMakeOrder;
+  const canRequestOrder = isAdmin || perms.canRequestOrder;
+  const canOpenOrderModal = canMakeOrder || canRequestOrder;
+  const canReviewPrice = isAdmin || canProcessOrder || canCreateItem || String(currentUser?.role || '').toLowerCase() === 'cso';
+
+  // Navigation sub-tab: 'orders' | 'stock' | 'report' | 'catalog'
+  const [viewTab, setViewTab] = useState<'orders' | 'stock' | 'report' | 'catalog'>('orders');
 
   // Orders data state
   const [orders, setOrders] = useState<SupplyOrder[]>([]);
@@ -89,6 +123,39 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
   // Dynamic Catalog state (Configured by Admin)
   const [catalog, setCatalog] = useState<CatalogSupplyItem[]>(DEFAULT_SUPPLY_CATALOG);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
+
+  // Vendors & Branch Stock state
+  const [vendors, setVendors] = useState<SupplyVendor[]>(DEFAULT_SUPPLY_VENDORS);
+  const [branchStock, setBranchStock] = useState<BranchSupplyStockEntry[]>([]);
+  const [allBranchesStock, setAllBranchesStock] = useState<BranchSupplyStockEntry[]>([]);
+  const [stockMovements, setStockMovements] = useState<BranchSupplyMovement[]>([]);
+  const [loadingStock, setLoadingStock] = useState(false);
+  const [stockBranchId, setStockBranchId] = useState<string>(
+    currentUser?.branchId || (shops[0]?.id || 'ONLINE')
+  );
+  const [stockCategoryFilter, setStockCategoryFilter] = useState<string>('all');
+  const [stockSearchQuery, setStockSearchQuery] = useState<string>('');
+  const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'low' | 'out'>('all');
+
+  // Report Filter States
+  const [reportPeriod, setReportPeriod] = useState<'this_month' | '30days' | '7days' | 'all'>('this_month');
+  const [reportBranchFilter, setReportBranchFilter] = useState<string>('all');
+  const [reportCategoryFilter, setReportCategoryFilter] = useState<string>('all');
+
+  // Stock Adjust Modal state
+  const [adjustingStockItem, setAdjustingStockItem] = useState<{
+    catalogItem: CatalogSupplyItem;
+    quantity: number;
+    minStock: number;
+    note: string;
+  } | null>(null);
+  const [savingStock, setSavingStock] = useState(false);
+
+  // 6-Month Price Review Modal state
+  const [isPriceReviewModalOpen, setIsPriceReviewModalOpen] = useState(false);
+  const [priceDraftMap, setPriceDraftMap] = useState<Record<string, number>>({});
+  const [reviewingItemId, setReviewingItemId] = useState<string | null>(null);
+  const [sendingReminderTask, setSendingReminderTask] = useState(false);
 
   // Catalog Management filters & edit states
   const [catalogFilterCategory, setCatalogFilterCategory] = useState<string>('all');
@@ -143,7 +210,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     try {
       if (!silent) setLoading(true);
       else setRefreshing(true);
-      const effectiveBranch = isAdmin ? branchFilter : (currentUser?.branchId || undefined);
+      const effectiveBranch = canProcessOrder ? branchFilter : (currentUser?.branchId || undefined);
       const res = await getSupplyOrdersAction(effectiveBranch);
       if (res.success && res.orders) {
         setOrders(res.orders);
@@ -158,25 +225,48 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     }
   };
 
-  // Open Create Order Modal with Outlet Check
-  const handleOpenCreateModal = () => {
-    if (!isAdmin && !currentUser?.branchId) {
+  // Open Create Order Modal with Outlet & Permission Check
+  const handleOpenCreateModal = (defaultCustomMode = false) => {
+    if (!canOpenOrderModal) {
+      toast.error('Your role does not have permission to Make Order or Request Order.');
+      return;
+    }
+    if (!isAdmin && !canProcessOrder && !currentUser?.branchId) {
       toast.error('Your staff account is not assigned to an outlet. You can only place orders for your assigned outlet.');
       return;
     }
-    if (!isAdmin && currentUser?.branchId) {
+    if (!isAdmin && !canProcessOrder && currentUser?.branchId) {
       setOrderBranchId(currentUser.branchId);
+    }
+    if (defaultCustomMode || (!canMakeOrder && canRequestOrder)) {
+      setIsAddingCustom(true);
+    } else {
+      setIsAddingCustom(false);
     }
     setIsCreateOpen(true);
   };
 
-  // 2. Load Catalog (Admin Configured Items)
+  // 2. Load Catalog, Permissions, Vendors & Stock
   const loadCatalog = async () => {
     try {
       setLoadingCatalog(true);
-      const res = await getSupplyCatalogAction();
-      if (res.success && res.items) {
-        setCatalog(res.items);
+      const [catRes, permRes, vndRes] = await Promise.all([
+        getSupplyCatalogAction(),
+        getSupplyPermissionsAction(),
+        getSupplyVendorsAction(),
+      ]);
+      if (catRes.success && catRes.items) {
+        setCatalog(catRes.items);
+      }
+      if (vndRes.success && vndRes.vendors) {
+        setVendors(vndRes.vendors);
+      }
+      if (permRes.success && permRes.permissions) {
+        setSupplyPermissions(permRes.permissions);
+        const resolved = resolveSupplyPermissionsForUser(currentUser, permRes.permissions);
+        if (!isAdmin && resolved.canCreateItem && !resolved.canProcessOrder && !resolved.canMakeOrder && !resolved.canRequestOrder) {
+          setViewTab('catalog');
+        }
       }
     } catch (e: any) {
       console.error('Error loading catalog:', e);
@@ -185,17 +275,50 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     }
   };
 
+  const loadBranchStock = async (targetBranch?: string) => {
+    try {
+      setLoadingStock(true);
+      const bId = !isAdmin && !canProcessOrder && currentUser?.branchId
+        ? currentUser.branchId
+        : (targetBranch || stockBranchId || 'ONLINE');
+      const [res, allRes, movRes] = await Promise.all([
+        getBranchSupplyStockAction(bId),
+        getBranchSupplyStockAction('all'),
+        getBranchSupplyMovementsAction('all'),
+      ]);
+      if (res.success && res.stock) {
+        setBranchStock(res.stock);
+      }
+      if (allRes.success && allRes.stock) {
+        setAllBranchesStock(allRes.stock);
+      }
+      if (movRes.success && movRes.movements) {
+        setStockMovements(movRes.movements);
+      }
+    } catch (e: any) {
+      console.error('Error loading branch stock:', e);
+    } finally {
+      setLoadingStock(false);
+    }
+  };
+
   useEffect(() => {
     loadOrders();
     loadCatalog();
   }, [branchFilter]);
 
+  useEffect(() => {
+    loadBranchStock(stockBranchId);
+  }, [stockBranchId, currentUser?.branchId]);
+
   // Sync Branch ID when shops or user change
   useEffect(() => {
     if (currentUser?.branchId) {
       setOrderBranchId(currentUser.branchId);
+      setStockBranchId(currentUser.branchId);
     } else if (shops.length > 0 && !orderBranchId) {
       setOrderBranchId(shops[0].id);
+      setStockBranchId(shops[0].id);
     }
   }, [currentUser, shops]);
 
@@ -285,6 +408,537 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     return { total, available, disabled, popular };
   }, [catalog]);
 
+  // 6-Month Price Review Summary
+  const priceReviewSummary = useMemo(() => {
+    const itemsWithStatus = catalog.map((item) => ({
+      item,
+      review: getSupplyItemPriceReviewStatus(item),
+    }));
+    const overdueItems = itemsWithStatus.filter((x) => x.review.isDue);
+    const dueSoonItems = itemsWithStatus.filter((x) => x.review.isDueSoon);
+    return {
+      all: itemsWithStatus,
+      overdueItems,
+      dueSoonItems,
+      actionRequiredItems: [...overdueItems, ...dueSoonItems],
+    };
+  }, [catalog]);
+
+  // Branch Stock Merged with Catalog
+  const effectiveStockBranchId = !isAdmin && !canProcessOrder && currentUser?.branchId
+    ? currentUser.branchId
+    : stockBranchId;
+
+  const branchStockViewList = useMemo(() => {
+    const availableItems = catalog.filter((i) => i.available !== false);
+    return availableItems
+      .map((item, idx) => {
+        const found = branchStock.find(
+          (s) => s.branchId === effectiveStockBranchId && s.catalogItemId === item.id
+        );
+        // Realistic initial stock fallback if branch hasn't set stock yet
+        const defaultInitialQty = item.popular ? (idx % 3 === 0 ? 1 : 5) : 3;
+        const quantity = found ? Number(found.quantity) : defaultInitialQty;
+        const minStock = found ? Number(found.minStock ?? 2) : 2;
+        const isOut = quantity <= 0;
+        const isLow = !isOut && quantity <= minStock;
+        return {
+          catalogItem: item,
+          quantity,
+          minStock,
+          isOut,
+          isLow,
+          updatedAt: found?.updatedAt,
+          updatedBy: found?.updatedBy,
+          lastNote: found?.lastNote,
+        };
+      })
+      .filter((row) => {
+        const matchCat =
+          stockCategoryFilter === 'all' || row.catalogItem.category === stockCategoryFilter;
+        const q = stockSearchQuery.trim().toLowerCase();
+        const matchSearch =
+          !q ||
+          row.catalogItem.name.toLowerCase().includes(q) ||
+          row.catalogItem.nameTh?.toLowerCase().includes(q);
+        const matchStatus =
+          stockStatusFilter === 'all' ||
+          (stockStatusFilter === 'low' && (row.isLow || row.isOut)) ||
+          (stockStatusFilter === 'out' && row.isOut);
+        return matchCat && matchSearch && matchStatus;
+      });
+  }, [
+    catalog,
+    branchStock,
+    effectiveStockBranchId,
+    stockCategoryFilter,
+    stockSearchQuery,
+    stockStatusFilter,
+  ]);
+
+  const stockStats = useMemo(() => {
+    const availableItems = catalog.filter((i) => i.available !== false);
+    let normal = 0;
+    let low = 0;
+    let out = 0;
+    availableItems.forEach((item, idx) => {
+      const found = branchStock.find(
+        (s) => s.branchId === effectiveStockBranchId && s.catalogItemId === item.id
+      );
+      const defaultInitialQty = item.popular ? (idx % 3 === 0 ? 1 : 5) : 3;
+      const qty = found ? Number(found.quantity) : defaultInitialQty;
+      const min = found ? Number(found.minStock ?? 2) : 2;
+      if (qty <= 0) out++;
+      else if (qty <= min) low++;
+      else normal++;
+    });
+    return { total: availableItems.length, normal, low, out };
+  }, [catalog, branchStock, effectiveStockBranchId]);
+
+  // --- BRANCH ORDER & USAGE REPORT ANALYTICS ---
+  const reportAnalytics = useMemo(() => {
+    const now = new Date();
+    const cutoffMs =
+      reportPeriod === '7days'
+        ? now.getTime() - 7 * 24 * 60 * 60 * 1000
+        : reportPeriod === '30days'
+        ? now.getTime() - 30 * 24 * 60 * 60 * 1000
+        : reportPeriod === 'this_month'
+        ? new Date(now.getFullYear(), now.getMonth(), 1).getTime()
+        : 0;
+
+    const effectiveReportBranch =
+      !isAdmin && !canProcessOrder && currentUser?.branchId
+        ? currentUser.branchId
+        : reportBranchFilter;
+
+    // Build list of branches to evaluate
+    const branchList: { id: string; name: string }[] = [
+      ...shops.map((s) => ({ id: s.id, name: s.name })),
+      { id: 'ONLINE', name: 'Online Central Dispatch' },
+    ];
+    // Ensure any branch from orders or movements is included
+    orders.forEach((o) => {
+      if (o.branchId && !branchList.some((b) => b.id === o.branchId)) {
+        branchList.push({ id: o.branchId, name: o.branchName || o.branchId });
+      }
+    });
+
+    const targetBranches =
+      effectiveReportBranch === 'all'
+        ? branchList
+        : branchList.filter((b) => b.id === effectiveReportBranch);
+
+    // Filter Orders in Period
+    const periodOrders = orders.filter((o) => {
+      if (o.status === 'cancelled') return false;
+      if (effectiveReportBranch !== 'all' && o.branchId !== effectiveReportBranch) return false;
+      const t = new Date(o.createdAt).getTime();
+      return t >= cutoffMs;
+    });
+
+    // Filter Movements in Period
+    const periodMovements = stockMovements.filter((m) => {
+      if (effectiveReportBranch !== 'all' && m.branchId !== effectiveReportBranch) return false;
+      if (reportCategoryFilter !== 'all' && m.category !== reportCategoryFilter) return false;
+      const t = new Date(m.createdAt).getTime();
+      return t >= cutoffMs;
+    });
+
+    // 1. Branch-by-Branch Comparison Rows
+    const branchRows = targetBranches.map((b) => {
+      const bOrders = periodOrders.filter((o) => o.branchId === b.id);
+      let orderedQty = 0;
+      let orderedCost = 0;
+      let receivedQty = 0;
+      let receivedCost = 0;
+
+      bOrders.forEach((o) => {
+        (o.items || []).forEach((it) => {
+          if (reportCategoryFilter !== 'all' && it.category !== reportCategoryFilter) return;
+          const q = Number(it.quantity) || 0;
+          const p = Number(it.estimatedPrice) || 0;
+          orderedQty += q;
+          orderedCost += q * p;
+          if (o.status === 'completed') {
+            receivedQty += q;
+            receivedCost += q * p;
+          }
+        });
+      });
+
+      const bMovements = periodMovements.filter((m) => m.branchId === b.id);
+      let usedQty = 0;
+      let usedCost = 0;
+      let manualAddedQty = 0;
+
+      bMovements.forEach((m) => {
+        if (m.deltaQty < 0) {
+          const absQ = Math.abs(m.deltaQty);
+          usedQty += absQ;
+          usedCost += m.estimatedCostImpact || absQ * (m.unitPrice || 0);
+        } else if (m.type === 'manual_add' && m.deltaQty > 0) {
+          manualAddedQty += m.deltaQty;
+        }
+      });
+
+      // Current Stock for this branch
+      const availItems = catalog.filter(
+        (i) =>
+          i.available !== false &&
+          (reportCategoryFilter === 'all' || i.category === reportCategoryFilter)
+      );
+      let currentStockQty = 0;
+      let currentStockValue = 0;
+      let lowStockCount = 0;
+
+      availItems.forEach((item, idx) => {
+        const st = allBranchesStock.find(
+          (s) => s.branchId === b.id && s.catalogItemId === item.id
+        );
+        const defaultInitialQty = item.popular ? (idx % 3 === 0 ? 1 : 5) : 3;
+        const qty = st ? Number(st.quantity) : defaultInitialQty;
+        const min = st ? Number(st.minStock ?? 2) : 2;
+        currentStockQty += qty;
+        currentStockValue += qty * (item.estimatedPrice || 0);
+        if (qty <= min) lowStockCount++;
+      });
+
+      return {
+        branchId: b.id,
+        branchName: b.name,
+        ordersCount: bOrders.length,
+        orderedQty,
+        orderedCost,
+        receivedQty: receivedQty + manualAddedQty,
+        receivedCost,
+        usedQty,
+        usedCost,
+        currentStockQty,
+        currentStockValue,
+        lowStockCount,
+      };
+    });
+
+    // 2. Item-by-Item Consumption Breakdown
+    const availCatalog = catalog.filter(
+      (i) =>
+        reportCategoryFilter === 'all' || i.category === reportCategoryFilter
+    );
+
+    const itemRows = availCatalog
+      .map((item) => {
+        let orderedQty = 0;
+        let orderedCost = 0;
+        let receivedQty = 0;
+
+        periodOrders.forEach((o) => {
+          (o.items || []).forEach((it) => {
+            if (it.catalogItemId === item.id || it.name === item.name) {
+              const q = Number(it.quantity) || 0;
+              const p = Number(it.estimatedPrice ?? item.estimatedPrice) || 0;
+              orderedQty += q;
+              orderedCost += q * p;
+              if (o.status === 'completed') {
+                receivedQty += q;
+              }
+            }
+          });
+        });
+
+        let usedQty = 0;
+        let usedCost = 0;
+        periodMovements.forEach((m) => {
+          if (
+            (m.catalogItemId === item.id || m.itemName === item.name) &&
+            m.deltaQty < 0
+          ) {
+            const absQ = Math.abs(m.deltaQty);
+            usedQty += absQ;
+            usedCost += m.estimatedCostImpact || absQ * (item.estimatedPrice || 0);
+          }
+        });
+
+        return {
+          item,
+          orderedQty,
+          orderedCost,
+          receivedQty,
+          usedQty,
+          usedCost,
+        };
+      })
+      .filter((r) => r.orderedQty > 0 || r.usedQty > 0 || r.item.popular)
+      .sort((a, b) => b.usedCost + b.orderedCost - (a.usedCost + a.orderedCost));
+
+    const totals = branchRows.reduce(
+      (acc, r) => ({
+        ordersCount: acc.ordersCount + r.ordersCount,
+        orderedQty: acc.orderedQty + r.orderedQty,
+        orderedCost: acc.orderedCost + r.orderedCost,
+        receivedQty: acc.receivedQty + r.receivedQty,
+        usedQty: acc.usedQty + r.usedQty,
+        usedCost: acc.usedCost + r.usedCost,
+        currentStockQty: acc.currentStockQty + r.currentStockQty,
+        currentStockValue: acc.currentStockValue + r.currentStockValue,
+      }),
+      {
+        ordersCount: 0,
+        orderedQty: 0,
+        orderedCost: 0,
+        receivedQty: 0,
+        usedQty: 0,
+        usedCost: 0,
+        currentStockQty: 0,
+        currentStockValue: 0,
+      }
+    );
+
+    return {
+      branchRows,
+      itemRows,
+      periodMovements,
+      totals,
+    };
+  }, [
+    orders,
+    stockMovements,
+    allBranchesStock,
+    catalog,
+    shops,
+    reportPeriod,
+    reportBranchFilter,
+    reportCategoryFilter,
+    isAdmin,
+    canProcessOrder,
+    currentUser?.branchId,
+  ]);
+
+  const handleExportReportCsv = () => {
+    const headers = [
+      'Branch Name',
+      'Orders Count',
+      'Ordered Qty (Units)',
+      'Ordered Cost (THB)',
+      'Received Qty (Units)',
+      'Actual Used Qty (Units)',
+      'Actual Used Cost (THB)',
+      'Current Stock Qty (Units)',
+      'Current Stock Value (THB)',
+      'Low Stock Items Count',
+    ];
+    const rows = reportAnalytics.branchRows.map((r) => [
+      `"${r.branchName.replace(/"/g, '""')}"`,
+      r.ordersCount,
+      r.orderedQty,
+      r.orderedCost,
+      r.receivedQty,
+      r.usedQty,
+      r.usedCost,
+      r.currentStockQty,
+      r.currentStockValue,
+      r.lowStockCount,
+    ]);
+    const csvContent =
+      '\uFEFF' + [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `branch_supplies_usage_report_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success('ดาวน์โหลดไฟล์ CSV รายงานการเบิกและใช้น้ำยาแยกตามสาขาเรียบร้อยแล้ว');
+  };
+
+  // --- BRANCH STOCK HANDLERS ---
+  const handleQuickAdjustStock = async (
+    item: CatalogSupplyItem,
+    currentQty: number,
+    minStock: number,
+    delta: number
+  ) => {
+    const nextQty = Math.max(0, currentQty + delta);
+    // Optimistic update
+    setBranchStock((prev) => {
+      const idx = prev.findIndex(
+        (s) => s.branchId === effectiveStockBranchId && s.catalogItemId === item.id
+      );
+      const entry: BranchSupplyStockEntry = {
+        branchId: effectiveStockBranchId,
+        catalogItemId: item.id,
+        quantity: nextQty,
+        minStock,
+        updatedAt: new Date().toISOString(),
+        updatedBy: currentUser?.name || currentUser?.email || 'Staff',
+        lastNote: delta > 0 ? `Quick +${delta}` : `Used ${delta}`,
+      };
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = entry;
+        return copy;
+      }
+      return [...prev, entry];
+    });
+
+    const branchObj = shops.find((s) => s.id === effectiveStockBranchId);
+    const branchName = branchObj
+      ? branchObj.name
+      : effectiveStockBranchId === 'ONLINE'
+      ? 'Online Central'
+      : effectiveStockBranchId;
+
+    try {
+      const res = await updateBranchSupplyStockAction({
+        branchId: effectiveStockBranchId,
+        branchName,
+        catalogItemId: item.id,
+        quantity: nextQty,
+        previousQty: currentQty,
+        minStock,
+        movementType: delta > 0 ? 'manual_add' : 'usage',
+        note: delta > 0 ? `รับเข้าสต็อกเพิ่ม (+${delta})` : `ตัดสต็อกใช้งานประจำวัน (${delta})`,
+      });
+      if (res.success && res.stock) {
+        setBranchStock(res.stock);
+        setAllBranchesStock(res.stock);
+        if ((res as any).movements) setStockMovements((res as any).movements);
+        toast.success(
+          `${item.nameTh || item.name}: คงเหลือ ${nextQty} ${item.defaultUnit}`
+        );
+      } else {
+        toast.error(res.error || 'Failed to update stock');
+        loadBranchStock(effectiveStockBranchId);
+      }
+    } catch (e: any) {
+      toast.error('Error: ' + e.message);
+      loadBranchStock(effectiveStockBranchId);
+    }
+  };
+
+  const handleSaveStockModal = async () => {
+    if (!adjustingStockItem) return;
+    const branchObj = shops.find((s) => s.id === effectiveStockBranchId);
+    const branchName = branchObj
+      ? branchObj.name
+      : effectiveStockBranchId === 'ONLINE'
+      ? 'Online Central'
+      : effectiveStockBranchId;
+    const foundCurrent = branchStockViewList.find(
+      (r) => r.catalogItem.id === adjustingStockItem.catalogItem.id
+    );
+    const prevQty = foundCurrent ? foundCurrent.quantity : 0;
+
+    try {
+      setSavingStock(true);
+      const res = await updateBranchSupplyStockAction({
+        branchId: effectiveStockBranchId,
+        branchName,
+        catalogItemId: adjustingStockItem.catalogItem.id,
+        quantity: Math.max(0, Number(adjustingStockItem.quantity) || 0),
+        previousQty: prevQty,
+        minStock: Math.max(0, Number(adjustingStockItem.minStock) || 0),
+        movementType: 'audit_adjust',
+        note: adjustingStockItem.note || 'ปรับยอดจากการนับสต็อกสาขา',
+      });
+      if (res.success && res.stock) {
+        setBranchStock(res.stock);
+        setAllBranchesStock(res.stock);
+        if ((res as any).movements) setStockMovements((res as any).movements);
+        toast.success('บันทึกยอดสต็อกสาขาเรียบร้อยแล้ว');
+        setAdjustingStockItem(null);
+      } else {
+        toast.error(res.error || 'Failed to save stock');
+      }
+    } catch (e: any) {
+      toast.error('Error: ' + e.message);
+    } finally {
+      setSavingStock(false);
+    }
+  };
+
+  const handleOrderAllLowStock = () => {
+    if (!canOpenOrderModal) {
+      toast.error('บทบาทของคุณไม่มีสิทธิ์สร้างใบสั่งซื้อ');
+      return;
+    }
+    const lowRows = branchStockViewList.filter((r) => r.isLow || r.isOut);
+    if (lowRows.length === 0) {
+      toast.info('ไม่มีรายการสินค้าที่ใกล้หมดหรือสต็อกต่ำกว่าเกณฑ์ในขณะนี้');
+      return;
+    }
+    const itemsToOrder: SupplyOrderItem[] = lowRows.map((r) => {
+      const suggestedQty = Math.max(1, r.minStock - r.quantity + 2);
+      return {
+        id: `item_${Date.now()}_${r.catalogItem.id}`,
+        catalogItemId: r.catalogItem.id,
+        name: r.catalogItem.name,
+        nameTh: r.catalogItem.nameTh,
+        category: r.catalogItem.category,
+        quantity: suggestedQty,
+        unit: r.catalogItem.defaultUnit,
+        estimatedPrice: r.catalogItem.estimatedPrice,
+      };
+    });
+    setOrderBranchId(effectiveStockBranchId);
+    setSelectedItems(itemsToOrder);
+    setOrderPriority(lowRows.some((r) => r.isOut) ? 'critical' : 'urgent');
+    setOrderNotes('สั่งซื้อเติมสต็อกอัตโนมัติจากรายการที่ใกล้หมด (Low Stock Auto-Reorder)');
+    setIsAddingCustom(false);
+    setIsCreateOpen(true);
+    toast.success(`เพิ่มรายการใกล้หมดจำนวน ${itemsToOrder.length} รายการเข้าตะกร้าสั่งซื้อแล้ว`);
+  };
+
+  // --- 6-MONTH PRICE REVIEW HANDLERS ---
+  const handleOpenPriceReviewModal = () => {
+    const drafts: Record<string, number> = {};
+    catalog.forEach((it) => {
+      drafts[it.id] = it.estimatedPrice || 0;
+    });
+    setPriceDraftMap(drafts);
+    setIsPriceReviewModalOpen(true);
+  };
+
+  const handleConfirmOrUpdateItemPrice = async (item: CatalogSupplyItem) => {
+    const draftPrice =
+      priceDraftMap[item.id] !== undefined ? priceDraftMap[item.id] : item.estimatedPrice;
+    try {
+      setReviewingItemId(item.id);
+      const res = await reviewSupplyItemPriceAction({
+        itemId: item.id,
+        newPrice: Number(draftPrice) || 0,
+      });
+      if (res.success && res.items) {
+        setCatalog(res.items);
+        toast.success(
+          `ยืนยัน/อัปเดตราคา "${item.nameTh || item.name}" (฿${Number(draftPrice).toLocaleString()}) สำหรับรอบ 6 เดือนถัดไปเรียบร้อยแล้ว!`
+        );
+      } else {
+        toast.error(res.error || 'Failed to update price review');
+      }
+    } catch (e: any) {
+      toast.error('Error: ' + e.message);
+    } finally {
+      setReviewingItemId(null);
+    }
+  };
+
+  const handleSendCsoReminderTask = async () => {
+    try {
+      setSendingReminderTask(true);
+      const res = await triggerSupplyPriceReviewReminderAction();
+      if (res.success) {
+        toast.success(res.message || 'ส่งแจ้งเตือนและสร้าง Task ให้ CSO เรียบร้อยแล้ว');
+      } else {
+        toast.error(res.error || 'Failed to send reminder');
+      }
+    } catch (e: any) {
+      toast.error('Error: ' + e.message);
+    } finally {
+      setSendingReminderTask(false);
+    }
+  };
+
   // --- CATALOG MANAGEMENT HANDLERS ---
   const handleToggleItemAvailability = async (item: CatalogSupplyItem) => {
     const nextVal = item.available === false ? true : false;
@@ -355,6 +1009,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
         description: editingItem.description || '',
         available: editingItem.available !== false,
         vendor: editingItem.vendor || '',
+        vendorId: editingItem.vendorId || '',
       });
 
       if (res.success) {
@@ -484,12 +1139,12 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
       return;
     }
 
-    if (!isAdmin && !currentUser?.branchId) {
+    if (!isAdmin && !canProcessOrder && !currentUser?.branchId) {
       toast.error('Your staff account is not assigned to an outlet. You can only place orders for your assigned outlet.');
       return;
     }
 
-    const effectiveBranchId = !isAdmin && currentUser?.branchId ? currentUser.branchId : orderBranchId;
+    const effectiveBranchId = !isAdmin && !canProcessOrder && currentUser?.branchId ? currentUser.branchId : orderBranchId;
     const branchObj = shops.find((s) => s.id === effectiveBranchId);
     const branchName = branchObj ? branchObj.name : effectiveBranchId === 'ONLINE' ? 'Online Central' : effectiveBranchId;
 
@@ -541,6 +1196,10 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
         setSelectedOrderForView(res.order);
         if (res.orders) setOrders(res.orders);
         else loadOrders(true);
+        if (editStatus === 'completed') {
+          loadBranchStock(res.order.branchId);
+          toast.info(`เพิ่มจำนวนสินค้าจากใบสั่งซื้อ ${res.order.orderNumber} เข้าสต็อกสาขา ${res.order.branchName} อัตโนมัติแล้ว`);
+        }
       } else {
         toast.error(res.error || 'Failed to update order');
       }
@@ -558,6 +1217,10 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
       if (res.success) {
         toast.success(`Order ${order.orderNumber} marked as ${newStatus}`);
         loadOrders(true);
+        if (newStatus === 'completed') {
+          loadBranchStock(order.branchId);
+          toast.info(`เพิ่มจำนวนสินค้าจากใบสั่งซื้อ ${order.orderNumber} เข้าสต็อกสาขา ${order.branchName} อัตโนมัติแล้ว`);
+        }
       } else {
         toast.error(res.error || 'Failed to update status');
       }
@@ -672,15 +1335,14 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 <Droplets size={22} className="text-sky-300" />
               </span>
               <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white flex items-center gap-2 flex-wrap">
-                Chemicals & Supplies Orders
+                Order Supplies
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-white/10 text-sky-200 border border-white/15">
-                  สั่งซื้อน้ำยาและอุปกรณ์
+                  สั่งซื้อน้ำยาและอุปกรณ์สาขา
                 </span>
               </h1>
             </div>
             <p className="text-xs sm:text-sm text-sky-100/80 max-w-2xl leading-relaxed">
-              Order detergents, fabric softeners, packaging, and store supplies. Admins can configure
-              which items are available for branch orders and manage procurement.
+              Order detergents, fabric softeners, packaging, and store supplies. Authorized roles can create catalog items, make orders, request custom supplies, and process branch orders.
             </p>
           </div>
 
@@ -699,17 +1361,94 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                   <span className="hidden sm:inline ml-1.5">Refresh</span>
                 </Button>
 
+                {canMakeOrder && (
+                  <Button
+                    size="sm"
+                    onClick={() => handleOpenCreateModal(false)}
+                    className="h-10 px-4 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-sky-600/30 gap-2 cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98]"
+                  >
+                    <Plus size={16} />
+                    <span>+ Make Supply Order (สั่งเบิกอุปกรณ์)</span>
+                  </Button>
+                )}
+
+                {canRequestOrder && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleOpenCreateModal(true)}
+                    className="h-10 px-3.5 bg-amber-500/20 hover:bg-amber-500/30 border-amber-400/40 text-amber-200 font-extrabold text-xs rounded-xl backdrop-blur-sm gap-1.5 cursor-pointer transition-all"
+                  >
+                    <Sparkles size={15} />
+                    <span>+ Request Custom Item (ขอสั่งนอกรายการ)</span>
+                  </Button>
+                )}
+              </>
+            ) : viewTab === 'stock' ? (
+              <>
                 <Button
                   size="sm"
-                  onClick={handleOpenCreateModal}
-                  className="h-10 px-4 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-sky-600/30 gap-2 cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98]"
+                  variant="outline"
+                  onClick={() => loadBranchStock(effectiveStockBranchId)}
+                  disabled={loadingStock}
+                  className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl backdrop-blur-sm transition-all cursor-pointer"
                 >
-                  <Plus size={16} />
-                  <span>+ New Supply Order (สั่งซื้อน้ำยา)</span>
+                  <RefreshCw size={15} className={loadingStock ? 'animate-spin' : ''} />
+                  <span className="hidden sm:inline ml-1.5">Refresh Stock</span>
+                </Button>
+
+                {canOpenOrderModal && (
+                  <Button
+                    size="sm"
+                    onClick={handleOrderAllLowStock}
+                    className="h-10 px-4 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-amber-600/30 gap-2 cursor-pointer"
+                  >
+                    <ShoppingBag size={15} />
+                    <span>
+                      Order Low Stock ({stockStats.low + stockStats.out} รายการใกล้หมด)
+                    </span>
+                  </Button>
+                )}
+              </>
+            ) : viewTab === 'report' ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    loadOrders(true);
+                    loadBranchStock(effectiveStockBranchId);
+                  }}
+                  disabled={refreshing || loadingStock}
+                  className="h-10 px-3 bg-white/10 hover:bg-white/20 border-white/20 text-white font-bold text-xs rounded-xl backdrop-blur-sm transition-all cursor-pointer"
+                >
+                  <RefreshCw size={15} className={refreshing || loadingStock ? 'animate-spin' : ''} />
+                  <span className="hidden sm:inline ml-1.5">Refresh Report</span>
+                </Button>
+
+                <Button
+                  size="sm"
+                  onClick={handleExportReportCsv}
+                  className="h-10 px-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-emerald-600/30 gap-2 cursor-pointer"
+                >
+                  <Download size={15} />
+                  <span>Export CSV Report</span>
                 </Button>
               </>
             ) : (
               <>
+                {canReviewPrice && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleOpenPriceReviewModal}
+                    className="h-10 px-3.5 bg-amber-500/20 hover:bg-amber-500/30 border-amber-400/40 text-amber-200 font-extrabold text-xs rounded-xl gap-1.5 cursor-pointer"
+                  >
+                    <Clock size={14} />
+                    <span>6-Month Price Review ({priceReviewSummary.actionRequiredItems.length})</span>
+                  </Button>
+                )}
+
                 <Button
                   size="sm"
                   onClick={handleOpenCreateItemModal}
@@ -734,7 +1473,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
           </div>
         </div>
 
-        {/* Sub-tab Navigation: Orders vs Catalog Manager */}
+        {/* Sub-tab Navigation: Orders vs Branch Stock vs Catalog Manager */}
         <div className="flex items-center gap-1.5 p-1 bg-white/10 backdrop-blur-md rounded-xl border border-white/15 w-fit max-w-full overflow-x-auto relative z-10 custom-scrollbar">
           <button
             type="button"
@@ -756,7 +1495,46 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
             </span>
           </button>
 
-          {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setViewTab('stock')}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
+              viewTab === 'stock'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-white/80 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            <Store size={14} />
+            <span>Branch Stock (สต็อกประจำสาขา)</span>
+            <span
+              className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                stockStats.low + stockStats.out > 0
+                  ? 'bg-amber-500 text-white'
+                  : viewTab === 'stock'
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : 'bg-white/20 text-white'
+              }`}
+            >
+              {stockStats.low + stockStats.out > 0
+                ? `${stockStats.low + stockStats.out} Low`
+                : stockStats.total}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setViewTab('report')}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
+              viewTab === 'report'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-white/80 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            <BarChart3 size={14} />
+            <span>Usage & Cost Report (รายงานการเบิกและใช้รายสาขา)</span>
+          </button>
+
+          {(canCreateItem || canReviewPrice) && (
             <button
               type="button"
               onClick={() => setViewTab('catalog')}
@@ -767,7 +1545,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
               }`}
             >
               <Boxes size={14} />
-              <span>Available Items & Catalog (ตั้งค่ารายการสินค้าที่สั่งได้)</span>
+              <span>Available Items & Catalog (ตั้งค่ารายการสินค้า/ราคา)</span>
               <span
                 className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
                   viewTab === 'catalog' ? 'bg-sky-100 text-sky-800' : 'bg-white/20 text-white'
@@ -779,6 +1557,70 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
           )}
         </div>
       </div>
+
+      {/* 6-MONTH PRICE REVIEW REMINDER BANNER FOR CSO / ADMIN */}
+      {canReviewPrice && priceReviewSummary.actionRequiredItems.length > 0 && (
+        <div className="bg-gradient-to-r from-amber-50 via-orange-50/90 to-amber-50 border border-amber-300/90 rounded-2xl p-4 shadow-2xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 rounded-xl bg-amber-500 text-white shrink-0 shadow-xs">
+              <Clock size={20} className="animate-pulse" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs sm:text-sm font-black text-amber-950">
+                  ⏰ 6-Month Supply Price Review Reminder (แจ้งเตือนทบทวนราคาทุก 6 เดือน)
+                </span>
+                {priceReviewSummary.overdueItems.length > 0 && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-600 text-white">
+                    Overdue &gt; 6M: {priceReviewSummary.overdueItems.length} items (ครบกำหนด)
+                  </span>
+                )}
+                {priceReviewSummary.dueSoonItems.length > 0 && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-200 text-amber-900">
+                    Due Soon (≤15d): {priceReviewSummary.dueSoonItems.length} items (ใกล้ครบ)
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-amber-900/80">
+                Items due for supplier cost review (รายการถึงรอบเช็คราคา):{' '}
+                <strong className="font-bold text-amber-950">
+                  {priceReviewSummary.actionRequiredItems
+                    .slice(0, 4)
+                    .map((x) => x.item.name)
+                    .join(', ')}
+                  {priceReviewSummary.actionRequiredItems.length > 4
+                    ? ` +${priceReviewSummary.actionRequiredItems.length - 4} more`
+                    : ''}
+                </strong>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleSendCsoReminderTask}
+              disabled={sendingReminderTask}
+              className="h-9 px-3 bg-white hover:bg-amber-100/60 border-amber-300 text-amber-900 text-xs font-bold rounded-xl gap-1.5 cursor-pointer"
+            >
+              <Send size={13} />
+              <span>
+                {sendingReminderTask ? 'Creating Task...' : 'Create CSO Reminder Task (สร้าง Task แจ้งเตือน)'}
+              </span>
+            </Button>
+
+            <Button
+              size="sm"
+              onClick={handleOpenPriceReviewModal}
+              className="h-9 px-4 bg-amber-600 hover:bg-amber-700 text-white text-xs font-extrabold rounded-xl shadow-xs gap-1.5 cursor-pointer"
+            >
+              <CheckCircle2 size={14} />
+              <span>Review & Update Prices (อัปเดตราคา)</span>
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* ======================================================== */}
       {/* VIEW TAB 1: BRANCH ORDERS (คำสั่งซื้อของสาขา) */}
@@ -911,7 +1753,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
 
               {/* Quick Filters */}
               <div className="flex flex-wrap items-center gap-2">
-                {isAdmin ? (
+                {canProcessOrder ? (
                   <select
                     value={branchFilter}
                     onChange={(e) => setBranchFilter(e.target.value)}
@@ -1012,14 +1854,16 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                     : 'No chemicals or supplies have been ordered yet. Click below to submit an order to the admin.'}
                 </p>
               </div>
-              <Button
-                size="sm"
-                onClick={handleOpenCreateModal}
-                className="h-9 px-4 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl gap-1.5"
-              >
-                <Plus size={15} />
-                <span>Create First Supply Order</span>
-              </Button>
+              {canOpenOrderModal && (
+                <Button
+                  size="sm"
+                  onClick={() => handleOpenCreateModal(false)}
+                  className="h-9 px-4 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl gap-1.5"
+                >
+                  <Plus size={15} />
+                  <span>Create First Supply Order</span>
+                </Button>
+              )}
             </div>
           ) : (
             <div className="space-y-3">
@@ -1133,8 +1977,8 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                           </div>
 
                           <div className="flex items-center gap-1.5 flex-wrap justify-end">
-                            {/* Quick Admin Actions */}
-                            {isAdmin && order.status === 'pending' && (
+                            {/* Quick Processing Actions (Admin / CSO) */}
+                            {canProcessOrder && order.status === 'pending' && (
                               <Button
                                 size="sm"
                                 onClick={() => handleQuickStatusChange(order, 'approved')}
@@ -1146,7 +1990,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                               </Button>
                             )}
 
-                            {isAdmin && order.status === 'approved' && (
+                            {canProcessOrder && order.status === 'approved' && (
                               <Button
                                 size="sm"
                                 onClick={() => handleQuickStatusChange(order, 'processing')}
@@ -1158,7 +2002,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                               </Button>
                             )}
 
-                            {isAdmin && order.status === 'processing' && (
+                            {canProcessOrder && order.status === 'processing' && (
                               <Button
                                 size="sm"
                                 onClick={() => handleQuickStatusChange(order, 'dispatched')}
@@ -1224,9 +2068,784 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
       )}
 
       {/* ======================================================== */}
-      {/* VIEW TAB 2: AVAILABLE ITEMS & CATALOG (ADMIN SETTINGS)   */}
+      {/* VIEW TAB 1.5: BRANCH STOCK (สต็อกประจำสาขา)              */}
       {/* ======================================================== */}
-      {viewTab === 'catalog' && isAdmin && (
+      {viewTab === 'stock' && (
+        <div className="space-y-4">
+          {/* Stock KPI Cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+            <div
+              onClick={() => setStockStatusFilter('all')}
+              className={`bg-white rounded-2xl border p-4 shadow-2xs cursor-pointer transition-all hover:shadow-md ${
+                stockStatusFilter === 'all'
+                  ? 'border-sky-500 ring-2 ring-sky-500/20 bg-sky-50/10'
+                  : 'border-slate-200/80 border-t-4 border-t-sky-500'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Tracked Branch Supplies
+                </span>
+                <span className="p-1.5 rounded-lg bg-sky-50 text-sky-600">
+                  <Boxes size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-slate-900">{stockStats.total}</span>
+                <span className="text-xs text-slate-500 font-semibold">items</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">
+                {shops.find((s) => s.id === effectiveStockBranchId)?.name || 'Selected Branch'}
+              </p>
+            </div>
+
+            <div
+              onClick={() => setStockStatusFilter('all')}
+              className="bg-white rounded-2xl border border-slate-200/80 border-t-4 border-t-emerald-500 p-4 shadow-2xs cursor-pointer"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Healthy Stock (ปกติ)
+                </span>
+                <span className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600">
+                  <CheckCircle2 size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-emerald-600">{stockStats.normal}</span>
+                <span className="text-xs text-emerald-700 font-semibold">items</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Above minimum threshold</p>
+            </div>
+
+            <div
+              onClick={() => setStockStatusFilter(stockStatusFilter === 'low' ? 'all' : 'low')}
+              className={`bg-white rounded-2xl border p-4 shadow-2xs cursor-pointer transition-all hover:shadow-md ${
+                stockStatusFilter === 'low'
+                  ? 'border-amber-500 ring-2 ring-amber-500/20 bg-amber-50/20'
+                  : 'border-slate-200/80 border-t-4 border-t-amber-500'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Low Stock Alert (ใกล้หมด)
+                </span>
+                <span className="p-1.5 rounded-lg bg-amber-50 text-amber-600">
+                  <AlertTriangle size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-amber-600">{stockStats.low}</span>
+                <span className="text-xs text-amber-700 font-semibold">low</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Should reorder soon</p>
+            </div>
+
+            <div
+              onClick={() => setStockStatusFilter(stockStatusFilter === 'out' ? 'all' : 'out')}
+              className={`bg-white rounded-2xl border p-4 shadow-2xs cursor-pointer transition-all hover:shadow-md ${
+                stockStatusFilter === 'out'
+                  ? 'border-rose-500 ring-2 ring-rose-500/20 bg-rose-50/20'
+                  : 'border-slate-200/80 border-t-4 border-t-rose-500'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Out of Stock (หมดสต็อก)
+                </span>
+                <span className="p-1.5 rounded-lg bg-rose-50 text-rose-600">
+                  <AlertCircle size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-rose-600">{stockStats.out}</span>
+                <span className="text-xs text-rose-700 font-semibold">depleted</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Immediate restock needed</p>
+            </div>
+          </div>
+
+          {/* Stock Filter & Branch Selector Bar */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs space-y-3">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="relative flex-1">
+                <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Input
+                  value={stockSearchQuery}
+                  onChange={(e) => setStockSearchQuery(e.target.value)}
+                  placeholder="Search branch stock items by English or Thai name (ค้นหาสินค้าในสต็อกสาขา)..."
+                  className="pl-9 h-10 text-xs bg-slate-50 border-slate-200 rounded-xl focus:bg-white"
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {isAdmin || canProcessOrder ? (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-bold text-slate-500">Branch (สาขา):</span>
+                    <select
+                      value={stockBranchId}
+                      onChange={(e) => setStockBranchId(e.target.value)}
+                      className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                    >
+                      <option value="ONLINE">Online Central Dispatch</option>
+                      {shops.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <div className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                    <Store size={14} className="text-sky-600" />
+                    <span>
+                      {shops.find((s) => s.id === effectiveStockBranchId)?.name || 'My Branch'}
+                    </span>
+                    <span className="text-[10px] text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded font-black">
+                      My Outlet
+                    </span>
+                  </div>
+                )}
+
+                {canOpenOrderModal && (stockStats.low > 0 || stockStats.out > 0) && (
+                  <Button
+                    size="sm"
+                    onClick={handleOrderAllLowStock}
+                    className="h-10 px-4 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs rounded-xl gap-1.5 cursor-pointer"
+                  >
+                    <ShoppingBag size={14} />
+                    <span>Order Low Stock ({stockStats.low + stockStats.out} รายการใกล้หมด)</span>
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {/* Category Filter Pills */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setStockCategoryFilter('all')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  stockCategoryFilter === 'all'
+                    ? 'bg-slate-900 text-white'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                All Categories
+              </button>
+              {Object.entries(SUPPLY_CATEGORY_LABELS).map(([catKey, label]) => (
+                <button
+                  key={catKey}
+                  type="button"
+                  onClick={() => setStockCategoryFilter(catKey)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    stockCategoryFilter === catKey
+                      ? 'bg-sky-700 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  <span>{label.icon}</span>
+                  <span>{label.en}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Stock Items Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            {branchStockViewList.map((row) => {
+              const { catalogItem: item, quantity, minStock, isLow, isOut } = row;
+              const catCfg = SUPPLY_CATEGORY_LABELS[item.category] || SUPPLY_CATEGORY_LABELS.other;
+
+              return (
+                <div
+                  key={item.id}
+                  className={`bg-white rounded-2xl border p-4 shadow-2xs transition-all flex flex-col justify-between gap-3 ${
+                    isOut
+                      ? 'border-rose-300 bg-rose-50/20'
+                      : isLow
+                      ? 'border-amber-300 bg-amber-50/15'
+                      : 'border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-slate-100 text-slate-700">
+                        <span>{catCfg.icon}</span>
+                        <span>{catCfg.en}</span>
+                      </span>
+
+                      {isOut ? (
+                        <Badge className="bg-rose-600 text-white font-black text-[10px] gap-1 animate-pulse">
+                          <AlertTriangle size={11} /> Out of Stock (หมดสต็อก)
+                        </Badge>
+                      ) : isLow ? (
+                        <Badge className="bg-amber-100 text-amber-800 border-amber-300 font-black text-[10px] gap-1">
+                          <AlertCircle size={11} /> Low Stock ≤ {minStock} (ใกล้หมด)
+                        </Badge>
+                      ) : (
+                        <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200 font-bold text-[10px] gap-1">
+                          <CheckCircle2 size={11} /> In Stock (ปกติ)
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div>
+                      <h4 className="text-sm font-black text-slate-900 leading-snug">{item.name}</h4>
+                      <p className="text-xs text-slate-500 mt-0.5">{item.nameTh}</p>
+                    </div>
+
+                    {/* Stock Counter Box */}
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                          Current Stock (คงเหลือในสาขา)
+                        </span>
+                        <div className="flex items-baseline gap-1.5 mt-0.5">
+                          <span
+                            className={`text-2xl font-black ${
+                              isOut
+                                ? 'text-rose-600'
+                                : isLow
+                                ? 'text-amber-600'
+                                : 'text-slate-900'
+                            }`}
+                          >
+                            {quantity}
+                          </span>
+                          <span className="text-xs font-bold text-slate-500">
+                            {item.defaultUnit}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-400">
+                          Min Alert (จุดเตือนขั้นต่ำ): <strong>{minStock}</strong>
+                        </span>
+                      </div>
+
+                      {/* Quick -1 / +1 Buttons */}
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleQuickAdjustStock(item, quantity, minStock, -1)}
+                          disabled={quantity <= 0}
+                          className="h-9 px-2.5 rounded-xl bg-white border border-slate-200 hover:bg-rose-50 hover:border-rose-200 hover:text-rose-700 font-extrabold text-xs text-slate-700 shadow-2xs transition-colors cursor-pointer disabled:opacity-40"
+                          title="Deduct 1 unit used (-1 ใช้ไป)"
+                        >
+                          -1 Use (ใช้)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleQuickAdjustStock(item, quantity, minStock, 1)}
+                          className="h-9 px-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-extrabold text-xs shadow-2xs transition-colors cursor-pointer"
+                          title="Add 1 unit received (+1 รับเข้า)"
+                        >
+                          +1 Add (รับ)
+                        </button>
+                      </div>
+                    </div>
+
+                    {row.updatedAt && (
+                      <div className="text-[10px] text-slate-400 flex items-center justify-between">
+                        <span>
+                          Updated: {new Date(row.updatedAt).toLocaleDateString('en-GB')}{' '}
+                          {row.updatedBy ? `by ${row.updatedBy}` : ''}
+                        </span>
+                        {row.lastNote && <span className="italic truncate max-w-[140px]">{row.lastNote}</span>}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        setAdjustingStockItem({
+                          catalogItem: item,
+                          quantity,
+                          minStock,
+                          note: '',
+                        })
+                      }
+                      className="h-7 px-2.5 text-[11px] font-bold rounded-lg border-slate-200 text-slate-700 hover:bg-slate-100 gap-1 cursor-pointer"
+                    >
+                      <SlidersHorizontal size={11} />
+                      <span>Adjust / Min Alert (นับสต็อก)</span>
+                    </Button>
+
+                    {canOpenOrderModal && (
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          setOrderBranchId(effectiveStockBranchId);
+                          handleAddCatalogItem(item);
+                          setIsCreateOpen(true);
+                        }}
+                        className="h-7 px-2.5 text-[11px] font-bold rounded-lg bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white transition-colors cursor-pointer"
+                      >
+                        + Reorder (สั่งเพิ่ม)
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* VIEW TAB 1.8: BRANCH ORDER & USAGE REPORT (รายงานการเบิก/ใช้) */}
+      {/* ======================================================== */}
+      {viewTab === 'report' && (
+        <div className="space-y-5">
+          {/* Filter & Controls Bar */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-extrabold text-slate-700 flex items-center gap-1.5 mr-1">
+                <Calendar size={14} className="text-indigo-600" />
+                <span>Period (ช่วงเวลา):</span>
+              </span>
+              {[
+                { id: 'this_month', label: 'This Month (เดือนนี้)' },
+                { id: '30days', label: 'Last 30 Days (30 วัน)' },
+                { id: '7days', label: 'Last 7 Days (7 วัน)' },
+                { id: 'all', label: 'All Time (ทั้งหมด)' },
+              ].map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setReportPeriod(p.id as any)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    reportPeriod === p.id
+                      ? 'bg-indigo-600 text-white shadow-2xs'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {isAdmin || canProcessOrder ? (
+                <select
+                  value={reportBranchFilter}
+                  onChange={(e) => setReportBranchFilter(e.target.value)}
+                  className="h-9 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                >
+                  <option value="all">All Branches (เปรียบเทียบทุกสาขา)</option>
+                  <option value="ONLINE">Online Central Dispatch</option>
+                  {shops.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="h-9 rounded-xl border border-slate-200 bg-slate-50 px-3 flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                  <Store size={13} className="text-sky-600" />
+                  <span>
+                    {shops.find((s) => s.id === currentUser?.branchId)?.name || 'My Branch'}
+                  </span>
+                </div>
+              )}
+
+              <select
+                value={reportCategoryFilter}
+                onChange={(e) => setReportCategoryFilter(e.target.value)}
+                className="h-9 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+              >
+                <option value="all">All Categories (ทุกหมวดหมู่)</option>
+                {Object.entries(SUPPLY_CATEGORY_LABELS).map(([k, cfg]) => (
+                  <option key={k} value={k}>
+                    {cfg.icon} {cfg.en} ({cfg.th})
+                  </option>
+                ))}
+              </select>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleExportReportCsv}
+                className="h-9 px-3 rounded-xl border-emerald-300 bg-emerald-50/70 text-emerald-800 hover:bg-emerald-100 text-xs font-bold gap-1.5 cursor-pointer"
+              >
+                <Download size={13} />
+                <span>Export CSV</span>
+              </Button>
+            </div>
+          </div>
+
+          {/* Executive KPI Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+            <div className="bg-white rounded-2xl border border-slate-200/80 border-t-4 border-t-indigo-500 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Total Ordered (ยอดสั่งเบิกรวม)
+                </span>
+                <span className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600">
+                  <ShoppingBag size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-slate-900">
+                  {reportAnalytics.totals.orderedQty.toLocaleString()}
+                </span>
+                <span className="text-xs font-semibold text-slate-500">
+                  units ({reportAnalytics.totals.ordersCount} orders)
+                </span>
+              </div>
+              <p className="text-xs text-indigo-700 font-bold mt-1">
+                Ordered Cost (มูลค่าเบิก): ฿{reportAnalytics.totals.orderedCost.toLocaleString()}
+              </p>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-200/80 border-t-4 border-t-emerald-500 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Total Received (รับเข้าสต็อกแล้ว)
+                </span>
+                <span className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600">
+                  <ArrowDownRight size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-emerald-600">
+                  {reportAnalytics.totals.receivedQty.toLocaleString()}
+                </span>
+                <span className="text-xs font-semibold text-emerald-700">units received</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                From completed POs & manual restocks (รับเข้าจริง)
+              </p>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-200/80 border-t-4 border-t-rose-500 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Actual Used (ยอดตัดใช้จริง)
+                </span>
+                <span className="p-1.5 rounded-lg bg-rose-50 text-rose-600">
+                  <ArrowUpRight size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-rose-600">
+                  {reportAnalytics.totals.usedQty.toLocaleString()}
+                </span>
+                <span className="text-xs font-semibold text-rose-700">units consumed</span>
+              </div>
+              <p className="text-xs text-rose-700 font-bold mt-1">
+                Used Cost (ต้นทุนใช้จริง): ฿{reportAnalytics.totals.usedCost.toLocaleString()}
+              </p>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-200/80 border-t-4 border-t-sky-500 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Remaining Stock (คงเหลือปัจจุบัน)
+                </span>
+                <span className="p-1.5 rounded-lg bg-sky-50 text-sky-600">
+                  <Store size={14} />
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-sky-700">
+                  {reportAnalytics.totals.currentStockQty.toLocaleString()}
+                </span>
+                <span className="text-xs font-semibold text-slate-500">units on hand</span>
+              </div>
+              <p className="text-xs text-sky-700 font-bold mt-1">
+                Stock Value (มูลค่าคงเหลือ): ~฿{reportAnalytics.totals.currentStockValue.toLocaleString()}
+              </p>
+            </div>
+          </div>
+
+          {/* 1. Branch-by-Branch Comparison Table */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-50/60">
+              <div>
+                <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                  <Building2 size={16} className="text-indigo-600" />
+                  <span>
+                    1. Branch Order vs Usage Summary (ตารางสรุปยอดเบิกและใช้รายสาขา)
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Compare ordered quantities, received stock, actual usage, and current on-hand balance by branch (เปรียบเทียบยอดเบิก-รับ-ใช้จริงรายสาขา)
+                </p>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-left">
+                    <th className="py-3 px-4 font-extrabold uppercase text-[10px]">Branch (สาขา)</th>
+                    <th className="py-3 px-3 font-extrabold uppercase text-[10px] text-center">
+                      Orders (ใบเบิก)
+                    </th>
+                    <th className="py-3 px-3 font-extrabold uppercase text-[10px] text-right">
+                      Ordered Qty (เบิก)
+                    </th>
+                    <th className="py-3 px-3 font-extrabold uppercase text-[10px] text-right">
+                      Ordered Cost (มูลค่าเบิก)
+                    </th>
+                    <th className="py-3 px-3 font-extrabold uppercase text-[10px] text-right">
+                      Received (รับเข้า)
+                    </th>
+                    <th className="py-3 px-3 font-extrabold uppercase text-[10px] text-right">
+                      Actual Used (ใช้จริง)
+                    </th>
+                    <th className="py-3 px-3 font-extrabold uppercase text-[10px] text-right">
+                      Used Cost (ต้นทุนใช้)
+                    </th>
+                    <th className="py-3 px-3 font-extrabold uppercase text-[10px] text-right">
+                      Current Stock (คงเหลือ)
+                    </th>
+                    <th className="py-3 px-4 font-extrabold uppercase text-[10px] text-center">
+                      Status (สถานะ)
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {reportAnalytics.branchRows.map((row) => (
+                    <tr key={row.branchId} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="py-3 px-4 font-black text-slate-900 flex items-center gap-2">
+                        <Store size={14} className="text-sky-600 shrink-0" />
+                        <span>{row.branchName}</span>
+                      </td>
+                      <td className="py-3 px-3 text-center font-bold text-slate-700">
+                        {row.ordersCount}
+                      </td>
+                      <td className="py-3 px-3 text-right font-extrabold text-indigo-700">
+                        {row.orderedQty.toLocaleString()} units
+                      </td>
+                      <td className="py-3 px-3 text-right font-bold text-slate-800">
+                        ฿{row.orderedCost.toLocaleString()}
+                      </td>
+                      <td className="py-3 px-3 text-right font-bold text-emerald-700">
+                        +{row.receivedQty.toLocaleString()} units
+                      </td>
+                      <td className="py-3 px-3 text-right font-extrabold text-rose-600">
+                        -{row.usedQty.toLocaleString()} units
+                      </td>
+                      <td className="py-3 px-3 text-right font-black text-rose-700">
+                        ฿{row.usedCost.toLocaleString()}
+                      </td>
+                      <td className="py-3 px-3 text-right font-black text-sky-700">
+                        {row.currentStockQty.toLocaleString()} units
+                        <span className="block text-[10px] font-medium text-slate-400">
+                          (~฿{row.currentStockValue.toLocaleString()})
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-center">
+                        {row.lowStockCount > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setStockBranchId(row.branchId);
+                              setStockStatusFilter('low');
+                              setViewTab('stock');
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 cursor-pointer"
+                          >
+                            <AlertTriangle size={11} />
+                            <span>{row.lowStockCount} Low (ใกล้หมด)</span>
+                          </button>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            <CheckCircle2 size={11} /> Healthy (ปกติ)
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-slate-900 text-white font-black text-xs">
+                    <td className="py-3 px-4">Total Summary (รวมทั้งหมด)</td>
+                    <td className="py-3 px-3 text-center">{reportAnalytics.totals.ordersCount}</td>
+                    <td className="py-3 px-3 text-right">
+                      {reportAnalytics.totals.orderedQty.toLocaleString()} units
+                    </td>
+                    <td className="py-3 px-3 text-right text-sky-300">
+                      ฿{reportAnalytics.totals.orderedCost.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-3 text-right text-emerald-300">
+                      +{reportAnalytics.totals.receivedQty.toLocaleString()} units
+                    </td>
+                    <td className="py-3 px-3 text-right text-rose-300">
+                      -{reportAnalytics.totals.usedQty.toLocaleString()} units
+                    </td>
+                    <td className="py-3 px-3 text-right text-rose-300">
+                      ฿{reportAnalytics.totals.usedCost.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-3 text-right text-sky-200">
+                      {reportAnalytics.totals.currentStockQty.toLocaleString()} units
+                    </td>
+                    <td className="py-3 px-4 text-center text-[11px] text-slate-300">
+                      ~฿{reportAnalytics.totals.currentStockValue.toLocaleString()}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+
+          {/* 2. Item Breakdown & 3. Recent Stock Usage Log */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Section 2: Item Consumption Breakdown */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col">
+              <div className="p-4 border-b border-slate-100 bg-slate-50/60">
+                <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                  <TrendingUp size={16} className="text-sky-600" />
+                  <span>2. Consumption Breakdown by Item (สรุปยอดเบิกและใช้แยกตามสินค้า)</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Sorted by highest ordered & consumed value (เรียงตามมูลค่าการเบิกและใช้งานสูงสุด)
+                </p>
+              </div>
+
+              <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto custom-scrollbar">
+                {reportAnalytics.itemRows.map(({ item, orderedQty, orderedCost, usedQty, usedCost }) => {
+                  const catCfg = SUPPLY_CATEGORY_LABELS[item.category] || SUPPLY_CATEGORY_LABELS.other;
+                  return (
+                    <div
+                      key={item.id}
+                      className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50 text-xs"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span>{catCfg.icon}</span>
+                          <span className="font-black text-slate-900 truncate">{item.name}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 truncate mt-0.5">
+                          {item.nameTh} • ฿{item.estimatedPrice} / {item.defaultUnit}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4 shrink-0 text-right">
+                        <div>
+                          <span className="text-[10px] font-bold text-slate-400 block uppercase">
+                            Ordered (เบิก)
+                          </span>
+                          <span className="font-extrabold text-indigo-700">
+                            {orderedQty} <span className="text-[10px] font-normal">({item.defaultUnit})</span>
+                          </span>
+                          <span className="block text-[10px] text-slate-500">
+                            ฿{orderedCost.toLocaleString()}
+                          </span>
+                        </div>
+
+                        <div className="pl-3 border-l border-slate-100">
+                          <span className="text-[10px] font-bold text-slate-400 block uppercase">
+                            Used (ใช้จริง)
+                          </span>
+                          <span className="font-extrabold text-rose-600">
+                            {usedQty} <span className="text-[10px] font-normal">units</span>
+                          </span>
+                          <span className="block text-[10px] font-bold text-rose-700">
+                            ฿{usedCost.toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Section 3: Stock Usage & Movement Log */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col">
+              <div className="p-4 border-b border-slate-100 bg-slate-50/60">
+                <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                  <History size={16} className="text-rose-600" />
+                  <span>
+                    3. Stock Usage & Movement Log (ประวัติการตัดสต็อกและรับเข้าล่าสุด)
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Audit log of "-1 Use", "+1 Add", stock counts, and completed PO receipts (บันทึกทุกครั้งที่มีการตัด/เพิ่มสต็อก)
+                </p>
+              </div>
+
+              {reportAnalytics.periodMovements.length === 0 ? (
+                <div className="p-8 text-center text-xs text-slate-400 space-y-2">
+                  <History size={28} className="mx-auto text-slate-300" />
+                  <div className="font-bold text-slate-600">
+                    No stock movements recorded in this period (ยังไม่มีประวัติการเคลื่อนไหวสต็อก)
+                  </div>
+                  <p>
+                    When branches click <strong>"-1 Use"</strong> or <strong>"Adjust Stock"</strong> in{' '}
+                    <strong>Branch Stock</strong>, or when a Supply Order is marked Completed, logs will appear here.
+                  </p>
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto custom-scrollbar">
+                  {reportAnalytics.periodMovements.slice(0, 50).map((mov) => {
+                    const isUsage = mov.deltaQty < 0;
+                    const branchLabel =
+                      shops.find((s) => s.id === mov.branchId)?.name ||
+                      mov.branchName ||
+                      mov.branchId;
+                    return (
+                      <div
+                        key={mov.id}
+                        className="p-3 flex items-center justify-between gap-3 hover:bg-slate-50 text-xs"
+                      >
+                        <div className="space-y-0.5 min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-800 font-bold text-[10px]">
+                              {branchLabel}
+                            </span>
+                            <span className="font-extrabold text-slate-900 truncate">
+                              {mov.itemName}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 flex items-center gap-2 flex-wrap">
+                            <span>
+                              {new Date(mov.createdAt).toLocaleDateString('en-GB', {
+                                day: 'numeric',
+                                month: 'short',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                            <span>• by {mov.userName}</span>
+                            {mov.note && <span className="italic text-slate-400">({mov.note})</span>}
+                          </div>
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-lg font-black text-xs ${
+                              isUsage
+                                ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            }`}
+                          >
+                            {mov.deltaQty > 0 ? `+${mov.deltaQty}` : mov.deltaQty} {mov.unit}
+                          </span>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            Stock: {mov.previousQty} ➡️ <strong>{mov.newQty}</strong> (฿
+                            {(mov.estimatedCostImpact || 0).toLocaleString()})
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* VIEW TAB 2: AVAILABLE ITEMS & CATALOG (CREATE ITEM PERM) */}
+      {/* ======================================================== */}
+      {viewTab === 'catalog' && (canCreateItem || canReviewPrice) && (
         <div className="space-y-4">
           {/* Catalog KPI Analytics Strip */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
@@ -1278,20 +2897,25 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
               <p className="text-[11px] text-slate-500 mt-1 font-medium">Closed for ordering</p>
             </div>
 
-            <div className="bg-white rounded-2xl border border-slate-200/80 border-t-4 border-t-indigo-500 p-4 shadow-2xs">
+            <div
+              onClick={handleOpenPriceReviewModal}
+              className="bg-white rounded-2xl border border-slate-200/80 border-t-4 border-t-rose-500 p-4 shadow-2xs cursor-pointer hover:shadow-md transition-all"
+            >
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                  Popular Essentials
+                  6-Month Price Review Due
                 </span>
-                <span className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600">
-                  <Star size={14} />
+                <span className="p-1.5 rounded-lg bg-rose-50 text-rose-600">
+                  <Clock size={14} />
                 </span>
               </div>
               <div className="mt-2 flex items-baseline gap-2">
-                <span className="text-2xl font-black text-indigo-600">{catalogStats.popular}</span>
-                <span className="text-xs text-indigo-700 font-semibold">featured</span>
+                <span className="text-2xl font-black text-rose-600">
+                  {priceReviewSummary.actionRequiredItems.length}
+                </span>
+                <span className="text-xs text-rose-700 font-semibold">items due</span>
               </div>
-              <p className="text-[11px] text-slate-500 mt-1 font-medium">Highlighted for fast re-ordering</p>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Click to confirm/update prices</p>
             </div>
           </div>
 
@@ -1330,14 +2954,16 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                   <option value="disabled">Disabled / Out of Stock Only</option>
                 </select>
 
-                <Button
-                  size="sm"
-                  onClick={handleOpenCreateItemModal}
-                  className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-xs gap-1.5 cursor-pointer"
-                >
-                  <Plus size={15} />
-                  <span>+ Add Item</span>
-                </Button>
+                {canCreateItem && (
+                  <Button
+                    size="sm"
+                    onClick={handleOpenCreateItemModal}
+                    className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-xs gap-1.5 cursor-pointer"
+                  >
+                    <Plus size={15} />
+                    <span>+ Add Item</span>
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -1388,12 +3014,15 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
             {filteredCatalogAdmin.map((item) => {
               const isAvailable = item.available !== false;
               const catCfg = SUPPLY_CATEGORY_LABELS[item.category] || SUPPLY_CATEGORY_LABELS.other;
+              const reviewStatus = getSupplyItemPriceReviewStatus(item);
 
               return (
                 <div
                   key={item.id}
                   className={`bg-white rounded-2xl border p-4 shadow-2xs transition-all flex flex-col justify-between gap-3 ${
-                    isAvailable
+                    reviewStatus.isDue
+                      ? 'border-rose-300 ring-1 ring-rose-200'
+                      : isAvailable
                       ? 'border-slate-200 hover:border-slate-300 hover:shadow-md'
                       : 'border-amber-300/80 bg-amber-50/20 opacity-85'
                   }`}
@@ -1465,6 +3094,26 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                       </div>
                     </div>
 
+                    {/* 6-Month Price Review Status Strip */}
+                    <div className="flex items-center justify-between text-[10px] pt-1">
+                      <span className="text-slate-400">
+                        Last price update: {reviewStatus.daysSinceUpdate}d ago (อัปเดตล่าสุด)
+                      </span>
+                      {reviewStatus.isDue ? (
+                        <span className="font-black text-rose-600 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
+                          ⏰ Price Review Due (ครบ 6 เดือน)
+                        </span>
+                      ) : reviewStatus.isDueSoon ? (
+                        <span className="font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                          ⏳ Due in {reviewStatus.daysUntilDue}d (ใกล้ครบ)
+                        </span>
+                      ) : (
+                        <span className="font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                          ✓ Up to date ({reviewStatus.daysUntilDue}d left)
+                        </span>
+                      )}
+                    </div>
+
                     {item.vendor && (
                       <div className="text-[10px] text-slate-400 font-medium">
                         Supplier: <span className="font-bold text-slate-600">{item.vendor}</span>
@@ -1488,20 +3137,22 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                         variant="outline"
                         onClick={() => handleOpenEditItemModal(item)}
                         className="h-7 px-2.5 text-xs font-bold rounded-lg gap-1 border-slate-200 hover:bg-slate-100"
-                        title="Edit Item Details"
+                        title="Edit Item Details / Update Price"
                       >
                         <Edit2 size={12} />
-                        <span>Edit</span>
+                        <span>Edit / Price</span>
                       </Button>
 
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteCatalogItem(item.id, item.name)}
-                        className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                        title="Delete Item"
-                      >
-                        <Trash2 size={13} />
-                      </button>
+                      {canCreateItem && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCatalogItem(item.id, item.name)}
+                          className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                          title="Delete Item"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1538,13 +3189,13 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
               <div className="space-y-1">
                 <label className="text-xs font-bold text-slate-600 flex items-center justify-between">
                   <span>Branch (สาขา) *</span>
-                  {!isAdmin && (
+                  {!isAdmin && !canProcessOrder && (
                     <span className="text-[10px] font-bold text-amber-600 flex items-center gap-0.5">
                       <Lock size={10} /> Locked to Outlet
                     </span>
                   )}
                 </label>
-                {isAdmin ? (
+                {isAdmin || canProcessOrder ? (
                   <select
                     value={orderBranchId}
                     onChange={(e) => setOrderBranchId(e.target.value)}
@@ -1570,7 +3221,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                     </span>
                   </div>
                 )}
-                {!isAdmin && (
+                {!isAdmin && !canProcessOrder && (
                   <p className="text-[10px] text-slate-400 font-medium">
                     Orders can only be submitted for your assigned outlet.
                   </p>
@@ -1601,34 +3252,47 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
               </div>
             </div>
 
-            {/* Catalog Selector */}
+            {/* Catalog Selector & Custom Request */}
             <div className="space-y-3">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
                   <h4 className="text-xs font-extrabold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                     <Sparkles size={14} className="text-sky-600" />
-                    <span>Select Chemicals & Supplies (เลือกรายการสั่งซื้อ)</span>
+                    <span>
+                      {canMakeOrder
+                        ? 'Select Supplies from Catalog (Make Order / เลือกเบิกจากรายการมาตรฐาน)'
+                        : 'Request Custom Supply Order (ขอสั่งซื้อรายการพิเศษนอก Catalog)'}
+                    </span>
                   </h4>
                   <p className="text-[11px] text-slate-400">
-                    Showing items currently available for order as set by the admin
+                    {canMakeOrder
+                      ? 'Showing items currently available for branch order'
+                      : 'Specify custom items to request procurement approval'}
                   </p>
                 </div>
 
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setIsAddingCustom(!isAddingCustom)}
-                  className="h-8 px-2.5 text-xs font-bold rounded-xl border-dashed border-sky-400 text-sky-700 bg-sky-50/50 hover:bg-sky-100/60"
-                >
-                  <Plus size={13} />
-                  <span>{isAddingCustom ? 'Close Custom Item' : '+ Custom Item'}</span>
-                </Button>
+                {canRequestOrder && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setIsAddingCustom(!isAddingCustom)}
+                    className="h-8 px-2.5 text-xs font-bold rounded-xl border-dashed border-sky-400 text-sky-700 bg-sky-50/50 hover:bg-sky-100/60"
+                  >
+                    <Plus size={13} />
+                    <span>{isAddingCustom ? 'Close Request Form' : '+ Request Custom Item (ขอสั่งนอกรายการ)'}</span>
+                  </Button>
+                )}
               </div>
 
-              {/* Custom Item Form */}
-              {isAddingCustom && (
+              {/* Custom Item Form (Request Order) */}
+              {canRequestOrder && isAddingCustom && (
                 <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-xl space-y-2.5 animate-fadeIn">
-                  <div className="text-xs font-bold text-sky-900">Add Custom Supply Item</div>
+                  <div className="text-xs font-bold text-sky-900 flex items-center justify-between">
+                    <span>Request Custom / Out-of-Catalog Supply Item (Request Order)</span>
+                    <span className="text-[10px] font-semibold text-sky-700 bg-sky-100 px-2 py-0.5 rounded">
+                      Custom Request
+                    </span>
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
                     <div className="sm:col-span-2">
                       <Input
@@ -1663,12 +3327,14 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                       onClick={handleAddCustomItem}
                       className="h-7 px-3 bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold rounded-lg"
                     >
-                      Add to Order
+                      Add Request Item to Order
                     </Button>
                   </div>
                 </div>
               )}
 
+              {canMakeOrder && (
+                <>
               {/* Category Pills Filter */}
               <div className="flex flex-wrap items-center gap-1.5 pb-1">
                 <button
@@ -1774,6 +3440,8 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                   );
                 })}
               </div>
+                </>
+              )}
             </div>
 
             {/* Selected Items Cart Strip */}
@@ -1979,11 +3647,38 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 </div>
 
                 <div className="space-y-1">
-                  <label className="font-bold text-slate-700">Preferred Supplier / Vendor</label>
+                  <label className="font-bold text-slate-700">Preferred Supplier / Vendor (ซัพพลายเออร์)</label>
+                  <select
+                    value={
+                      vendors.find(
+                        (v) => v.id === editingItem.vendorId || v.name === editingItem.vendor
+                      )?.id || ''
+                    }
+                    onChange={(e) => {
+                      const picked = vendors.find((v) => v.id === e.target.value);
+                      if (picked) {
+                        setEditingItem({
+                          ...editingItem,
+                          vendorId: picked.id,
+                          vendor: picked.name,
+                        });
+                      } else {
+                        setEditingItem({ ...editingItem, vendorId: '' });
+                      }
+                    }}
+                    className="w-full h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-800 mb-1.5"
+                  >
+                    <option value="">-- Select from Vendor CRM or type below (เลือกจาก CRM) --</option>
+                    {vendors.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        [{v.code}] {v.name} {v.lineId ? `(LINE: ${v.lineId})` : ''}
+                      </option>
+                    ))}
+                  </select>
                   <Input
                     value={editingItem.vendor || ''}
                     onChange={(e) => setEditingItem({ ...editingItem, vendor: e.target.value })}
-                    placeholder="e.g. The Laundering Company / Ecolab"
+                    placeholder="e.g. Ecolab / Siam Poly Pack"
                     className="h-9 text-xs"
                   />
                 </div>
@@ -2166,12 +3861,12 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                   </div>
                 )}
 
-                {/* Admin Processing & Procurement Controls */}
-                {isAdmin ? (
+                {/* Admin / CSO Processing & Procurement Controls */}
+                {canProcessOrder ? (
                   <div className="p-4 bg-indigo-50/60 rounded-xl border border-indigo-200/80 space-y-3">
                     <div className="flex items-center gap-1.5 text-xs font-black text-indigo-950 uppercase tracking-wider">
                       <ShieldCheck size={16} className="text-indigo-600" />
-                      <span>Admin Procurement & Processing Controls</span>
+                      <span>Order Procurement & Processing Controls (ดำเนินการจัดซื้อ/จัดส่ง)</span>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
@@ -2192,11 +3887,27 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                       </div>
 
                       <div className="space-y-1">
-                        <label className="font-bold text-slate-700">Vendor / Supplier Name</label>
+                        <label className="font-bold text-slate-700">Vendor / Supplier (เลือกจาก Vendor CRM)</label>
+                        <select
+                          value={
+                            vendors.find((v) => v.name === editVendorName)?.name || ''
+                          }
+                          onChange={(e) => {
+                            if (e.target.value) setEditVendorName(e.target.value);
+                          }}
+                          className="w-full h-9 rounded-xl border border-slate-200 bg-white px-2.5 font-bold text-slate-800 focus:outline-none mb-1.5"
+                        >
+                          <option value="">-- Select Supplier from Vendor CRM (เลือกซัพพลายเออร์) --</option>
+                          {vendors.map((v) => (
+                            <option key={v.id} value={v.name}>
+                              [{v.code}] {v.name} ({v.orderChannel || 'LINE'})
+                            </option>
+                          ))}
+                        </select>
                         <Input
                           value={editVendorName}
                           onChange={(e) => setEditVendorName(e.target.value)}
-                          placeholder="e.g. The Laundering Company / Ecolab"
+                          placeholder="e.g. Ecolab / Siam Poly Pack"
                           className="h-9 text-xs bg-white"
                         />
                       </div>
@@ -2221,6 +3932,44 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                         />
                       </div>
                     </div>
+
+                    {(() => {
+                      const matchedVendor = vendors.find(
+                        (v) =>
+                          editVendorName &&
+                          (v.name.toLowerCase() === editVendorName.toLowerCase() ||
+                            v.name.toLowerCase().includes(editVendorName.toLowerCase()))
+                      );
+                      if (!matchedVendor) return null;
+                      return (
+                        <div className="p-3 bg-white rounded-xl border border-indigo-200 text-xs space-y-1">
+                          <div className="font-extrabold text-indigo-900 flex items-center justify-between">
+                            <span>
+                              📇 Supplier Contact Details ({matchedVendor.code}: {matchedVendor.name})
+                            </span>
+                            <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-bold">
+                              {matchedVendor.paymentTerms || 'Credit 30 Days'}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-x-4 gap-y-1 text-slate-600 text-[11px]">
+                            {matchedVendor.contactPerson && (
+                              <span>Contact (ผู้ติดต่อ): <strong>{matchedVendor.contactPerson}</strong></span>
+                            )}
+                            {matchedVendor.phone && (
+                              <span>Tel (โทร): <strong>{matchedVendor.phone}</strong></span>
+                            )}
+                            {matchedVendor.lineId && (
+                              <span className="text-emerald-700 font-bold">
+                                LINE: {matchedVendor.lineId}
+                              </span>
+                            )}
+                            {matchedVendor.orderChannel && (
+                              <span>Channel (ช่องทางสั่ง): <strong>{matchedVendor.orderChannel}</strong></span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     <div className="space-y-1 text-xs">
                       <label className="font-bold text-slate-700">Admin Processing Notes (Visible to Branch)</label>
@@ -2366,6 +4115,282 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 </div>
               </div>
             </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ======================================================== */}
+      {/* 7. DIALOG: 6-MONTH PRICE REVIEW MODAL (CSO / ADMIN)      */}
+      {/* ======================================================== */}
+      <Dialog open={isPriceReviewModalOpen} onOpenChange={setIsPriceReviewModalOpen}>
+        <DialogContent className="max-w-3xl p-0 overflow-hidden bg-white rounded-2xl border border-slate-200 shadow-2xl">
+          <DialogHeader className="p-5 bg-gradient-to-r from-amber-600 via-orange-600 to-amber-700 text-white">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <span className="p-2 rounded-xl bg-white/15 text-white">
+                  <Clock size={20} />
+                </span>
+                <div>
+                  <DialogTitle className="text-base sm:text-lg font-black text-white">
+                    ⏰ 6-Month Supply Price Review (ทบทวนและอัปเดตราคารอบ 6 เดือน)
+                  </DialogTitle>
+                  <p className="text-xs text-amber-100 mt-0.5">
+                    Verify current supplier costs and confirm or update unit prices to reset the next 6-month cycle (ยืนยันหรือแก้ไขราคาทุนเพื่อรีเซ็ตรอบ 6 เดือน)
+                  </p>
+                </div>
+              </div>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleSendCsoReminderTask}
+                disabled={sendingReminderTask}
+                className="h-8 px-3 bg-white/15 hover:bg-white/25 border-white/30 text-white text-xs font-bold rounded-xl gap-1.5 shrink-0 cursor-pointer"
+              >
+                <Send size={12} />
+                <span>{sendingReminderTask ? 'Sending...' : 'Send CSO Reminder Task (ส่ง Task)'}</span>
+              </Button>
+            </div>
+          </DialogHeader>
+
+          <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto custom-scrollbar text-xs">
+            {priceReviewSummary.actionRequiredItems.length > 0 && (
+              <div className="space-y-2.5">
+                <h4 className="font-black text-rose-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <AlertTriangle size={14} />
+                  <span>
+                    Items Due / Due Soon for 6-Month Review ({priceReviewSummary.actionRequiredItems.length} รายการครบกำหนด)
+                  </span>
+                </h4>
+
+                <div className="border border-amber-200 rounded-xl divide-y divide-amber-100 overflow-hidden bg-amber-50/20">
+                  {priceReviewSummary.actionRequiredItems.map(({ item, review }) => (
+                    <div
+                      key={item.id}
+                      className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-amber-50/50"
+                    >
+                      <div className="space-y-0.5 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-black text-slate-900 text-sm">{item.name}</span>
+                          {review.isDue ? (
+                            <Badge className="bg-rose-600 text-white text-[10px] font-black">
+                              Overdue ({review.daysSinceUpdate}d ago / เกินกำหนด)
+                            </Badge>
+                          ) : (
+                            <Badge className="bg-amber-100 text-amber-900 border-amber-300 text-[10px] font-bold">
+                              Due in {review.daysUntilDue}d (ใกล้ครบกำหนด)
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="text-slate-600">{item.nameTh}</div>
+                        <div className="text-[11px] text-slate-400">
+                          Unit: <strong>{item.defaultUnit}</strong>
+                          {item.vendor ? ` • Supplier: ${item.vendor}` : ''}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className="w-28">
+                          <label className="text-[10px] font-bold text-slate-500 block">
+                            Unit Price (ราคา ฿)
+                          </label>
+                          <Input
+                            type="number"
+                            min="0"
+                            value={
+                              priceDraftMap[item.id] !== undefined
+                                ? priceDraftMap[item.id]
+                                : item.estimatedPrice
+                            }
+                            onChange={(e) =>
+                              setPriceDraftMap({
+                                ...priceDraftMap,
+                                [item.id]: parseFloat(e.target.value) || 0,
+                              })
+                            }
+                            className="h-8 text-xs font-black bg-white"
+                          />
+                        </div>
+
+                        <Button
+                          size="sm"
+                          onClick={() => handleConfirmOrUpdateItemPrice(item)}
+                          disabled={reviewingItemId === item.id}
+                          className="h-8 px-3 mt-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl gap-1 cursor-pointer"
+                        >
+                          <Check size={13} />
+                          <span>
+                            {reviewingItemId === item.id
+                              ? 'Saving...'
+                              : 'Confirm Price (+6M / ยืนยัน)'}
+                          </span>
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* All Catalog Items Price Table */}
+            <div className="space-y-2 pt-2">
+              <h4 className="font-extrabold text-slate-700 uppercase tracking-wider">
+                All Catalog Supply Items ({catalog.length} รายการทั้งหมด)
+              </h4>
+              <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 overflow-hidden">
+                {priceReviewSummary.all.map(({ item, review }) => (
+                  <div
+                    key={item.id}
+                    className="p-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-slate-800 truncate">{item.name}</div>
+                      <div className="text-[11px] text-slate-500">
+                        {item.nameTh} • Updated {review.daysSinceUpdate}d ago (Next review in{' '}
+                        {Math.max(0, review.daysUntilDue)}d)
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Input
+                        type="number"
+                        min="0"
+                        value={
+                          priceDraftMap[item.id] !== undefined
+                            ? priceDraftMap[item.id]
+                            : item.estimatedPrice
+                        }
+                        onChange={(e) =>
+                          setPriceDraftMap({
+                            ...priceDraftMap,
+                            [item.id]: parseFloat(e.target.value) || 0,
+                          })
+                        }
+                        className="w-24 h-8 text-xs font-bold bg-white"
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleConfirmOrUpdateItemPrice(item)}
+                        disabled={reviewingItemId === item.id}
+                        className="h-8 px-2.5 text-xs font-bold rounded-lg border-slate-200 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200 cursor-pointer"
+                      >
+                        Update (+6M)
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter className="p-4 bg-slate-50 border-t border-slate-200">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setIsPriceReviewModalOpen(false)}
+              className="h-8.5 text-xs font-bold rounded-xl"
+            >
+              Close (ปิด)
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ======================================================== */}
+      {/* 8. DIALOG: ADJUST BRANCH STOCK & MIN ALERT MODAL         */}
+      {/* ======================================================== */}
+      <Dialog
+        open={Boolean(adjustingStockItem)}
+        onOpenChange={(open) => !open && setAdjustingStockItem(null)}
+      >
+        <DialogContent className="max-w-md p-0 overflow-hidden bg-white rounded-2xl border border-slate-200 shadow-2xl">
+          {adjustingStockItem && (
+            <>
+              <DialogHeader className="p-5 bg-slate-900 text-white">
+                <DialogTitle className="text-base font-black text-white flex items-center gap-2">
+                  <Store size={18} className="text-sky-400" />
+                  <span>Adjust Branch Stock (ปรับปรุงยอดสต็อกสาขา)</span>
+                </DialogTitle>
+                <p className="text-xs text-slate-300 mt-0.5">
+                  {adjustingStockItem.catalogItem.name} ({adjustingStockItem.catalogItem.nameTh})
+                </p>
+              </DialogHeader>
+
+              <div className="p-5 space-y-4 text-xs">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700">
+                      Actual Stock Qty (คงเหลือจริง: {adjustingStockItem.catalogItem.defaultUnit})
+                    </label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={adjustingStockItem.quantity}
+                      onChange={(e) =>
+                        setAdjustingStockItem({
+                          ...adjustingStockItem,
+                          quantity: Math.max(0, parseInt(e.target.value) || 0),
+                        })
+                      }
+                      className="h-10 text-base font-black"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700">
+                      Min Alert Threshold (จุดเตือนใกล้หมด)
+                    </label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={adjustingStockItem.minStock}
+                      onChange={(e) =>
+                        setAdjustingStockItem({
+                          ...adjustingStockItem,
+                          minStock: Math.max(0, parseInt(e.target.value) || 0),
+                        })
+                      }
+                      className="h-10 text-base font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700">Stock Count Note (หมายเหตุการนับสต็อก)</label>
+                  <Input
+                    value={adjustingStockItem.note}
+                    onChange={(e) =>
+                      setAdjustingStockItem({
+                        ...adjustingStockItem,
+                        note: e.target.value,
+                      })
+                    }
+                    placeholder="e.g. Weekly stock count, used for duvet batch (นับสต็อกประจำสัปดาห์)..."
+                    className="h-9 text-xs"
+                  />
+                </div>
+              </div>
+
+              <DialogFooter className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setAdjustingStockItem(null)}
+                  className="h-8.5 text-xs font-bold rounded-xl"
+                >
+                  Cancel (ยกเลิก)
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleSaveStockModal}
+                  disabled={savingStock}
+                  className="h-8.5 px-4 bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold rounded-xl"
+                >
+                  {savingStock ? 'Saving...' : 'Save Stock (บันทึกยอดสต็อก)'}
+                </Button>
+              </DialogFooter>
+            </>
           )}
         </DialogContent>
       </Dialog>

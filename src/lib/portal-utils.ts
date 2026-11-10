@@ -56,12 +56,24 @@ export function formatPortalOrder(job: any) {
   const proformaUrls = allBillUrls.filter(u => u.toLowerCase().includes('proforma-'))
   const receiptUrls = allBillUrls.filter(u => u.toLowerCase().includes('receipt-'))
   const paymentSlipUrls = allBillUrls.filter(
-    u => !u.toLowerCase().includes('proforma-') && !u.toLowerCase().includes('receipt-')
+    u =>
+      !u.toLowerCase().includes('proforma-') &&
+      !u.toLowerCase().includes('receipt-') &&
+      !u.toLowerCase().includes('/bills/') &&
+      !u.toLowerCase().includes('/bills-')
   )
 
   const bagImageUrls = parseImageArray(job.bagImageUrl)
-  const pickupProofUrls = parseImageArray(job.pickupProofImageUrl || job.proofImageUrl)
-  const deliveryProofUrls = parseImageArray(job.deliveryProofImageUrl)
+  const pickupProofUrls = parseImageArray(job.pickupProofImageUrl || job.proofImageUrl).filter(
+    u => !u.toLowerCase().includes('/bills/') && !u.toLowerCase().includes('/bills-')
+  )
+  const deliveryProofUrls = parseImageArray(job.deliveryProofImageUrl).filter(
+    u =>
+      !u.toLowerCase().includes('/bills/') &&
+      !u.toLowerCase().includes('/bills-') &&
+      !u.toLowerCase().includes('proforma-') &&
+      !u.toLowerCase().includes('receipt-')
+  )
 
   const tracking = computeOrderTrackingStep(job)
   const isPaid = Boolean(job.isPaid || job.isShopPaid)

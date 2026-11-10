@@ -2683,7 +2683,7 @@ export async function claimAutoReceiptGenerationAction(
   jobId: string,
   filename: string
 ): Promise<{ claimed: boolean }> {
-  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   if (!jobId || !filename) return { claimed: false };
 
   const lockKey = `${jobId}:${filename}`;
@@ -2705,9 +2705,21 @@ export async function claimAutoReceiptGenerationAction(
   try {
     const job = await prisma.job.findUnique({
       where: { id: jobId },
-      select: { billImageUrl: true },
+      select: {
+        id: true,
+        branchId: true,
+        riderId: true,
+        pickupRiderId: true,
+        deliveryRiderId: true,
+        status: true,
+        billImageUrl: true,
+      },
     });
     if (!job) {
+      autoReceiptGenerationLocks.delete(lockKey);
+      return { claimed: false };
+    }
+    if (authUser && !isAdminOrSuperadmin(authUser) && !canUserAccessJob(authUser, job)) {
       autoReceiptGenerationLocks.delete(lockKey);
       return { claimed: false };
     }
@@ -9703,13 +9715,13 @@ export async function reviewPettyCashTransactionAction(data: {
   id: string;
   action: "APPROVE" | "REJECT" | "VOID";
   reason?: string;
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; taskId?: string | null; error?: string }> {
   try {
     const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
     const role = (authUser.role || "").toLowerCase();
     const canTransfer = role === "admin" || role === "superadmin" || role === "accounting" || (authUser.permissions || []).includes("approve-petty-cash");
     if (!canTransfer) {
-      return { success: false, error: "เฉพาะฝ่ายบัญชี (Tier 1) หรือผู้ดูแลระบบเท่านั้นที่สามารถโอนวงเงินสดย่อยได้" };
+      return { success: false, error: "เฉพาะฝ่ายบัญชี (Tier 1) หรือผู้ดูแลระบบเท่านั้นที่สามารถอนุมัติหรือปฏิเสธรายการเงินสดย่อยได้" };
     }
     await ensurePettyCashTableExists();
 
@@ -9720,6 +9732,92 @@ export async function reviewPettyCashTransactionAction(data: {
     const nextStatus = data.action === "APPROVE" ? "APPROVED" : data.action === "REJECT" ? "REJECTED" : "VOID";
     const now = new Date();
     const actorName = authUser.name || authUser.email || "Accounting";
+    const cleanReason = data.reason?.trim() || "";
+
+    // Auto-create a follow-up Task when a Petty Cash transaction is REJECTED
+    let createdTaskId: string | null = null;
+    if (data.action === "REJECT") {
+      try {
+        const parseUrlList = (raw: any): string[] => {
+          if (!raw) return [];
+          try {
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed.filter((u) => typeof u === "string" && u.trim()) : [];
+          } catch {
+            return typeof raw === "string" && raw.trim() ? [raw.trim()] : [];
+          }
+        };
+        const receiptList = parseUrlList(existing.receiptUrls);
+        const slipList = parseUrlList(existing.slipUrls);
+        const allDocUrls = [...receiptList, ...slipList];
+        const taskAttachments =
+          allDocUrls.length > 0
+            ? allDocUrls.map((url, idx) => ({
+                id: `pc_att_${Date.now()}_${idx}`,
+                name: idx < receiptList.length ? `receipt-${idx + 1}` : `slip-${idx - receiptList.length + 1}`,
+                url,
+                type: url.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg",
+                uploadedAt: now.toISOString(),
+              }))
+            : undefined;
+
+        const formattedAmt = Number(existing.amount || 0).toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+        const txNoLabel = existing.txNumber || existing.id;
+        const taskTitle = `[Petty Cash Rejected] ${txNoLabel} ฿${formattedAmt} - ${existing.holderName || "Holder"}`;
+        const taskDescription = [
+          `### ⚠️ Petty Cash Expense Rejected (ปฏิเสธรายการเบิกเงินสดย่อย & คืนเงินกลับ)`,
+          `- **Transaction No.:** ${txNoLabel}`,
+          `- **Type / Category:** ${existing.type || "EXPENSE"} — ${existing.category || "-"}`,
+          `- **Description:** ${existing.description || "-"}`,
+          existing.invoiceNo ? `- **Document / Invoice No.:** ${existing.invoiceNo}` : null,
+          existing.vehiclePlate ? `- **Vehicle License Plate:** ${existing.vehiclePlate}` : null,
+          `- **Amount Refunded to Balance:** ฿${formattedAmt}`,
+          `- **Petty Cash Holder:** ${existing.holderName || "-"} (ID: ${existing.holderId || "-"})`,
+          `- **Created By:** ${existing.createdByName || existing.holderName || "Staff"}`,
+          `- **Rejected By:** ${actorName}`,
+          `- **Reject Reason:** ${cleanReason || "ไม่ระบุเหตุผล"}`,
+          `- **Petty Cash Balance Refund:** ระบบได้คืนยอดเงิน ฿${formattedAmt} กลับเข้าวงเงินสดย่อยของ ${existing.holderName || "ผู้ถือวงเงิน"} เรียบร้อยแล้ว`,
+          ``,
+          `---`,
+          `**Action Required (สิ่งที่ต้องดำเนินการ):**`,
+          `รายการเบิกจ่ายเงินสดย่อยนี้ถูก Reject และระบบได้คืนยอดเงินกลับเข้าวงเงินคงเหลือของผู้ถือเงินสดย่อยเรียบร้อยแล้ว กรุณาตรวจสอบใบเสร็จ/เอกสารและดำเนินการแก้ไข หรืออัปเดตความคืบหน้าผ่านกล่องข้อความใน Task นี้`,
+        ]
+          .filter(Boolean)
+          .join("\n");
+
+        const taskRes = await createTask({
+          title: taskTitle,
+          description: taskDescription,
+          priority: "high",
+          assignedToId: existing.holderId || existing.createdById || undefined,
+          assignedToName: existing.holderName || existing.createdByName || undefined,
+          attachments: taskAttachments,
+          createdById: authUser.id,
+          createdByName: actorName,
+        });
+
+        if (taskRes.success && taskRes.data?.id) {
+          createdTaskId = taskRes.data.id;
+          await addTaskNote(createdTaskId, {
+            text: `[Rejection Reason / เหตุผลที่ปฏิเสธรายการ]\n${cleanReason || "ไม่ระบุเหตุผล"}\n\n💰 ระบบได้คืนยอดเงิน ฿${formattedAmt} กลับเข้าวงเงินสดย่อยของ ${existing.holderName || "ผู้ถือวงเงิน"} เรียบร้อยแล้ว กรุณาตรวจสอบและอัปเดตข้อมูลที่นี่`,
+            userId: authUser.id,
+            userName: actorName,
+          });
+        }
+      } catch (taskErr) {
+        console.warn("[reviewPettyCashTransactionAction] Failed to auto-create task:", taskErr);
+      }
+    }
+
+    const storedRejectReason =
+      createdTaskId && cleanReason
+        ? `${cleanReason} [Task: ${createdTaskId}]`
+        : createdTaskId
+          ? `Rejected [Task: ${createdTaskId}]`
+          : cleanReason || null;
 
     await prisma.$executeRaw`
       UPDATE "PettyCashTransaction"
@@ -9728,11 +9826,12 @@ export async function reviewPettyCashTransactionAction(data: {
         "approvedById" = ${authUser.id},
         "approvedByName" = ${actorName},
         "approvedAt" = ${now},
-        "rejectReason" = ${data.reason?.trim() || null},
+        "rejectReason" = ${storedRejectReason},
         "updatedAt" = ${now}
       WHERE "id" = ${data.id}
     `;
 
+    // Recalculate holder's running balance (automatically refunds/restores rejected expense amount back to balance)
     await recalculateHolderPettyCashBalances(existing.holderId);
 
     // If voiding/rejecting/approving a 2-leg transfer, sync status to the paired leg and recalculate its holder's balance
@@ -9747,7 +9846,7 @@ export async function reviewPettyCashTransactionAction(data: {
             "approvedById" = ${authUser.id},
             "approvedByName" = ${actorName},
             "approvedAt" = ${now},
-            "rejectReason" = ${data.reason?.trim() || null},
+            "rejectReason" = ${storedRejectReason},
             "updatedAt" = ${now}
           WHERE "id" = ${paired.id}
         `;
@@ -9762,11 +9861,11 @@ export async function reviewPettyCashTransactionAction(data: {
         action: `PETTY_CASH_${nextStatus}`,
         entityType: "petty_cash",
         entityId: data.id,
-        details: `[${existing.txNumber || data.id}] ${nextStatus} (฿${Number(existing.amount).toLocaleString()} - ${existing.holderName})${data.reason ? ` เหตุผล: ${data.reason}` : ""}`,
+        details: `[${existing.txNumber || data.id}] ${nextStatus} (฿${Number(existing.amount).toLocaleString()} - ${existing.holderName})${cleanReason ? ` เหตุผล: ${cleanReason}` : ""}${createdTaskId ? ` [Task: ${createdTaskId}]` : ""}`,
       },
     }).catch(() => {});
 
-    return { success: true };
+    return { success: true, taskId: createdTaskId };
   } catch (err: any) {
     console.error("[reviewPettyCashTransactionAction] Error:", err);
     return { success: false, error: err?.message || "Failed to review petty cash transaction" };
@@ -10353,6 +10452,83 @@ export async function triggerRecurringOrderNowAction(scheduleId: string) {
 // CHEMICALS & LAUNDRY SUPPLIES ORDERS
 // ==========================================
 const SUPPLY_ORDERS_SETTING_KEY = "TLS_SUPPLY_ORDERS_V1";
+const SUPPLY_PERMISSIONS_SETTING_KEY = "TLS_SUPPLY_PERMISSIONS_V1";
+
+async function getResolvedSupplyPermsForUser(authUser: { role?: string | null }) {
+  const { normalizeSupplyPermissionsMap, resolveSupplyPermissionsForUser } = await import('@/types/supply-order');
+  let rawMap: any = null;
+  try {
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_PERMISSIONS_SETTING_KEY },
+    });
+    if (setting?.value) {
+      rawMap = JSON.parse(setting.value);
+    }
+  } catch {}
+  const permissionsMap = normalizeSupplyPermissionsMap(rawMap);
+  const perms = resolveSupplyPermissionsForUser(authUser, permissionsMap);
+  return { perms, permissionsMap };
+}
+
+export async function getSupplyPermissionsAction() {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const { normalizeSupplyPermissionsMap } = await import('@/types/supply-order');
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_PERMISSIONS_SETTING_KEY },
+    });
+    let rawMap: any = null;
+    if (setting?.value) {
+      try {
+        rawMap = JSON.parse(setting.value);
+      } catch {
+        rawMap = null;
+      }
+    }
+    const permissions = normalizeSupplyPermissionsMap(rawMap);
+    return { success: true, permissions };
+  } catch (err: any) {
+    console.error("[getSupplyPermissionsAction] Error:", err);
+    const { DEFAULT_SUPPLY_ROLE_PERMISSIONS } = await import('@/types/supply-order');
+    return {
+      success: false,
+      error: err?.message || "Failed to load supply permissions",
+      permissions: DEFAULT_SUPPLY_ROLE_PERMISSIONS,
+    };
+  }
+}
+
+export async function saveSupplyPermissionsAction(permissionsInput: Record<string, any>) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+    const { normalizeSupplyPermissionsMap } = await import('@/types/supply-order');
+    const normalized = normalizeSupplyPermissionsMap(permissionsInput);
+
+    await prisma.setting.upsert({
+      where: { key: SUPPLY_PERMISSIONS_SETTING_KEY },
+      update: { value: JSON.stringify(normalized) },
+      create: { key: SUPPLY_PERMISSIONS_SETTING_KEY, value: JSON.stringify(normalized) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: SUPPLY_PERMISSIONS_SETTING_KEY,
+          entityType: "SUPPLY_PERMISSIONS",
+          action: "UPDATE_SUPPLY_PERMISSIONS",
+          details: `Updated Order Supplies role permissions matrix by ${authUser.name || authUser.email}`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch {}
+
+    return { success: true, permissions: normalized };
+  } catch (err: any) {
+    console.error("[saveSupplyPermissionsAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to save supply permissions" };
+  }
+}
 
 export async function getSupplyOrdersAction(filterBranchId?: string) {
   try {
@@ -10371,11 +10547,13 @@ export async function getSupplyOrdersAction(filterBranchId?: string) {
     }
 
     const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    const canViewAllBranches = isAdmin || perms.canProcessOrder;
     
     // Strict Outlet Isolation:
-    // Non-admin staff can strictly ONLY view orders belonging to their assigned outlet (branchId)
-    // or orders they personally created. Non-admin users cannot query or see orders from other branches.
-    if (!isAdmin) {
+    // Non-admin/non-processor staff can strictly ONLY view orders belonging to their assigned outlet (branchId)
+    // or orders they personally created.
+    if (!canViewAllBranches) {
       const staffBranchId = authUser.branchId;
       if (!staffBranchId) {
         orders = orders.filter((o: any) => o.requesterId === authUser.id);
@@ -10411,12 +10589,37 @@ export async function createSupplyOrderAction(input: {
     }
 
     const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+
+    if (!isAdmin && !perms.canMakeOrder && !perms.canRequestOrder) {
+      return {
+        success: false,
+        error: "Permission Denied: Your role does not have permission to Make Order or Request Order.",
+      };
+    }
+
+    const hasCatalogItems = input.items.some((it: any) => Boolean(it.catalogItemId));
+    const hasCustomItems = input.items.some((it: any) => !it.catalogItemId);
+
+    if (!isAdmin && hasCatalogItems && !perms.canMakeOrder) {
+      return {
+        success: false,
+        error: "Permission Denied: Your role does not have 'Make Order' permission for catalog items.",
+      };
+    }
+    if (!isAdmin && hasCustomItems && !perms.canRequestOrder) {
+      return {
+        success: false,
+        error: "Permission Denied: Your role does not have 'Request Order' permission for custom items.",
+      };
+    }
+
     let targetBranchId = input.branchId;
     let targetBranchName = input.branchName;
 
     // Strict Outlet Isolation:
-    // Non-admin staff can strictly ONLY make orders for their assigned outlet.
-    if (!isAdmin) {
+    // Non-admin staff can strictly ONLY make orders for their assigned outlet (unless they also have canProcessOrder or have no branchId restriction).
+    if (!isAdmin && !perms.canProcessOrder) {
       if (!authUser.branchId) {
         return {
           success: false,
@@ -10564,16 +10767,19 @@ export async function updateSupplyOrderStatusAction(
 
     const order = orders[orderIdx];
     const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    const canProcess = isAdmin || perms.canProcessOrder;
 
-    if (!isAdmin) {
+    if (!canProcess) {
       if (status !== 'cancelled' || order.requesterId !== authUser.id || order.status !== 'pending') {
-        return { success: false, error: "Only admins can process or update this order." };
+        return { success: false, error: "Only authorized Order Processors (e.g. Admin / CSO) can process or update this order." };
       }
     }
 
     const nowBkk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
     const nowIso = nowBkk.toISOString();
 
+    const prevStatus = order.status;
     order.status = status;
     order.updatedAt = nowIso;
 
@@ -10591,6 +10797,109 @@ export async function updateSupplyOrderStatusAction(
       order.dispatchedAt = nowIso;
     } else if (status === 'completed') {
       order.completedAt = nowIso;
+    }
+
+    // Auto-increment Branch Stock when order transitions to 'completed' for the first time
+    if (status === 'completed' && prevStatus !== 'completed' && !order.stockAdded && order.branchId) {
+      try {
+        const stockSetting = await prisma.setting.findUnique({
+          where: { key: "TLS_SUPPLY_BRANCH_STOCK_V1" },
+        });
+        let stockList: any[] = [];
+        if (stockSetting?.value) {
+          try {
+            stockList = JSON.parse(stockSetting.value);
+          } catch {
+            stockList = [];
+          }
+        }
+
+        const movSetting = await prisma.setting.findUnique({
+          where: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1" },
+        });
+        let movements: any[] = [];
+        if (movSetting?.value) {
+          try {
+            movements = JSON.parse(movSetting.value);
+          } catch {
+            movements = [];
+          }
+        }
+
+        for (const it of order.items || []) {
+          const catalogId = it.catalogItemId || it.id;
+          if (!catalogId) continue;
+          const qtyToAdd = Math.max(0, Number(it.quantity) || 0);
+          if (qtyToAdd <= 0) continue;
+
+          const idx = stockList.findIndex(
+            (s: any) => s.branchId === order.branchId && s.catalogItemId === catalogId
+          );
+          const prevQty = idx >= 0 ? Number(stockList[idx].quantity) || 0 : 0;
+          const nextQty = prevQty + qtyToAdd;
+
+          if (idx >= 0) {
+            stockList[idx] = {
+              ...stockList[idx],
+              quantity: nextQty,
+              updatedAt: nowIso,
+              updatedBy: authUser.name || authUser.email,
+              lastNote: `Auto-received from Order ${order.orderNumber} (+${qtyToAdd})`,
+            };
+          } else {
+            stockList.push({
+              branchId: order.branchId,
+              catalogItemId: catalogId,
+              quantity: nextQty,
+              minStock: 2,
+              updatedAt: nowIso,
+              updatedBy: authUser.name || authUser.email,
+              lastNote: `Auto-received from Order ${order.orderNumber} (+${qtyToAdd})`,
+            });
+          }
+
+          const unitPrice = Number(it.estimatedPrice) || 0;
+          movements.unshift({
+            id: `mov_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            branchId: order.branchId,
+            branchName: order.branchName || order.branchId,
+            catalogItemId: catalogId,
+            itemName: it.name,
+            itemNameTh: it.nameTh || it.name,
+            category: it.category || 'chemical',
+            unit: it.unit || 'Unit',
+            unitPrice,
+            type: 'receive_order',
+            deltaQty: qtyToAdd,
+            previousQty: prevQty,
+            newQty: nextQty,
+            estimatedCostImpact: qtyToAdd * unitPrice,
+            note: `รับของเข้าสต็อกจากใบสั่งซื้อ ${order.orderNumber}`,
+            orderNumber: order.orderNumber,
+            userId: authUser.id,
+            userName: authUser.name || authUser.email || 'Admin',
+            createdAt: nowIso,
+          });
+        }
+
+        if (movements.length > 2000) movements = movements.slice(0, 2000);
+
+        await Promise.all([
+          prisma.setting.upsert({
+            where: { key: "TLS_SUPPLY_BRANCH_STOCK_V1" },
+            update: { value: JSON.stringify(stockList) },
+            create: { key: "TLS_SUPPLY_BRANCH_STOCK_V1", value: JSON.stringify(stockList) },
+          }),
+          prisma.setting.upsert({
+            where: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1" },
+            update: { value: JSON.stringify(movements) },
+            create: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1", value: JSON.stringify(movements) },
+          }),
+        ]);
+        order.stockAdded = true;
+      } catch (stockErr) {
+        console.error("[updateSupplyOrderStatusAction] Auto-stock update error:", stockErr);
+      }
     }
 
     orders[orderIdx] = order;
@@ -10614,7 +10923,7 @@ export async function updateSupplyOrderStatusAction(
       });
     } catch {}
 
-    if (isAdmin && order.requesterId && order.requesterId !== authUser.id) {
+    if (canProcess && order.requesterId && order.requesterId !== authUser.id) {
       try {
         await prisma.notification.create({
           data: {
@@ -10728,19 +11037,21 @@ export async function saveSupplyCatalogItemAction(item: {
   description?: string;
   available?: boolean;
   vendor?: string;
+  vendorId?: string;
 }) {
   try {
     const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
-    if (!isAdmin) {
-      return { success: false, error: "Only administrators can configure available supply items." };
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    if (!isAdmin && !perms.canCreateItem && !perms.canProcessOrder) {
+      return { success: false, error: "Permission Denied: Your role does not have 'Create Item' or 'Process Order' permission." };
     }
 
     if (!item.name || !item.name.trim()) {
       return { success: false, error: "Item name is required." };
     }
 
-    const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
+    const { DEFAULT_SUPPLY_CATALOG, computeNextPriceReviewDate } = await import('@/types/supply-order');
     const setting = await prisma.setting.findUnique({
       where: { key: SUPPLY_CATALOG_SETTING_KEY },
     });
@@ -10760,6 +11071,22 @@ export async function saveSupplyCatalogItemAction(item: {
 
     const itemId = item.id || `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const categoryLabel = item.categoryLabel || item.category;
+    const existingIdx = items.findIndex((i: any) => i.id === itemId);
+    const existingItem = existingIdx >= 0 ? items[existingIdx] : null;
+
+    const nowIso = new Date().toISOString();
+    const nextPriceVal = Number(item.estimatedPrice) || 0;
+    const priceChangedOrNew = !existingItem || Number(existingItem.estimatedPrice) !== nextPriceVal;
+
+    const lastPriceUpdatedAt = priceChangedOrNew
+      ? nowIso
+      : existingItem?.lastPriceUpdatedAt || nowIso;
+    const lastPriceUpdatedBy = priceChangedOrNew
+      ? (authUser.name || authUser.email)
+      : existingItem?.lastPriceUpdatedBy || (authUser.name || authUser.email);
+    const nextPriceReviewAt = priceChangedOrNew
+      ? computeNextPriceReviewDate(nowIso)
+      : existingItem?.nextPriceReviewAt || computeNextPriceReviewDate(lastPriceUpdatedAt);
 
     const formattedItem = {
       id: itemId,
@@ -10768,14 +11095,17 @@ export async function saveSupplyCatalogItemAction(item: {
       category: item.category || 'chemical',
       categoryLabel,
       defaultUnit: item.defaultUnit?.trim() || 'Unit',
-      estimatedPrice: Number(item.estimatedPrice) || 0,
+      estimatedPrice: nextPriceVal,
       popular: Boolean(item.popular),
       description: item.description?.trim() || "",
       available: item.available !== false,
       vendor: item.vendor?.trim() || "",
+      vendorId: item.vendorId?.trim() || existingItem?.vendorId || "",
+      lastPriceUpdatedAt,
+      lastPriceUpdatedBy,
+      nextPriceReviewAt,
     };
 
-    const existingIdx = items.findIndex((i: any) => i.id === itemId);
     if (existingIdx >= 0) {
       items[existingIdx] = formattedItem;
     } else {
@@ -10812,8 +11142,9 @@ export async function toggleSupplyItemAvailabilityAction(itemId: string, availab
   try {
     const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
-    if (!isAdmin) {
-      return { success: false, error: "Only administrators can configure item availability." };
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    if (!isAdmin && !perms.canCreateItem) {
+      return { success: false, error: "Permission Denied: Your role does not have 'Create Item' permission." };
     }
 
     const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
@@ -10871,8 +11202,9 @@ export async function deleteSupplyCatalogItemAction(itemId: string) {
   try {
     const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
-    if (!isAdmin) {
-      return { success: false, error: "Only administrators can delete supply items." };
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    if (!isAdmin && !perms.canCreateItem) {
+      return { success: false, error: "Permission Denied: Your role does not have 'Create Item' permission." };
     }
 
     const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
@@ -10925,8 +11257,9 @@ export async function resetSupplyCatalogAction() {
   try {
     const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
-    if (!isAdmin) {
-      return { success: false, error: "Only administrators can reset the catalog." };
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    if (!isAdmin && !perms.canCreateItem) {
+      return { success: false, error: "Permission Denied: Your role does not have 'Create Item' permission." };
     }
 
     const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
@@ -10955,5 +11288,557 @@ export async function resetSupplyCatalogAction() {
   } catch (err: any) {
     console.error("[resetSupplyCatalogAction] Error:", err);
     return { success: false, error: err?.message || "Failed to reset supply catalog" };
+  }
+}
+
+// ==========================================
+// 6-MONTH PRICE REVIEW REMINDER (CSO / ADMIN)
+// ==========================================
+export async function reviewSupplyItemPriceAction(input: {
+  itemId: string;
+  newPrice: number;
+  vendor?: string;
+  vendorId?: string;
+}) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    if (!isAdmin && !perms.canProcessOrder && !perms.canCreateItem && authUser.role !== 'cso') {
+      return { success: false, error: "Only CSO, Marketing, or Admin can review and update supply prices." };
+    }
+
+    const { DEFAULT_SUPPLY_CATALOG, computeNextPriceReviewDate } = await import('@/types/supply-order');
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_CATALOG_SETTING_KEY },
+    });
+
+    let items: any[] = [];
+    if (setting?.value) {
+      try {
+        items = JSON.parse(setting.value);
+      } catch {
+        items = [];
+      }
+    }
+    if (!items || items.length === 0) {
+      items = [...DEFAULT_SUPPLY_CATALOG.map((i) => ({ ...i, available: i.available !== false }))];
+    }
+
+    const idx = items.findIndex((i: any) => i.id === input.itemId);
+    if (idx === -1) {
+      return { success: false, error: "Supply item not found in catalog." };
+    }
+
+    const nowIso = new Date().toISOString();
+    const nextPrice = Math.max(0, Number(input.newPrice) || 0);
+    const prevPrice = Number(items[idx].estimatedPrice) || 0;
+
+    items[idx] = {
+      ...items[idx],
+      estimatedPrice: nextPrice,
+      vendor: input.vendor !== undefined ? input.vendor.trim() : items[idx].vendor,
+      vendorId: input.vendorId !== undefined ? input.vendorId.trim() : items[idx].vendorId,
+      lastPriceUpdatedAt: nowIso,
+      lastPriceUpdatedBy: authUser.name || authUser.email,
+      nextPriceReviewAt: computeNextPriceReviewDate(nowIso),
+    };
+
+    await prisma.setting.upsert({
+      where: { key: SUPPLY_CATALOG_SETTING_KEY },
+      update: { value: JSON.stringify(items) },
+      create: { key: SUPPLY_CATALOG_SETTING_KEY, value: JSON.stringify(items) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: input.itemId,
+          entityType: "SUPPLY_CATALOG",
+          action: "REVIEW_SUPPLY_PRICE",
+          details: `6-Month Price Review for "${items[idx].name}": ฿${prevPrice} -> ฿${nextPrice} (Next review in 6 months) by ${authUser.name || authUser.email}`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch {}
+
+    return { success: true, item: items[idx], items };
+  } catch (err: any) {
+    console.error("[reviewSupplyItemPriceAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to review supply item price" };
+  }
+}
+
+export async function triggerSupplyPriceReviewReminderAction() {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const { DEFAULT_SUPPLY_CATALOG, getSupplyItemPriceReviewStatus } = await import('@/types/supply-order');
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_CATALOG_SETTING_KEY },
+    });
+    let items: any[] = [];
+    if (setting?.value) {
+      try {
+        items = JSON.parse(setting.value);
+      } catch {
+        items = [];
+      }
+    }
+    if (!items || items.length === 0) {
+      items = [...DEFAULT_SUPPLY_CATALOG];
+    }
+
+    const dueItems = items.filter((it) => {
+      const st = getSupplyItemPriceReviewStatus(it);
+      return st.isDue || st.isDueSoon;
+    });
+
+    if (dueItems.length === 0) {
+      return { success: true, createdCount: 0, message: "All supply prices are up to date (within 6-month cycle)." };
+    }
+
+    const csoAndAdmins = await prisma.adminUser.findMany({
+      where: { role: { in: ['cso', 'admin', 'superadmin'] } },
+      select: { id: true, name: true, role: true },
+    });
+
+    const csoUsers = csoAndAdmins.filter((u) => u.role === 'cso');
+    const targetUsers = csoUsers.length > 0 ? csoUsers : csoAndAdmins;
+
+    const itemNamesPreview = dueItems.slice(0, 4).map((i) => i.nameTh || i.name).join(', ');
+    const title = `⏰ 6-Month Supply Price Review (${dueItems.length} items due)`;
+    const description = `กรุณาตรวจสอบและอัปเดตราคาสินค้าน้ำยา/อุปกรณ์กับ Vendor ประจำรอบ 6 เดือน จำนวน ${dueItems.length} รายการ (อาทิ ${itemNamesPreview}) ในเมนู Order Supplies`;
+
+    const dueDate = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+
+    for (const target of targetUsers) {
+      try {
+        await prisma.task.create({
+          data: {
+            title,
+            description,
+            assignedToId: target.id,
+            assignedToName: target.name || 'CSO',
+            createdById: authUser.id,
+            createdByName: authUser.name || authUser.email || 'System',
+            status: 'pending',
+            priority: 'high',
+            dueDate,
+          },
+        });
+      } catch {}
+
+      try {
+        await prisma.notification.create({
+          data: {
+            userId: target.id,
+            title,
+            message: description,
+            type: 'task',
+          },
+        });
+      } catch {}
+    }
+
+    return {
+      success: true,
+      createdCount: targetUsers.length,
+      dueItemsCount: dueItems.length,
+      message: `Sent 6-month price review reminder & created task for ${targetUsers.length} CSO/Admin user(s).`,
+    };
+  } catch (err: any) {
+    console.error("[triggerSupplyPriceReviewReminderAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to send price review reminder" };
+  }
+}
+
+// ==========================================
+// BRANCH SUPPLY STOCK MANAGEMENT
+// ==========================================
+const SUPPLY_BRANCH_STOCK_SETTING_KEY = "TLS_SUPPLY_BRANCH_STOCK_V1";
+
+export async function getBranchSupplyStockAction(branchId?: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    const canViewAll = isAdmin || perms.canProcessOrder;
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_BRANCH_STOCK_SETTING_KEY },
+    });
+
+    let stockList: any[] = [];
+    if (setting?.value) {
+      try {
+        stockList = JSON.parse(setting.value);
+      } catch {
+        stockList = [];
+      }
+    }
+
+    if (!canViewAll && authUser.branchId) {
+      stockList = stockList.filter((s: any) => s.branchId === authUser.branchId);
+    } else if (branchId && branchId !== 'all') {
+      stockList = stockList.filter((s: any) => s.branchId === branchId);
+    }
+
+    return { success: true, stock: stockList };
+  } catch (err: any) {
+    console.error("[getBranchSupplyStockAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to load branch stock", stock: [] };
+  }
+}
+
+export async function updateBranchSupplyStockAction(input: {
+  branchId: string;
+  branchName?: string;
+  catalogItemId: string;
+  quantity: number;
+  previousQty?: number;
+  minStock?: number;
+  note?: string;
+  movementType?: 'manual_add' | 'usage' | 'audit_adjust';
+}) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    const canViewAll = isAdmin || perms.canProcessOrder;
+
+    const targetBranchId = !canViewAll && authUser.branchId ? authUser.branchId : input.branchId;
+    if (!targetBranchId || targetBranchId === 'all') {
+      return { success: false, error: "Please select a specific branch to update stock." };
+    }
+
+    const [setting, catSetting, movSetting] = await Promise.all([
+      prisma.setting.findUnique({ where: { key: SUPPLY_BRANCH_STOCK_SETTING_KEY } }),
+      prisma.setting.findUnique({ where: { key: SUPPLY_CATALOG_SETTING_KEY } }),
+      prisma.setting.findUnique({ where: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1" } }),
+    ]);
+
+    let stockList: any[] = [];
+    if (setting?.value) {
+      try {
+        stockList = JSON.parse(setting.value);
+      } catch {
+        stockList = [];
+      }
+    }
+
+    let catalogItems: any[] = [];
+    if (catSetting?.value) {
+      try {
+        catalogItems = JSON.parse(catSetting.value);
+      } catch {
+        catalogItems = [];
+      }
+    }
+    if (!catalogItems || catalogItems.length === 0) {
+      const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
+      catalogItems = DEFAULT_SUPPLY_CATALOG;
+    }
+
+    let movements: any[] = [];
+    if (movSetting?.value) {
+      try {
+        movements = JSON.parse(movSetting.value);
+      } catch {
+        movements = [];
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const nextQty = Math.max(0, Number(input.quantity) || 0);
+    const idx = stockList.findIndex(
+      (s: any) => s.branchId === targetBranchId && s.catalogItemId === input.catalogItemId
+    );
+
+    const prevQty = idx >= 0
+      ? Number(stockList[idx].quantity) || 0
+      : (input.previousQty !== undefined ? Number(input.previousQty) : 0);
+    const delta = nextQty - prevQty;
+
+    const entry = {
+      branchId: targetBranchId,
+      catalogItemId: input.catalogItemId,
+      quantity: nextQty,
+      minStock: input.minStock !== undefined ? Math.max(0, Number(input.minStock) || 0) : (idx >= 0 ? stockList[idx].minStock ?? 2 : 2),
+      updatedAt: nowIso,
+      updatedBy: authUser.name || authUser.email,
+      lastNote: input.note?.trim() || (idx >= 0 ? stockList[idx].lastNote : ""),
+    };
+
+    if (idx >= 0) {
+      stockList[idx] = entry;
+    } else {
+      stockList.push(entry);
+    }
+
+    let newMovement: any = null;
+    if (delta !== 0) {
+      const catItem = catalogItems.find((c: any) => c.id === input.catalogItemId);
+      const unitPrice = Number(catItem?.estimatedPrice) || 0;
+      const movType = input.movementType || (delta < 0 ? 'usage' : 'manual_add');
+
+      newMovement = {
+        id: `mov_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        branchId: targetBranchId,
+        branchName: input.branchName || targetBranchId,
+        catalogItemId: input.catalogItemId,
+        itemName: catItem?.name || input.catalogItemId,
+        itemNameTh: catItem?.nameTh || catItem?.name || input.catalogItemId,
+        category: catItem?.category || 'chemical',
+        unit: catItem?.defaultUnit || 'Unit',
+        unitPrice,
+        type: movType,
+        deltaQty: delta,
+        previousQty: prevQty,
+        newQty: nextQty,
+        estimatedCostImpact: Math.abs(delta) * unitPrice,
+        note: input.note?.trim() || (delta < 0 ? `ตัดสต็อกใช้งาน (${delta})` : `รับเข้า/เพิ่มสต็อก (+${delta})`),
+        userId: authUser.id,
+        userName: authUser.name || authUser.email || 'Staff',
+        createdAt: nowIso,
+      };
+      movements.unshift(newMovement);
+      if (movements.length > 2000) movements = movements.slice(0, 2000);
+    }
+
+    await Promise.all([
+      prisma.setting.upsert({
+        where: { key: SUPPLY_BRANCH_STOCK_SETTING_KEY },
+        update: { value: JSON.stringify(stockList) },
+        create: { key: SUPPLY_BRANCH_STOCK_SETTING_KEY, value: JSON.stringify(stockList) },
+      }),
+      delta !== 0
+        ? prisma.setting.upsert({
+            where: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1" },
+            update: { value: JSON.stringify(movements) },
+            create: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1", value: JSON.stringify(movements) },
+          })
+        : Promise.resolve(),
+    ]);
+
+    return { success: true, entry, stock: stockList, movement: newMovement, movements };
+  } catch (err: any) {
+    console.error("[updateBranchSupplyStockAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to update branch supply stock" };
+  }
+}
+
+export async function getBranchSupplyMovementsAction(branchId?: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    const canViewAll = isAdmin || perms.canProcessOrder;
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1" },
+    });
+
+    let movements: any[] = [];
+    if (setting?.value) {
+      try {
+        movements = JSON.parse(setting.value);
+      } catch {
+        movements = [];
+      }
+    }
+
+    if (!canViewAll && authUser.branchId) {
+      movements = movements.filter((m: any) => m.branchId === authUser.branchId);
+    } else if (branchId && branchId !== 'all') {
+      movements = movements.filter((m: any) => m.branchId === branchId);
+    }
+
+    return { success: true, movements };
+  } catch (err: any) {
+    console.error("[getBranchSupplyMovementsAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to load supply movements", movements: [] };
+  }
+}
+
+// ==========================================
+// VENDOR CRM MANAGEMENT (CRM >> VENDORS)
+// ==========================================
+const SUPPLY_VENDORS_SETTING_KEY = "TLS_SUPPLY_VENDORS_V1";
+
+export async function getSupplyVendorsAction() {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_VENDORS_SETTING_KEY },
+    });
+
+    let vendors: any[] = [];
+    if (setting?.value) {
+      try {
+        vendors = JSON.parse(setting.value);
+      } catch {
+        vendors = [];
+      }
+    }
+
+    if (!vendors || vendors.length === 0) {
+      const { DEFAULT_SUPPLY_VENDORS } = await import('@/types/supply-order');
+      vendors = [...DEFAULT_SUPPLY_VENDORS];
+    }
+
+    return { success: true, vendors };
+  } catch (err: any) {
+    console.error("[getSupplyVendorsAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to load supply vendors", vendors: [] };
+  }
+}
+
+export async function saveSupplyVendorAction(vendorInput: {
+  id?: string;
+  code?: string;
+  name: string;
+  category?: string;
+  contactPerson?: string;
+  phone?: string;
+  lineId?: string;
+  email?: string;
+  orderChannel?: string;
+  address?: string;
+  taxId?: string;
+  paymentTerms?: string;
+  leadTimeDays?: number;
+  minOrderAmount?: number;
+  bankAccount?: string;
+  notes?: string;
+  isActive?: boolean;
+}) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const allowedRoles = ['admin', 'superadmin', 'cso', 'marketing', 'accounting'];
+    if (!allowedRoles.includes(String(authUser.role || '').toLowerCase())) {
+      return { success: false, error: "Permission Denied: Only Admin, CSO, Marketing, or Accounting can manage Vendors." };
+    }
+
+    if (!vendorInput.name || !vendorInput.name.trim()) {
+      return { success: false, error: "Vendor company/supplier name is required." };
+    }
+
+    const { DEFAULT_SUPPLY_VENDORS } = await import('@/types/supply-order');
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_VENDORS_SETTING_KEY },
+    });
+
+    let vendors: any[] = [];
+    if (setting?.value) {
+      try {
+        vendors = JSON.parse(setting.value);
+      } catch {
+        vendors = [];
+      }
+    }
+    if (!vendors || vendors.length === 0) {
+      vendors = [...DEFAULT_SUPPLY_VENDORS];
+    }
+
+    const nowIso = new Date().toISOString();
+    const existingIdx = vendorInput.id ? vendors.findIndex((v: any) => v.id === vendorInput.id) : -1;
+    const existing = existingIdx >= 0 ? vendors[existingIdx] : null;
+
+    const vendorId = existing?.id || vendorInput.id || `vnd_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const autoCode = `VD-${String(vendors.length + 1).padStart(3, '0')}`;
+
+    const savedVendor = {
+      id: vendorId,
+      code: vendorInput.code?.trim() || existing?.code || autoCode,
+      name: vendorInput.name.trim(),
+      category: vendorInput.category || existing?.category || 'chemical',
+      contactPerson: vendorInput.contactPerson?.trim() || "",
+      phone: vendorInput.phone?.trim() || "",
+      lineId: vendorInput.lineId?.trim() || "",
+      email: vendorInput.email?.trim() || "",
+      orderChannel: vendorInput.orderChannel?.trim() || "LINE OA",
+      address: vendorInput.address?.trim() || "",
+      taxId: vendorInput.taxId?.trim() || "",
+      paymentTerms: vendorInput.paymentTerms?.trim() || "Credit 30 Days",
+      leadTimeDays: Number(vendorInput.leadTimeDays) || 2,
+      minOrderAmount: Number(vendorInput.minOrderAmount) || 0,
+      bankAccount: vendorInput.bankAccount?.trim() || "",
+      notes: vendorInput.notes?.trim() || "",
+      isActive: vendorInput.isActive !== false,
+      createdAt: existing?.createdAt || nowIso,
+      updatedAt: nowIso,
+    };
+
+    if (existingIdx >= 0) {
+      vendors[existingIdx] = savedVendor;
+    } else {
+      vendors.unshift(savedVendor);
+    }
+
+    await prisma.setting.upsert({
+      where: { key: SUPPLY_VENDORS_SETTING_KEY },
+      update: { value: JSON.stringify(vendors) },
+      create: { key: SUPPLY_VENDORS_SETTING_KEY, value: JSON.stringify(vendors) },
+    });
+
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: vendorId,
+          entityType: "SUPPLY_VENDOR",
+          action: existingIdx >= 0 ? "UPDATE_VENDOR" : "CREATE_VENDOR",
+          details: `Vendor ${savedVendor.name} (${savedVendor.code}) ${existingIdx >= 0 ? 'updated' : 'created'} by ${authUser.name || authUser.email}`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email,
+        },
+      });
+    } catch {}
+
+    return { success: true, vendor: savedVendor, vendors };
+  } catch (err: any) {
+    console.error("[saveSupplyVendorAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to save vendor" };
+  }
+}
+
+export async function deleteSupplyVendorAction(vendorId: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const allowedRoles = ['admin', 'superadmin', 'cso', 'marketing'];
+    if (!allowedRoles.includes(String(authUser.role || '').toLowerCase())) {
+      return { success: false, error: "Permission Denied: Only Admin, CSO, or Marketing can delete Vendors." };
+    }
+
+    const { DEFAULT_SUPPLY_VENDORS } = await import('@/types/supply-order');
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_VENDORS_SETTING_KEY },
+    });
+
+    let vendors: any[] = [];
+    if (setting?.value) {
+      try {
+        vendors = JSON.parse(setting.value);
+      } catch {
+        vendors = [];
+      }
+    }
+    if (!vendors || vendors.length === 0) {
+      vendors = [...DEFAULT_SUPPLY_VENDORS];
+    }
+
+    const filtered = vendors.filter((v: any) => v.id !== vendorId);
+
+    await prisma.setting.upsert({
+      where: { key: SUPPLY_VENDORS_SETTING_KEY },
+      update: { value: JSON.stringify(filtered) },
+      create: { key: SUPPLY_VENDORS_SETTING_KEY, value: JSON.stringify(filtered) },
+    });
+
+    return { success: true, vendors: filtered };
+  } catch (err: any) {
+    console.error("[deleteSupplyVendorAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to delete vendor" };
   }
 }

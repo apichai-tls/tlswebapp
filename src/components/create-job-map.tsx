@@ -201,14 +201,25 @@ function MapBoundsController({
   return null;
 }
 
+function isValidThailandCoord(c: LatLng | null | undefined): c is LatLng {
+  if (!c || typeof c.lat !== "number" || typeof c.lng !== "number") return false;
+  if (!Number.isFinite(c.lat) || !Number.isFinite(c.lng)) return false;
+  if (c.lat === 0 && c.lng === 0) return false;
+  // Thailand bounding box (approx lat 5..21.5, lng 97..106.5)
+  return c.lat >= 5 && c.lat <= 21.5 && c.lng >= 97 && c.lng <= 106.5;
+}
+
 export function CreateJobMap({
   branchCoords,
-  pickupCoords,
-  deliveryCoords,
+  pickupCoords: rawPickupCoords,
+  deliveryCoords: rawDeliveryCoords,
   onMarkerDrag,
   onDistanceCalculated,
   className = "h-full w-full",
 }: CreateJobMapProps) {
+  const pickupCoords = isValidThailandCoord(rawPickupCoords) ? rawPickupCoords : null;
+  const deliveryCoords = isValidThailandCoord(rawDeliveryCoords) ? rawDeliveryCoords : null;
+
   const branchMarkerRef = useRef<L.Marker>(null);
   const pickupMarkerRef = useRef<L.Marker>(null);
   const deliveryMarkerRef = useRef<L.Marker>(null);
@@ -217,12 +228,14 @@ export function CreateJobMap({
   const [dDist, setDDist] = useState(0);
   const [pickupRoute, setPickupRoute] = useState<KeyedRoute | null>(null);
   const [deliveryRoute, setDeliveryRoute] = useState<KeyedRoute | null>(null);
+  const onDistanceCalculatedRef = useRef(onDistanceCalculated);
+  onDistanceCalculatedRef.current = onDistanceCalculated;
 
   useEffect(() => {
-    if (onDistanceCalculated) {
-      onDistanceCalculated(pDist, dDist);
+    if (onDistanceCalculatedRef.current) {
+      onDistanceCalculatedRef.current(pDist, dDist);
     }
-  }, [pDist, dDist, onDistanceCalculated]);
+  }, [pDist, dDist]);
 
   const handleDragEnd = (type: 'pickup' | 'delivery' | 'branch') => {
     if (!onMarkerDrag) return;

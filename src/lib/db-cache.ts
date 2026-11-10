@@ -313,9 +313,15 @@ export async function getOrFetchJobById(jobId: string, minRevision?: number): Pr
       where: { id: jobId },
       select: JOB_SELECT_FIELDS,
     })
-    .then((raw) => {
-      if (!raw) return null;
-      return primeJobCache(raw);
+    .then(async (raw) => {
+      const target =
+        raw ||
+        (await prisma.job.findFirst({
+          where: { billNo: jobId },
+          select: JOB_SELECT_FIELDS,
+        }));
+      if (!target) return null;
+      return primeJobCache(target);
     })
     .finally(() => {
       dbCache.inFlightJobFetches.delete(inflightKey);

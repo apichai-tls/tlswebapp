@@ -3148,17 +3148,10 @@ function AdminPageContent() {
   const handleEditFullJob = (job: Job) => {
     setSaveError(null);
     if (job?.id) {
-      const isAlreadyInStore = jobStore.getSnapshot().some((j) => j.id === job.id);
-      if (isAlreadyInStore) {
-        api.applyServerJob(job);
-      }
-      fetch(`/api/jobs/${encodeURIComponent(job.id)}`)
-        .then((r) => (r.ok ? r.json() : null))
+      api.applyServerJob(job);
+      api.fetchAndApplyJob(job.id)
         .then((fresh) => {
           if (!fresh || editingJobIdRef.current !== job.id) return;
-          if (jobStore.getSnapshot().some((j) => j.id === job.id)) {
-            api.applyServerJob(fresh);
-          }
           const orig = originalJobRef.current as any;
           if (orig) {
             const paidChanged =
@@ -6402,7 +6395,7 @@ function AdminPageContent() {
                     ? "bg-sky-50/90 text-sky-700 ring-1 ring-sky-500/20 shadow-2xs font-bold"
                     : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
                 }`}
-                title="Order Detergent & Supplies"
+                title="Order Supplies"
               >
                 {activeTab === "supplies" && !isSidebarCollapsed && (
                   <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-sky-600 rounded-r-full" />
@@ -6410,7 +6403,7 @@ function AdminPageContent() {
                 <Droplets size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "supplies" ? "text-sky-600" : "text-sky-500 group-hover:text-sky-600"}`} />
                 {!isSidebarCollapsed && (
                   <span className="truncate flex items-center justify-between flex-1">
-                    <span>Order Detergent</span>
+                    <span>Order Supplies</span>
                   </span>
                 )}
               </motion.a>
@@ -6846,7 +6839,7 @@ function AdminPageContent() {
                       }`}
                     >
                       <Droplets size={17} className={activeTab === "supplies" ? "text-sky-600" : "text-sky-500"} />
-                      <span>Order Detergent & Supplies</span>
+                      <span>Order Supplies</span>
                     </a>
                   </div>
                 </nav>
@@ -6940,7 +6933,7 @@ function AdminPageContent() {
                 "activity-logs": { section: "Management", title: "Activity Logs", subtitle: "System audit trail & staff actions" },
                 users: { section: "Management", title: "Manage Users", subtitle: "Staff accounts, roles & branch permissions" },
                 settings: { section: "Management", title: "System Settings", subtitle: "Branches, payment channels & configurations" },
-                supplies: { section: "Operations", title: "Chemicals & Supplies Orders", subtitle: "Branch detergent orders, replenishment & admin processing" },
+                supplies: { section: "Operations", title: "Order Supplies", subtitle: "Branch supply orders, replenishment & procurement processing" },
                 inbox: { section: "Sales & CRM", title: "Omnichannel Social Inbox", subtitle: "Unified customer chat across WhatsApp, LINE OA, Messenger, Instagram & Telegram" },
               };
               const currentMeta = tabMeta[activeTab] || { section: "Workspace", title: "Dashboard", subtitle: "That Laundry Shop" };

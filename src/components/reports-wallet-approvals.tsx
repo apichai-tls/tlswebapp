@@ -44,6 +44,7 @@ import {
   customerStore, 
   jobStore 
 } from "@/lib/store";
+import { api } from "@/lib/api";
 import { formatCurrency, formatJobDisplayId, formatBaht } from "@/lib/utils";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
@@ -502,7 +503,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
     URL.revokeObjectURL(url);
   };
 
-  const handleRowClick = (tx: WalletTransactionItem) => {
+  const handleRowClick = async (tx: WalletTransactionItem) => {
     const isJob = tx.referenceType === "job" 
       || tx.type === "DEDUCT" 
       || tx.type === "REFUND"
@@ -517,7 +518,12 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
         onViewJob(job, tx);
         return;
       }
-      toast.info("Job นี้ไม่อยู่ใน session ปัจจุบัน — กรุณาค้นหาจากหน้า Jobs");
+      const fetchedJob = await api.fetchAndApplyJob(tx.referenceId);
+      if (fetchedJob) {
+        onViewJob(fetchedJob, tx);
+        return;
+      }
+      setInspectTx(tx);
       return;
     }
 
