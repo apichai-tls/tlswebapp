@@ -50,6 +50,8 @@ RUN npm install -g prisma
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+RUN mkdir -p /app/storage/whatsapp-auth /app/storage/uploads/system/chat && chown -R nextjs:nodejs /app/storage
+
 USER nextjs
 
 EXPOSE 8080

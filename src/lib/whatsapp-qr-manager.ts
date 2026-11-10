@@ -1,7 +1,9 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import QRCode from 'qrcode';
 import pino from 'pino';
+import { prisma } from '@/lib/prisma';
 import { formatDisplayPhone, formatPhoneForWhatsApp } from '@/lib/social-helpers';
 import { SocialMessageAttachment } from '@/types/social-inbox';
 
@@ -20,7 +22,11 @@ interface GlobalWhatsAppSingleton {
   startingPromise: Promise<WhatsAppQrState> | null;
   sentMessageIds: Set<string>;
   autoStartChecked: boolean;
+  resolvedAuthDir: string | null;
+  backupTimer: ReturnType<typeof setTimeout> | null;
 }
+
+const DB_AUTH_BACKUP_KEY = 'whatsapp_baileys_auth_backup';
 
 const globalForWa = globalThis as unknown as {
   __tlsWhatsAppQrSingleton?: GlobalWhatsAppSingleton;
@@ -41,22 +47,117 @@ function getSingleton(): GlobalWhatsAppSingleton {
       startingPromise: null,
       sentMessageIds: new Set<string>(),
       autoStartChecked: false,
+      resolvedAuthDir: null,
+      backupTimer: null,
     };
   }
   return globalForWa.__tlsWhatsAppQrSingleton;
 }
 
-function getAuthDir(): string {
-  return path.resolve(process.cwd(), 'storage', 'whatsapp-auth');
+/**
+ * Resolves a writable directory for Baileys multi-file auth state.
+ * Tries `<cwd>/storage/whatsapp-auth` first; if the container filesystem
+ * denies mkdir (e.g. EACCES in Docker/Cloud Run), falls back to `/tmp/tls-whatsapp-auth`.
+ */
+async function resolveWritableAuthDir(): Promise<string> {
+  const s = getSingleton();
+  if (s.resolvedAuthDir) {
+    try {
+      await fs.promises.mkdir(s.resolvedAuthDir, { recursive: true });
+      return s.resolvedAuthDir;
+    } catch {
+      s.resolvedAuthDir = null;
+    }
+  }
+
+  const primaryDir = path.resolve(process.cwd(), 'storage', 'whatsapp-auth');
+  try {
+    await fs.promises.mkdir(primaryDir, { recursive: true });
+    s.resolvedAuthDir = primaryDir;
+    return primaryDir;
+  } catch {
+    const tmpFallbackDir = path.join(os.tmpdir(), 'tls-whatsapp-auth');
+    await fs.promises.mkdir(tmpFallbackDir, { recursive: true });
+    s.resolvedAuthDir = tmpFallbackDir;
+    return tmpFallbackDir;
+  }
 }
 
-function hasSavedAuthCreds(): boolean {
+async function restoreAuthDirFromDbIfNeeded(authDir: string): Promise<boolean> {
   try {
-    const credsPath = path.join(getAuthDir(), 'creds.json');
+    const credsPath = path.join(authDir, 'creds.json');
+    if (fs.existsSync(credsPath)) {
+      return true;
+    }
+    const row = await prisma.setting.findUnique({ where: { key: DB_AUTH_BACKUP_KEY } });
+    if (!row?.value) return false;
+
+    const filesMap = JSON.parse(row.value) as Record<string, string>;
+    if (!filesMap || typeof filesMap !== 'object' || !filesMap['creds.json']) {
+      return false;
+    }
+
+    await fs.promises.mkdir(authDir, { recursive: true });
+    for (const [fileName, fileContent] of Object.entries(filesMap)) {
+      if (!fileName.endsWith('.json') || fileName.includes('/') || fileName.includes('\\')) continue;
+      await fs.promises.writeFile(path.join(authDir, fileName), fileContent, 'utf8');
+    }
     return fs.existsSync(credsPath);
-  } catch {
+  } catch (err) {
+    console.warn('[WhatsApp QR Bridge] Failed to restore auth from DB:', err);
     return false;
   }
+}
+
+function scheduleBackupAuthDirToDb(authDir: string): void {
+  const s = getSingleton();
+  if (s.backupTimer) {
+    clearTimeout(s.backupTimer);
+  }
+  s.backupTimer = setTimeout(async () => {
+    s.backupTimer = null;
+    try {
+      if (!fs.existsSync(path.join(authDir, 'creds.json'))) return;
+      const entries = await fs.promises.readdir(authDir);
+      const filesMap: Record<string, string> = {};
+      for (const name of entries) {
+        if (!name.endsWith('.json')) continue;
+        // Persist creds.json and essential app-state/pre-key files
+        if (name === 'creds.json' || name.startsWith('app-state-sync-') || name.startsWith('session-')) {
+          const content = await fs.promises.readFile(path.join(authDir, name), 'utf8');
+          filesMap[name] = content;
+        }
+      }
+      if (filesMap['creds.json']) {
+        await prisma.setting.upsert({
+          where: { key: DB_AUTH_BACKUP_KEY },
+          update: { value: JSON.stringify(filesMap) },
+          create: { key: DB_AUTH_BACKUP_KEY, value: JSON.stringify(filesMap) },
+        });
+      }
+    } catch (err) {
+      console.warn('[WhatsApp QR Bridge] Failed to backup auth to DB:', err);
+    }
+  }, 1500);
+}
+
+async function clearAuthFromDiskAndDb(): Promise<void> {
+  const s = getSingleton();
+  const candidates = [
+    s.resolvedAuthDir,
+    path.resolve(process.cwd(), 'storage', 'whatsapp-auth'),
+    path.join(os.tmpdir(), 'tls-whatsapp-auth'),
+  ].filter(Boolean) as string[];
+
+  for (const dir of candidates) {
+    try {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+    } catch {}
+  }
+
+  try {
+    await prisma.setting.deleteMany({ where: { key: DB_AUTH_BACKUP_KEY } });
+  } catch {}
 }
 
 function extractPhoneDigitsFromJid(jid?: string | null, altJid?: string | null): string {
@@ -73,11 +174,19 @@ function extractPhoneDigitsFromJid(jid?: string | null, altJid?: string | null):
 
 export function getWhatsAppQrStatus(): WhatsAppQrState {
   const s = getSingleton();
-  // Auto-resume saved session on server boot if creds.json exists on disk
+  // Auto-resume saved session on server boot if creds exist on disk or in DB
   if (!s.autoStartChecked) {
     s.autoStartChecked = true;
-    if (s.state.status === 'disconnected' && hasSavedAuthCreds()) {
-      startWhatsAppQrConnection(false).catch(() => {});
+    if (s.state.status === 'disconnected') {
+      (async () => {
+        try {
+          const authDir = await resolveWritableAuthDir();
+          const hasCreds = await restoreAuthDirFromDbIfNeeded(authDir);
+          if (hasCreds && s.state.status === 'disconnected') {
+            await startWhatsAppQrConnection(false);
+          }
+        } catch {}
+      })();
     }
   }
   return { ...s.state };
@@ -110,8 +219,10 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
       const downloadMediaMessage =
         baileys.downloadMediaMessage || baileys.default?.downloadMediaMessage;
 
-      const authDir = getAuthDir();
-      await fs.promises.mkdir(authDir, { recursive: true });
+      const authDir = await resolveWritableAuthDir();
+      if (!resetAuth) {
+        await restoreAuthDirFromDbIfNeeded(authDir);
+      }
 
       const { state: authState, saveCreds } = await useMultiFileAuthState(authDir);
 
@@ -150,7 +261,10 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
 
       s.sock = sock;
 
-      sock.ev.on('creds.update', saveCreds);
+      sock.ev.on('creds.update', async () => {
+        await saveCreds();
+        scheduleBackupAuthDirToDb(authDir);
+      });
 
       sock.ev.on('connection.update', async (update: any) => {
         const { connection, lastDisconnect, qr } = update;
@@ -192,6 +306,7 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
             lastError: null,
             updatedAt: new Date().toISOString(),
           };
+          scheduleBackupAuthDirToDb(authDir);
           console.log(`[WhatsApp QR Bridge] Connected as ${displayName} (${displayPhone})`);
         }
 
@@ -203,9 +318,7 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
 
           s.sock = null;
           if (loggedOut) {
-            try {
-              await fs.promises.rm(getAuthDir(), { recursive: true, force: true });
-            } catch {}
+            await clearAuthFromDiskAndDb();
             s.state = {
               status: 'disconnected',
               qrDataUrl: null,
@@ -283,18 +396,27 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
                   { logger, reuploadRequest: sock.updateMediaMessage }
                 );
                 if (buffer) {
-                  const uploadDir = path.resolve(process.cwd(), 'storage', 'uploads', 'system', 'chat');
-                  await fs.promises.mkdir(uploadDir, { recursive: true });
-                  const safeId = (msgId || `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '');
-                  const filename = `wa-${safeId}.jpg`;
-                  await fs.promises.writeFile(path.join(uploadDir, filename), Buffer.from(buffer));
-                  const localUrl = `/uploads/system/chat/${filename}`;
-                  imageUrls.push(localUrl);
-                  attachments.push({
-                    type: 'image',
-                    url: localUrl,
-                    name: 'WhatsApp Photo',
-                  });
+                  let imageUrl: string | null = null;
+                  try {
+                    const uploadDir = path.resolve(process.cwd(), 'storage', 'uploads', 'system', 'chat');
+                    await fs.promises.mkdir(uploadDir, { recursive: true });
+                    const safeId = (msgId || `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '');
+                    const filename = `wa-${safeId}.jpg`;
+                    await fs.promises.writeFile(path.join(uploadDir, filename), Buffer.from(buffer));
+                    imageUrl = `/uploads/system/chat/${filename}`;
+                  } catch {
+                    // Fallback to inline base64 data URL if container storage is read-only
+                    const mime = inner.imageMessage.mimetype || 'image/jpeg';
+                    imageUrl = `data:${mime};base64,${Buffer.from(buffer).toString('base64')}`;
+                  }
+                  if (imageUrl) {
+                    imageUrls.push(imageUrl);
+                    attachments.push({
+                      type: 'image',
+                      url: imageUrl,
+                      name: 'WhatsApp Photo',
+                    });
+                  }
                 }
               } catch (imgErr) {
                 console.warn('[WhatsApp QR Bridge] Failed to download image:', imgErr);
@@ -378,9 +500,7 @@ export async function disconnectWhatsAppQrSession(clearFiles = true): Promise<Wh
     s.sock = null;
   }
   if (clearFiles) {
-    try {
-      await fs.promises.rm(getAuthDir(), { recursive: true, force: true });
-    } catch {}
+    await clearAuthFromDiskAndDb();
   }
   s.state = {
     status: 'disconnected',
@@ -419,7 +539,12 @@ export async function sendDirectWhatsAppQrMessage(params: {
         const urlStr = (att.url || '').trim();
         let imgBuffer: Buffer | null = null;
 
-        if (urlStr.startsWith('/uploads/')) {
+        if (urlStr.startsWith('data:image/')) {
+          const commaIdx = urlStr.indexOf(',');
+          if (commaIdx > -1) {
+            imgBuffer = Buffer.from(urlStr.slice(commaIdx + 1), 'base64');
+          }
+        } else if (urlStr.startsWith('/uploads/')) {
           const rel = urlStr.replace(/^\/+/, '');
           const candidates = [
             path.resolve(process.cwd(), 'storage', rel),
