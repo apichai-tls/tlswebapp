@@ -847,6 +847,27 @@ function AdminPageContent() {
   };
 
 
+  const handlePasteAdminNoteImage = (e: React.ClipboardEvent) => {
+    if (isUploadingNote) return;
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageFiles: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf("image") !== -1) {
+        const file = items[i].getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      setShowNoteUploader(true);
+      setTimeout(() => {
+        noteUploaderRef.current?.addFiles?.(imageFiles);
+      }, 20);
+    }
+  };
+
   const handleSendAdminLog = async () => {
     if (isSendingNoteRef.current) return;
     const hasPendingImages = noteUploaderRef.current && noteUploaderRef.current.getPendingFilesCount() > 0;
@@ -9113,7 +9134,11 @@ function AdminPageContent() {
                       </div>
 
                       {/* Admin Notes & Activity Feed Card */}
-                      <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col gap-2.5 flex-1 min-h-[250px] overflow-hidden">
+                      <div
+                        onPaste={handlePasteAdminNoteImage}
+                        tabIndex={0}
+                        className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col gap-2.5 flex-1 min-h-[250px] overflow-hidden outline-none focus-within:border-indigo-300"
+                      >
                         <div className="flex items-center justify-between gap-2 shrink-0 flex-wrap">
                           <Label className="text-xs font-extrabold text-slate-700 uppercase tracking-wider flex items-center gap-1.5 shrink-0">
                             <MessageSquare size={15} className="text-indigo-600 shrink-0" />
@@ -9317,9 +9342,10 @@ function AdminPageContent() {
                                 <Paperclip size={14} />
                               </Button>
                               <Input
-                                placeholder="Type a note & press Enter..."
+                                placeholder="Type a note or paste image (Ctrl+V) & press Enter..."
                                 value={adminNoteInput}
                                 onChange={(e) => setAdminNoteInput(e.target.value)}
+                                onPaste={handlePasteAdminNoteImage}
                                 onKeyDown={(e) => {
                                   if (e.key === 'Enter') {
                                     e.preventDefault();
@@ -9344,8 +9370,8 @@ function AdminPageContent() {
                                 <span className="ml-1.5">Send</span>
                               </Button>
                             </div>
-                            {showNoteUploader && !noteLogsModalOpen && (
-                              <div className="border border-slate-200 bg-white p-2 rounded-xl shadow-2xs mt-1 max-h-[160px] overflow-y-auto">
+                            {!noteLogsModalOpen && (
+                              <div className={showNoteUploader ? "border border-slate-200 bg-white p-2 rounded-xl shadow-2xs mt-1 max-h-[160px] overflow-y-auto" : "hidden"}>
                                 <MultiImageUploader
                                   ref={noteUploaderRef}
                                   entityType="job"
@@ -12214,7 +12240,10 @@ function AdminPageContent() {
 
             {/* Admin Note Logs Expanded Dialog */}
             <Dialog open={noteLogsModalOpen} onOpenChange={setNoteLogsModalOpen}>
-              <DialogContent className="sm:max-w-lg w-[95vw] rounded-2xl mx-auto p-0 bg-white border-none shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+              <DialogContent
+                onPaste={handlePasteAdminNoteImage}
+                className="sm:max-w-lg w-[95vw] rounded-2xl mx-auto p-0 bg-white border-none shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+              >
                 <DialogHeader className="p-4 bg-indigo-600 border-b border-indigo-700 sticky top-0 shrink-0 text-white">
                   <div>
                     <DialogTitle className="text-base font-bold flex items-center gap-2">
@@ -12295,9 +12324,10 @@ function AdminPageContent() {
                     </Button>
                     <Input
                       ref={expandedNoteInputRef}
-                      placeholder="Type a note & press Enter..."
+                      placeholder="Type a note or paste image (Ctrl+V) & press Enter..."
                       value={adminNoteInput}
                       onChange={(e) => setAdminNoteInput(e.target.value)}
+                      onPaste={handlePasteAdminNoteImage}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
@@ -12322,8 +12352,8 @@ function AdminPageContent() {
                       <span className="ml-1">Send</span>
                     </Button>
                   </div>
-                  {showNoteUploader && (
-                    <div className="border border-slate-200 bg-white p-2 rounded-lg shadow-sm mt-1 max-h-[160px] overflow-y-auto">
+                  {noteLogsModalOpen && (
+                    <div className={showNoteUploader ? "border border-slate-200 bg-white p-2 rounded-lg shadow-sm mt-1 max-h-[160px] overflow-y-auto" : "hidden"}>
                       <MultiImageUploader
                         ref={noteUploaderRef}
                         entityType="job"

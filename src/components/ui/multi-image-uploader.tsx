@@ -205,6 +205,7 @@ export interface MultiImageUploaderRef {
   startUpload: () => Promise<string[]>;
   reset: () => void;
   getPendingFilesCount: () => number;
+  addFiles: (files: File[]) => void;
 }
 
 interface MultiImageUploaderProps {
@@ -356,6 +357,11 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
       },
       getPendingFilesCount: () => {
         return pendingFiles.length;
+      },
+      addFiles: (files: File[]) => {
+        if (readOnly || !files || files.length === 0) return;
+        processFiles(files);
+        toast.success(`Pasted ${files.length} image(s) from clipboard!`);
       }
     }));
 
