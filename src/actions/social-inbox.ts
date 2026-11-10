@@ -32,6 +32,7 @@ import {
 import { getStoredLineOaSettings } from '@/actions/line';
 import {
   getWhatsAppQrStatus,
+  getWhatsAppQrStatusAsync,
   startWhatsAppQrConnection,
   disconnectWhatsAppQrSession,
   sendDirectWhatsAppQrMessage,
@@ -149,6 +150,16 @@ function normalizeAndSortConversations(
     ) {
       updated.customerName = 'JOE';
       updated.customerId = null;
+      didClean = true;
+    }
+
+    // Auto-heal WhatsApp conversations where 10-digit international phone (e.g. Singapore 65xxxxxxxx) had +66 prepended
+    if (updated.channel === 'whatsapp' && updated.contactPhone?.startsWith('+6665') && updated.contactPhone.length === 13) {
+      const fixedPhone = `+${updated.contactPhone.slice(3)}`;
+      if (updated.contactName === updated.contactPhone) {
+        updated.contactName = fixedPhone;
+      }
+      updated.contactPhone = fixedPhone;
       didClean = true;
     }
 
@@ -1243,8 +1254,8 @@ export async function createWhatsAppChatAction(input: {
       let status: SocialMessage['status'] = 'sent';
 
       // Priority 0: If Direct WhatsApp QR Link (Linked Devices) is connected, send directly!
-      const waQr = getWhatsAppQrStatus();
-      if (waQr.status === 'connected') {
+      const waQr = await getWhatsAppQrStatusAsync();
+      if (waQr.status === 'connected' || waQr.status === 'connecting') {
         const qrSendRes = await sendDirectWhatsAppQrMessage({
           phone: e164Phone,
           countryCode,
@@ -1592,8 +1603,10 @@ export async function sendSocialMessageAction(input: {
       whatsappProtocolUrl = buildWhatsAppProtocolUrl(targetPhone, waBody, cc);
 
       // Mode 0: Built-in Direct WhatsApp QR Link (Linked Devices — 100% Free & 2-Way Sync)
-      const waQr = getWhatsAppQrStatus();
-      if (waQr.status === 'connected') {
+      const waQr = await getWhatsAppQrStatusAsync();
+      const hasQrLinked = waQr.status === 'connected' || waQr.status === 'connecting';
+      if (hasQrLinked) {
+        deliveryMethod = 'whatsapp_gateway_api';
         const qrRes = await sendDirectWhatsAppQrMessage({
           phone: targetPhone,
           countryCode: cc,
@@ -1601,9 +1614,9 @@ export async function sendSocialMessageAction(input: {
           attachments,
         });
         if (qrRes.ok) {
-          deliveryMethod = 'whatsapp_gateway_api';
           status = 'delivered';
         } else {
+          status = 'failed';
           externalError = qrRes.error;
         }
       }
@@ -1666,7 +1679,11 @@ export async function sendSocialMessageAction(input: {
         }
       }
       // Mode B: Custom WhatsApp QR / REST Gateway API (WAHA / Evolution / Baileys / UltraMsg)
-      else if (config.whatsapp.mode === 'gateway_api' && config.whatsapp.gatewayUrl?.trim()) {
+      else if (
+        status !== 'delivered' &&
+        config.whatsapp.mode === 'gateway_api' &&
+        config.whatsapp.gatewayUrl?.trim()
+      ) {
         deliveryMethod = 'whatsapp_gateway_api';
         try {
           const gwHeaders: Record<string, string> = {
@@ -1702,8 +1719,8 @@ export async function sendSocialMessageAction(input: {
           status = 'delivered';
         }
       }
-      // Mode C: Live WhatsApp Web / Native App Bridge (only if not already delivered via Direct QR)
-      else if (status !== 'delivered') {
+      // Mode C: Live WhatsApp Web / Native App Bridge (only if QR is NOT linked and not already delivered)
+      else if (status !== 'delivered' && !hasQrLinked) {
         deliveryMethod = 'whatsapp_web_bridge';
         status = 'delivered';
       }
@@ -2408,10 +2425,13 @@ export async function pollLiveChannelUpdatesAction() {
       await saveInboxStore(conversations, messages);
     }
 
+    const waQrState = await getWhatsAppQrStatusAsync();
+
     return {
       success: true,
       conversations,
       messages,
+      waQrState,
       serverTime: new Date().toISOString(),
     };
   } catch (err: any) {
@@ -2435,7 +2455,7 @@ export async function checkChannelsLiveStatusAction(): Promise<{
   const { config } = await loadRawInboxStore();
   const lineSettings = await getStoredLineOaSettings('that_laundry_shop');
 
-  const waQr = getWhatsAppQrStatus();
+  const waQr = await getWhatsAppQrStatusAsync();
   const isWaQrConnected = waQr.status === 'connected';
 
   const statuses: Record<SocialChannel, SocialChannelLiveStatus> = {
@@ -2566,7 +2586,7 @@ export async function getWhatsAppQrStatusAction(): Promise<{
   state: WhatsAppQrState;
 }> {
   await assertServerActionAuthorized({ forbidRoles: ['rider'] });
-  const state = getWhatsAppQrStatus();
+  const state = await getWhatsAppQrStatusAsync();
   return { success: true, state };
 }
 

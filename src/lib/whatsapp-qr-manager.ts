@@ -22,6 +22,7 @@ interface GlobalWhatsAppSingleton {
   startingPromise: Promise<WhatsAppQrState> | null;
   sentMessageIds: Set<string>;
   autoStartChecked: boolean;
+  replacedByAnotherInstance: boolean;
   resolvedAuthDir: string | null;
   backupTimer: ReturnType<typeof setTimeout> | null;
 }
@@ -47,6 +48,7 @@ function getSingleton(): GlobalWhatsAppSingleton {
       startingPromise: null,
       sentMessageIds: new Set<string>(),
       autoStartChecked: false,
+      replacedByAnotherInstance: false,
       resolvedAuthDir: null,
       backupTimer: null,
     };
@@ -177,12 +179,12 @@ export function getWhatsAppQrStatus(): WhatsAppQrState {
   // Auto-resume saved session on server boot if creds exist on disk or in DB
   if (!s.autoStartChecked) {
     s.autoStartChecked = true;
-    if (s.state.status === 'disconnected') {
+    if (s.state.status === 'disconnected' && !s.replacedByAnotherInstance) {
       (async () => {
         try {
           const authDir = await resolveWritableAuthDir();
           const hasCreds = await restoreAuthDirFromDbIfNeeded(authDir);
-          if (hasCreds && s.state.status === 'disconnected') {
+          if (hasCreds && s.state.status === 'disconnected' && !s.replacedByAnotherInstance) {
             await startWhatsAppQrConnection(false);
           }
         } catch {}
@@ -190,6 +192,61 @@ export function getWhatsAppQrStatus(): WhatsAppQrState {
     }
   }
   return { ...s.state };
+}
+
+async function readSavedCredsMetadata(): Promise<{
+  hasCreds: boolean;
+  connectedPhone: string | null;
+  connectedName: string | null;
+}> {
+  try {
+    const authDir = await resolveWritableAuthDir();
+    await restoreAuthDirFromDbIfNeeded(authDir);
+    const credsPath = path.join(authDir, 'creds.json');
+    if (!fs.existsSync(credsPath)) {
+      return { hasCreds: false, connectedPhone: null, connectedName: null };
+    }
+    const raw = await fs.promises.readFile(credsPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    const meId = parsed?.me?.id || '';
+    const meLid = parsed?.me?.lid || '';
+    if (!meId && !parsed?.registered) {
+      return { hasCreds: false, connectedPhone: null, connectedName: null };
+    }
+    const phoneDigits = extractPhoneDigitsFromJid(meId, meLid);
+    const connectedPhone = phoneDigits ? `+${phoneDigits}` : meId || null;
+    const connectedName = parsed?.me?.name || parsed?.me?.verifiedName || 'That Laundry Shop';
+    return { hasCreds: true, connectedPhone, connectedName };
+  } catch {
+    return { hasCreds: false, connectedPhone: null, connectedName: null };
+  }
+}
+
+export async function getWhatsAppQrStatusAsync(): Promise<WhatsAppQrState> {
+  const s = getSingleton();
+  if (s.state.status === 'connected' && s.sock) {
+    return { ...s.state };
+  }
+  if (s.state.status === 'qr_ready' && s.state.qrDataUrl) {
+    return { ...s.state };
+  }
+
+  const meta = await readSavedCredsMetadata();
+  if (meta.hasCreds) {
+    if (!s.replacedByAnotherInstance && s.state.status === 'disconnected' && !s.startingPromise) {
+      startWhatsAppQrConnection(false).catch(() => {});
+    }
+    return {
+      status: 'connected',
+      qrDataUrl: null,
+      connectedPhone: s.state.connectedPhone || meta.connectedPhone,
+      connectedName: s.state.connectedName || meta.connectedName || 'That Laundry Shop',
+      lastError: null,
+      updatedAt: s.state.updatedAt || new Date().toISOString(),
+    };
+  }
+
+  return getWhatsAppQrStatus();
 }
 
 export async function startWhatsAppQrConnection(resetAuth = false): Promise<WhatsAppQrState> {
@@ -298,6 +355,7 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
           const displayPhone = phoneDigits ? `+${phoneDigits}` : meId;
           const displayName = sock.user?.name || sock.user?.verifiedName || 'That Laundry Shop';
 
+          s.replacedByAnotherInstance = false;
           s.state = {
             status: 'connected',
             qrDataUrl: null,
@@ -315,9 +373,11 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
             (lastDisconnect?.error as any)?.output?.statusCode ||
             (lastDisconnect?.error as any)?.statusCode;
           const loggedOut = statusCode === (DisconnectReason?.loggedOut ?? 401);
+          const connectionReplaced = statusCode === (DisconnectReason?.connectionReplaced ?? 440);
 
           s.sock = null;
           if (loggedOut) {
+            s.replacedByAnotherInstance = false;
             await clearAuthFromDiskAndDb();
             s.state = {
               status: 'disconnected',
@@ -325,6 +385,17 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
               connectedPhone: null,
               connectedName: null,
               lastError: 'Session logged out from phone. Please scan QR again.',
+              updatedAt: new Date().toISOString(),
+            };
+          } else if (connectionReplaced) {
+            // Another Cloud Run instance took over the WhatsApp socket — do NOT ping-pong in a 2.5s loop!
+            // Keep status as 'connected' and only reconnect on-demand if this instance must send an outbound message.
+            s.replacedByAnotherInstance = true;
+            s.state = {
+              ...s.state,
+              status: 'connected',
+              qrDataUrl: null,
+              lastError: null,
               updatedAt: new Date().toISOString(),
             };
           } else {
@@ -335,7 +406,9 @@ export async function startWhatsAppQrConnection(resetAuth = false): Promise<What
               updatedAt: new Date().toISOString(),
             };
             setTimeout(() => {
-              startWhatsAppQrConnection(false).catch(() => {});
+              if (!s.replacedByAnotherInstance) {
+                startWhatsAppQrConnection(false).catch(() => {});
+              }
             }, 2500);
           }
         }
@@ -513,6 +586,34 @@ export async function disconnectWhatsAppQrSession(clearFiles = true): Promise<Wh
   return { ...s.state };
 }
 
+async function ensureWhatsAppQrReadyForSend(timeoutMs = 12000): Promise<boolean> {
+  const s = getSingleton();
+  if (s.state.status === 'connected' && s.sock) {
+    return true;
+  }
+
+  const meta = await readSavedCredsMetadata();
+  if (!meta.hasCreds && s.state.status !== 'connecting') {
+    return false;
+  }
+
+  s.replacedByAnotherInstance = false;
+  if (!s.startingPromise && (!s.sock || s.state.status !== 'connected')) {
+    startWhatsAppQrConnection(false).catch(() => {});
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (s.state.status === 'connected' && s.sock) {
+      await new Promise((r) => setTimeout(r, 250));
+      return Boolean(s.sock);
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+
+  return Boolean(s.state.status === 'connected' && s.sock);
+}
+
 export async function sendDirectWhatsAppQrMessage(params: {
   phone: string;
   countryCode?: string;
@@ -520,7 +621,8 @@ export async function sendDirectWhatsAppQrMessage(params: {
   attachments?: SocialMessageAttachment[];
 }): Promise<{ ok: boolean; error?: string }> {
   const s = getSingleton();
-  if (s.state.status !== 'connected' || !s.sock) {
+  const ready = await ensureWhatsAppQrReadyForSend(12000);
+  if (!ready || !s.sock) {
     return { ok: false, error: 'WhatsApp QR session is not connected' };
   }
 

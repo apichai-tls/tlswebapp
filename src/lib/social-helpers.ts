@@ -16,6 +16,11 @@ export function formatPhoneForWhatsApp(rawPhone: string, defaultCountryCode = '6
 
   const cleanCountry = (defaultCountryCode || '66').replace(/\D/g, '') || '66';
 
+  // Auto-heal previously double-prefixed 10-digit international numbers (e.g., +6665xxxxxxxx -> 65xxxxxxxx)
+  if (digits.startsWith(`${cleanCountry}65`) && digits.length === cleanCountry.length + 10) {
+    digits = digits.slice(cleanCountry.length);
+  }
+
   // If user explicitly started with '+' (e.g. +6591234567 or +660812345678)
   if (hasPlus) {
     if (digits.startsWith(`${cleanCountry}0`)) {
@@ -39,8 +44,8 @@ export function formatPhoneForWhatsApp(rawPhone: string, defaultCountryCode = '6
     return digits;
   }
 
-  // If 8-9 digits without leading 0, prepend default country code
-  if (digits.length >= 7 && digits.length <= 10) {
+  // If 7-9 digits without leading 0, prepend default country code (10+ digits without leading 0 are already international E.164, e.g. 65xxxxxxxx)
+  if (digits.length >= 7 && digits.length <= 9) {
     return `${cleanCountry}${digits}`;
   }
 

@@ -160,7 +160,7 @@ export function AdminSocialInbox({
   const [replyingTo, setReplyingTo] = useState<SocialMessageReplyRef | null>(null);
   const [showTemplatesBar, setShowTemplatesBar] = useState(true);
   const [templateLang, setTemplateLang] = useState<'en' | 'th' | 'both'>('en');
-  const [openWaWebOnSend, setOpenWaWebOnSend] = useState(true);
+  const [openWaWebOnSend, setOpenWaWebOnSend] = useState(false);
   const [sendingMsg, setSendingMsg] = useState(false);
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
 
@@ -321,6 +321,9 @@ export function AdminSocialInbox({
       try {
         const res = await pollLiveChannelUpdatesAction();
         if (res.success && res.conversations && res.messages) {
+          if ((res as any).waQrState) {
+            setWaQrState((res as any).waQrState);
+          }
           setLiveConnected(true);
           setLastLiveSyncAt(
             new Date().toLocaleTimeString([], {
@@ -672,6 +675,8 @@ export function AdminSocialInbox({
 
     const formattedTargetPhone = formatPhoneForWhatsApp(waPhoneInput, waCountryCode);
     const hasDirectApiConfigured =
+      waQrState?.status === 'connected' ||
+      waQrState?.status === 'connecting' ||
       (config?.whatsapp?.mode === 'cloud_api' &&
         Boolean(config?.whatsapp?.phoneNumberId?.trim() && config?.whatsapp?.accessToken?.trim())) ||
       (config?.whatsapp?.mode === 'gateway_api' && Boolean(config?.whatsapp?.gatewayUrl?.trim()));
@@ -773,6 +778,7 @@ export function AdminSocialInbox({
 
     const hasDirectWaApi =
       waQrState?.status === 'connected' ||
+      waQrState?.status === 'connecting' ||
       (config?.whatsapp?.mode === 'cloud_api' &&
         Boolean(config?.whatsapp?.phoneNumberId?.trim() && config?.whatsapp?.accessToken?.trim())) ||
       (config?.whatsapp?.mode === 'gateway_api' && Boolean(config?.whatsapp?.gatewayUrl?.trim()));
@@ -2195,7 +2201,7 @@ export function AdminSocialInbox({
                     className="flex-1 min-h-[38px] max-h-24 rounded-xl border border-slate-200 bg-slate-50/90 focus:bg-white px-3 py-2 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none"
                   />
 
-                  {activeConversation.channel === 'whatsapp' && (
+                  {activeConversation.channel === 'whatsapp' && waQrState?.status !== 'connected' && (
                     <Button
                       type="button"
                       size="sm"
@@ -2233,15 +2239,22 @@ export function AdminSocialInbox({
 
                 {activeConversation.channel === 'whatsapp' && (
                   <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500 px-1">
-                    <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={openWaWebOnSend}
-                        onChange={(e) => setOpenWaWebOnSend(e.target.checked)}
-                        className="rounded border-slate-300"
-                      />
-                      <span>Auto-sync to Docked WhatsApp Companion on Enter</span>
-                    </label>
+                    {waQrState?.status === 'connected' ? (
+                      <span className="inline-flex items-center gap-1.5 text-emerald-700 font-semibold">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                        Direct WhatsApp QR Connected ({waQrState.connectedPhone || 'Linked Device'}) — Messages send directly to customer
+                      </span>
+                    ) : (
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={openWaWebOnSend}
+                          onChange={(e) => setOpenWaWebOnSend(e.target.checked)}
+                          className="rounded border-slate-300"
+                        />
+                        <span>Auto-sync to Docked WhatsApp Companion on Enter</span>
+                      </label>
+                    )}
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
