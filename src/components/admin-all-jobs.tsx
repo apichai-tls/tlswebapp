@@ -20,6 +20,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, settingsStore, realtimeStore, shiftStore, computeLiveShiftStats, type Job, type JobStatus, type CashierShift } from "@/lib/store";
 import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown, formatLocationWithRoom, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId, getJobPackingCounts, getJobProcessingBranchId } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
+import { isBeamPaymentChannel } from "@/lib/beam";
 import { BranchFilterDropdown, getUserAssignedBranchIds, getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
@@ -74,6 +75,109 @@ function parseUploadedBillPhotoUrls(raw: string | null | undefined): string[] {
     if (typeof raw === "string" && !raw.includes("proforma-") && !raw.includes("receipt-")) return [raw];
     return [];
   }
+}
+
+/**
+ * Detects if a paid job was settled via Beam at or after 19:00 Thailand time (UTC+7),
+ * rolling its settlement date over from `actualPaidDate` (Day D) to `effectivePaidDate` (Day D+1 09:00 BKK).
+ */
+function getBeamPostCutoffRolloverDates(job: Job): { actualPaidDate: Date; effectivePaidDate: Date } | null {
+  if (!job.isPaid && !job.isShopPaid) return null;
+
+  let parsedAdmin: any = null;
+  if (job.adminNotesJson) {
+    try {
+      const p = JSON.parse(job.adminNotesJson);
+      if (p && typeof p === "object" && !Array.isArray(p)) {
+        parsedAdmin = p;
+      }
+    } catch {}
+  }
+
+  const payments: any[] = Array.isArray(parsedAdmin?.payments) ? parsedAdmin.payments : [];
+  if (payments.length > 0) {
+    const latestPayment = payments[payments.length - 1];
+    if (
+      latestPayment &&
+      isBeamPaymentChannel(latestPayment.channel || job.paymentChannel) &&
+      latestPayment.actualPaidAt
+    ) {
+      const actualPaidDate = new Date(latestPayment.actualPaidAt);
+      const effRaw = latestPayment.timestamp || job.shopPaidAt || job.csoPaidAt;
+      const effectivePaidDate = effRaw ? new Date(effRaw) : new Date(NaN);
+      if (
+        !isNaN(actualPaidDate.getTime()) &&
+        !isNaN(effectivePaidDate.getTime()) &&
+        effectivePaidDate.getTime() > actualPaidDate.getTime() &&
+        !isSameDay(actualPaidDate, effectivePaidDate)
+      ) {
+        return { actualPaidDate, effectivePaidDate };
+      }
+    }
+    return null;
+  }
+
+  if (!isBeamPaymentChannel(job.paymentChannel)) return null;
+
+  if (parsedAdmin?.beamCutoffActualPaidAt) {
+    const actualPaidDate = new Date(parsedAdmin.beamCutoffActualPaidAt);
+    const effRaw = parsedAdmin.beamCutoffEffectivePaidAt || job.shopPaidAt || job.csoPaidAt;
+    const effectivePaidDate = effRaw ? new Date(effRaw) : new Date(NaN);
+    if (
+      !isNaN(actualPaidDate.getTime()) &&
+      !isNaN(effectivePaidDate.getTime()) &&
+      effectivePaidDate.getTime() > actualPaidDate.getTime() &&
+      !isSameDay(actualPaidDate, effectivePaidDate)
+    ) {
+      return { actualPaidDate, effectivePaidDate };
+    }
+  }
+
+  // Fallback for historical manual Beam-paid jobs whose shopPaidAt/csoPaidAt was rolled over to exact 09:00:00.000 BKK (02:00:00.000Z UTC)
+  const effRaw = job.shopPaidAt || job.csoPaidAt;
+  if (effRaw) {
+    const effectivePaidDate = new Date(effRaw);
+    if (
+      !isNaN(effectivePaidDate.getTime()) &&
+      effectivePaidDate.getUTCHours() === 2 &&
+      effectivePaidDate.getUTCMinutes() === 0 &&
+      effectivePaidDate.getUTCSeconds() === 0 &&
+      effectivePaidDate.getUTCMilliseconds() === 0
+    ) {
+      const actualPaidDate = new Date(effectivePaidDate.getTime() - 12 * 60 * 60 * 1000);
+      if (!isSameDay(actualPaidDate, effectivePaidDate)) {
+        return { actualPaidDate, effectivePaidDate };
+      }
+    }
+  }
+
+  return null;
+}
+
+function isHiddenByBeamCutoffOnSelectedDate(
+  job: Job,
+  dateFilter: FilterDate,
+  today: Date,
+  yesterday: Date,
+  customRangeStart: Date | null,
+  customRangeEnd: Date | null
+): boolean {
+  const rollover = getBeamPostCutoffRolloverDates(job);
+  if (!rollover) return false;
+  const { actualPaidDate, effectivePaidDate } = rollover;
+
+  if (dateFilter === "today") {
+    return isSameDay(actualPaidDate, today) && !isSameDay(effectivePaidDate, today);
+  }
+  if (dateFilter === "yesterday") {
+    return isSameDay(actualPaidDate, yesterday) && !isSameDay(effectivePaidDate, yesterday);
+  }
+  if (dateFilter === "custom" && customRangeStart && customRangeEnd) {
+    const actualInRange = actualPaidDate >= customRangeStart && actualPaidDate <= customRangeEnd;
+    const effectiveInRange = effectivePaidDate >= customRangeStart && effectivePaidDate <= customRangeEnd;
+    return actualInRange && !effectiveInRange;
+  }
+  return false;
 }
 
 export interface JobBillingMeta {
@@ -1289,9 +1393,14 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     return Array.from(new Set([...configured, ...fromJobs]));
   }, [systemSettings, jobs]);
 
+  const hasActiveSearch = Boolean(searchTerm.trim());
+
   // 1. Scoped Overview Jobs: filters jobs by Global Context (Branch, Brand, Source, Role, Date, Active/ShowCompleted)
   // This forms the consistent baseline for BOTH the quick filter pill badges AND the final job view.
   const scopedOverviewJobs = useMemo(() => {
+    const customStartBound = dateFilter === "custom" && startDate ? parseLocalDayDate(startDate, false) : null;
+    const customEndBound = dateFilter === "custom" && endDate ? parseLocalDayDate(endDate, true) : null;
+
     return jobs.filter((job) => {
       // 0. Hard Area / Assigned Branches Boundary (Prevents cross-branch/area viewing)
       if (isAreaRestricted) {
@@ -1330,6 +1439,16 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
       if (job.status === 'topup') return false;
 
+      // Beam Post-19:00 Cutoff Rule:
+      // Hide Beam-paid jobs on the actual payment day (Day D) once paid at/after 19:00 BKK (they roll over to Day D+1 09:00 BKK),
+      // unless staff is actively searching in the search box.
+      if (
+        !hasActiveSearch &&
+        isHiddenByBeamCutoffOnSelectedDate(job, dateFilter, today, yesterday, customStartBound, customEndBound)
+      ) {
+        return false;
+      }
+
       // Date Filter
       let matchesDate = true;
       const isActive = !['completed', 'cancel', 'return'].includes(job.status);
@@ -1341,6 +1460,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       (job.pickupScheduledAt ? isSameDay(new Date(job.pickupScheduledAt), today) : false) ||
                       (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), today) : false) ||
                       (job.shopPaidAt ? isSameDay(new Date(job.shopPaidAt), today) : false) ||
+                      (job.csoPaidAt ? isSameDay(new Date(job.csoPaidAt), today) : false) ||
                       (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
       } else if (dateFilter === "yesterday") {
         matchesDate = isSameDay(new Date(job.createdAt), yesterday) || 
@@ -1349,17 +1469,19 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       (job.pickupScheduledAt ? isSameDay(new Date(job.pickupScheduledAt), yesterday) : false) ||
                       (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), yesterday) : false) ||
                       (job.shopPaidAt ? isSameDay(new Date(job.shopPaidAt), yesterday) : false) ||
+                      (job.csoPaidAt ? isSameDay(new Date(job.csoPaidAt), yesterday) : false) ||
                       (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), yesterday) : false);
       } else if (dateFilter === "custom") {
         const jobDate = new Date(job.createdAt);
-        const start = parseLocalDayDate(startDate, false);
-        const end = parseLocalDayDate(endDate, true);
+        const start = customStartBound || parseLocalDayDate(startDate, false);
+        const end = customEndBound || parseLocalDayDate(endDate, true);
         matchesDate = (jobDate >= start && jobDate <= end) || 
                       (job.completedAt ? (new Date(job.completedAt) >= start && new Date(job.completedAt) <= end) : false) ||
                       (job.scheduledAt ? (new Date(job.scheduledAt) >= start && new Date(job.scheduledAt) <= end) : false) ||
                       (job.pickupScheduledAt ? (new Date(job.pickupScheduledAt) >= start && new Date(job.pickupScheduledAt) <= end) : false) ||
                       (job.deliveryScheduledAt ? (new Date(job.deliveryScheduledAt) >= start && new Date(job.deliveryScheduledAt) <= end) : false) ||
                       (job.shopPaidAt ? (new Date(job.shopPaidAt) >= start && new Date(job.shopPaidAt) <= end) : false) ||
+                      (job.csoPaidAt ? (new Date(job.csoPaidAt) >= start && new Date(job.csoPaidAt) <= end) : false) ||
                       (!job.completedAt && job.status === 'completed' && job.updatedAt ? (new Date(job.updatedAt) >= start && new Date(job.updatedAt) <= end) : false);
       }
       if (!matchesDate) return false;
@@ -1379,7 +1501,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     jobs, isAreaRestricted, allowedBranchIdSet, user?.role, isCSO, selectedBrand,
     jobSourceFilter, effectiveSelectedBranchIds, selectedBranchIds, allowedBranches,
     shopLocations, dateFilter, today, yesterday, startDate, endDate, statusFilter,
-    showCompleted, showCancelled, billingFilterMode
+    showCompleted, showCancelled, billingFilterMode, hasActiveSearch
   ]);
 
   // 2. Quick summary counts for Billing, Stuck, CSO Paid, and Shop Unpaid
@@ -1397,9 +1519,17 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     const currentSelectedBranchIds = isAreaRestricted ? effectiveSelectedBranchIds : selectedBranchIds;
     const totalBranchCount = isAreaRestricted ? allowedBranches.length : shopLocations.length;
     const isAllBranchesSelected = currentSelectedBranchIds.length >= totalBranchCount;
+    const customStartBound = dateFilter === "custom" && startDate ? parseLocalDayDate(startDate, false) : null;
+    const customEndBound = dateFilter === "custom" && endDate ? parseLocalDayDate(endDate, true) : null;
 
     for (const job of jobs) {
       if (!isRiderDeliveryCompletedJob(job)) continue;
+      if (
+        !hasActiveSearch &&
+        isHiddenByBeamCutoffOnSelectedDate(job, dateFilter, today, yesterday, customStartBound, customEndBound)
+      ) {
+        continue;
+      }
       if (isAreaRestricted && (!job.branchId || !allowedBranchIdSet.has(job.branchId))) continue;
       if (selectedBrand !== "ALL" && (job.brand || "that_laundry_shop") !== selectedBrand) continue;
       if (jobSourceFilter === "ONLINE") {
@@ -1476,7 +1606,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       }
     }
     return { noBillCount, unsentBillCount, stuckCount, csoPaidCount, shopUnpaidCount, csoPaidShopUnpaidCount, riderCashCount, unsentPhotoCount };
-  }, [scopedOverviewJobs, showCompleted, jobs, isAreaRestricted, allowedBranchIdSet, selectedBrand, jobSourceFilter, effectiveSelectedBranchIds, selectedBranchIds, allowedBranches, shopLocations, dateFilter, today, yesterday, startDate, endDate, statusFilter]);
+  }, [scopedOverviewJobs, showCompleted, jobs, isAreaRestricted, allowedBranchIdSet, selectedBrand, jobSourceFilter, effectiveSelectedBranchIds, selectedBranchIds, allowedBranches, shopLocations, dateFilter, today, yesterday, startDate, endDate, statusFilter, hasActiveSearch]);
 
   // 3. Payment counts across scoped jobs for quick filter pill badges
   const csoOverviewCounts = useMemo(() => {

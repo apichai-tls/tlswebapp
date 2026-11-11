@@ -10841,6 +10841,8 @@ function AdminPageContent() {
                                   targetProformaNum = targetProformaNum || (cleanOriginalId ? `PR-${cleanOriginalId}` : generateProformaBaseNumber(editingJobId));
                                 }
                                 let targetRevision = proformaRevision;
+                                const currentEditingJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+                                let shouldPersistProformaAndCart = false;
 
                                 if (!targetProformaNum || targetProformaNum === "DRAFT" || targetRevision === null) {
                                   if (editingJobId) {
@@ -10849,15 +10851,7 @@ function AdminPageContent() {
                                     setProformaReceiptNumber(targetProformaNum);
                                     setProformaRevision(targetRevision);
                                     setLastProformaCartHash(cartHash);
-                                    jobStore.updateJobDetails(editingJobId, {
-                                      proformaNumber: targetProformaNum,
-                                      proformaRevision: targetRevision,
-                                      proformaCartHash: cartHash,
-                                    } as any).then((confirmed) => {
-                                      if (confirmed?.updatedAt && originalJobRef.current) {
-                                        (originalJobRef.current as any).updatedAt = confirmed.updatedAt;
-                                      }
-                                    });
+                                    shouldPersistProformaAndCart = true;
                                   } else {
                                     targetProformaNum = "DRAFT";
                                     targetRevision = 0;
@@ -10866,7 +10860,6 @@ function AdminPageContent() {
                                     setLastProformaCartHash(cartHash);
                                   }
                                 } else {
-                                  const currentEditingJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
                                   const rawHash = (currentEditingJob as any)?.proformaCartHash;
                                   const validHash = rawHash && rawHash.includes('"speed":') ? rawHash : null;
                                   const baseHash = validHash || lastProformaCartHash;
@@ -10875,21 +10868,76 @@ function AdminPageContent() {
                                     targetRevision = (proformaRevision !== null ? proformaRevision : (editingJobId?.startsWith("RF-") ? 1 : 0)) + 1;
                                     setProformaRevision(targetRevision);
                                     setLastProformaCartHash(cartHash);
-                                    if (editingJobId) {
-                                      jobStore.updateJobDetails(editingJobId, {
-                                        proformaNumber: targetProformaNum,
-                                        proformaRevision: targetRevision,
-                                        proformaCartHash: cartHash,
-                                      } as any).then((confirmed) => {
-                                        if (confirmed?.updatedAt && originalJobRef.current) {
-                                          (originalJobRef.current as any).updatedAt = confirmed.updatedAt;
-                                        }
-                                      });
-                                    }
+                                    shouldPersistProformaAndCart = true;
                                   } else if (editingJobId?.startsWith("RF-") && (targetRevision === null || targetRevision === 0)) {
                                     targetRevision = 1;
                                     setProformaRevision(1);
+                                    shouldPersistProformaAndCart = true;
+                                  } else if (
+                                    editingJobId &&
+                                    !isPaidJob &&
+                                    !isCancelledJob &&
+                                    dialogCart.length > 0 &&
+                                    (!currentEditingJob?.items ||
+                                      currentEditingJob.items.length === 0 ||
+                                      computeCartHash({ items: currentEditingJob.items as any }) !== computeCartHash({ items: dialogCart }))
+                                  ) {
+                                    shouldPersistProformaAndCart = true;
                                   }
+                                }
+
+                                if (editingJobId && shouldPersistProformaAndCart) {
+                                  const proformaSavePayload: Record<string, any> = {
+                                    proformaNumber: targetProformaNum,
+                                    proformaRevision: targetRevision ?? 0,
+                                    proformaCartHash: cartHash,
+                                  };
+                                  if (!isPaidJob && !isCancelledJob && dialogCart.length > 0) {
+                                    const itemsPayload = dialogCart.map((item) => ({
+                                      name: item.name,
+                                      nameEn: item.nameEn || item.name,
+                                      quantity: item.quantity,
+                                      price: item.price,
+                                      basePrice: item.basePrice,
+                                      serviceId: item.id,
+                                      category: item.category,
+                                      unit: item.unit || "pcs",
+                                    }));
+                                    const uniqueCategories = Array.from(
+                                      new Set(dialogCart.map((item) => item.category).filter(Boolean))
+                                    );
+                                    const subtotalVal = dialogCart.reduce(
+                                      (sum, item) => sum + safeCeil((item.price || 0) * (item.quantity || 0)),
+                                      0
+                                    );
+                                    const expressRateVal =
+                                      serviceSpeed === "express_50" ? 0.5 : serviceSpeed === "express_100" ? 1 : 0;
+                                    const surchargeVal = expressRateVal > 0 ? safeCeil(subtotalVal * expressRateVal) : 0;
+                                    const manualDiscountVal = showDialogDiscount
+                                      ? (subtotalVal + surchargeVal) * (dialogDiscountPercent / 100)
+                                      : 0;
+                                    const totalDiscountVal = manualDiscountVal + (appliedPromo ? promoDiscountAmount : 0);
+
+                                    proformaSavePayload.items = itemsPayload;
+                                    proformaSavePayload.totalAmount = dialogTotal;
+                                    proformaSavePayload.fee = fee;
+                                    proformaSavePayload.discount = totalDiscountVal;
+                                    proformaSavePayload.discountPercent = showDialogDiscount ? dialogDiscountPercent : 0;
+                                    proformaSavePayload.serviceType = dialogCart[0]?.id || currentEditingJob?.serviceType || "wash_fold";
+                                    if (uniqueCategories.length > 0) {
+                                      proformaSavePayload.laundryTypes = uniqueCategories;
+                                    }
+                                  }
+
+                                  if (originalJobRef.current && originalJobRef.current.id === editingJobId) {
+                                    Object.assign(originalJobRef.current, proformaSavePayload);
+                                  }
+
+                                  jobStore.updateJobDetails(editingJobId, proformaSavePayload as any).then((confirmed) => {
+                                    if (confirmed?.updatedAt && originalJobRef.current && originalJobRef.current.id === editingJobId) {
+                                      (originalJobRef.current as any).updatedAt = confirmed.updatedAt;
+                                    }
+                                  });
                                 }
 
                                 setProformaPressedSinceLastEdit(true);

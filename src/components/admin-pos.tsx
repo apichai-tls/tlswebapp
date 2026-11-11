@@ -6033,6 +6033,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
                   let targetProformaNum = proformaReceiptNumber;
                   let targetRevision = proformaRevision;
+                  const loadedJob = loadedJobId ? jobs.find(j => j.id === loadedJobId) : null;
+                  let shouldPersistPosProforma = false;
 
                   if (!targetProformaNum || targetProformaNum === "DRAFT" || targetRevision === null) {
                     if (loadedJobId) {
@@ -6042,6 +6044,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       setProformaReceiptNumber(targetProformaNum);
                       setProformaRevision(0);
                       setLastProformaCartHash(cartHash);
+                      shouldPersistPosProforma = true;
                     } else {
                       // New POS job without ID yet — show DRAFT (will be PR-{jobId} after Pay)
                       targetProformaNum = "DRAFT";
@@ -6051,14 +6054,46 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       setLastProformaCartHash(cartHash);
                     }
                   } else {
-                    const loadedJob = loadedJobId ? jobs.find(j => j.id === loadedJobId) : null;
                     const baseHash = (loadedJob as any)?.proformaCartHash || lastProformaCartHash;
                     const isCartChanged = Boolean(baseHash ? (cartHash !== baseHash) : false);
                     if (isCartChanged) {
                       targetRevision = (proformaRevision !== null ? proformaRevision : 0) + 1;
                       setProformaRevision(targetRevision);
                       setLastProformaCartHash(cartHash);
+                      shouldPersistPosProforma = true;
+                    } else if (
+                      loadedJobId &&
+                      !loadedJob?.isShopPaid &&
+                      loadedJob?.status !== "cancel" &&
+                      cart.length > 0 &&
+                      (!loadedJob?.items || loadedJob.items.length === 0)
+                    ) {
+                      shouldPersistPosProforma = true;
                     }
+                  }
+
+                  if (loadedJobId && shouldPersistPosProforma && loadedJob?.status !== "cancel") {
+                    const posProformaPayload: Record<string, any> = {
+                      proformaNumber: targetProformaNum,
+                      proformaRevision: targetRevision ?? 0,
+                      proformaCartHash: cartHash,
+                    };
+                    if (!loadedJob?.isShopPaid && cart.length > 0) {
+                      posProformaPayload.items = cart.map(item => ({
+                        name: item.name,
+                        nameEn: item.nameEn || item.name,
+                        quantity: item.quantity,
+                        price: item.price,
+                        category: item.category,
+                        unit: item.unit || "pcs",
+                        serviceId: item.id,
+                      }));
+                      posProformaPayload.totalAmount = total;
+                      posProformaPayload.fee = isDeliveryCheck ? (parseFloat(localDeliveryPrice) || 0) : 0;
+                      posProformaPayload.discount = manualAdjustment + totalDiscount;
+                      posProformaPayload.discountPercent = discountPercent;
+                    }
+                    jobStore.updateJobDetails(loadedJobId, posProformaPayload as any).catch(() => {});
                   }
 
                   const clickTime = new Date();

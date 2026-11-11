@@ -9,7 +9,7 @@ import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode
 import { invalidateDbCache, sanitizeCustomerRecord } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
 import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, canAccessCustomerRecords, canAccessCustomerOrLinkedJob, isAdminOrSuperadmin } from '@/lib/server-auth';
-import { ensureDailyRiderOfflineReset, recordRiderGpsTimestamp } from '@/lib/rider-presence'; import { resolveBeamSettlementDate } from '@/lib/beam';
+import { ensureDailyRiderOfflineReset, recordRiderGpsTimestamp } from '@/lib/rider-presence'; import { resolveBeamSettlementDate, isBeamPaymentChannel } from '@/lib/beam';
 
 // CUSTOMERS
 function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string; baseStartingNum: number } {
@@ -1763,24 +1763,67 @@ export async function addJobAction(data: any) {
           : proformaRemark;
       }
 
+      const createBeamSettlement = (data.isPaid || data.isShopPaid)
+        ? resolveBeamSettlementDate(new Date(), data.paymentChannel)
+        : null;
+      let resolvedCreateAdminNotesJson = data.adminNotesJson;
+      if (createBeamSettlement?.isRolledOver) {
+        let baseAdminObj: Record<string, any> = {};
+        if (resolvedCreateAdminNotesJson) {
+          try {
+            const parsed = JSON.parse(resolvedCreateAdminNotesJson);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              baseAdminObj = parsed;
+            } else if (Array.isArray(parsed)) {
+              baseAdminObj = { notes: parsed };
+            }
+          } catch {}
+        }
+        resolvedCreateAdminNotesJson = JSON.stringify({
+          ...baseAdminObj,
+          beamCutoffActualPaidAt: createBeamSettlement.actualDate.toISOString(),
+          beamCutoffEffectivePaidAt: createBeamSettlement.effectiveDate.toISOString(),
+        });
+      }
+
+      let resolvedBranchId = data.branchId || null;
+      if (resolvedBranchId && String(resolvedBranchId).trim().toUpperCase() === 'ONLINE') {
+        const hqShop =
+          (await tx.shopLocation.findUnique({ where: { id: 'shop-head' }, select: { id: true } })) ||
+          (await tx.shopLocation.findFirst({ select: { id: true } }));
+        resolvedBranchId = hqShop?.id || null;
+      }
+      const fallbackLocation =
+        typeof data.pickupLocation === 'string'
+          ? data.pickupLocation
+          : typeof data.address === 'string'
+            ? data.address
+            : '';
+      const fallbackDropoffLocation =
+        typeof data.dropoffLocation === 'string'
+          ? data.dropoffLocation
+          : fallbackLocation;
+      const fallbackScheduledAt =
+        data.scheduledAt || data.pickupScheduledAt || data.deliveryScheduledAt || new Date();
+
       const jobRow = await tx.job.create({
         data: {
           id: jobId,
-          type: data.type || 'full_service',
+          type: data.type === 'both' ? 'full_service' : (data.type || 'full_service'),
           customerId: data.customerId,
           customerName: data.customerName,
           customerPhone: data.customerPhone,
-          pickupLocation: data.pickupLocation,
-          dropoffLocation: data.dropoffLocation,
+          pickupLocation: fallbackLocation,
+          dropoffLocation: fallbackDropoffLocation,
           pickupLat: data.pickupCoords?.lat || 0,
           pickupLng: data.pickupCoords?.lng || 0,
           dropoffLat: data.dropoffCoords?.lat || 0,
           dropoffLng: data.dropoffCoords?.lng || 0,
           distance: Math.max(0, Number.isFinite(Number(data.distance ?? data.deliveryDistance ?? data.pickupDistance)) ? Number(data.distance ?? data.deliveryDistance ?? data.pickupDistance) : 0),
           fee: Math.max(0, Number.isFinite(Number(data.fee)) ? Number(data.fee) : 0),
-          status: data.status,
+          status: data.status || 'pending',
           createdAt: data.createdAt,
-          scheduledAt: data.scheduledAt,
+          scheduledAt: fallbackScheduledAt,
           completedAt: data.completedAt,
           proofImageUrl: data.proofImageUrl,
           riderId: data.riderId,
@@ -1795,8 +1838,8 @@ export async function addJobAction(data: any) {
           paymentChannel: data.paymentChannel,
           isPaid: data.isPaid || false,
           isShopPaid: data.isShopPaid || false,
-          csoPaidAt: data.isPaid ? resolveBeamSettlementDate(new Date(), data.paymentChannel).effectiveDate : null,
-          shopPaidAt: data.isShopPaid ? resolveBeamSettlementDate(new Date(), data.paymentChannel).effectiveDate : null,
+          csoPaidAt: data.isPaid && createBeamSettlement ? createBeamSettlement.effectiveDate : null,
+          shopPaidAt: data.isShopPaid && createBeamSettlement ? createBeamSettlement.effectiveDate : null,
           discount: Math.max(0, Number.isFinite(Number(data.discount)) ? Number(data.discount) : 0),
           discountPercent: Math.min(100, Math.max(0, Number.isFinite(Number(data.discountPercent)) ? Number(data.discountPercent) : 0)),
           pickupDistance: data.pickupDistance !== undefined && data.pickupDistance !== null ? Math.max(0, Number.isFinite(Number(data.pickupDistance)) ? Number(data.pickupDistance) : 0) : null,
@@ -1811,9 +1854,10 @@ export async function addJobAction(data: any) {
           deliveryRiderId: data.deliveryRiderId,
           itemsJson: data.items ? JSON.stringify(data.items) : null,
           legsJson: data.legs ? JSON.stringify(data.legs) : null,
-          remark: resolvedRemark,
-          adminNotesJson: data.adminNotesJson,
-          branchId: data.branchId,
+          remark: resolvedRemark !== undefined ? resolvedRemark : data.notes,
+          adminNotesJson: resolvedCreateAdminNotesJson,
+          branchId: resolvedBranchId,
+          brand: data.brand || 'that_laundry_shop',
           createdBy: data.createdBy,
           cashPlaced: data.cashPlaced || false,
           isStuck: data.isStuck || false,
@@ -3275,6 +3319,44 @@ async function updateJobActionInternal(id: string, updates: any) {
       isUnlockingPayment,
       isExplicitAdminNotesOnlyEdit,
     });
+  }
+  {
+    const effectivePaymentChannel = updates.paymentChannel !== undefined ? updates.paymentChannel : existingJob?.paymentChannel;
+    const newlyPaidTransition =
+      (updates.isPaid === true && existingJob?.isPaid !== true) ||
+      (updates.isShopPaid === true && existingJob?.isShopPaid !== true);
+    const nextIsPaidState = data.isPaid !== undefined ? data.isPaid : Boolean(existingJob?.isPaid);
+    const nextIsShopPaidState = data.isShopPaid !== undefined ? data.isShopPaid : Boolean(existingJob?.isShopPaid);
+    const beamUpdateSettlement = newlyPaidTransition
+      ? resolveBeamSettlementDate(new Date(), effectivePaymentChannel)
+      : null;
+    if (beamUpdateSettlement?.isRolledOver) {
+      const currentNotesRaw = data.adminNotesJson !== undefined ? data.adminNotesJson : existingJob?.adminNotesJson;
+      const parsed = parseStructuredAdminNotes(currentNotesRaw);
+      data.adminNotesJson = JSON.stringify({
+        ...parsed.obj,
+        notes: parsed.notes,
+        ...(parsed.payments.length > 0 || Array.isArray(parsed.obj.payments) ? { payments: parsed.payments } : {}),
+        beamCutoffActualPaidAt: beamUpdateSettlement.actualDate.toISOString(),
+        beamCutoffEffectivePaidAt: beamUpdateSettlement.effectiveDate.toISOString(),
+      });
+    } else if (
+      (!nextIsPaidState && !nextIsShopPaidState) ||
+      (updates.paymentChannel !== undefined && !isBeamPaymentChannel(updates.paymentChannel) && updates.paymentChannel !== 'Split Payment')
+    ) {
+      const currentNotesRaw = data.adminNotesJson !== undefined ? data.adminNotesJson : existingJob?.adminNotesJson;
+      if (currentNotesRaw && currentNotesRaw.includes('beamCutoffActualPaidAt')) {
+        const parsed = parseStructuredAdminNotes(currentNotesRaw);
+        const cleanedObj = { ...parsed.obj };
+        delete cleanedObj.beamCutoffActualPaidAt;
+        delete cleanedObj.beamCutoffEffectivePaidAt;
+        data.adminNotesJson = JSON.stringify({
+          ...cleanedObj,
+          notes: parsed.notes,
+          ...(parsed.payments.length > 0 || Array.isArray(parsed.obj.payments) ? { payments: parsed.payments } : {}),
+        });
+      }
+    }
   }
   if (updates.shiftId !== undefined) data.shiftId = updates.shiftId;
   if (updates.scheduledAt !== undefined) data.scheduledAt = updates.scheduledAt;
@@ -7495,9 +7577,9 @@ export async function recordJobPaymentAction(data: {
         data: {
           isPaid: isFullyPaid ? true : job.isPaid,
           isShopPaid: isFullyPaid ? true : job.isShopPaid,
-          csoPaidAt: isFullyPaid ? (job.csoPaidAt || resolveBeamSettlementDate(new Date(), finalChannel).effectiveDate) : job.csoPaidAt,
+          csoPaidAt: isFullyPaid ? (job.csoPaidAt || resolveBeamSettlementDate(new Date(), isBeamPaymentChannel(data.channel) ? data.channel : finalChannel).effectiveDate) : job.csoPaidAt,
           walletBalanceAfter: newBalance !== undefined ? newBalance : (isFullyPaid && job.customerId ? ((await tx.customer.findUnique({ where: { id: job.customerId }, select: { isMember: true, creditBalance: true } }))?.isMember ? ((await tx.customer.findUnique({ where: { id: job.customerId }, select: { creditBalance: true } }))?.creditBalance ?? 0) : null) : job.walletBalanceAfter),
-          shopPaidAt: isFullyPaid ? (job.shopPaidAt || resolveBeamSettlementDate(new Date(), finalChannel).effectiveDate) : job.shopPaidAt,
+          shopPaidAt: isFullyPaid ? (job.shopPaidAt || resolveBeamSettlementDate(new Date(), isBeamPaymentChannel(data.channel) ? data.channel : finalChannel).effectiveDate) : job.shopPaidAt,
           paymentChannel: finalChannel,
 
           billImageUrl: updatedBillImageUrl,
@@ -10244,23 +10326,218 @@ export async function toggleRecurringScheduleStatusAction(scheduleId: string, st
   }
 }
 
+function getBangkokCurrentDateParts() {
+  const bkkNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const year = bkkNow.getUTCFullYear();
+  const monthIdx = bkkNow.getUTCMonth();
+  const dayNum = bkkNow.getUTCDate();
+  const dayOfWeek = bkkNow.getUTCDay();
+  const todayStr = `${year}-${String(monthIdx + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+  return { bkkNow, year, monthIdx, dayNum, dayOfWeek, todayStr };
+}
+
+function parseBangkokSlotBounds(ymdStr: string, slotStr: string | undefined, defaultStartHour: number): { start: Date; end?: Date } {
+  let startHH = defaultStartHour;
+  let startMM = 0;
+  let endHH: number | null = null;
+  let endMM = 0;
+
+  if (slotStr) {
+    const matches = Array.from(String(slotStr).matchAll(/(\d{1,2}):(\d{2})/g));
+    if (matches.length >= 1) {
+      startHH = Math.min(23, Math.max(0, parseInt(matches[0][1], 10)));
+      startMM = Math.min(59, Math.max(0, parseInt(matches[0][2], 10)));
+    }
+    if (matches.length >= 2) {
+      endHH = Math.min(23, Math.max(0, parseInt(matches[1][1], 10)));
+      endMM = Math.min(59, Math.max(0, parseInt(matches[1][2], 10)));
+    }
+  }
+
+  const start = new Date(`${ymdStr}T${String(startHH).padStart(2, '0')}:${String(startMM).padStart(2, '0')}:00+07:00`);
+  const end =
+    endHH !== null
+      ? new Date(`${ymdStr}T${String(endHH).padStart(2, '0')}:${String(endMM).padStart(2, '0')}:00+07:00`)
+      : undefined;
+  return { start, end };
+}
+
+async function buildRecurringJobPayload(params: {
+  schedule: any;
+  authUser: { id: string; name?: string | null; email?: string | null; allowedBranchIds: string[] | 'ALL' };
+  source: 'recurring_automation' | 'recurring_manual_trigger';
+  clientRequestId: string;
+}) {
+  const { schedule, authUser, source, clientRequestId } = params;
+  const { year, monthIdx, dayNum, todayStr } = getBangkokCurrentDateParts();
+
+  const pickupSlot = parseBangkokSlotBounds(todayStr, schedule.timeSlot, 9);
+  const turnaroundDays =
+    schedule.deliveryDaysOffset !== undefined &&
+    schedule.deliveryDaysOffset !== null &&
+    !isNaN(Number(schedule.deliveryDaysOffset))
+      ? Math.max(0, Number(schedule.deliveryDaysOffset))
+      : 1;
+  const delivUtc = new Date(Date.UTC(year, monthIdx, dayNum + turnaroundDays));
+  const delivYmd = `${delivUtc.getUTCFullYear()}-${String(delivUtc.getUTCMonth() + 1).padStart(2, '0')}-${String(delivUtc.getUTCDate()).padStart(2, '0')}`;
+  const deliverySlot = parseBangkokSlotBounds(delivYmd, schedule.deliveryTimeSlot, 17);
+
+  const [customer, latestCustomerJob, shopRows] = await Promise.all([
+    schedule.customerId
+      ? prisma.customer.findUnique({
+          where: { id: schedule.customerId },
+          include: {
+            addresses: {
+              orderBy: [{ isPrimary: 'desc' }, { updatedAt: 'desc' }],
+              take: 1,
+            },
+          },
+        })
+      : Promise.resolve(null),
+    schedule.customerId
+      ? prisma.job.findFirst({
+          where: { customerId: schedule.customerId, status: { not: 'cancel' } },
+          orderBy: { createdAt: 'desc' },
+          select: {
+            branchId: true,
+            pickupLocation: true,
+            dropoffLocation: true,
+            pickupLat: true,
+            pickupLng: true,
+            dropoffLat: true,
+            dropoffLng: true,
+            distance: true,
+            fee: true,
+          },
+        })
+      : Promise.resolve(null),
+    prisma.shopLocation.findMany({ select: { id: true } }),
+  ]);
+
+  const validShopIds = new Set(shopRows.map((s) => s.id));
+  let resolvedBranchId: string | null = null;
+  if (schedule.branchId && validShopIds.has(schedule.branchId)) {
+    resolvedBranchId = schedule.branchId;
+  } else if (latestCustomerJob?.branchId && validShopIds.has(latestCustomerJob.branchId)) {
+    resolvedBranchId = latestCustomerJob.branchId;
+  } else if (authUser.allowedBranchIds !== 'ALL' && authUser.allowedBranchIds.length > 0) {
+    const allowedValid = authUser.allowedBranchIds.find((id) => validShopIds.has(id));
+    resolvedBranchId = allowedValid || null;
+  } else if (validShopIds.has('shop-head')) {
+    resolvedBranchId = 'shop-head';
+  } else {
+    resolvedBranchId = shopRows[0]?.id || null;
+  }
+
+  const primaryAddr = customer?.addresses?.[0];
+  const baseAddress = String(
+    schedule.address ||
+      customer?.defaultAddress ||
+      primaryAddr?.address ||
+      latestCustomerJob?.pickupLocation ||
+      ''
+  ).trim();
+  const roomNo = String(
+    schedule.roomNo ||
+      customer?.roomNo ||
+      primaryAddr?.roomNumber ||
+      ''
+  ).trim();
+
+  let pickupLocation = baseAddress;
+  if (roomNo && !/\b(room|ห้อง|#)\s*\w+/i.test(pickupLocation)) {
+    pickupLocation = pickupLocation ? `${pickupLocation} (Room ${roomNo})` : `Room ${roomNo}`;
+  }
+  if (!pickupLocation) {
+    pickupLocation = '-';
+  }
+  const dropoffLocation =
+    !schedule.address && latestCustomerJob?.dropoffLocation
+      ? latestCustomerJob.dropoffLocation
+      : pickupLocation;
+
+  const pickupLat = customer?.defaultLat ?? primaryAddr?.latitude ?? latestCustomerJob?.pickupLat ?? 0;
+  const pickupLng = customer?.defaultLng ?? primaryAddr?.longitude ?? latestCustomerJob?.pickupLng ?? 0;
+  const dropoffLat = customer?.defaultLat ?? primaryAddr?.latitude ?? latestCustomerJob?.dropoffLat ?? pickupLat;
+  const dropoffLng = customer?.defaultLng ?? primaryAddr?.longitude ?? latestCustomerJob?.dropoffLng ?? pickupLng;
+
+  const specialNotes = schedule.specialInstructions ? ` [Notes: ${schedule.specialInstructions}]` : '';
+  const remarkPrefix =
+    source === 'recurring_manual_trigger'
+      ? `[Manual Trigger: Recurring Order] ${schedule.frequencyType === 'weekly' ? 'Weekly' : 'Multi-day'}`
+      : `[Auto-Recurring Order] ${schedule.frequencyType === 'weekly' ? 'Weekly pickup' : 'Multi-day pickup'}`;
+  const jobRemark = `${remarkPrefix}${specialNotes}`;
+
+  const defaultServiceItems =
+    Array.isArray(schedule.defaultItems) && schedule.defaultItems.length > 0
+      ? schedule.defaultItems
+      : [
+          {
+            serviceId: `S-${schedule.serviceType || 'KILO'}`,
+            name: schedule.serviceSummary || `${schedule.serviceType || 'KILO'} Service`,
+            category: schedule.serviceType || 'KILO',
+            price: 0,
+            quantity: 1,
+            unit: schedule.serviceType === 'KILO' ? 'kg' : 'pcs',
+          },
+        ];
+
+  const mappedServiceType =
+    String(schedule.serviceType || 'KILO').toUpperCase() === 'DRY_CLEAN'
+      ? 'dry_clean'
+      : String(schedule.serviceType || 'KILO').toUpperCase() === 'IRON'
+        ? 'iron_only'
+        : 'wash_fold';
+
+  return {
+    todayStr,
+    pickupDate: pickupSlot.start,
+    payload: {
+      customerName: schedule.customerName || customer?.name || '',
+      customerPhone: schedule.customerPhone || customer?.phone || '',
+      customerId: schedule.customerId,
+      pickupLocation,
+      dropoffLocation,
+      pickupCoords: { lat: pickupLat, lng: pickupLng },
+      dropoffCoords: { lat: dropoffLat, lng: dropoffLng },
+      distance: latestCustomerJob?.distance ?? 0,
+      fee: latestCustomerJob?.fee ?? 0,
+      branchId: resolvedBranchId,
+      brand: schedule.brand || customer?.brand || 'that_laundry_shop',
+      type: 'full_service',
+      status: 'pending',
+      serviceType: mappedServiceType,
+      scheduledAt: pickupSlot.start,
+      pickupScheduledAt: pickupSlot.start,
+      pickupScheduledEndAt: pickupSlot.end,
+      deliveryScheduledAt: deliverySlot.start,
+      deliveryScheduledEndAt: deliverySlot.end,
+      items: defaultServiceItems,
+      remark: jobRemark,
+      source,
+      createdBy: authUser.name || authUser.email || 'System',
+      legs: {
+        pickupOutbound: { scheduledAt: pickupSlot.start, status: 'pending' },
+        pickupInbound: { scheduledAt: pickupSlot.start, status: 'pending' },
+        deliveryOutbound: { scheduledAt: deliverySlot.start, status: 'pending' },
+        deliveryInbound: { scheduledAt: deliverySlot.start, status: 'pending' },
+      },
+      clientRequestId,
+    },
+  };
+}
+
 export async function runRecurringOrdersAutomationAction() {
   try {
     const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     const res = await getRecurringSchedulesAction();
     const schedules: any[] = (res.schedules as any[]) || [];
 
-    // Bangkok timezone GMT+7
-    const nowBkk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
-    const todayDayOfWeek = nowBkk.getDay(); // 0 = Sun, 1 = Mon ...
-    const year = nowBkk.getFullYear();
-    const month = String(nowBkk.getMonth() + 1).padStart(2, '0');
-    const day = String(nowBkk.getDate()).padStart(2, '0');
-    const todayStr = `${year}-${month}-${day}`;
+    const { bkkNow, dayOfWeek: todayDayOfWeek, todayStr } = getBangkokCurrentDateParts();
 
     const dueSchedules = schedules.filter((s: any) => {
       if (s.status !== "active") return false;
-      if (s.pausedUntil && new Date(s.pausedUntil) > nowBkk) return false;
+      if (s.pausedUntil && new Date(s.pausedUntil) > bkkNow) return false;
       if (!Array.isArray(s.daysOfWeek) || !s.daysOfWeek.includes(todayDayOfWeek)) return false;
       if (s.lastGeneratedDate === todayStr) return false; // Already created today!
       return true;
@@ -10274,52 +10551,14 @@ export async function runRecurringOrdersAutomationAction() {
 
     for (const schedule of dueSchedules) {
       try {
-        // Calculate pickup and delivery times
-        let pickupHour = 9;
-        if (schedule.timeSlot && schedule.timeSlot.includes(":")) {
-          const match = schedule.timeSlot.match(/(\d{1,2}):/);
-          if (match) pickupHour = parseInt(match[1], 10);
-        }
-        const pickupDate = new Date(nowBkk);
-        pickupDate.setHours(pickupHour, 0, 0, 0);
-
-        const turnaroundDays = Number(schedule.deliveryDaysOffset) || 1;
-        const deliveryDate = new Date(pickupDate.getTime() + turnaroundDays * 86400000);
-        deliveryDate.setHours(17, 0, 0, 0);
-
-        const specialNotes = schedule.specialInstructions ? ` [Notes: ${schedule.specialInstructions}]` : "";
-        const jobNotes = `[Auto-Recurring Order] ${schedule.frequencyType === 'weekly' ? 'Weekly pickup' : 'Multi-day pickup'}${specialNotes}`;
-
-        const defaultServiceItems = Array.isArray(schedule.defaultItems) && schedule.defaultItems.length > 0
-          ? schedule.defaultItems
-          : [{
-              serviceId: `S-${schedule.serviceType || 'KILO'}`,
-              name: schedule.serviceSummary || `${schedule.serviceType || 'KILO'} Service`,
-              category: schedule.serviceType || 'KILO',
-              price: 0,
-              quantity: 1,
-              unit: schedule.serviceType === 'KILO' ? 'kg' : 'pcs',
-            }];
-
-        const jobPayload: any = {
-          customerName: schedule.customerName,
-          customerPhone: schedule.customerPhone,
-          customerId: schedule.customerId,
-          address: schedule.address,
-          roomNumber: schedule.roomNo || "",
-          branchId: schedule.branchId || "ONLINE",
-          brand: schedule.brand || "that_laundry_shop",
-          type: "both",
-          status: "pending",
-          pickupScheduledAt: pickupDate,
-          deliveryScheduledAt: deliveryDate,
-          items: defaultServiceItems,
-          notes: jobNotes,
-          source: "recurring_automation",
+        const { pickupDate, payload } = await buildRecurringJobPayload({
+          schedule,
+          authUser,
+          source: 'recurring_automation',
           clientRequestId: `REC_AUTO_${schedule.id}_${todayStr}`,
-        };
+        });
 
-        const createdJob = await addJobAction(jobPayload);
+        const createdJob = await addJobAction(payload);
         if (createdJob && createdJob.id) {
           schedule.lastGeneratedDate = todayStr;
           schedule.lastJobId = createdJob.id;
@@ -10378,57 +10617,14 @@ export async function triggerRecurringOrderNowAction(scheduleId: string) {
     const schedule = schedules.find((s: any) => s.id === scheduleId);
     if (!schedule) return { success: false, error: "Schedule not found" };
 
-    const nowBkk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
-    const year = nowBkk.getFullYear();
-    const month = String(nowBkk.getMonth() + 1).padStart(2, '0');
-    const day = String(nowBkk.getDate()).padStart(2, '0');
-    const todayStr = `${year}-${month}-${day}`;
-
-    let pickupHour = 9;
-    if (schedule.timeSlot && schedule.timeSlot.includes(":")) {
-      const match = schedule.timeSlot.match(/(\d{1,2}):/);
-      if (match) pickupHour = parseInt(match[1], 10);
-    }
-    const pickupDate = new Date(nowBkk);
-    pickupDate.setHours(pickupHour, 0, 0, 0);
-
-    const turnaroundDays = Number(schedule.deliveryDaysOffset) || 1;
-    const deliveryDate = new Date(pickupDate.getTime() + turnaroundDays * 86400000);
-    deliveryDate.setHours(17, 0, 0, 0);
-
-    const specialNotes = schedule.specialInstructions ? ` [Notes: ${schedule.specialInstructions}]` : "";
-    const jobNotes = `[Manual Trigger: Recurring Order] ${schedule.frequencyType === 'weekly' ? 'Weekly' : 'Multi-day'}${specialNotes}`;
-
-    const defaultServiceItems = Array.isArray(schedule.defaultItems) && schedule.defaultItems.length > 0
-      ? schedule.defaultItems
-      : [{
-          serviceId: `S-${schedule.serviceType || 'KILO'}`,
-          name: schedule.serviceSummary || `${schedule.serviceType || 'KILO'} Service`,
-          category: schedule.serviceType || 'KILO',
-          price: 0,
-          quantity: 1,
-          unit: schedule.serviceType === 'KILO' ? 'kg' : 'pcs',
-        }];
-
-    const jobPayload: any = {
-      customerName: schedule.customerName,
-      customerPhone: schedule.customerPhone,
-      customerId: schedule.customerId,
-      address: schedule.address,
-      roomNumber: schedule.roomNo || "",
-      branchId: schedule.branchId || "ONLINE",
-      brand: schedule.brand || "that_laundry_shop",
-      type: "both",
-      status: "pending",
-      pickupScheduledAt: pickupDate,
-      deliveryScheduledAt: deliveryDate,
-      items: defaultServiceItems,
-      notes: jobNotes,
-      source: "recurring_manual_trigger",
+    const { todayStr, payload } = await buildRecurringJobPayload({
+      schedule,
+      authUser,
+      source: 'recurring_manual_trigger',
       clientRequestId: `REC_MANUAL_${schedule.id}_${Date.now()}`,
-    };
+    });
 
-    const createdJob = await addJobAction(jobPayload);
+    const createdJob = await addJobAction(payload);
 
     // Update schedule
     schedule.lastGeneratedDate = todayStr;
