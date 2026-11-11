@@ -276,7 +276,7 @@ export async function uploadReceiptImage(blob: Blob, entityId: string, filename:
             headers: { "Content-Type": "image/png" },
             body: blob
           });
-          if (putRes.ok) return filename.startsWith("receipt-") ? `${signData.publicUrl}?v=${Date.now()}` : signData.publicUrl;
+          if (putRes.ok) return (filename.startsWith("receipt-") || filename.startsWith("proforma-")) ? `${signData.publicUrl}?v=${Date.now()}` : signData.publicUrl;
         }
       }
     } catch (gcsErr) {

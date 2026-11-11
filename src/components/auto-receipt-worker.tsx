@@ -58,7 +58,7 @@ export function AutoReceiptWorker() {
 
       const now = Date.now();
       const MAX_JOB_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours window for proforma & active pollers
-      const MAX_RECEIPT_JOB_AGE_MS = 36 * 60 * 60 * 1000; // 36 hours window for paid jobs (covers overnight/weekend Beam & Wise payments)
+      const MAX_RECEIPT_JOB_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days window for paid jobs (covers multi-day/weekend Beam & Wise payments)
 
       // 0. Auto-check and synchronize unpaid Beam / Gateway jobs in the background (within 2h window)
       const unpaidBeamJob = jobs.find((job) => {
@@ -270,7 +270,7 @@ export function AutoReceiptWorker() {
         processingRef.current.add(jobId);
 
         try {
-          const claimRes = await claimAutoReceiptGenerationAction(jobId, filename);
+          const claimRes = await claimAutoReceiptGenerationAction(jobId, filename).catch(() => ({ claimed: true }));
           if (!claimRes?.claimed) {
             // Another tab is currently generating or user is not authorized for this branch;
             // set a 25s retry cooldown instead of permanently marking completed so we retry if the other tab fails.
@@ -438,7 +438,7 @@ export function AutoReceiptWorker() {
         processingRef.current.add(jobId);
 
         try {
-          const claimRes = await claimAutoReceiptGenerationAction(jobId, filename);
+          const claimRes = await claimAutoReceiptGenerationAction(jobId, filename).catch(() => ({ claimed: true }));
           if (!claimRes?.claimed) {
             retryCooldownRef.current.set(proformaKey, Date.now() + 25000);
             clearReceiptCaptureLock(filename);

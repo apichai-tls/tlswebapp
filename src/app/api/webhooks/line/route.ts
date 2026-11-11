@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
+import { uploadBufferToGcs } from "@/lib/gcs";
 import { invalidateDbCache } from "@/lib/db-cache";
 import {
   getLineUserProfile,
@@ -239,13 +240,31 @@ export async function POST(req: NextRequest) {
             );
             if (imgRes.ok) {
               const arrBuf = await imgRes.arrayBuffer();
-              const uploadDir = path.resolve(process.cwd(), "storage", "uploads", "system", "chat");
-              await fs.promises.mkdir(uploadDir, { recursive: true });
+              const rawBuffer = Buffer.from(arrBuf);
+              const contentType = imgRes.headers.get("content-type") || "image/jpeg";
               const filename = `line-${msgId}.jpg`;
-              await fs.promises.writeFile(path.join(uploadDir, filename), Buffer.from(arrBuf));
+
+              // 1. Primary: Upload directly to Google Cloud Storage for permanent retention
+              let imageUrl = await uploadBufferToGcs(rawBuffer, {
+                entityType: "system",
+                entityId: `line_${userId.slice(-12)}`,
+                subType: "chat",
+                contentType,
+                extension: "jpg",
+                customFileName: filename,
+              });
+
+              // 2. Fallback: Local storage if GCS is unavailable
+              if (!imageUrl) {
+                const uploadDir = path.resolve(process.cwd(), "storage", "uploads", "system", "chat");
+                await fs.promises.mkdir(uploadDir, { recursive: true });
+                await fs.promises.writeFile(path.join(uploadDir, filename), rawBuffer);
+                imageUrl = `/uploads/system/chat/${filename}`;
+              }
+
               inboundAttachments.push({
                 type: "image",
-                url: `/uploads/system/chat/${filename}`,
+                url: imageUrl,
                 name: "LINE Customer Photo",
               });
             }

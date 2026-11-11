@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
-import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, walletApprovalStore, realtimeStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type ServiceItem, type AdminNoteLog, type Customer, type CustomerCoupon, type WalletTransactionItem, shiftStore } from "@/lib/store";
+import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, walletApprovalStore, realtimeStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type ServiceItem, type AdminNoteLog, type Customer, type CustomerCoupon, type WalletTransactionItem, shiftStore, computeLiveShiftStats } from "@/lib/store";
 import { refreshDb, ensureDbLoaded, startRealtimeConnection, api } from "@/lib/api";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
@@ -1458,6 +1458,7 @@ function AdminPageContent() {
   useEffect(() => {
     if (user) {
       shiftStore.fetchActiveShift(user.id, activeShopConfig?.id);
+      shiftStore.getOpenShifts();
     }
   }, [user, activeShopConfig?.id]);
 
@@ -1470,13 +1471,9 @@ function AdminPageContent() {
 
   const isShiftDateFromPreviousDay = useCallback((shift?: { openedAt?: Date | string | null } | null) => {
     if (!shift?.openedAt) return false;
-    const openedDate = new Date(shift.openedAt);
-    const today = new Date();
-    return (
-      openedDate.getFullYear() !== today.getFullYear() ||
-      openedDate.getMonth() !== today.getMonth() ||
-      openedDate.getDate() !== today.getDate()
-    );
+    const openedDateStr = new Date(shift.openedAt).toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+    const todayDateStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+    return openedDateStr !== todayDateStr;
   }, []);
 
   const currentDialogBranchShift = useMemo(
@@ -1485,11 +1482,60 @@ function AdminPageContent() {
   );
 
   const isShiftFromPreviousDay = useMemo(
-    () => isShiftDateFromPreviousDay(currentDialogBranchShift || activeShift),
-    [isShiftDateFromPreviousDay, currentDialogBranchShift, activeShift]
+    () => isShiftDateFromPreviousDay(currentDialogBranchShift),
+    [isShiftDateFromPreviousDay, currentDialogBranchShift]
   );
 
   const hasValidActiveShift = !!currentDialogBranchShift && !isShiftFromPreviousDay;
+
+  // Fallback Open / Close Shift Modal state when activeTab !== "jobs" (e.g. Kanban / Dashboard)
+  const [globalShiftModalBranchId, setGlobalShiftModalBranchId] = useState<string | null>(null);
+  const [isGlobalOpenShiftOpen, setIsGlobalOpenShiftOpen] = useState(false);
+  const [isGlobalCloseShiftOpen, setIsGlobalCloseShiftOpen] = useState(false);
+  const [globalStartingCash, setGlobalStartingCash] = useState("");
+  const [globalOpenShiftNotes, setGlobalOpenShiftNotes] = useState("");
+  const [globalActualCash, setGlobalActualCash] = useState("");
+  const [globalCloseShiftNotes, setGlobalCloseShiftNotes] = useState("");
+  const [isGlobalShiftSubmitting, setIsGlobalShiftSubmitting] = useState(false);
+
+  const globalTargetBranch = useMemo(() => {
+    if (globalShiftModalBranchId) {
+      return shopLocations.find(s => s.id === globalShiftModalBranchId) || activeShopConfig;
+    }
+    return activeShopConfig;
+  }, [globalShiftModalBranchId, shopLocations, activeShopConfig]);
+
+  const globalTargetShift = useMemo(
+    () => getBranchOpenShift(globalTargetBranch?.id) || currentDialogBranchShift,
+    [getBranchOpenShift, globalTargetBranch?.id, currentDialogBranchShift]
+  );
+
+  const globalShiftStats = useMemo(
+    () => computeLiveShiftStats(globalTargetShift, jobs),
+    [globalTargetShift, jobs]
+  );
+
+  useEffect(() => {
+    if (activeTab === "jobs") return;
+    const handleGlobalShiftEvent = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      if (!detail) return;
+      if (detail.branchId) {
+        setGlobalShiftModalBranchId(detail.branchId);
+      }
+      if (detail.action === "open") {
+        setGlobalStartingCash("");
+        setGlobalOpenShiftNotes("");
+        setIsGlobalOpenShiftOpen(true);
+      } else if (detail.action === "close") {
+        setGlobalActualCash("");
+        setGlobalCloseShiftNotes("");
+        setIsGlobalCloseShiftOpen(true);
+      }
+    };
+    window.addEventListener("alljobs-shift-action", handleGlobalShiftEvent);
+    return () => window.removeEventListener("alljobs-shift-action", handleGlobalShiftEvent);
+  }, [activeTab]);
 
   const isNewCustomer = useMemo(() => {
     // If no customer selected or typed, not a new customer
@@ -2389,35 +2435,6 @@ function AdminPageContent() {
   };
 
   const handleCreateNewJob = () => {
-    const userBranchIdx = user?.branchId ? shopLocations.findIndex(s => s.id === user.branchId) : -1;
-    const defaultShop = userBranchIdx >= 0 ? shopLocations[userBranchIdx] : (shopLocations[selectedStoreIndex] || shopLocations[0]);
-    if (defaultShop?.isPosEnabled) {
-      const bShift = getBranchOpenShift(defaultShop.id);
-      if (bShift && isShiftDateFromPreviousDay(bShift)) {
-        toast.error(
-          currentLanguage === "en"
-            ? `Branch "${defaultShop.name}" has an unclosed shift from ${format(new Date(bShift.openedAt), "dd/MM/yyyy")}. Please close it first.`
-            : `สาขา "${defaultShop.name}" มีกะค้างของวันที่ ${format(new Date(bShift.openedAt), "dd/MM/yyyy")} กรุณาปิดกะเก่าก่อนสร้างบิลใหม่`
-        );
-        if (activeTab !== "jobs") handleTabChange("jobs");
-        setTimeout(() => {
-          window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "close", branchId: defaultShop.id } }));
-        }, 50);
-        return;
-      }
-      if (!bShift) {
-        toast.error(
-          currentLanguage === "en"
-            ? `Please open today's cashier shift for "${defaultShop.name}" before creating a new job.`
-            : `กรุณาเปิดกะลิ้นชักเงินสดของสาขา "${defaultShop.name}" ก่อนสร้างบิลใหม่`
-        );
-        if (activeTab !== "jobs") handleTabChange("jobs");
-        setTimeout(() => {
-          window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "open", branchId: defaultShop.id } }));
-        }, 50);
-        return;
-      }
-    }
     resetDialogForm();
     setDialogOpen(true);
   };
@@ -2426,64 +2443,108 @@ function AdminPageContent() {
     const targetBranchIdx = payload.branchId ? shopLocations.findIndex(s => s.id === payload.branchId) : -1;
     const userBranchIdx = user?.branchId ? shopLocations.findIndex(s => s.id === user.branchId) : -1;
     const effectiveIdx = targetBranchIdx >= 0 ? targetBranchIdx : (userBranchIdx >= 0 ? userBranchIdx : selectedStoreIndex);
-    const targetShop = shopLocations[effectiveIdx] || shopLocations[0];
-
-    if (targetShop?.isPosEnabled) {
-      const bShift = getBranchOpenShift(targetShop.id);
-      if (bShift && isShiftDateFromPreviousDay(bShift)) {
-        toast.error(
-          currentLanguage === "en"
-            ? `Branch "${targetShop.name}" has an unclosed shift from ${format(new Date(bShift.openedAt), "dd/MM/yyyy")}. Please close it first.`
-            : `สาขา "${targetShop.name}" มีกะค้างของวันที่ ${format(new Date(bShift.openedAt), "dd/MM/yyyy")} กรุณาปิดกะเก่าก่อนสร้างบิลใหม่`
-        );
-        if (activeTab !== "jobs") handleTabChange("jobs");
-        setTimeout(() => {
-          window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "close", branchId: targetShop.id } }));
-        }, 50);
-        return;
-      }
-      if (!bShift) {
-        toast.error(
-          currentLanguage === "en"
-            ? `Please open today's cashier shift for "${targetShop.name}" before creating a new job.`
-            : `กรุณาเปิดกะลิ้นชักเงินสดของสาขา "${targetShop.name}" ก่อนสร้างบิลใหม่`
-        );
-        if (activeTab !== "jobs") handleTabChange("jobs");
-        setTimeout(() => {
-          window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "open", branchId: targetShop.id } }));
-        }, 50);
-        return;
-      }
-    }
 
     resetDialogForm();
     if (effectiveIdx >= 0) {
       setSelectedStoreIndex(effectiveIdx);
     }
+
+    const c = payload.customer || null;
+    if (c) {
+      const resolvedPhones = resolveCustomerPhones({ customer: c });
+      setCustomerName(c.name || payload.contactName || "");
+      setCustomerPhone(resolvedPhones.primaryPhone || payload.contactPhone || c.phone || "");
+      setSelectedProfileCustomer(c);
+
+      const custRoomVal = (
+        c.roomNo ||
+        (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, "") : "") ||
+        ""
+      ).trim();
+      setPickupRoom(custRoomVal);
+      setDeliveryRoom(custRoomVal);
+
+      if (c.isMember) {
+        setSelectedMemberLabel("Member");
+        setSelectedMemberId(c.memberId || "");
+        setPaymentChannel("Deduct Member");
+      } else {
+        setSelectedMemberLabel("");
+        setSelectedMemberId(c.memberId || "");
+      }
+      const resolvedSavedPl =
+        !c.isMember && !c.isVIP && !c.isCorporate && c.priceListId === "PL-MP56NWKW"
+          ? "regular"
+          : c.priceListId || null;
+      setCustomerPriceListId(resolvedSavedPl);
+      handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, resolvedSavedPl);
+
+      if (c.remark && c.remark.trim() !== "") {
+        handleAddAdminLog(`CRM Remark: ${c.remark}`, true);
+      }
+    } else {
+      if (payload.contactName) setCustomerName(payload.contactName);
+      if (payload.contactPhone) setCustomerPhone(payload.contactPhone);
+    }
+
+    if (payload.contactChannel === "line" || payload.contactChannel === "whatsapp") {
+      setDialogContactChannel(payload.contactChannel);
+    }
+    if (payload.customerLineId) {
+      setDialogLineProfileId(payload.customerLineId);
+    } else if (c?.lineId) {
+      setDialogLineProfileId(c.lineId);
+    }
+    if (payload.customerWhatsappId) {
+      setDialogWhatsappId(payload.customerWhatsappId);
+    } else if (c?.whatsappId) {
+      setDialogWhatsappId(c.whatsappId);
+    }
+
     setIsPickup(payload.isPickup);
     setIsDelivery(payload.isDelivery);
     setIsWalkIn(!payload.isPickup);
 
-    const pName = payload.pickupLoc?.name || "";
-    const dName = payload.deliveryLoc?.name || "";
+    const fallbackCustAddr =
+      c?.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-"
+        ? stripRoomSuffix(c.defaultAddress)
+        : "";
+    const fallbackCustCoords =
+      c && isRealCustomerCoords(c.defaultCoords, c.defaultAddress) ? c.defaultCoords : null;
+
+    const pName = payload.pickupLoc?.name || fallbackCustAddr || "";
+    const dName = payload.deliveryLoc?.name || fallbackCustAddr || "";
+    const pCoords = payload.pickupLoc?.coords || fallbackCustCoords || null;
+    const dCoords = payload.deliveryLoc?.coords || fallbackCustCoords || null;
+
     setPickupLoc(payload.isPickup ? pName : "");
-    setPickupCoords(payload.isPickup && payload.pickupLoc?.coords ? payload.pickupLoc.coords : null);
+    setPickupCoords(payload.isPickup ? pCoords : null);
     setPickupDist(payload.isPickup ? (payload.pickupDist || 0) : 0);
 
     setDeliveryLoc(payload.isDelivery ? dName : "");
-    setDeliveryCoords(payload.isDelivery && payload.deliveryLoc?.coords ? payload.deliveryLoc.coords : null);
+    setDeliveryCoords(payload.isDelivery ? dCoords : null);
     setDeliveryDist(payload.isDelivery ? (payload.deliveryDist || 0) : 0);
 
     setDifferentDeliveryAddress(Boolean(payload.isDeliveryDirty));
     setIsDeliveryDirty(Boolean(payload.isDeliveryDirty));
-    setSelectedVIPLabel(payload.isVip ? "VIP" : "");
-    setEditingFeeLock(payload.lockedFee);
+    const effectiveVip = Boolean(payload.isVip || c?.isVIP);
+    setSelectedVIPLabel(effectiveVip ? "VIP" : "");
+
+    if (payload.lockedFee > 0 && (payload.pickupLoc || payload.deliveryLoc)) {
+      setEditingFeeLock(payload.lockedFee);
+    } else if (fallbackCustCoords && fallbackCustAddr) {
+      updateClosestStoreAsync(fallbackCustCoords, fallbackCustAddr);
+    }
 
     setDialogOpen(true);
     toast.success(
       currentLanguage === "en"
-        ? `Order opened with locked delivery fee ฿${payload.lockedFee}`
-        : `เปิด Job พร้อมล็อกค่ารับ-ส่ง ฿${payload.lockedFee} จากหน้าคำนวณระยะทางแล้ว`
+        ? payload.lockedFee > 0
+          ? `Order opened for ${c?.name || payload.contactName || "Customer"} with locked delivery fee ฿${payload.lockedFee}`
+          : `Order opened for ${c?.name || payload.contactName || "Customer"}`
+        : payload.lockedFee > 0
+        ? `เปิดบิลพร้อมข้อมูลลูกค้าและล็อกค่ารับ-ส่ง ฿${payload.lockedFee} เรียบร้อยแล้ว`
+        : `เปิดบิลพร้อมข้อมูลลูกค้าเรียบร้อยแล้ว`
     );
   };
 
@@ -3778,16 +3839,18 @@ function AdminPageContent() {
       return;
     }
     
-    const shop = shopLocations[selectedStoreIndex] || shopLocations[0];
+    const shop = (editingJobId && existingJob?.branchId ? shopLocations.find(s => s.id === existingJob.branchId) : null)
+      || shopLocations[selectedStoreIndex]
+      || shopLocations[0];
     const branchShift = getBranchOpenShift(shop?.id);
 
-    // Shift Guard (Policy C): When branch has shift system enabled (isPosEnabled), require an open shift from today for creating jobs or recording payment
-    if (shop?.isPosEnabled && (!editingJobId || isPayment)) {
+    // Shift Guard: When branch has shift system enabled (isPosEnabled), require an open shift from today ONLY when recording payment (Pay button)
+    if (shop?.isPosEnabled && isPayment && !isRewashJob && !isSplitDeliveryChildJob(existingJob)) {
       if (branchShift && isShiftDateFromPreviousDay(branchShift)) {
         abortSubmit(
           currentLanguage === "en"
             ? `Branch "${shop.name}" has an unclosed shift from ${format(new Date(branchShift.openedAt), "dd/MM/yyyy")}. Please close the pending shift first.`
-            : `สาขา "${shop.name}" มีกะค้างของวันที่ ${format(new Date(branchShift.openedAt), "dd/MM/yyyy")} กรุณาปิดกะเก่าก่อน${isPayment ? "รับชำระเงิน" : "สร้างบิลใหม่"}`
+            : `สาขา "${shop.name}" มีกะค้างของวันที่ ${format(new Date(branchShift.openedAt), "dd/MM/yyyy")} กรุณาปิดกะเก่าก่อนรับชำระเงิน`
         );
         window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "close", branchId: shop.id } }));
         return;
@@ -3795,8 +3858,8 @@ function AdminPageContent() {
       if (!branchShift) {
         abortSubmit(
           currentLanguage === "en"
-            ? `Please open today's cashier shift for "${shop.name}" before ${isPayment ? "recording payment" : "creating a job"}.`
-            : `สาขา "${shop.name}" ยังไม่ได้เปิดกะลิ้นชักเงินสดของวันนี้ กรุณาเปิดกะก่อน${isPayment ? "กด Pay รับชำระเงิน" : "สร้างบิลใหม่"}`
+            ? `Please open today's cashier shift for "${shop.name}" before recording payment.`
+            : `สาขา "${shop.name}" ยังไม่ได้เปิดกะลิ้นชักเงินสดของวันนี้ กรุณาเปิดกะก่อนกด Pay รับชำระเงิน`
         );
         window.dispatchEvent(new CustomEvent("alljobs-shift-action", { detail: { action: "open", branchId: shop.id } }));
         return;
@@ -4057,6 +4120,9 @@ function AdminPageContent() {
             Math.abs((Number(existingJob.fee) || 0) - fee) > 0.01
           )
     );
+    const isProformaCurrentForCart = Boolean(
+      proformaPressedSinceLastEdit && (!lastProformaCartHash || currentCartHash === lastProformaCartHash)
+    );
 
     const hasActualItems = Boolean((itemsPayload && itemsPayload.length > 0) || (dialogCart && dialogCart.length > 0));
 
@@ -4081,13 +4147,13 @@ function AdminPageContent() {
           targetProformaNum = generateProformaBaseNumber(targetEditingJobId);
         }
 
-        if (isCartChangedFromLastProforma && !proformaPressedSinceLastEdit) {
-          // Items were edited and user clicked Pay directly -> Auto-bump revision!
+        if (isCartChangedFromLastProforma && !isProformaCurrentForCart) {
+          // Items were edited and user clicked Pay directly (or edited after pressing Proforma) -> Auto-bump revision!
           effectiveProformaRevision = (proformaRevision !== null ? proformaRevision : (isRfJob ? 1 : 0)) + 1;
           effectiveProformaCartHash = currentCartHash;
         } else {
           effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision ?? 1) : (proformaRevision ?? 0);
-          effectiveProformaCartHash = baseCartHashToCompare || currentCartHash;
+          effectiveProformaCartHash = currentCartHash;
         }
       } else {
         // Job NEVER had a Proforma before, but user clicked Pay with actual items:
@@ -4105,16 +4171,16 @@ function AdminPageContent() {
       }
     } else {
       // ── Save Changes flow (isPayment === false) ────────────────────
-      // Rule: Revision will ONLY bump if user explicitly pressed Proforma in this session.
-      // Saving edits without pressing Proforma retains the existing revision (or null if never issued).
-      if (proformaPressedSinceLastEdit) {
+      // Rule: Revision stays same ONLY if user pressed Proforma AFTER the most recent cart edit.
+      // If user edited items/weights AFTER pressing Proforma (or on a job that already has a Proforma), bump revision!
+      if (isProformaCurrentForCart) {
         targetProformaNum = (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT")
           ? cleanProformaNumber(proformaReceiptNumber)
           : (targetEditingJobId ? generateProformaBaseNumber(targetEditingJobId) : null);
         effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision ?? 1) : (proformaRevision ?? 0);
         effectiveProformaCartHash = currentCartHash;
-      } else if (existingProformaNum) {
-        targetProformaNum = existingProformaNum;
+      } else if (existingProformaNum || proformaPressedSinceLastEdit) {
+        targetProformaNum = existingProformaNum || (targetEditingJobId ? generateProformaBaseNumber(targetEditingJobId) : null);
         if (isCartChangedFromLastProforma && !isAlreadyPaidJob) {
           // Smart Auto-Regen: Items / weights / fee changed on unpaid job with existing proforma -> bump revision!
           effectiveProformaRevision = (proformaRevision !== null ? proformaRevision : (isRfJob ? 1 : 0)) + 1;
@@ -5830,8 +5896,11 @@ function AdminPageContent() {
                 : isRfJob
                   ? 1
                   : 0;
+          const isProformaCurrentForCart = Boolean(
+            proformaPressedSinceLastEdit && (!lastProformaCartHash || currentCartHash === lastProformaCartHash)
+          );
           targetPfRev =
-            isCartChanged && !proformaPressedSinceLastEdit && !current.isPaid && !(current as any).isShopPaid
+            isCartChanged && !isProformaCurrentForCart && !current.isPaid && !(current as any).isShopPaid
               ? baseRev + 1
               : baseRev;
           targetPfHash = currentCartHash;
@@ -10817,6 +10886,37 @@ function AdminPageContent() {
                             </div>
                           )}
 
+                          {/* Shift Warning & Quick Action inside Edit Job Dialog when shift is not open or has unclosed shift from yesterday */}
+                          {isBranchShiftEnabled && !hasValidActiveShift && !isPaidJob && !isCancelledJob && !isRewashJob && !isSplitDeliveryChildJob(activeJob) && (isAdmin || isBranchManager) && (
+                            <div className="mt-1 p-2 rounded-xl bg-amber-950/80 border border-amber-700/80 text-[10px] flex items-center justify-between text-amber-200 font-bold gap-2">
+                              <span className="flex items-center gap-1.5 min-w-0 truncate">
+                                <Banknote size={12} className="text-amber-400 shrink-0" />
+                                <span className="truncate">
+                                  {isShiftFromPreviousDay && currentDialogBranchShift
+                                    ? `มีกะค้าง (${format(new Date(currentDialogBranchShift.openedAt), "dd/MM/yyyy")}) ต้องปิดก่อนกด Pay`
+                                    : "สาขานี้ยังไม่เปิดกะวันนี้ ต้องเปิดกะก่อนกด Pay"}
+                                </span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!activeShopConfig?.id) return;
+                                  window.dispatchEvent(
+                                    new CustomEvent("alljobs-shift-action", {
+                                      detail: {
+                                        action: isShiftFromPreviousDay && currentDialogBranchShift ? "close" : "open",
+                                        branchId: activeShopConfig.id,
+                                      },
+                                    })
+                                  );
+                                }}
+                                className="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10px] shrink-0 cursor-pointer transition-colors"
+                              >
+                                {isShiftFromPreviousDay && currentDialogBranchShift ? "ปิดกะค้าง" : "+ เปิดกะลิ้นชัก"}
+                              </button>
+                            </div>
+                          )}
+
                           {/* Consolidated Checkout Buttons */}
                           <div className="flex gap-2 mt-1 pt-1.5 border-t border-slate-800 select-none">
                             <Button 
@@ -12490,7 +12590,7 @@ function AdminPageContent() {
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
-          {activeTab === "reports" && hasAccess("reports") && <AdminReports />}
+          {activeTab === "reports" && hasAccess("reports") && <AdminReports onViewJob={stableHandleEditFullJob} currentUser={user} />}
           {activeTab === "petty-cash" && hasAccess("petty-cash") && <AdminPettyCash currentUser={user} />}
           {activeTab === "building-report" && hasAccess("building-report") && <AdminBuildingReport onViewJob={stableHandleEditFullJob} />}
           {activeTab === "marketing" && hasAccess("marketing") && <AdminMarketing onViewJob={stableHandleEditFullJob} />}
@@ -12868,6 +12968,187 @@ function AdminPageContent() {
           setOnlinePaymentJob(null);
         }}
       />
+
+      {/* Fallback Open / Close Cashier Shift Modals when activeTab !== "jobs" (e.g. Kanban / Dashboard) */}
+      <Dialog open={isGlobalOpenShiftOpen} onOpenChange={setIsGlobalOpenShiftOpen}>
+        <DialogContent className="z-[110] max-w-md p-5 bg-white border border-slate-200 shadow-2xl rounded-2xl">
+          <DialogHeader className="mb-2">
+            <DialogTitle className="text-base font-black text-slate-900 flex items-center gap-2">
+              <Banknote className="text-emerald-600" size={18} />
+              <span>เปิดรอบลิ้นชักเงินสด (Open Cashier Shift)</span>
+            </DialogTitle>
+          </DialogHeader>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!user?.id || !globalTargetBranch?.id) return;
+              const cashVal = parseFloat(globalStartingCash === "" ? "0" : globalStartingCash);
+              if (isNaN(cashVal) || cashVal < 0) {
+                toast.error("กรุณาระบุเงินทอนเริ่มต้นให้ถูกต้อง (ต้องไม่น้อยกว่า 0)");
+                return;
+              }
+              setIsGlobalShiftSubmitting(true);
+              try {
+                await shiftStore.openShift(
+                  user.id,
+                  (user as any).name || user.email || "Staff",
+                  globalTargetBranch.id,
+                  cashVal,
+                  globalOpenShiftNotes.trim() || undefined
+                );
+                await shiftStore.getOpenShifts();
+                toast.success(`เปิดรอบลิ้นชักเงินสดสาขา "${globalTargetBranch.name}" สำเร็จแล้ว`);
+                setGlobalStartingCash("");
+                setGlobalOpenShiftNotes("");
+                setIsGlobalOpenShiftOpen(false);
+              } catch (err: any) {
+                toast.error(err?.message || "ไม่สามารถเปิดรอบลิ้นชักเงินสดได้");
+              } finally {
+                setIsGlobalShiftSubmitting(false);
+              }
+            }}
+            className="space-y-4"
+          >
+            {globalTargetBranch && (
+              <div className="px-3 py-2 rounded-xl bg-emerald-50/80 border border-emerald-200/80 text-xs font-bold text-emerald-900 flex items-center justify-between">
+                <span>สาขา: {globalTargetBranch.name}</span>
+                <span>ผู้เปิดกะ: {(user as any)?.name || user?.email}</span>
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-700 block">
+                เงินทอนเริ่มต้นในลิ้นชัก (Starting Float ฿) *
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">฿</span>
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  required
+                  placeholder="0.00"
+                  value={globalStartingCash}
+                  onChange={(e) => setGlobalStartingCash(e.target.value)}
+                  className="w-full pl-7 pr-3 h-10 font-black text-base border border-slate-200 rounded-xl outline-none text-slate-900"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-700 block">หมายเหตุเปิดกะ (Notes)</label>
+              <input
+                type="text"
+                placeholder="เช่น เงินทอนครบถ้วน..."
+                value={globalOpenShiftNotes}
+                onChange={(e) => setGlobalOpenShiftNotes(e.target.value)}
+                className="w-full px-3 h-9 text-xs border border-slate-200 rounded-xl outline-none text-slate-900"
+              />
+            </div>
+            <DialogFooter className="pt-2 border-t border-slate-100 gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => setIsGlobalOpenShiftOpen(false)} className="h-9 rounded-xl text-xs font-bold cursor-pointer">
+                ยกเลิก
+              </Button>
+              <Button type="submit" disabled={isGlobalShiftSubmitting} className="h-9 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl cursor-pointer">
+                ยืนยันเปิดกะลิ้นชัก
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isGlobalCloseShiftOpen} onOpenChange={setIsGlobalCloseShiftOpen}>
+        <DialogContent className="z-[110] max-w-md p-5 bg-white border border-slate-200 shadow-2xl rounded-2xl">
+          <DialogHeader className="mb-2">
+            <DialogTitle className="text-base font-black text-slate-900 flex items-center gap-2">
+              <Banknote className="text-rose-600" size={18} />
+              <span>สรุปยอดลิ้นชักและปิดกะ (Close Shift Report)</span>
+            </DialogTitle>
+          </DialogHeader>
+          {globalTargetShift ? (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!globalTargetShift?.id) return;
+                const cashVal = parseFloat(globalActualCash);
+                if (isNaN(cashVal) || cashVal < 0) {
+                  toast.error("กรุณาระบุเงินสดนับจริงในลิ้นชักให้ถูกต้อง (ต้องไม่น้อยกว่า 0)");
+                  return;
+                }
+                setIsGlobalShiftSubmitting(true);
+                try {
+                  await shiftStore.closeShift(globalTargetShift.id, cashVal, globalCloseShiftNotes.trim() || undefined);
+                  await shiftStore.getOpenShifts();
+                  toast.success("ปิดรอบลิ้นชักเงินสดและส่งรายงานกะเรียบร้อยแล้ว");
+                  setGlobalActualCash("");
+                  setGlobalCloseShiftNotes("");
+                  setIsGlobalCloseShiftOpen(false);
+                } catch (err: any) {
+                  toast.error(err?.message || "ไม่สามารถปิดรอบลิ้นชักเงินสดได้");
+                } finally {
+                  setIsGlobalShiftSubmitting(false);
+                }
+              }}
+              className="space-y-4"
+            >
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 space-y-2 text-xs font-semibold text-slate-700">
+                <div className="flex justify-between items-center text-[10.5px] text-slate-500 font-bold border-b border-slate-200 pb-1.5">
+                  <span>พนักงาน: {globalTargetShift.userName}</span>
+                  <span>เปิดเมื่อ: {format(new Date(globalTargetShift.openedAt), "dd/MM/yyyy HH:mm")}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">1. เงินทอนเริ่มต้น (Starting Float):</span>
+                  <span className="font-bold text-slate-900">฿{globalTargetShift.startingCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">2. ยอดรับเงินสดในกะ (Cash Sales):</span>
+                  <span className="font-bold text-emerald-600">+฿{globalShiftStats.cashSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+                <div className="flex justify-between font-black border-t border-dashed border-slate-300 pt-2 text-sm text-slate-900">
+                  <span>เงินสดที่ควรมีในลิ้นชัก (Expected Cash):</span>
+                  <span className="text-emerald-700">฿{globalShiftStats.expectedCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-800 block">
+                  เงินสดนับจริงในลิ้นชัก (Actual Cash in Drawer ฿) *
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">฿</span>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    required
+                    placeholder="0.00"
+                    value={globalActualCash}
+                    onChange={(e) => setGlobalActualCash(e.target.value)}
+                    className="w-full pl-7 pr-3 h-10 font-black text-base border border-slate-200 rounded-xl outline-none text-slate-900"
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-800 block">หมายเหตุปิดกะ (Closing Notes)</label>
+                <input
+                  type="text"
+                  placeholder="เช่น ส่งยอดบัญชีเรียบร้อย..."
+                  value={globalCloseShiftNotes}
+                  onChange={(e) => setGlobalCloseShiftNotes(e.target.value)}
+                  className="w-full px-3 h-9 text-xs border border-slate-200 rounded-xl outline-none text-slate-900"
+                />
+              </div>
+              <DialogFooter className="pt-2 border-t border-slate-100 gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => setIsGlobalCloseShiftOpen(false)} className="h-9 rounded-xl text-xs font-bold cursor-pointer">
+                  ยกเลิก
+                </Button>
+                <Button type="submit" disabled={isGlobalShiftSubmitting} className="h-9 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl cursor-pointer">
+                  ยืนยันปิดกะลิ้นชัก
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : (
+            <div className="py-6 text-center text-xs text-slate-500">ไม่พบรอบกะที่เปิดอยู่สำหรับสาขานี้</div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Silent Background Auto-Receipt Worker */}
       <AutoReceiptWorker />

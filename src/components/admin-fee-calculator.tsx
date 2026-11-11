@@ -47,6 +47,12 @@ export interface CalculatorOrderPayload {
   pickupDist: number;
   deliveryDist: number;
   lockedFee: number;
+  customer?: any;
+  contactName?: string;
+  contactPhone?: string;
+  contactChannel?: "line" | "whatsapp" | null;
+  customerLineId?: string;
+  customerWhatsappId?: string;
 }
 
 interface AdminFeeCalculatorProps {

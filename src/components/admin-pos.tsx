@@ -1522,12 +1522,24 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     setUserDismissedPromo(false);
   }, [selectedCustomer?.id]);
 
-  // Cashier Shift States
-  const { activeShift, branchActiveShift, hasLoaded: hasLoadedShift } = useSyncExternalStore(
+  // Cashier Shift States (Branch-scoped: all staff in the same branch share the branch's active shift)
+  const { activeShift: rawUserShift, branchActiveShift, allOpenShifts: storeOpenShifts, hasLoaded: hasLoadedShift } = useSyncExternalStore(
     shiftStore.subscribe,
     shiftStore.getSnapshot,
     shiftStore.getSnapshot
   );
+
+  const activeShift = useMemo(() => {
+    const targetBranchId = activeShop?.id || activeBranchId;
+    if (targetBranchId) {
+      if (branchActiveShift && branchActiveShift.branchId === targetBranchId && branchActiveShift.status === "open") return branchActiveShift;
+      if (rawUserShift && rawUserShift.branchId === targetBranchId && rawUserShift.status === "open") return rawUserShift;
+      const fromAll = storeOpenShifts.find(s => s.branchId === targetBranchId && s.status === "open");
+      if (fromAll) return fromAll;
+      return null;
+    }
+    return branchActiveShift || rawUserShift || null;
+  }, [activeShop?.id, activeBranchId, branchActiveShift, rawUserShift, storeOpenShifts]);
 
   useEffect(() => {
     if (shops.length === 1) {
@@ -3861,14 +3873,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={() => {
-                    if (activeShopShift && activeShopShift.userId !== user?.id) {
-                      playAudioFeedback("click");
-                      setViewingShiftDetails({ shift: activeShopShift, shopName: shop.name });
-                    } else {
-                      setActiveBranchId(shop.id);
-                      localStorage.setItem("pos_active_branch_id", shop.id);
-                      playAudioFeedback("click");
-                    }
+                    setActiveBranchId(shop.id);
+                    localStorage.setItem("pos_active_branch_id", shop.id);
+                    playAudioFeedback("click");
                   }}
                   className="flex flex-col items-start text-left p-4.5 bg-muted/20 hover:bg-muted/40 border border-border hover:border-primary/40 rounded-xl cursor-pointer transition-all shadow-sm w-full relative overflow-hidden"
                 >

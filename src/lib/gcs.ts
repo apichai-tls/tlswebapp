@@ -21,7 +21,7 @@ export const bucketName = process.env.GCS_BUCKET_NAME || 'tls-images-test';
 export function generateGcsPath(
   entityType: 'job' | 'rider' | 'system' | 'task' | 'customer',
   entityId: string,
-  subType?: 'bags' | 'proofs' | 'bills' | 'avatars' | 'attachments' | 'notes' | 'slips',
+  subType?: 'bags' | 'proofs' | 'bills' | 'avatars' | 'attachments' | 'notes' | 'slips' | 'chat' | string,
   extension: string = 'jpg',
   customFileName?: string
 ): string {
@@ -54,7 +54,68 @@ export function generateGcsPath(
     return `tasks/${year}/${month}/${entityId}/${folder}/file-${timestamp}-${randomSuffix}.${extension}`;
   }
 
-  return `system/placeholders/file-${timestamp}-${randomSuffix}.${extension}`;
+  const sysFolder = subType || 'chat';
+  const cleanId = (entityId || 'social').replace(/[^a-zA-Z0-9_-]/g, '') || 'social';
+  if (customFileName && /^[a-zA-Z0-9._-]+$/.test(customFileName) && !customFileName.includes('..')) {
+    return `system/${sysFolder}/${year}/${month}/${day}/${cleanId}/${customFileName}`;
+  }
+  return `system/${sysFolder}/${year}/${month}/${day}/${cleanId}/file-${timestamp}-${randomSuffix}.${extension}`;
+}
+
+/**
+ * Directly upload a Buffer from the server (e.g. WhatsApp Baileys, LINE Webhook, Telegram, or Server Upload) to Google Cloud Storage.
+ * Returns the permanent public GCS URL, or null if GCS credentials are unavailable or upload fails.
+ */
+export async function uploadBufferToGcs(
+  buffer: Buffer,
+  options: {
+    entityType?: 'job' | 'rider' | 'system' | 'task' | 'customer';
+    entityId?: string;
+    subType?: string;
+    contentType?: string;
+    extension?: string;
+    customFileName?: string;
+  } = {}
+): Promise<string | null> {
+  try {
+    if (!process.env.GCS_CLIENT_EMAIL || !process.env.GCS_PRIVATE_KEY) {
+      return null;
+    }
+    const entityType = options.entityType || 'system';
+    const entityId = options.entityId || 'social';
+    const subType = options.contentType?.startsWith('image/') ? (options.subType || 'chat') : (options.subType || 'chat');
+    const contentType = options.contentType || 'image/jpeg';
+    let ext = (options.extension || '').replace(/^\.+/, '').toLowerCase();
+    if (!ext) {
+      if (contentType.includes('png')) ext = 'png';
+      else if (contentType.includes('webp')) ext = 'webp';
+      else if (contentType.includes('gif')) ext = 'gif';
+      else if (contentType.includes('pdf')) ext = 'pdf';
+      else ext = 'jpg';
+    }
+
+    const filePath = generateGcsPath(
+      entityType,
+      entityId,
+      subType,
+      ext,
+      options.customFileName
+    );
+
+    const file = storage.bucket(bucketName).file(filePath);
+    await file.save(buffer, {
+      contentType,
+      resumable: false,
+      metadata: {
+        cacheControl: 'public, max-age=31536000',
+      },
+    });
+
+    return getPublicUrl(filePath);
+  } catch (err: any) {
+    console.warn('[GCS Buffer Upload] Failed to upload buffer to GCS:', err?.message || err);
+    return null;
+  }
 }
 
 /**

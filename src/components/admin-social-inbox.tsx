@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } from 'react';
 import {
   MessageSquare,
   Send,
@@ -35,8 +35,17 @@ import {
   Upload,
   QrCode,
   Calculator,
+  MapPin,
+  Store,
+  Crown,
+  RotateCcw,
+  UserPlus,
 } from 'lucide-react';
 import AdminFeeCalculator, { type CalculatorOrderPayload } from '@/components/admin-fee-calculator';
+import { AdminCustomerDialog } from '@/components/admin-customer-dialog';
+import { LocationInput } from '@/components/location-input';
+import { customerStore, poiStore, shopStore, getClosestShopId, getDirectDistance, type LatLng } from '@/lib/store';
+import { getRoute, getClosestShopByRoute } from '@/lib/map-api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -193,9 +202,10 @@ export function AdminSocialInbox({
   const [newSocialMessage, setNewSocialMessage] = useState('');
   const [creatingSocialChat, setCreatingSocialChat] = useState(false);
 
-  // Modal 3: Link Conversation to CRM Customer
+  // Modal 3: Link Conversation to CRM Customer / Create New CRM Customer
   const [isLinkCustomerOpen, setIsLinkCustomerOpen] = useState(false);
   const [linkCustomerSearch, setLinkCustomerSearch] = useState('');
+  const [isCreateCustomerOpen, setIsCreateCustomerOpen] = useState(false);
 
   // Modal 4: Channel Settings & Webhook Configuration
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -204,9 +214,72 @@ export function AdminSocialInbox({
   const [loadingWaQr, setLoadingWaQr] = useState(false);
   const [isDistanceCalOpen, setIsDistanceCalOpen] = useState(false);
 
+  // Embedded Mini Distance Calculator State (Right Sidebar)
+  const storeCustomers = useSyncExternalStore(customerStore.subscribe, customerStore.getSnapshot, customerStore.getSnapshot);
+  const allCustomers = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const c of customers) {
+      if (c?.id) map.set(c.id, c);
+    }
+    for (const c of storeCustomers) {
+      if (c?.id) map.set(c.id, c);
+    }
+    return Array.from(map.values());
+  }, [customers, storeCustomers]);
+  const storePois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
+  const storeShops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  const availableShops = useMemo(
+    () => (shops && shops.length > 0 ? shops : storeShops),
+    [shops, storeShops]
+  );
+  const [miniShopId, setMiniShopId] = useState<string>('');
+  const [miniAutoShop, setMiniAutoShop] = useState<boolean>(true);
+  const [miniSeparateDelivery, setMiniSeparateDelivery] = useState<boolean>(false);
+  const [miniTripMode, setMiniTripMode] = useState<'both' | 'pickup' | 'delivery'>('both');
+  const [miniIsVip, setMiniIsVip] = useState<boolean>(false);
+  const [miniPickupQuery, setMiniPickupQuery] = useState<string>('');
+  const [miniDeliveryQuery, setMiniDeliveryQuery] = useState<string>('');
+  const [miniPickupLoc, setMiniPickupLoc] = useState<{
+    name: string;
+    address: string;
+    coords: LatLng;
+    placeId?: string;
+  } | null>(null);
+  const [miniDeliveryLoc, setMiniDeliveryLoc] = useState<{
+    name: string;
+    address: string;
+    coords: LatLng;
+    placeId?: string;
+  } | null>(null);
+  const [miniPickupDist, setMiniPickupDist] = useState<number>(0);
+  const [miniDeliveryDist, setMiniDeliveryDist] = useState<number>(0);
+  const [miniCalculatingRoute, setMiniCalculatingRoute] = useState<boolean>(false);
+
+  const activeMiniShop = useMemo(() => {
+    if (miniShopId) return availableShops.find((s: any) => s.id === miniShopId) || availableShops[0];
+    return availableShops[0];
+  }, [availableShops, miniShopId]);
+
+  const localPoiSearchData = useMemo(() => {
+    return storePois.map((p) => ({
+      name: p.name,
+      address: p.address,
+      lat: p.coords.lat,
+      lng: p.coords.lng,
+      placeId: p.placeId || p.id,
+      isLocal: true,
+    }));
+  }, [storePois]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const prevInboundMsgCountRef = useRef<number | null>(null);
+  const selectedConvIdRef = useRef<string | null>(null);
+  const recentlyReadConvIdsRef = useRef<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    selectedConvIdRef.current = selectedConvId;
+  }, [selectedConvId]);
 
   // Pleasant two-tone native chat chime using Web Audio API
   const playNotificationChime = useCallback(() => {
@@ -338,6 +411,7 @@ export function AdminSocialInbox({
           );
 
           const newInboundMsgs = res.messages.filter((m) => m.direction === 'inbound');
+          let latestInboundConvId: string | null = null;
           if (
             prevInboundMsgCountRef.current !== null &&
             newInboundMsgs.length > prevInboundMsgCountRef.current
@@ -345,6 +419,8 @@ export function AdminSocialInbox({
             const latestInbound = newInboundMsgs[newInboundMsgs.length - 1];
             playNotificationChime();
             if (latestInbound) {
+              latestInboundConvId = latestInbound.conversationId;
+              recentlyReadConvIdsRef.current.delete(latestInbound.conversationId);
               const chLabel =
                 SOCIAL_CHANNEL_META[latestInbound.channel]?.shortLabel || latestInbound.channel;
               toast.success(
@@ -357,7 +433,21 @@ export function AdminSocialInbox({
           }
           prevInboundMsgCountRef.current = newInboundMsgs.length;
 
-          setConversations(res.conversations);
+          const nowMs = Date.now();
+          const mergedConversations = res.conversations.map((c) => {
+            const readAt = recentlyReadConvIdsRef.current.get(c.id);
+            const isRecentlyRead = Boolean(readAt && nowMs - readAt < 10000);
+            const isCurrentlyOpen = c.id === selectedConvIdRef.current;
+            if (
+              c.unreadCount > 0 &&
+              (isRecentlyRead || (isCurrentlyOpen && c.id !== latestInboundConvId))
+            ) {
+              return { ...c, unreadCount: 0 };
+            }
+            return c;
+          });
+
+          setConversations(mergedConversations);
           setMessages((prev) => {
             const inFlightOptimistic = prev.filter((m) => m.id.startsWith('optimistic_'));
             if (inFlightOptimistic.length === 0) return res.messages;
@@ -389,36 +479,111 @@ export function AdminSocialInbox({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeMessages.length, selectedConvId]);
 
-  // Mark conversation as read when selected
+  // Mark conversation as read helper (optimistic 0ms UI update + server persistence)
+  const markConversationAsRead = useCallback((convId: string) => {
+    if (!convId) return;
+    recentlyReadConvIdsRef.current.set(convId, Date.now());
+    setConversations((prev) =>
+      prev.map((c) => (c.id === convId && c.unreadCount > 0 ? { ...c, unreadCount: 0 } : c))
+    );
+    updateSocialConversationAction({
+      conversationId: convId,
+      markAsRead: true,
+    })
+      .then((res) => {
+        if (res.success && res.conversations) {
+          const nowMs = Date.now();
+          setConversations(
+            res.conversations.map((c) => {
+              const readAt = recentlyReadConvIdsRef.current.get(c.id);
+              if (c.unreadCount > 0 && (c.id === convId || (readAt && nowMs - readAt < 10000))) {
+                return { ...c, unreadCount: 0 };
+              }
+              return c;
+            })
+          );
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleSelectConversation = useCallback(
+    (conv: SocialConversation) => {
+      selectedConvIdRef.current = conv.id;
+      setSelectedConvId(conv.id);
+      if (conv.unreadCount > 0) {
+        markConversationAsRead(conv.id);
+      }
+    },
+    [markConversationAsRead]
+  );
+
+  // Mark conversation as read when selected or when new unread arrives on the open conversation
   useEffect(() => {
     if (activeConversation && activeConversation.unreadCount > 0) {
-      updateSocialConversationAction({
-        conversationId: activeConversation.id,
-        markAsRead: true,
-      }).then((res) => {
-        if (res.success && res.conversations) {
-          setConversations(res.conversations);
-        }
-      });
+      markConversationAsRead(activeConversation.id);
     }
-  }, [selectedConvId, activeConversation?.unreadCount]);
+  }, [selectedConvId, activeConversation?.id, activeConversation?.unreadCount, markConversationAsRead]);
 
-  // Upload File / Image from Device or Clipboard (`Ctrl+V`)
+  // Upload File / Image from Device or Clipboard (`Ctrl+V`) — Uploads directly to Google Cloud Storage first
   const uploadFileToChat = async (file: File) => {
     try {
       setUploadingFile(true);
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('entityType', 'system');
-      fd.append('subType', 'chat');
-      fd.append('entityId', 'social');
+      const entityId = activeConversation?.id
+        ? activeConversation.id.replace(/[^a-zA-Z0-9_-]/g, '')
+        : 'social';
+      let publicUrl = '';
 
-      const res = await fetch('/api/upload-local', {
-        method: 'POST',
-        body: fd,
-      });
-      const data = await res.json();
-      if (res.ok && data?.publicUrl) {
+      // 1. Primary: Upload directly to Google Cloud Storage via Signed URL
+      try {
+        const signRes = await fetch('/api/upload-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            entityType: 'system',
+            entityId,
+            subType: 'chat',
+            contentType: file.type || 'image/jpeg',
+            filename: file.name || `chat-${Date.now()}.jpg`,
+          }),
+        });
+        if (signRes.ok) {
+          const signData = await signRes.json();
+          if (signData.uploadUrl && signData.publicUrl) {
+            const putRes = await fetch(signData.uploadUrl, {
+              method: 'PUT',
+              headers: { 'Content-Type': file.type || 'image/jpeg' },
+              body: file,
+            });
+            if (putRes.ok) {
+              publicUrl = signData.publicUrl;
+            }
+          }
+        }
+      } catch {}
+
+      // 2. Fallback: Server-side upload via /api/upload-local (which also uploads chat files to GCS on the server)
+      if (!publicUrl) {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('entityType', 'system');
+        fd.append('subType', 'chat');
+        fd.append('entityId', entityId);
+
+        const res = await fetch('/api/upload-local', {
+          method: 'POST',
+          body: fd,
+        });
+        const data = await res.json();
+        if (res.ok && data?.publicUrl) {
+          publicUrl = data.publicUrl;
+        } else {
+          toast.error(data?.error || 'Failed to upload file');
+          return;
+        }
+      }
+
+      if (publicUrl) {
         const isImg =
           file.type.startsWith('image/') ||
           /\.(jpg|jpeg|png|webp|gif|heic)$/i.test(file.name || '');
@@ -426,13 +591,11 @@ export function AdminSocialInbox({
           ...prev,
           {
             type: isImg ? 'image' : 'file',
-            url: data.publicUrl,
+            url: publicUrl,
             name: file.name || 'Chat Photo',
           },
         ]);
         toast.success(`Attached ${file.name || 'photo'} ready to send!`);
-      } else {
-        toast.error(data?.error || 'Failed to upload file');
       }
     } catch (e: any) {
       toast.error('Upload error: ' + e.message);
@@ -540,11 +703,11 @@ export function AdminSocialInbox({
   const linkedCustomer = useMemo(() => {
     if (!activeConversation) return null;
     if (activeConversation.customerId) {
-      const found = customers.find((c) => c.id === activeConversation.customerId);
+      const found = allCustomers.find((c) => c.id === activeConversation.customerId);
       if (found) return found;
     }
     if (activeConversation.channel === 'line' && activeConversation.externalContactId) {
-      const byLineId = customers.find(
+      const byLineId = allCustomers.find(
         (c) => (c.lineId || '').trim() === activeConversation.externalContactId.trim()
       );
       if (byLineId) return byLineId;
@@ -553,13 +716,13 @@ export function AdminSocialInbox({
       activeConversation.contactPhone || activeConversation.externalContactId
     );
     if (pk.length >= 8) {
-      const byPhone = customers.find((c) => normalizePhoneKey(c.phone) === pk);
+      const byPhone = allCustomers.find((c) => normalizePhoneKey(c.phone) === pk);
       if (byPhone) return byPhone;
     }
     if (activeConversation.contactName) {
       const normName = activeConversation.contactName.trim().toLowerCase();
       if (normName.length >= 2 && normName !== 'line user') {
-        const byName = customers.find(
+        const byName = allCustomers.find(
           (c) =>
             c.name?.trim().toLowerCase() === normName ||
             c.nickName?.trim().toLowerCase() === normName
@@ -568,7 +731,259 @@ export function AdminSocialInbox({
       }
     }
     return null;
-  }, [activeConversation, customers]);
+  }, [activeConversation, allCustomers]);
+
+  // Sync VIP tier & saved customer address into Mini Distance Cal when switching chat/customer
+  useEffect(() => {
+    setMiniIsVip(Boolean(linkedCustomer?.isVIP));
+    if (
+      linkedCustomer?.defaultAddress &&
+      linkedCustomer.defaultAddress !== '--' &&
+      linkedCustomer.defaultAddress !== '-' &&
+      linkedCustomer?.defaultCoords?.lat &&
+      linkedCustomer?.defaultCoords?.lng
+    ) {
+      const cleanName = String(linkedCustomer.defaultAddress).replace(/^⭐\s*/, '').trim();
+      const locObj = {
+        name: cleanName,
+        address: cleanName,
+        coords: {
+          lat: Number(linkedCustomer.defaultCoords.lat),
+          lng: Number(linkedCustomer.defaultCoords.lng),
+        },
+      };
+      setMiniPickupQuery(cleanName);
+      setMiniPickupLoc(locObj);
+      if (!miniSeparateDelivery) {
+        setMiniDeliveryQuery(cleanName);
+        setMiniDeliveryLoc(locObj);
+      }
+      if (miniAutoShop && availableShops.length > 0) {
+        const closestId = getClosestShopId(locObj.coords, availableShops);
+        if (closestId) setMiniShopId(closestId);
+      }
+    }
+  }, [linkedCustomer?.id]);
+
+  // Calculate driving distance whenever activeMiniShop, miniPickupLoc, or miniDeliveryLoc changes
+  useEffect(() => {
+    let cancelled = false;
+    async function computeMiniDistances() {
+      if (!activeMiniShop?.coords) return;
+      const targetDelivLoc = miniSeparateDelivery ? miniDeliveryLoc : miniPickupLoc;
+      if (!miniPickupLoc && !targetDelivLoc) {
+        setMiniPickupDist(0);
+        setMiniDeliveryDist(0);
+        return;
+      }
+
+      setMiniCalculatingRoute(true);
+      try {
+        if (miniPickupLoc) {
+          const directP = getDirectDistance(activeMiniShop.coords, miniPickupLoc.coords);
+          setMiniPickupDist(directP);
+          const routeP = await getRoute(activeMiniShop.coords, miniPickupLoc.coords);
+          if (!cancelled && routeP?.distanceKm) {
+            setMiniPickupDist(routeP.distanceKm);
+          }
+        } else {
+          setMiniPickupDist(0);
+        }
+
+        if (targetDelivLoc) {
+          if (!miniSeparateDelivery && miniPickupLoc) {
+            // Same location as pickup — reuse route result
+            const routeP = await getRoute(activeMiniShop.coords, miniPickupLoc.coords);
+            if (!cancelled && routeP?.distanceKm) {
+              setMiniDeliveryDist(routeP.distanceKm);
+            } else if (!cancelled) {
+              setMiniDeliveryDist(getDirectDistance(activeMiniShop.coords, miniPickupLoc.coords));
+            }
+          } else {
+            const directD = getDirectDistance(activeMiniShop.coords, targetDelivLoc.coords);
+            setMiniDeliveryDist(directD);
+            const routeD = await getRoute(activeMiniShop.coords, targetDelivLoc.coords);
+            if (!cancelled && routeD?.distanceKm) {
+              setMiniDeliveryDist(routeD.distanceKm);
+            }
+          }
+        } else {
+          setMiniDeliveryDist(0);
+        }
+      } finally {
+        if (!cancelled) setMiniCalculatingRoute(false);
+      }
+    }
+    computeMiniDistances();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMiniShop, miniPickupLoc, miniDeliveryLoc, miniSeparateDelivery]);
+
+  const handleSelectMiniPickup = async (loc: {
+    name: string;
+    address?: string;
+    lat: number;
+    lng: number;
+    placeId?: string;
+  }) => {
+    const cleanName = loc.name.replace(/^⭐\s*/, '');
+    setMiniPickupQuery(cleanName);
+    const coords = { lat: loc.lat, lng: loc.lng };
+    const nextLoc = {
+      name: cleanName,
+      address: loc.address || cleanName,
+      coords,
+      placeId: loc.placeId,
+    };
+    setMiniPickupLoc(nextLoc);
+    if (!miniSeparateDelivery) {
+      setMiniDeliveryQuery(cleanName);
+      setMiniDeliveryLoc(nextLoc);
+    }
+    if (miniAutoShop && availableShops.length > 0) {
+      const immediateClosest = getClosestShopId(coords, availableShops);
+      if (immediateClosest) setMiniShopId(immediateClosest);
+      try {
+        const routeClosest = await getClosestShopByRoute(
+          coords,
+          availableShops,
+          loc.address || cleanName
+        );
+        if (routeClosest) setMiniShopId(routeClosest);
+      } catch {}
+    }
+  };
+
+  const handleSelectMiniDelivery = (loc: {
+    name: string;
+    address?: string;
+    lat: number;
+    lng: number;
+    placeId?: string;
+  }) => {
+    const cleanName = loc.name.replace(/^⭐\s*/, '');
+    setMiniDeliveryQuery(cleanName);
+    setMiniDeliveryLoc({
+      name: cleanName,
+      address: loc.address || cleanName,
+      coords: { lat: loc.lat, lng: loc.lng },
+      placeId: loc.placeId,
+    });
+  };
+
+  const miniFeeSummary = useMemo(() => {
+    const roundHalfUp = (val: number) => Math.ceil(val * 2) / 2;
+    const isPickup = miniTripMode === 'both' || miniTripMode === 'pickup';
+    const isDelivery = miniTripMode === 'both' || miniTripMode === 'delivery';
+    const effDeliveryDist = miniSeparateDelivery ? miniDeliveryDist : miniPickupDist;
+
+    const billablePickupKm = isPickup && miniPickupDist > 0 ? roundHalfUp(miniPickupDist * 2) : 0;
+    const billableDeliveryKm =
+      isDelivery && effDeliveryDist > 0 ? roundHalfUp(effDeliveryDist) : 0;
+    const totalBillableKm = billablePickupKm + billableDeliveryKm;
+
+    const hasAnyDist = (isPickup && miniPickupDist > 0) || (isDelivery && effDeliveryDist > 0);
+    const standardRaw = totalBillableKm * 10;
+    const vipRaw = totalBillableKm * 4;
+    const standardFee = hasAnyDist ? Math.max(30, standardRaw) : 0;
+    const vipFee = hasAnyDist ? Math.max(30, vipRaw) : 0;
+    const activeFee = miniIsVip ? vipFee : standardFee;
+
+    return {
+      isPickup,
+      isDelivery,
+      effDeliveryDist,
+      billablePickupKm,
+      billableDeliveryKm,
+      totalBillableKm,
+      standardFee,
+      vipFee,
+      activeFee,
+      hasAnyDist,
+    };
+  }, [miniTripMode, miniPickupDist, miniDeliveryDist, miniSeparateDelivery, miniIsVip]);
+
+  const handleInsertMiniQuote = () => {
+    const effDelivLoc = miniSeparateDelivery ? miniDeliveryLoc : miniPickupLoc;
+    if (!miniPickupLoc && !effDelivLoc) {
+      toast.error('Please select a pickup or delivery location first');
+      return;
+    }
+    const lines = [
+      `🧺 Delivery Fee Quote — ${activeMiniShop?.name || 'That Laundry Shop'}`,
+      miniPickupLoc && miniFeeSummary.isPickup
+        ? `📍 Pickup: ${miniPickupLoc.name} (${miniFeeSummary.billablePickupKm.toFixed(1)} km billable)`
+        : null,
+      effDelivLoc && miniFeeSummary.isDelivery
+        ? `🚚 Delivery: ${effDelivLoc.name} (${miniFeeSummary.billableDeliveryKm.toFixed(1)} km billable)`
+        : null,
+      `📏 Total Billable Distance: ${miniFeeSummary.totalBillableKm.toFixed(1)} km`,
+      `💳 Rate Tier: ${miniIsVip ? 'VIP (฿4/km)' : 'Standard (฿10/km, Min ฿30)'}`,
+      `💰 Total Delivery Fee: ฿${miniFeeSummary.activeFee.toLocaleString()}`,
+    ].filter(Boolean);
+    const quoteText = lines.join('\n');
+    setComposerText((prev) => (prev.trim() ? `${prev.trim()}\n\n${quoteText}` : quoteText));
+    toast.success('Inserted delivery fee quote into chat composer!');
+  };
+
+  // Unified 1-click handler: creates a new Laundry Job pre-populated with BOTH customer/chat info AND Quick Distance Cal route & fee
+  const handleCreateJobWithCustomerAndRoute = () => {
+    const effDeliv = miniSeparateDelivery ? miniDeliveryLoc : miniPickupLoc;
+    const resolvedPhone =
+      getDisplayPhone(linkedCustomer?.phone) ||
+      getDisplayPhone(activeConversation?.contactPhone) ||
+      (activeConversation?.channel === 'whatsapp'
+        ? getDisplayPhone(`+${activeConversation.externalContactId}`)
+        : '');
+    const contactChannel: 'line' | 'whatsapp' | null =
+      activeConversation?.channel === 'line'
+        ? 'line'
+        : activeConversation?.channel === 'whatsapp'
+        ? 'whatsapp'
+        : linkedCustomer?.lineId
+        ? 'line'
+        : linkedCustomer?.isWhatsapp || linkedCustomer?.whatsappId
+        ? 'whatsapp'
+        : null;
+
+    if (onCreateOrderFromCalculator) {
+      onCreateOrderFromCalculator({
+        branchId: activeMiniShop?.id,
+        isPickup: miniFeeSummary.isPickup,
+        isDelivery: miniFeeSummary.isDelivery,
+        isVip: miniIsVip || Boolean(linkedCustomer?.isVIP),
+        pickupLoc: miniFeeSummary.isPickup ? miniPickupLoc || effDeliv : null,
+        deliveryLoc: miniFeeSummary.isDelivery ? effDeliv || miniPickupLoc : null,
+        isDeliveryDirty: Boolean(
+          miniSeparateDelivery &&
+            miniPickupLoc &&
+            miniDeliveryLoc &&
+            miniPickupLoc.name !== miniDeliveryLoc.name
+        ),
+        pickupDist: miniFeeSummary.isPickup ? miniPickupDist : 0,
+        deliveryDist: miniFeeSummary.isDelivery ? miniFeeSummary.effDeliveryDist : 0,
+        lockedFee: miniFeeSummary.hasAnyDist ? miniFeeSummary.activeFee : 0,
+        customer: linkedCustomer || undefined,
+        contactName: linkedCustomer?.name || activeConversation?.contactName || '',
+        contactPhone: resolvedPhone,
+        contactChannel,
+        customerLineId:
+          activeConversation?.channel === 'line'
+            ? activeConversation.externalContactId
+            : linkedCustomer?.lineId || undefined,
+        customerWhatsappId:
+          activeConversation?.channel === 'whatsapp'
+            ? activeConversation.externalContactId
+            : linkedCustomer?.whatsappId || resolvedPhone || undefined,
+      });
+      return;
+    }
+
+    if (onCreateJobForCustomer) {
+      onCreateJobForCustomer(linkedCustomer);
+    }
+  };
 
   const customerJobs = useMemo(() => {
     if (!activeConversation) return [];
@@ -1239,16 +1654,6 @@ export function AdminSocialInbox({
 
             <Button
               size="sm"
-              onClick={() => setIsDistanceCalOpen(true)}
-              className="h-8 px-3 bg-indigo-500/30 hover:bg-indigo-500/45 border border-indigo-400/50 text-indigo-100 font-black text-xs rounded-xl gap-1.5 cursor-pointer transition-all shadow-2xs"
-              title="Open Distance & Delivery Fee Calculator"
-            >
-              <Calculator size={13} className="text-indigo-200" />
-              <span>Distance Cal</span>
-            </Button>
-
-            <Button
-              size="sm"
               variant="outline"
               onClick={handleSyncLineFollowers}
               disabled={syncingLine}
@@ -1484,7 +1889,7 @@ export function AdminSocialInbox({
                 return (
                   <div
                     key={conv.id}
-                    onClick={() => setSelectedConvId(conv.id)}
+                    onClick={() => handleSelectConversation(conv)}
                     className={`px-3 py-2.5 cursor-pointer transition-all hover:bg-slate-50/90 relative ${
                       isSelected
                         ? 'bg-emerald-50/70 border-l-[3px] border-l-emerald-600'
@@ -1917,7 +2322,7 @@ export function AdminSocialInbox({
                             <span className="text-[10px] font-bold text-slate-600">
                               {isOutbound
                                 ? msg.senderName || 'That Laundry Shop'
-                                : activeConversation.contactName}
+                                : msg.senderName || activeConversation.contactName}
                             </span>
                             <span className="text-[10px] text-slate-400">
                               {msgDateObj.toLocaleTimeString([], {
@@ -2253,19 +2658,6 @@ export function AdminSocialInbox({
                     <ImageIcon size={15} />
                   </Button>
 
-                  {/* Quick Distance Calculator Toggle */}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setIsDistanceCalOpen(true)}
-                    className="h-9.5 px-2.5 rounded-xl border-indigo-200 bg-indigo-50/70 text-indigo-700 hover:bg-indigo-100 font-bold text-[11px] gap-1 shrink-0 cursor-pointer"
-                    title="Calculate pickup/delivery distance & insert fee quote into chat"
-                  >
-                    <Calculator size={14} />
-                    <span className="hidden md:inline">Distance Cal</span>
-                  </Button>
-
                   <textarea
                     value={composerText}
                     onChange={(e) => setComposerText(e.target.value)}
@@ -2384,15 +2776,27 @@ export function AdminSocialInbox({
                 <span>Customer 360° & Orders</span>
               </span>
               {activeConversation && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setIsLinkCustomerOpen(true)}
-                  className="h-7 px-2 text-[10px] font-bold rounded-lg gap-1 cursor-pointer bg-white"
-                >
-                  <Link2 size={11} />
-                  <span>{linkedCustomer ? 'Change Link' : 'Link CRM'}</span>
-                </Button>
+                linkedCustomer ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setIsLinkCustomerOpen(true)}
+                    className="h-7 px-2 text-[10px] font-bold rounded-lg gap-1 cursor-pointer bg-white"
+                  >
+                    <Link2 size={11} />
+                    <span>Change Link</span>
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setIsCreateCustomerOpen(true)}
+                    className="h-7 px-2.5 text-[10px] font-bold rounded-lg gap-1 cursor-pointer bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200"
+                  >
+                    <UserPlus size={11} />
+                    <span>Create Customer</span>
+                  </Button>
+                )
               )}
             </div>
 
@@ -2473,14 +2877,14 @@ export function AdminSocialInbox({
                         </div>
                       </div>
 
-                      {onCreateJobForCustomer && (
+                      {(onCreateOrderFromCalculator || onCreateJobForCustomer) && (
                         <Button
                           size="sm"
-                          onClick={() => onCreateJobForCustomer(linkedCustomer)}
+                          onClick={handleCreateJobWithCustomerAndRoute}
                           className="w-full h-8.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] rounded-lg gap-1.5 cursor-pointer shadow-2xs"
                         >
                           <Plus size={13} />
-                          <span>+ Create Laundry Job for Customer</span>
+                          <span>Create Laundry Job for Customer</span>
                         </Button>
                       )}
                     </div>
@@ -2491,15 +2895,27 @@ export function AdminSocialInbox({
                         Link this social profile to an existing customer to view their orders &
                         wallet.
                       </p>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setIsLinkCustomerOpen(true)}
-                        className="h-8 px-3 text-xs font-bold rounded-lg gap-1.5 cursor-pointer bg-white"
-                      >
-                        <Link2 size={13} />
-                        <span>Link to CRM Customer</span>
-                      </Button>
+                      <div className="flex flex-col gap-1.5 pt-0.5">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setIsLinkCustomerOpen(true)}
+                          className="h-8 px-3 text-xs font-bold rounded-lg gap-1.5 cursor-pointer bg-white w-full"
+                        >
+                          <Link2 size={13} />
+                          <span>Link to CRM Customer</span>
+                        </Button>
+                        {(onCreateOrderFromCalculator || onCreateJobForCustomer) && (
+                          <Button
+                            size="sm"
+                            onClick={handleCreateJobWithCustomerAndRoute}
+                            className="w-full h-8 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] rounded-lg gap-1.5 cursor-pointer shadow-2xs"
+                          >
+                            <Plus size={13} />
+                            <span>Create Laundry Job for Customer</span>
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -2509,17 +2925,6 @@ export function AdminSocialInbox({
                       Tools & Live App Launchers
                     </span>
                     <div className="grid grid-cols-1 gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setIsDistanceCalOpen(true)}
-                        className="flex items-center justify-between px-3 py-2 rounded-xl border border-indigo-200 bg-indigo-50/80 hover:bg-indigo-100 text-xs font-bold text-indigo-900 transition-colors cursor-pointer shadow-2xs"
-                      >
-                        <span className="flex items-center gap-2">
-                          <Calculator size={13} className="text-indigo-600" />
-                          <span>Distance & Delivery Fee Calculator</span>
-                        </span>
-                        <ChevronRight size={13} className="text-indigo-600" />
-                      </button>
                       {activeConversation.channel === 'line' && (
                         <button
                           type="button"
@@ -2655,6 +3060,251 @@ export function AdminSocialInbox({
                         })}
                       </div>
                     )}
+                  </div>
+
+                  {/* ============================================================ */}
+                  {/* COMPACT MINI DISTANCE & DELIVERY FEE CALCULATOR (SIDEBAR)    */}
+                  {/* ============================================================ */}
+                  <div className="pt-2.5 border-t border-slate-100">
+                    <div className="rounded-xl border border-indigo-200/80 bg-gradient-to-b from-indigo-50/50 via-white to-slate-50/70 p-3 space-y-2.5 shadow-2xs">
+                      {/* Header Row */}
+                      <div className="flex items-center justify-between gap-1.5">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                            <Calculator size={12} />
+                          </div>
+                          <span className="text-[11px] font-black text-slate-900 truncate">
+                            Quick Distance Cal
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {(miniPickupLoc || miniDeliveryLoc) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMiniPickupQuery('');
+                                setMiniDeliveryQuery('');
+                                setMiniPickupLoc(null);
+                                setMiniDeliveryLoc(null);
+                                setMiniPickupDist(0);
+                                setMiniDeliveryDist(0);
+                              }}
+                              className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                              title="Reset route"
+                            >
+                              <RotateCcw size={11} />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setIsDistanceCalOpen(true)}
+                            className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-0.5 cursor-pointer"
+                            title="Open Full Map Calculator"
+                          >
+                            <span>Full Map</span>
+                            <ExternalLink size={10} />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 1. Branch Selector */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] font-extrabold text-slate-600 flex items-center gap-1">
+                            <Store size={11} className="text-indigo-600" />
+                            <span>Branch</span>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setMiniAutoShop(!miniAutoShop)}
+                            className={`text-[9px] font-black px-1.5 py-0.2 rounded-full border transition-all cursor-pointer ${
+                              miniAutoShop
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : 'bg-slate-100 text-slate-500 border-slate-200'
+                            }`}
+                            title="Automatically select the closest branch"
+                          >
+                            {miniAutoShop ? '⚡ Auto Nearest' : 'Manual'}
+                          </button>
+                        </div>
+                        <select
+                          value={activeMiniShop?.id || ''}
+                          onChange={(e) => {
+                            setMiniAutoShop(false);
+                            setMiniShopId(e.target.value);
+                          }}
+                          className="w-full h-8 rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-800 shadow-2xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                        >
+                          {availableShops.map((shop: any) => (
+                            <option key={shop.id} value={shop.id}>
+                              {shop.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* 2. Pickup / Delivery Location */}
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] font-extrabold text-slate-600 flex items-center gap-1">
+                            <MapPin size={11} className="text-emerald-600" />
+                            <span>
+                              {miniSeparateDelivery
+                                ? 'Pickup Location'
+                                : 'Pickup & Delivery Location'}
+                            </span>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = !miniSeparateDelivery;
+                              setMiniSeparateDelivery(next);
+                              if (!next && miniPickupLoc) {
+                                setMiniDeliveryQuery(miniPickupQuery);
+                                setMiniDeliveryLoc(miniPickupLoc);
+                              }
+                            }}
+                            className="text-[9px] font-bold text-indigo-600 hover:underline cursor-pointer"
+                          >
+                            {miniSeparateDelivery ? 'Same as Pickup' : '+ Different Drop-off'}
+                          </button>
+                        </div>
+
+                        <LocationInput
+                          placeholder="Search condo, hotel, or building..."
+                          value={miniPickupQuery}
+                          onChange={setMiniPickupQuery}
+                          onSelectLocation={handleSelectMiniPickup}
+                          localData={localPoiSearchData}
+                          inputClassName="h-8 text-[11px] bg-white border-slate-200 rounded-lg pr-7"
+                        />
+
+                        {miniSeparateDelivery && (
+                          <div className="space-y-1 pt-0.5">
+                            <label className="text-[10px] font-extrabold text-slate-600 flex items-center gap-1">
+                              <MapPin size={11} className="text-sky-600" />
+                              <span>Delivery Location</span>
+                            </label>
+                            <LocationInput
+                              placeholder="Search drop-off location..."
+                              value={miniDeliveryQuery}
+                              onChange={setMiniDeliveryQuery}
+                              onSelectLocation={handleSelectMiniDelivery}
+                              localData={localPoiSearchData}
+                              inputClassName="h-8 text-[11px] bg-white border-slate-200 rounded-lg pr-7"
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 3. Trip Mode & VIP Toggle */}
+                      <div className="flex items-center justify-between gap-1">
+                        <div className="grid grid-cols-3 gap-0.5 p-0.5 bg-slate-200/70 rounded-lg flex-1">
+                          {(
+                            [
+                              { id: 'both', label: 'Round Trip' },
+                              { id: 'pickup', label: 'Pickup Only' },
+                              { id: 'delivery', label: 'Delivery Only' },
+                            ] as const
+                          ).map((m) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => setMiniTripMode(m.id)}
+                              className={`py-1 px-1 rounded-md text-[9px] font-extrabold transition-all cursor-pointer truncate ${
+                                miniTripMode === m.id
+                                  ? 'bg-slate-900 text-white shadow-2xs'
+                                  : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              {m.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => setMiniIsVip(!miniIsVip)}
+                          className={`h-6.5 px-2 rounded-lg text-[9px] font-black flex items-center gap-1 border transition-all cursor-pointer shrink-0 ${
+                            miniIsVip
+                              ? 'bg-amber-400/20 text-amber-900 border-amber-400 shadow-2xs'
+                              : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+                          }`}
+                          title="Toggle VIP (฿4/km) vs Standard (฿10/km)"
+                        >
+                          <Crown
+                            size={10}
+                            className={miniIsVip ? 'text-amber-600 fill-amber-500' : 'text-slate-400'}
+                          />
+                          <span>VIP</span>
+                        </button>
+                      </div>
+
+                      {/* 4. Instant Delivery Fee Result Card */}
+                      <div className="rounded-xl bg-slate-900 text-white p-2.5 space-y-2 shadow-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 block">
+                              Delivery Fee ({miniIsVip ? 'VIP ฿4/km' : 'Standard ฿10/km'})
+                            </span>
+                            <div className="flex items-baseline gap-1.5 mt-0.5">
+                              <span className="text-lg font-black text-emerald-400 leading-none">
+                                ฿{miniFeeSummary.activeFee.toLocaleString()}
+                              </span>
+                              {miniFeeSummary.hasAnyDist && (
+                                <span className="text-[10px] font-semibold text-slate-300">
+                                  ({miniFeeSummary.totalBillableKm.toFixed(1)} km billable)
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <span className="text-[9px] text-slate-400 block">Route Dist.</span>
+                            <span className="text-xs font-extrabold text-white">
+                              {miniCalculatingRoute
+                                ? '...'
+                                : miniPickupDist > 0
+                                ? `${miniPickupDist.toFixed(2)} km`
+                                : '0.0 km'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Quick Tier Comparison Bar (Standard vs VIP) */}
+                        {miniFeeSummary.hasAnyDist && (
+                          <div className="flex items-center justify-between text-[10px] pt-1.5 border-t border-white/10 text-slate-300">
+                            <span>
+                              Standard:{' '}
+                              <strong className="text-white">
+                                ฿{miniFeeSummary.standardFee.toLocaleString()}
+                              </strong>
+                            </span>
+                            <span>
+                              VIP:{' '}
+                              <strong className="text-amber-300">
+                                ฿{miniFeeSummary.vipFee.toLocaleString()}
+                              </strong>
+                            </span>
+                            <span className="text-[9px] text-slate-400">Min ฿30</span>
+                          </div>
+                        )}
+
+                        {/* Action Button: Insert Quote into Chat */}
+                        <div className="pt-0.5">
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={!miniFeeSummary.hasAnyDist}
+                            onClick={handleInsertMiniQuote}
+                            className="w-full h-7.5 px-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black text-[10px] rounded-lg gap-1.5 cursor-pointer"
+                          >
+                            <Send size={10} />
+                            <span>Insert to Chat</span>
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </>
               )}
@@ -3008,9 +3658,24 @@ export function AdminSocialInbox({
       <Dialog open={isLinkCustomerOpen} onOpenChange={setIsLinkCustomerOpen}>
         <DialogContent className="sm:max-w-md rounded-2xl">
           <DialogHeader>
-            <DialogTitle className="text-sm font-black">
-              Link Conversation to CRM Customer
-            </DialogTitle>
+            <div className="flex items-center justify-between pr-6">
+              <DialogTitle className="text-sm font-black">
+                Link Conversation to CRM Customer
+              </DialogTitle>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setIsLinkCustomerOpen(false);
+                  setIsCreateCustomerOpen(true);
+                }}
+                className="h-7 px-2.5 text-[10px] font-bold rounded-lg gap-1 cursor-pointer bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200"
+              >
+                <UserPlus size={11} />
+                <span>Create Customer</span>
+              </Button>
+            </div>
           </DialogHeader>
           <div className="space-y-3">
             <Input
@@ -3020,7 +3685,7 @@ export function AdminSocialInbox({
               className="h-9 text-xs rounded-xl"
             />
             <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-xl">
-              {customers
+              {allCustomers
                 .filter((c) => {
                   if (!linkCustomerSearch.trim()) return true;
                   const q = linkCustomerSearch.toLowerCase();
@@ -3053,6 +3718,38 @@ export function AdminSocialInbox({
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* ================================================================ */}
+      {/* MODAL 3B: CREATE NEW CRM CUSTOMER & AUTO-LINK TO CONVERSATION    */}
+      {/* ================================================================ */}
+      <AdminCustomerDialog
+        open={isCreateCustomerOpen}
+        onOpenChange={setIsCreateCustomerOpen}
+        customer={null}
+        initialName={activeConversation?.contactName || ''}
+        initialPhone={
+          getDisplayPhone(activeConversation?.contactPhone) ||
+          (activeConversation?.channel === 'whatsapp'
+            ? getDisplayPhone(`+${activeConversation.externalContactId}`)
+            : '')
+        }
+        initialLineId={
+          activeConversation?.channel === 'line' ? activeConversation.externalContactId : ''
+        }
+        initialWhatsappId={
+          activeConversation?.channel === 'whatsapp' ? activeConversation.externalContactId : ''
+        }
+        initialAddress={miniPickupLoc?.name || ''}
+        initialCoords={miniPickupLoc?.coords || null}
+        initialBranchId={activeMiniShop?.id || ''}
+        initialIsVip={miniIsVip}
+        onSaved={async (newCustomer) => {
+          setIsCreateCustomerOpen(false);
+          if (newCustomer?.id) {
+            await handleLinkCustomer(newCustomer);
+          }
+        }}
+      />
 
       {/* ================================================================ */}
       {/* MODAL 4: LIVE CHANNEL SETTINGS & API / BRIDGE CONFIGURATION      */}

@@ -4,6 +4,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import path from 'path';
 import { prisma } from '@/lib/prisma';
+import { uploadBufferToGcs } from '@/lib/gcs';
 import { assertServerActionAuthorized } from '@/lib/server-auth';
 import {
   SocialChannel,
@@ -165,14 +166,29 @@ function normalizeAndSortConversations(
 
     if (convMsgs.length > 0) {
       const latestMsg = convMsgs[convMsgs.length - 1];
+      const isTgGroupInbound =
+        updated.channel === 'telegram' &&
+        (updated.contactName?.startsWith('👥') || updated.externalContactId?.startsWith('-')) &&
+        latestMsg.direction === 'inbound' &&
+        Boolean(latestMsg.senderName);
+      const expectedPreview =
+        isTgGroupInbound && !latestMsg.text.startsWith(`${latestMsg.senderName}:`)
+          ? `${latestMsg.senderName}: ${latestMsg.text}`
+          : latestMsg.text;
+
       if (
-        updated.lastMessageText !== latestMsg.text ||
+        updated.lastMessageText !== expectedPreview ||
         updated.lastMessageAt !== latestMsg.createdAt
       ) {
-        updated.lastMessageText = latestMsg.text;
+        updated.lastMessageText = expectedPreview;
         updated.lastMessageAt = latestMsg.createdAt;
         updated.lastMessageDirection = latestMsg.direction;
-        updated.updatedAt = latestMsg.createdAt;
+        if (
+          !updated.updatedAt ||
+          new Date(latestMsg.createdAt).getTime() > new Date(updated.updatedAt).getTime()
+        ) {
+          updated.updatedAt = latestMsg.createdAt;
+        }
         didClean = true;
       }
     } else if (
@@ -2030,6 +2046,7 @@ export async function recordOutboundSocialMessageFromSystemAction(input: {
         lastMessageText: input.text,
         lastMessageAt: nowIso,
         lastMessageDirection: 'outbound',
+        unreadCount: 0,
         status: 'open',
         updatedAt: nowIso,
       };
@@ -2119,6 +2136,7 @@ export async function updateSocialConversationAction(input: {
       return { success: false, error: 'Conversation not found' };
     }
 
+    const nowIso = new Date().toISOString();
     const conv = { ...conversations[idx] };
     if (input.status) conv.status = input.status;
     if (input.markAsRead) conv.unreadCount = 0;
@@ -2159,14 +2177,32 @@ export async function updateSocialConversationAction(input: {
       }
     }
 
-    conv.updatedAt = new Date().toISOString();
+    conv.updatedAt = nowIso;
     conversations[idx] = conv;
 
-    await saveInboxStore(conversations, messages);
+    // Also clear unreadCount on any duplicate conversation entries sharing the same ID or channel+externalContactId
+    if (input.markAsRead) {
+      for (let i = 0; i < conversations.length; i++) {
+        const c = conversations[i];
+        if (
+          c.id === input.conversationId ||
+          (conv.externalContactId &&
+            c.channel === conv.channel &&
+            c.externalContactId === conv.externalContactId)
+        ) {
+          if (c.unreadCount > 0) {
+            conversations[i] = { ...c, unreadCount: 0, updatedAt: nowIso };
+          }
+        }
+      }
+    }
+
+    const norm = normalizeAndSortConversations(conversations, messages);
+    await saveInboxStore(norm.conversations, norm.messages);
     return {
       success: true,
       conversation: conv,
-      conversations,
+      conversations: norm.conversations,
     };
   } catch (err: any) {
     console.error('[updateSocialConversationAction] Error:', err);
@@ -2210,6 +2246,14 @@ export async function saveSocialChannelConfigAction(newConfig: SocialChannelConf
       create: { key: SOCIAL_CONFIG_KEY, value: JSON.stringify(newConfig) },
     });
 
+    // Ensure Telegram webhook is cleared so getUpdates 3.5s live polling works without HTTP 409 Conflict
+    const botToken = newConfig?.telegram?.botToken?.trim();
+    if (newConfig?.telegram?.enabled && botToken) {
+      fetch(`https://api.telegram.org/bot${botToken}/deleteWebhook`, {
+        method: 'POST',
+      }).catch(() => {});
+    }
+
     return {
       success: true,
       config: newConfig,
@@ -2252,16 +2296,70 @@ export async function pollLiveChannelUpdatesAction() {
             if (typeof upd.update_id === 'number' && upd.update_id > maxUpdateId) {
               maxUpdateId = upd.update_id;
             }
-            const msg = upd.message || upd.edited_message;
+            const msg = upd.message || upd.edited_message || upd.channel_post;
+            const memberEvent = upd.my_chat_member;
+
+            if (!msg && memberEvent?.chat?.id) {
+              const mChatId = String(memberEvent.chat.id);
+              const mTitle = memberEvent.chat.title ? String(memberEvent.chat.title).trim() : `Group #${mChatId}`;
+              const mName = mTitle.startsWith('👥') ? mTitle : `👥 ${mTitle}`;
+              const nowIso = new Date().toISOString();
+              const exists = conversations.some(
+                (c) => c.channel === 'telegram' && c.externalContactId === mChatId
+              );
+              if (!exists) {
+                conversations.unshift({
+                  id: `conv_tg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                  channel: 'telegram',
+                  externalContactId: mChatId,
+                  contactName: mName,
+                  contactHandle: `Group (${mChatId})`,
+                  status: 'open',
+                  unreadCount: 1,
+                  lastMessageText: `Connected to Telegram Group "${mTitle}"`,
+                  lastMessageAt: nowIso,
+                  lastMessageDirection: 'inbound',
+                  createdAt: nowIso,
+                  updatedAt: nowIso,
+                });
+                didMutate = true;
+              }
+              continue;
+            }
+
             if (!msg || !msg.chat?.id) continue;
 
             const chatId = String(msg.chat.id);
+            const chatType = String(msg.chat.type || 'private');
+            const isGroupChat = chatType === 'group' || chatType === 'supergroup' || chatId.startsWith('-');
+            const groupTitle = msg.chat.title ? String(msg.chat.title).trim() : '';
             const from = msg.from || {};
             const senderName =
               [from.first_name, from.last_name].filter(Boolean).join(' ') ||
               from.username ||
               `Telegram #${chatId}`;
-            const text = String(msg.text || msg.caption || '').trim();
+            const threadContactName =
+              isGroupChat && groupTitle
+                ? groupTitle.startsWith('👥')
+                  ? groupTitle
+                  : `👥 ${groupTitle}`
+                : senderName;
+            const threadHandle = isGroupChat
+              ? msg.chat.username
+                ? `@${msg.chat.username}`
+                : `Group (${chatId})`
+              : from.username
+              ? `@${from.username}`
+              : chatId;
+            const isBotAddedEvent =
+              Array.isArray(msg.new_chat_members) && msg.new_chat_members.length > 0;
+            const text = String(
+              msg.text ||
+                msg.caption ||
+                (isBotAddedEvent && groupTitle
+                  ? `👋 Bot joined group "${groupTitle}"`
+                  : '')
+            ).trim();
             const nowIso = new Date().toISOString();
 
             const attachments: SocialMessageAttachment[] = [];
@@ -2278,9 +2376,25 @@ export async function pollLiveChannelUpdatesAction() {
                     const fileJson = await fileRes.json();
                     const filePath = fileJson?.result?.file_path;
                     if (filePath) {
+                      const tgFileUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+                      let savedUrl: string | null = null;
+                      try {
+                        const binRes = await fetch(tgFileUrl);
+                        if (binRes.ok) {
+                          const rawBuffer = Buffer.from(await binRes.arrayBuffer());
+                          savedUrl = await uploadBufferToGcs(rawBuffer, {
+                            entityType: 'system',
+                            entityId: `tg_${chatId.replace(/[^a-zA-Z0-9_-]/g, '')}`,
+                            subType: 'chat',
+                            contentType: binRes.headers.get('content-type') || 'image/jpeg',
+                            extension: 'jpg',
+                            customFileName: `tg-${upd.update_id || Date.now()}.jpg`,
+                          });
+                        }
+                      } catch {}
                       attachments.push({
                         type: 'image',
-                        url: `https://api.telegram.org/file/bot${botToken}/${filePath}`,
+                        url: savedUrl || tgFileUrl,
                         name: 'Telegram Photo',
                       });
                     }
@@ -2289,9 +2403,54 @@ export async function pollLiveChannelUpdatesAction() {
               }
             }
 
+            if (msg.document?.file_id) {
+              try {
+                const fileRes = await fetch(
+                  `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(
+                    msg.document.file_id
+                  )}`
+                );
+                if (fileRes.ok) {
+                  const fileJson = await fileRes.json();
+                  const filePath = fileJson?.result?.file_path;
+                  if (filePath) {
+                    const tgFileUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+                    const docMime = String(msg.document.mime_type || 'application/octet-stream');
+                    const isImageDoc = docMime.startsWith('image/');
+                    const ext = (msg.document.file_name?.split('.').pop() || (isImageDoc ? 'jpg' : 'pdf')).replace(/[^a-zA-Z0-9]/g, '');
+                    let savedUrl: string | null = null;
+                    try {
+                      const binRes = await fetch(tgFileUrl);
+                      if (binRes.ok) {
+                        const rawBuffer = Buffer.from(await binRes.arrayBuffer());
+                        savedUrl = await uploadBufferToGcs(rawBuffer, {
+                          entityType: 'system',
+                          entityId: `tg_${chatId.replace(/[^a-zA-Z0-9_-]/g, '')}`,
+                          subType: 'chat',
+                          contentType: docMime,
+                          extension: ext || 'bin',
+                          customFileName: `tg-doc-${upd.update_id || Date.now()}.${ext || 'bin'}`,
+                        });
+                      }
+                    } catch {}
+                    attachments.push({
+                      type: isImageDoc ? 'image' : 'file',
+                      url: savedUrl || tgFileUrl,
+                      name: msg.document.file_name || 'Telegram Document',
+                    });
+                  }
+                }
+              } catch {}
+            }
+
             if (!text && attachments.length === 0) continue;
 
-            const displayBody = text || '📷 [Sent a photo via Telegram]';
+            const displayBody =
+              text ||
+              (attachments.some((a) => a.type === 'image')
+                ? '📷 [Sent a photo via Telegram]'
+                : `📎 [Sent a file: ${attachments[0]?.name || 'Document'}]`);
+            const previewText = isGroupChat ? `${senderName}: ${displayBody}` : displayBody;
             let convIdx = conversations.findIndex(
               (c) => c.channel === 'telegram' && c.externalContactId === chatId
             );
@@ -2300,8 +2459,9 @@ export async function pollLiveChannelUpdatesAction() {
             if (convIdx >= 0) {
               conv = {
                 ...conversations[convIdx],
-                contactName: senderName || conversations[convIdx].contactName,
-                lastMessageText: displayBody,
+                contactName: threadContactName || conversations[convIdx].contactName,
+                contactHandle: threadHandle || conversations[convIdx].contactHandle,
+                lastMessageText: previewText,
                 lastMessageAt: nowIso,
                 lastMessageDirection: 'inbound',
                 unreadCount: (conversations[convIdx].unreadCount || 0) + 1,
@@ -2314,11 +2474,11 @@ export async function pollLiveChannelUpdatesAction() {
                 id: `conv_tg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
                 channel: 'telegram',
                 externalContactId: chatId,
-                contactName: senderName,
-                contactHandle: from.username ? `@${from.username}` : chatId,
+                contactName: threadContactName,
+                contactHandle: threadHandle,
                 status: 'open',
                 unreadCount: 1,
-                lastMessageText: displayBody,
+                lastMessageText: previewText,
                 lastMessageAt: nowIso,
                 lastMessageDirection: 'inbound',
                 createdAt: nowIso,
@@ -2400,11 +2560,16 @@ export async function pollLiveChannelUpdatesAction() {
           );
           if (convIdx >= 0) {
             const conv = conversations[convIdx];
-            const hasMsg = messages.some(
-              (m) => m.conversationId === conv.id && m.text === lc.lastMessageText
-            );
+            const hasMsg =
+              conv.lastMessageText === lc.lastMessageText ||
+              messages.some(
+                (m) => m.conversationId === conv.id && m.text === lc.lastMessageText
+              );
             if (!hasMsg) {
               const ts = lc.lastInteractionAt || new Date().toISOString();
+              const isNewerThanRead =
+                !conv.updatedAt ||
+                new Date(ts).getTime() > new Date(conv.updatedAt).getTime();
               messages.push({
                 id: `msg_line_wh_${lc.userId.slice(-8)}_${new Date(ts).getTime()}`,
                 conversationId: conv.id,
@@ -2421,8 +2586,10 @@ export async function pollLiveChannelUpdatesAction() {
                 lastMessageText: lc.lastMessageText,
                 lastMessageAt: ts,
                 lastMessageDirection: 'inbound',
-                unreadCount: (conv.unreadCount || 0) + 1,
-                updatedAt: ts,
+                unreadCount: isNewerThanRead
+                  ? (conv.unreadCount || 0) + 1
+                  : conv.unreadCount || 0,
+                updatedAt: isNewerThanRead ? ts : conv.updatedAt,
               };
               didMutate = true;
             }

@@ -226,6 +226,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
   const expenseMenuRef = useRef<HTMLDivElement | null>(null);
   const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
+  const [showSummaryTable, setShowSummaryTable] = useState<boolean>(true);
   const [formHolderId, setFormHolderId] = useState<string>("");
   const [formHolderName, setFormHolderName] = useState<string>("");
   const [formBranchId, setFormBranchId] = useState<string>("");
@@ -477,8 +478,11 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     });
   }, [riders, vehiclePlates, transactions]);
 
-  // Per-Holder Balances (computed immediately from all non-rejected/non-void transactions + authorized holders!)
+  // Per-Holder Balances (computed immediately from all non-rejected/non-void transactions + authorized holders, with period-filtered breakdown!)
   const holderSummaries = useMemo(() => {
+    const fromMs = dateFrom ? new Date(`${dateFrom}T00:00:00`).getTime() : null;
+    const toMs = dateTo ? new Date(`${dateTo}T23:59:59.999`).getTime() : null;
+
     const map = new Map<
       string,
       {
@@ -488,15 +492,21 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         department: string;
         isAccounting: boolean;
         branchId?: string | null;
+        openingBalance: number;
+        closingBalance: number;
         companyTopup: number;
         transferIn: number;
         transferOut: number;
         totalTopup: number;
         totalExpense: number;
+        approvedExpense: number;
+        allTimeTopup: number;
+        allTimeExpense: number;
         currentBalance: number;
         pendingCount: number;
         pendingAmount: number;
         txCount: number;
+        allTimeTxCount: number;
       }
     >();
 
@@ -509,15 +519,21 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         department: h.department,
         isAccounting: h.isAccounting,
         branchId: h.branchId || "HQ",
+        openingBalance: 0,
+        closingBalance: 0,
         companyTopup: 0,
         transferIn: 0,
         transferOut: 0,
         totalTopup: 0,
         totalExpense: 0,
+        approvedExpense: 0,
+        allTimeTopup: 0,
+        allTimeExpense: 0,
         currentBalance: 0,
         pendingCount: 0,
         pendingAmount: 0,
         txCount: 0,
+        allTimeTxCount: 0,
       });
     });
 
@@ -533,43 +549,87 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
           department: matchedOpt?.department || "STAFF",
           isAccounting: matchedOpt?.isAccounting ?? false,
           branchId: t.branchId || "HQ",
+          openingBalance: 0,
+          closingBalance: 0,
           companyTopup: 0,
           transferIn: 0,
           transferOut: 0,
           totalTopup: 0,
           totalExpense: 0,
+          approvedExpense: 0,
+          allTimeTopup: 0,
+          allTimeExpense: 0,
           currentBalance: 0,
           pendingCount: 0,
           pendingAmount: 0,
           txCount: 0,
+          allTimeTxCount: 0,
         };
         map.set(t.holderId, entry);
       }
-      entry.txCount += 1;
+      entry.allTimeTxCount += 1;
       if (t.status === "REJECTED" || t.status === "VOID") return;
 
       const amt = Number(t.amount) || 0;
+      const txMs = new Date(t.transactionDate).getTime();
+      const isBeforePeriod = fromMs !== null && txMs < fromMs;
+      const isAfterPeriod = toMs !== null && txMs > toMs;
+      const isInPeriod = !isBeforePeriod && !isAfterPeriod;
+
+      // 1. Live all-time balance & all-time totals
       if (t.direction === "CREDIT") {
-        entry.totalTopup = Math.round((entry.totalTopup + amt) * 100) / 100;
+        entry.allTimeTopup = Math.round((entry.allTimeTopup + amt) * 100) / 100;
         entry.currentBalance = Math.round((entry.currentBalance + amt) * 100) / 100;
-        if (t.type === "TRANSFER_IN") {
-          entry.transferIn = Math.round((entry.transferIn + amt) * 100) / 100;
-        } else {
-          entry.companyTopup = Math.round((entry.companyTopup + amt) * 100) / 100;
-        }
       } else {
         entry.currentBalance = Math.round((entry.currentBalance - amt) * 100) / 100;
-        if (t.type === "TRANSFER_OUT") {
-          entry.transferOut = Math.round((entry.transferOut + amt) * 100) / 100;
-        } else {
-          entry.totalExpense = Math.round((entry.totalExpense + amt) * 100) / 100;
+        if (t.type !== "TRANSFER_OUT") {
+          entry.allTimeExpense = Math.round((entry.allTimeExpense + amt) * 100) / 100;
         }
       }
 
-      if (t.status === "PENDING") {
-        entry.pendingCount += 1;
-        entry.pendingAmount = Math.round((entry.pendingAmount + amt) * 100) / 100;
+      // 2. Opening balance before selected dateFrom
+      if (isBeforePeriod) {
+        if (t.direction === "CREDIT") {
+          entry.openingBalance = Math.round((entry.openingBalance + amt) * 100) / 100;
+        } else {
+          entry.openingBalance = Math.round((entry.openingBalance - amt) * 100) / 100;
+        }
       }
+
+      // 3. Period-filtered metrics (or all-time when no date filter is set)
+      if (isInPeriod) {
+        entry.txCount += 1;
+        if (t.direction === "CREDIT") {
+          entry.totalTopup = Math.round((entry.totalTopup + amt) * 100) / 100;
+          if (t.type === "TRANSFER_IN") {
+            entry.transferIn = Math.round((entry.transferIn + amt) * 100) / 100;
+          } else {
+            entry.companyTopup = Math.round((entry.companyTopup + amt) * 100) / 100;
+          }
+        } else {
+          if (t.type === "TRANSFER_OUT") {
+            entry.transferOut = Math.round((entry.transferOut + amt) * 100) / 100;
+          } else {
+            entry.totalExpense = Math.round((entry.totalExpense + amt) * 100) / 100;
+            if (t.status === "APPROVED") {
+              entry.approvedExpense = Math.round((entry.approvedExpense + amt) * 100) / 100;
+            }
+          }
+        }
+
+        if (t.status === "PENDING") {
+          entry.pendingCount += 1;
+          entry.pendingAmount = Math.round((entry.pendingAmount + amt) * 100) / 100;
+        }
+      }
+    });
+
+    // Compute closingBalance at end of selected period
+    map.forEach((entry) => {
+      entry.closingBalance =
+        Math.round(
+          (entry.openingBalance + entry.totalTopup - entry.transferOut - entry.totalExpense) * 100
+        ) / 100;
     });
 
     const getDeptRank = (item: { department: string; roleLabel: string; isAccounting: boolean }) => {
@@ -589,7 +649,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       if (branchCmp !== 0) return branchCmp;
       return a.holderName.localeCompare(b.holderName, "th");
     });
-  }, [transactions, holderOptions, getBranchDisplayName]);
+  }, [transactions, holderOptions, getBranchDisplayName, dateFrom, dateTo]);
 
   const accountingCustodians = useMemo(
     () => holderSummaries.filter((h) => h.isAccounting),
@@ -1237,12 +1297,181 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     }
   };
 
-  // Export CSV
+  const periodLabel = useMemo(() => {
+    try {
+      if (dateFrom && dateTo) {
+        if (dateFrom === dateTo) {
+          return `${format(new Date(`${dateFrom}T00:00:00`), "dd/MM/yyyy")} (รายวัน)`;
+        }
+        return `${format(new Date(`${dateFrom}T00:00:00`), "dd/MM/yyyy")} – ${format(new Date(`${dateTo}T00:00:00`), "dd/MM/yyyy")}`;
+      }
+      if (dateFrom) return `ตั้งแต่วันที่ ${format(new Date(`${dateFrom}T00:00:00`), "dd/MM/yyyy")}`;
+      if (dateTo) return `ถึงวันที่ ${format(new Date(`${dateTo}T00:00:00`), "dd/MM/yyyy")}`;
+    } catch {}
+    return "ทั้งหมด (All Time)";
+  }, [dateFrom, dateTo]);
+
+  // Extended Analytics for Detailed Modern Dashboard & Reports
+  const dashboardDetails = useMemo(() => {
+    const totalLimitAll = holderSummaries.reduce(
+      (sum, h) => sum + getHolderLimit(h.holderId, h.isAccounting),
+      0
+    );
+    const totalWalletBalanceAll = Math.round(
+      holderSummaries.reduce((sum, h) => sum + h.currentBalance, 0) * 100
+    ) / 100;
+    const totalShortfallAll = Math.round(
+      holderSummaries.reduce((sum, h) => {
+        const lim = getHolderLimit(h.holderId, h.isAccounting);
+        return sum + Math.max(0, lim - h.currentBalance);
+      }, 0) * 100
+    ) / 100;
+
+    let txWithAttachments = 0;
+    let expenseTxCount = 0;
+    let topupTxCount = 0;
+    let transferTxCount = 0;
+    let approvedExpenseTotal = 0;
+    const categorySpendMap = new Map<string, { category: string; amount: number; count: number }>();
+
+    filteredTransactions.forEach((t) => {
+      if (t.status === "REJECTED" || t.status === "VOID") return;
+      const amt = Number(t.amount) || 0;
+      const hasFiles = (t.receiptUrls?.length || 0) + (t.slipUrls?.length || 0) > 0;
+      if (hasFiles) txWithAttachments += 1;
+
+      if (t.type === "TOPUP") {
+        topupTxCount += 1;
+      } else if (t.type === "TRANSFER_IN" || t.type === "TRANSFER_OUT") {
+        transferTxCount += 1;
+      } else if (t.direction === "DEBIT") {
+        expenseTxCount += 1;
+        if (t.status === "APPROVED") {
+          approvedExpenseTotal = Math.round((approvedExpenseTotal + amt) * 100) / 100;
+        }
+        const catName = t.category || "Uncategorized";
+        const prev = categorySpendMap.get(catName) || { category: catName, amount: 0, count: 0 };
+        prev.amount = Math.round((prev.amount + amt) * 100) / 100;
+        prev.count += 1;
+        categorySpendMap.set(catName, prev);
+      }
+    });
+
+    const activeValidCount = filteredTransactions.filter(
+      (t) => t.status !== "REJECTED" && t.status !== "VOID"
+    ).length;
+    const attachmentCompliancePct =
+      activeValidCount > 0 ? Math.round((txWithAttachments / activeValidCount) * 100) : 100;
+
+    const categoryBreakdown = Array.from(categorySpendMap.values()).sort(
+      (a, b) => b.amount - a.amount
+    );
+
+    // Filtered holder summaries matching current branch/holder filters for the report table
+    const visibleHolderSummaries = holderSummaries.filter((h) => {
+      if (!canApproveOrTopUp) {
+        return currentUser?.id ? h.holderId === currentUser.id : false;
+      }
+      if (holderFilter !== "ALL" && h.holderId !== holderFilter) return false;
+      if (branchFilter !== "ALL") {
+        const effectiveBranch = h.branchId || "HQ";
+        if (effectiveBranch !== branchFilter) return false;
+      }
+      return true;
+    });
+
+    return {
+      totalLimitAll,
+      totalWalletBalanceAll,
+      totalShortfallAll,
+      txWithAttachments,
+      activeValidCount,
+      attachmentCompliancePct,
+      expenseTxCount,
+      topupTxCount,
+      transferTxCount,
+      approvedExpenseTotal,
+      categoryBreakdown,
+      visibleHolderSummaries,
+    };
+  }, [
+    holderSummaries,
+    getHolderLimit,
+    filteredTransactions,
+    canApproveOrTopUp,
+    currentUser?.id,
+    holderFilter,
+    branchFilter,
+  ]);
+
+  // Export CSV (Full Executive Summary + Custodian Summary + Category Summary + Transaction Ledger)
   const handleExportCsv = () => {
-    if (filteredTransactions.length === 0) {
+    if (filteredTransactions.length === 0 && dashboardDetails.visibleHolderSummaries.length === 0) {
       toast.error("ไม่มีรายการสำหรับ Export");
       return;
     }
+
+    const summaryRows: any[][] = [
+      ["รายงานสรุปเงินสดย่อย (PETTY CASH REPLENISHMENT & USAGE REPORT)"],
+      ["ช่วงเวลาที่เลือก (Period)", periodLabel],
+      ["วันที่ส่งออก (Exported At)", format(new Date(), "dd/MM/yyyy HH:mm")],
+      ["ผู้ส่งออก (Exported By)", currentUser?.name || currentUser?.email || "-"],
+      [],
+      ["1. สรุปภาพรวมการเติมเงินและเบิกจ่าย (EXECUTIVE SUMMARY)"],
+      ["หัวข้อ (Metric)", "จำนวนเงิน (THB)", "หมายเหตุ (Details)"],
+      ["วงเงินรวมทั้งหมด (Total Quota Limit)", dashboardDetails.totalLimitAll.toFixed(2), `${holderSummaries.length} กระเป๋า`],
+      ["ยอดคงเหลือรวมปัจจุบัน (Current Total Balance)", dashboardDetails.totalWalletBalanceAll.toFixed(2), `ฝ่ายบัญชี ฿${kpiStats.accountingPoolBalance.toFixed(2)} | หน้าร้าน ฿${kpiStats.storePoolBalance.toFixed(2)}`],
+      ["ยอดเติมเงินเข้าจากบริษัทในงวด (+Company Top-up)", kpiStats.companyTopupTotal.toFixed(2), `${dashboardDetails.topupTxCount} รายการ`],
+      ["ยอดโอนเติมให้หน้าร้านในงวด (Transferred to Stores)", kpiStats.transferredToStoreTotal.toFixed(2), `${dashboardDetails.transferTxCount} รายการ`],
+      ["ยอดใช้จ่ายจริงรวมในงวด (-Total Real Expenses)", (-kpiStats.realExpenseTotal).toFixed(2), `${dashboardDetails.expenseTxCount} รายการ (อนุมัติแล้ว ฿${dashboardDetails.approvedExpenseTotal.toFixed(2)})`],
+      ["ยอดต้องเบิกชดเชยคืนเข้าวงเงิน (Replenishment Needed)", dashboardDetails.totalShortfallAll.toFixed(2), `รอตรวจบิล ${kpiStats.pendingCount} รายการ (฿${kpiStats.pendingAmount.toFixed(2)})`],
+      [],
+      ["2. ตารางสรุปแยกตามผู้ถือเงินสดย่อย (CUSTODIAN WALLET SUMMARY)"],
+      [
+        "ผู้ถือเงินสดย่อย (Custodian)",
+        "แผนก (Department)",
+        "สาขา (Branch)",
+        "วงเงินตั้งต้น (Quota Limit)",
+        "ยอดยกมาต้นงวด (Opening Balance)",
+        "เติมจากบริษัท (+Company Top-up)",
+        "รับโอนจากบัญชี (+Transfer In)",
+        "รวมรับเข้าในงวด (+Total Received)",
+        "โอนให้สาขา (-Transfer Out)",
+        "ใช้จ่ายจริงในงวด (-Real Expenses)",
+        "คงเหลือปัจจุบัน (Current Balance)",
+        "ต้องเติมเพิ่มให้เต็มวงเงิน (Shortfall / To Replenish)",
+        "บิลรอตรวจ (Pending Bills)",
+      ],
+      ...dashboardDetails.visibleHolderSummaries.map((h) => {
+        const limit = getHolderLimit(h.holderId, h.isAccounting);
+        const shortfall = Math.max(0, Math.round((limit - h.currentBalance) * 100) / 100);
+        return [
+          h.holderName,
+          h.department || h.roleLabel,
+          getBranchDisplayName(h.branchId),
+          limit.toFixed(2),
+          h.openingBalance.toFixed(2),
+          h.companyTopup.toFixed(2),
+          h.transferIn.toFixed(2),
+          h.totalTopup.toFixed(2),
+          (-h.transferOut).toFixed(2),
+          (-h.totalExpense).toFixed(2),
+          h.currentBalance.toFixed(2),
+          shortfall.toFixed(2),
+          h.pendingCount,
+        ];
+      }),
+      [],
+      ["3. สรุปค่าใช้จ่ายแยกตามหมวดหมู่ (EXPENSE BREAKDOWN BY CATEGORY)"],
+      ["หมวดหมู่ (Category)", "จำนวนรายการ (Count)", "ยอดใช้จ่าย (THB)", "สัดส่วน (%)"],
+      ...dashboardDetails.categoryBreakdown.map((c) => {
+        const pct = kpiStats.realExpenseTotal > 0 ? ((c.amount / kpiStats.realExpenseTotal) * 100).toFixed(1) : "0.0";
+        return [c.category, c.count, c.amount.toFixed(2), `${pct}%`];
+      }),
+      [],
+      ["4. รายการเดินบัญชีละเอียด (DETAILED TRANSACTION LEDGER)"],
+    ];
+
     const headers = [
       "Tx No.",
       "Date",
@@ -1294,7 +1523,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
 
     const csvContent =
       "\uFEFF" +
-      [headers, ...rows]
+      [...summaryRows, headers, ...rows]
         .map((row) => row.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(","))
         .join("\n");
 
@@ -1302,16 +1531,16 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `petty-cash-export-${format(new Date(), "yyyyMMdd-HHmm")}.csv`;
+    a.download = `petty-cash-report-${format(new Date(), "yyyyMMdd-HHmm")}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     setExportMenuOpen(false);
   };
 
-  // Export PDF
+  // Export PDF (Includes Top-up vs Spent Executive Summary + Custodian Summary Table + Category Breakdown + Ledger)
   const handleExportPdf = () => {
     setExportMenuOpen(false);
-    if (filteredTransactions.length === 0) {
+    if (filteredTransactions.length === 0 && dashboardDetails.visibleHolderSummaries.length === 0) {
       toast.error("ไม่มีรายการสำหรับ Export PDF");
       return;
     }
@@ -1323,34 +1552,110 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
 
-    const nowStr = format(new Date(), "dd/MM/yyyy HH:mm");
-    const fileTitle = `petty-cash-export-${format(new Date(), "yyyyMMdd-HHmm")}`;
+    const fmtMoney = (n: number) =>
+      Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-    const rowsHtml = filteredTransactions
-      .map((t, idx) => {
-        const branchName = getBranchDisplayName(t.branchId);
-        const isCredit = t.direction === "CREDIT";
-        const signedAmt = isCredit ? `+฿${t.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `-฿${t.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-        const amtColor = t.status === "REJECTED" || t.status === "VOID" ? "#94a3b8" : isCredit ? "#059669" : "#e11d48";
-        const vendorInvoice = [t.vendorName, t.invoiceNo].filter(Boolean).join(" / ") || "-";
+    const nowStr = format(new Date(), "dd/MM/yyyy HH:mm");
+    const fileTitle = `petty-cash-report-${format(new Date(), "yyyyMMdd-HHmm")}`;
+
+    let sumLimit = 0;
+    let sumOpening = 0;
+    let sumCompanyTopup = 0;
+    let sumTransferIn = 0;
+    let sumTotalTopup = 0;
+    let sumTransferOut = 0;
+    let sumExpense = 0;
+    let sumCurrentBal = 0;
+    let sumShortfall = 0;
+
+    const custodianRowsHtml = dashboardDetails.visibleHolderSummaries
+      .map((h, idx) => {
+        const branchName = getBranchDisplayName(h.branchId);
+        const limit = getHolderLimit(h.holderId, h.isAccounting);
+        const shortfall = Math.max(0, Math.round((limit - h.currentBalance) * 100) / 100);
+        sumLimit += limit;
+        sumOpening += h.openingBalance;
+        sumCompanyTopup += h.companyTopup;
+        sumTransferIn += h.transferIn;
+        sumTotalTopup += h.totalTopup;
+        sumTransferOut += h.transferOut;
+        sumExpense += h.totalExpense;
+        sumCurrentBal += h.currentBalance;
+        sumShortfall += shortfall;
+
         return `
           <tr>
             <td style="text-align:center;">${idx + 1}</td>
-            <td style="white-space:nowrap;font-family:monospace;">${escapeHtml(t.txNumber || t.id.slice(0, 8))}</td>
-            <td style="white-space:nowrap;">${escapeHtml(format(new Date(t.transactionDate), "dd/MM/yyyy HH:mm"))}</td>
-            <td><strong>${escapeHtml(t.holderName)}</strong><br/><span style="color:#64748b;font-size:10px;">${escapeHtml(branchName)}</span></td>
-            <td>${escapeHtml(t.type)}</td>
-            <td>${escapeHtml(t.category)}</td>
-            <td>${escapeHtml(t.description)}</td>
-            <td>${escapeHtml(vendorInvoice)}</td>
-            <td style="text-align:center;">${escapeHtml(t.paymentMethod || "-")}</td>
-            <td style="text-align:right;font-family:monospace;font-weight:700;color:${amtColor};">${signedAmt}</td>
-            <td style="text-align:right;font-family:monospace;">฿${t.balanceAfter.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-            <td style="text-align:center;">${escapeHtml(t.status)}</td>
+            <td><strong>${escapeHtml(h.holderName)}</strong></td>
+            <td>${escapeHtml(h.department || h.roleLabel)}<br/><span style="color:#64748b;font-size:9.5px;">${escapeHtml(branchName)}</span></td>
+            <td style="text-align:right;font-family:monospace;">฿${fmtMoney(limit)}</td>
+            <td style="text-align:right;font-family:monospace;color:#475569;">฿${fmtMoney(h.openingBalance)}</td>
+            <td style="text-align:right;font-family:monospace;color:#059669;">${h.companyTopup > 0 ? `+฿${fmtMoney(h.companyTopup)}` : "-"}</td>
+            <td style="text-align:right;font-family:monospace;color:#0284c7;">${h.transferIn > 0 ? `+฿${fmtMoney(h.transferIn)}` : "-"}</td>
+            <td style="text-align:right;font-family:monospace;font-weight:700;color:#059669;">+฿${fmtMoney(h.totalTopup)}</td>
+            <td style="text-align:right;font-family:monospace;color:#6366f1;">${h.transferOut > 0 ? `-฿${fmtMoney(h.transferOut)}` : "-"}</td>
+            <td style="text-align:right;font-family:monospace;font-weight:700;color:#e11d48;">-฿${fmtMoney(h.totalExpense)}</td>
+            <td style="text-align:right;font-family:monospace;font-weight:700;color:${h.currentBalance < 0 ? "#e11d48" : "#0f172a"};">฿${fmtMoney(h.currentBalance)}</td>
+            <td style="text-align:right;font-family:monospace;font-weight:700;color:${shortfall > 0 ? "#d97706" : "#059669"};">฿${fmtMoney(shortfall)}</td>
           </tr>
         `;
       })
       .join("");
+
+    const categoryRowsHtml =
+      dashboardDetails.categoryBreakdown.length > 0
+        ? dashboardDetails.categoryBreakdown
+            .map((c, idx) => {
+              const pct =
+                kpiStats.realExpenseTotal > 0
+                  ? ((c.amount / kpiStats.realExpenseTotal) * 100).toFixed(1)
+                  : "0.0";
+              return `
+                <tr>
+                  <td style="text-align:center;">${idx + 1}</td>
+                  <td><strong>${escapeHtml(c.category)}</strong></td>
+                  <td style="text-align:center;font-family:monospace;">${c.count} รายการ</td>
+                  <td style="text-align:right;font-family:monospace;font-weight:700;color:#e11d48;">-฿${fmtMoney(c.amount)}</td>
+                  <td style="text-align:right;font-family:monospace;">${pct}%</td>
+                </tr>
+              `;
+            })
+            .join("")
+        : `<tr><td colspan="5" style="text-align:center;color:#94a3b8;">ไม่มีรายการเบิกจ่ายในช่วงเวลานี้</td></tr>`;
+
+    const rowsHtml =
+      filteredTransactions.length > 0
+        ? filteredTransactions
+            .map((t, idx) => {
+              const branchName = getBranchDisplayName(t.branchId);
+              const isCredit = t.direction === "CREDIT";
+              const signedAmt = isCredit ? `+฿${fmtMoney(t.amount)}` : `-฿${fmtMoney(t.amount)}`;
+              const amtColor =
+                t.status === "REJECTED" || t.status === "VOID"
+                  ? "#94a3b8"
+                  : isCredit
+                    ? "#059669"
+                    : "#e11d48";
+              const vendorInvoice = [t.vendorName, t.invoiceNo].filter(Boolean).join(" / ") || "-";
+              return `
+                <tr>
+                  <td style="text-align:center;">${idx + 1}</td>
+                  <td style="white-space:nowrap;font-family:monospace;">${escapeHtml(t.txNumber || t.id.slice(0, 8))}</td>
+                  <td style="white-space:nowrap;">${escapeHtml(format(new Date(t.transactionDate), "dd/MM/yyyy HH:mm"))}</td>
+                  <td><strong>${escapeHtml(t.holderName)}</strong><br/><span style="color:#64748b;font-size:10px;">${escapeHtml(branchName)}</span></td>
+                  <td>${escapeHtml(t.type)}</td>
+                  <td>${escapeHtml(t.category)}</td>
+                  <td>${escapeHtml(t.description)}</td>
+                  <td>${escapeHtml(vendorInvoice)}</td>
+                  <td style="text-align:center;">${escapeHtml(t.paymentMethod || "-")}</td>
+                  <td style="text-align:right;font-family:monospace;font-weight:700;color:${amtColor};">${signedAmt}</td>
+                  <td style="text-align:right;font-family:monospace;">฿${fmtMoney(t.balanceAfter)}</td>
+                  <td style="text-align:center;">${escapeHtml(t.status)}</td>
+                </tr>
+              `;
+            })
+            .join("")
+        : `<tr><td colspan="12" style="text-align:center;color:#94a3b8;padding:12px;">ไม่มีรายการเดินบัญชีในช่วงเวลานี้</td></tr>`;
 
     const htmlContent = `<!DOCTYPE html>
 <html lang="th">
@@ -1359,47 +1664,57 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
   <title>${escapeHtml(fileTitle)}</title>
   <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
-    @page { size: A4 landscape; margin: 12mm; }
+    @page { size: A4 landscape; margin: 10mm; }
     * { box-sizing: border-box; }
     body {
       font-family: 'Sarabun', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       color: #0f172a;
       margin: 0;
       padding: 0;
-      font-size: 11px;
+      font-size: 10.5px;
     }
     .header {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
       border-bottom: 2px solid #1e293b;
-      padding-bottom: 10px;
-      margin-bottom: 12px;
+      padding-bottom: 8px;
+      margin-bottom: 10px;
     }
-    .title { font-size: 18px; font-weight: 700; margin: 0; }
+    .title { font-size: 17px; font-weight: 700; margin: 0; }
     .subtitle { font-size: 11px; color: #475569; margin-top: 3px; }
+    .section-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #1e293b;
+      margin: 12px 0 6px 0;
+      padding-left: 8px;
+      border-left: 3px solid #4f46e5;
+    }
     .kpi-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 10px;
-      margin-bottom: 14px;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
     }
     .kpi-card {
       border: 1px solid #cbd5e1;
       border-radius: 8px;
-      padding: 8px 12px;
+      padding: 7px 10px;
       background: #f8fafc;
     }
-    .kpi-label { font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase; }
-    .kpi-val { font-size: 15px; font-weight: 700; margin-top: 2px; font-family: monospace; }
+    .kpi-label { font-size: 9.5px; color: #64748b; font-weight: 700; text-transform: uppercase; }
+    .kpi-val { font-size: 13.5px; font-weight: 700; margin-top: 2px; font-family: monospace; }
+    .kpi-sub { font-size: 9.5px; color: #64748b; margin-top: 2px; }
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 10.5px;
+      font-size: 10px;
+      margin-bottom: 10px;
     }
     th, td {
       border: 1px solid #cbd5e1;
-      padding: 5px 6px;
+      padding: 4.5px 6px;
       vertical-align: top;
       text-align: left;
     }
@@ -1410,39 +1725,142 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       white-space: nowrap;
     }
     tr:nth-child(even) td { background: #fafafa; }
+    tfoot td {
+      background: #f1f5f9 !important;
+      font-weight: 700;
+      border-top: 2px solid #64748b;
+    }
+    .sig-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin-top: 22px;
+      page-break-inside: avoid;
+    }
+    .sig-box {
+      text-align: center;
+      padding-top: 28px;
+      font-size: 10.5px;
+      color: #334155;
+    }
+    .sig-line {
+      border-top: 1px dashed #64748b;
+      width: 75%;
+      margin: 0 auto 4px auto;
+      padding-top: 4px;
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <div>
-      <h1 class="title">รายงานเงินสดย่อย (Petty Cash Management Report)</h1>
-      <div class="subtitle">จำนวนรายการทั้งหมด: ${filteredTransactions.length} รายการ</div>
+      <h1 class="title">รายงานสรุปเงินสดย่อย: ยอดเติมเข้า - ยอดใช้ไป & ยอดเบิกชดเชย (Petty Cash Report)</h1>
+      <div class="subtitle">
+        <strong>ช่วงเวลาข้อมูล:</strong> ${escapeHtml(periodLabel)} &nbsp;|&nbsp;
+        <strong>จำนวนรายการเดินบัญชี:</strong> ${filteredTransactions.length} รายการ
+      </div>
     </div>
-    <div style="text-align:right;font-size:11px;color:#475569;">
+    <div style="text-align:right;font-size:10.5px;color:#475569;">
       <div><strong>วันที่พิมพ์:</strong> ${escapeHtml(nowStr)}</div>
-      <div><strong>ผู้พิมพ์:</strong> ${escapeHtml(currentUser?.name || currentUser?.email || "-")}</div>
+      <div><strong>ผู้พิมพ์รายงาน:</strong> ${escapeHtml(currentUser?.name || currentUser?.email || "-")}</div>
     </div>
   </div>
 
   <div class="kpi-grid">
     <div class="kpi-card">
-      <div class="kpi-label">Total Balance (คงเหลือรวม)</div>
-      <div class="kpi-val">฿${kpiStats.netBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+      <div class="kpi-label">คงเหลือรวมปัจจุบัน (Total Balance)</div>
+      <div class="kpi-val">฿${fmtMoney(holderFilter === "ALL" ? dashboardDetails.totalWalletBalanceAll : kpiStats.netBalance)}</div>
+      <div class="kpi-sub">วงเงินรวม: ฿${fmtMoney(dashboardDetails.totalLimitAll)}</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Accounting Pool (ฝ่ายบัญชี)</div>
-      <div class="kpi-val" style="color:#059669;">฿${kpiStats.accountingPoolBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+      <div class="kpi-label">เติมเงินจากบริษัท (+Company Top-up)</div>
+      <div class="kpi-val" style="color:#059669;">+฿${fmtMoney(kpiStats.companyTopupTotal)}</div>
+      <div class="kpi-sub">เติมเข้าบัญชี ${dashboardDetails.topupTxCount} รายการ</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Store Wallets (หน้าร้าน)</div>
-      <div class="kpi-val" style="color:#4f46e5;">฿${kpiStats.storePoolBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+      <div class="kpi-label">โอนเติมให้สาขา (Store Transfers)</div>
+      <div class="kpi-val" style="color:#0284c7;">฿${fmtMoney(kpiStats.transferredToStoreTotal)}</div>
+      <div class="kpi-sub">โอนวงเงิน ${dashboardDetails.transferTxCount} รายการ</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Total Expenses (เบิกจ่ายจริง)</div>
-      <div class="kpi-val" style="color:#e11d48;">-฿${kpiStats.realExpenseTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+      <div class="kpi-label">ใช้จ่ายจริงรวม (-Total Expenses)</div>
+      <div class="kpi-val" style="color:#e11d48;">-฿${fmtMoney(kpiStats.realExpenseTotal)}</div>
+      <div class="kpi-sub">อนุมัติแล้ว: ฿${fmtMoney(dashboardDetails.approvedExpenseTotal)} (${dashboardDetails.expenseTxCount} บิล)</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">คงเหลือ บัญชี / หน้าร้าน</div>
+      <div class="kpi-val" style="color:#4f46e5;font-size:12px;">บัญชี ฿${fmtMoney(kpiStats.accountingPoolBalance)}</div>
+      <div class="kpi-sub">หน้าร้าน: ฿${fmtMoney(kpiStats.storePoolBalance)}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">ต้องเบิกชดเชยเพิ่ม (To Replenish)</div>
+      <div class="kpi-val" style="color:#d97706;">฿${fmtMoney(dashboardDetails.totalShortfallAll)}</div>
+      <div class="kpi-sub">รอตรวจบิล: ${kpiStats.pendingCount} รายการ (฿${fmtMoney(kpiStats.pendingAmount)})</div>
     </div>
   </div>
 
+  <div class="section-title">1. ตารางสรุปยอดเติมเงิน - ยอดใช้ไป และยอดต้องเบิกชดเชย แยกตามผู้ถือเงินสดย่อย (Custodian Replenishment & Usage Summary)</div>
+  <table>
+    <thead>
+      <tr>
+        <th style="text-align:center;width:26px;">#</th>
+        <th>ผู้ถือเงินสดย่อย (Custodian)</th>
+        <th>แผนก / สาขา</th>
+        <th style="text-align:right;">วงเงินตั้งต้น (Quota)</th>
+        <th style="text-align:right;">ยอดยกมาต้นงวด</th>
+        <th style="text-align:right;">เติมจากบริษัท (+)</th>
+        <th style="text-align:right;">รับโอนจากบัญชี (+)</th>
+        <th style="text-align:right;">รวมเติมเข้าในงวด (+)</th>
+        <th style="text-align:right;">โอนให้สาขา (-)</th>
+        <th style="text-align:right;">ใช้จ่ายจริงในงวด (-)</th>
+        <th style="text-align:right;">คงเหลือปัจจุบัน</th>
+        <th style="text-align:right;">ต้องเติมเพิ่ม (Shortfall)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${custodianRowsHtml}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="3" style="text-align:right;">รวมทั้งหมด (${dashboardDetails.visibleHolderSummaries.length} กระเป๋า)</td>
+        <td style="text-align:right;font-family:monospace;">฿${fmtMoney(sumLimit)}</td>
+        <td style="text-align:right;font-family:monospace;">฿${fmtMoney(sumOpening)}</td>
+        <td style="text-align:right;font-family:monospace;color:#059669;">+฿${fmtMoney(sumCompanyTopup)}</td>
+        <td style="text-align:right;font-family:monospace;color:#0284c7;">+฿${fmtMoney(sumTransferIn)}</td>
+        <td style="text-align:right;font-family:monospace;color:#059669;">+฿${fmtMoney(sumTotalTopup)}</td>
+        <td style="text-align:right;font-family:monospace;color:#6366f1;">-฿${fmtMoney(sumTransferOut)}</td>
+        <td style="text-align:right;font-family:monospace;color:#e11d48;">-฿${fmtMoney(sumExpense)}</td>
+        <td style="text-align:right;font-family:monospace;">฿${fmtMoney(sumCurrentBal)}</td>
+        <td style="text-align:right;font-family:monospace;color:#d97706;">฿${fmtMoney(sumShortfall)}</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <div class="section-title">2. สรุปค่าใช้จ่ายแยกตามหมวดหมู่ (Expense Breakdown by Category)</div>
+  <table style="width:65%;">
+    <thead>
+      <tr>
+        <th style="text-align:center;width:28px;">#</th>
+        <th>หมวดหมู่ค่าใช้จ่าย (Category)</th>
+        <th style="text-align:center;width:110px;">จำนวนบิล</th>
+        <th style="text-align:right;width:150px;">ยอดใช้จ่ายจริง (THB)</th>
+        <th style="text-align:right;width:90px;">สัดส่วน (%)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${categoryRowsHtml}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="2" style="text-align:right;">รวมค่าใช้จ่ายจริงทั้งหมด</td>
+        <td style="text-align:center;font-family:monospace;">${dashboardDetails.expenseTxCount} รายการ</td>
+        <td style="text-align:right;font-family:monospace;color:#e11d48;">-฿${fmtMoney(kpiStats.realExpenseTotal)}</td>
+        <td style="text-align:right;font-family:monospace;">100.0%</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <div class="section-title">3. รายการเดินบัญชีเงินสดย่อยละเอียด (Detailed Transaction Ledger)</div>
   <table>
     <thead>
       <tr>
@@ -1465,6 +1883,21 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     </tbody>
   </table>
 
+  <div class="sig-grid">
+    <div class="sig-box">
+      <div class="sig-line"><strong>ผู้สรุป / ผู้ขอเบิกชดเชย (Prepared By)</strong></div>
+      <div>วันที่ ____/____/________</div>
+    </div>
+    <div class="sig-box">
+      <div class="sig-line"><strong>ผู้ตรวจสอบฝ่ายบัญชี (Verified By Accounting)</strong></div>
+      <div>วันที่ ____/____/________</div>
+    </div>
+    <div class="sig-box">
+      <div class="sig-line"><strong>ผู้อนุมัติจ่ายชดเชย (Approved By)</strong></div>
+      <div>วันที่ ____/____/________</div>
+    </div>
+  </div>
+
   <script>
     window.onload = function() {
       setTimeout(function() {
@@ -1485,75 +1918,6 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     printWin.document.write(htmlContent);
     printWin.document.close();
   };
-
-  // Extended Analytics for Detailed Modern Dashboard
-  const dashboardDetails = useMemo(() => {
-    const totalLimitAll = holderSummaries.reduce(
-      (sum, h) => sum + getHolderLimit(h.holderId, h.isAccounting),
-      0
-    );
-    const totalWalletBalanceAll = Math.round(
-      holderSummaries.reduce((sum, h) => sum + h.currentBalance, 0) * 100
-    ) / 100;
-    const totalShortfallAll = Math.max(
-      0,
-      Math.round((totalLimitAll - totalWalletBalanceAll) * 100) / 100
-    );
-
-    let txWithAttachments = 0;
-    let expenseTxCount = 0;
-    let topupTxCount = 0;
-    let transferTxCount = 0;
-    let approvedExpenseTotal = 0;
-    const categorySpendMap = new Map<string, { category: string; amount: number; count: number }>();
-
-    filteredTransactions.forEach((t) => {
-      if (t.status === "REJECTED" || t.status === "VOID") return;
-      const amt = Number(t.amount) || 0;
-      const hasFiles = (t.receiptUrls?.length || 0) + (t.slipUrls?.length || 0) > 0;
-      if (hasFiles) txWithAttachments += 1;
-
-      if (t.type === "TOPUP") {
-        topupTxCount += 1;
-      } else if (t.type === "TRANSFER_IN" || t.type === "TRANSFER_OUT") {
-        transferTxCount += 1;
-      } else if (t.direction === "DEBIT") {
-        expenseTxCount += 1;
-        if (t.status === "APPROVED") {
-          approvedExpenseTotal = Math.round((approvedExpenseTotal + amt) * 100) / 100;
-        }
-        const catName = t.category || "Uncategorized";
-        const prev = categorySpendMap.get(catName) || { category: catName, amount: 0, count: 0 };
-        prev.amount = Math.round((prev.amount + amt) * 100) / 100;
-        prev.count += 1;
-        categorySpendMap.set(catName, prev);
-      }
-    });
-
-    const activeValidCount = filteredTransactions.filter(
-      (t) => t.status !== "REJECTED" && t.status !== "VOID"
-    ).length;
-    const attachmentCompliancePct =
-      activeValidCount > 0 ? Math.round((txWithAttachments / activeValidCount) * 100) : 100;
-
-    const categoryBreakdown = Array.from(categorySpendMap.values()).sort(
-      (a, b) => b.amount - a.amount
-    );
-
-    return {
-      totalLimitAll,
-      totalWalletBalanceAll,
-      totalShortfallAll,
-      txWithAttachments,
-      activeValidCount,
-      attachmentCompliancePct,
-      expenseTxCount,
-      topupTxCount,
-      transferTxCount,
-      approvedExpenseTotal,
-      categoryBreakdown,
-    };
-  }, [holderSummaries, getHolderLimit, filteredTransactions]);
 
   return (
     <div className="space-y-5 pb-12 font-sans">
@@ -2031,7 +2395,23 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowSummaryTable((prev) => !prev)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                  showSummaryTable
+                    ? "bg-indigo-600 text-white border-indigo-600 shadow-2xs"
+                    : "bg-white hover:bg-slate-50 text-slate-700 border-slate-200"
+                }`}
+              >
+                <FileText size={13} />
+                <span>
+                  {showSummaryTable
+                    ? "ซ่อนตารางสรุปยอดเติม-ใช้ไป (Hide Summary Table)"
+                    : "ดูตารางสรุปยอดเติม-ใช้ไป (Show Summary Table)"}
+                </span>
+              </button>
               {holderFilter !== "ALL" && (
                 <button
                   type="button"
@@ -2155,20 +2535,26 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                         <span>
                           ต้องเติมเพิ่ม (Shortfall): <strong className="font-mono text-indigo-600">฿{shortfall.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
                         </span>
-                        <span>{h.txCount} รายการสะสม</span>
+                        <span>
+                          {dateFrom || dateTo ? `${h.txCount} รายการในงวด (${h.allTimeTxCount} สะสม)` : `${h.allTimeTxCount} รายการสะสม`}
+                        </span>
                       </div>
                     </div>
 
                     {/* 3-Column Mini Financial Ledger */}
                     <div className="grid grid-cols-3 gap-2 mt-2.5 text-center">
                       <div className="bg-emerald-50/50 border border-emerald-100 rounded-lg py-1.5 px-2">
-                        <span className="text-[9.5px] font-bold text-emerald-700 uppercase block">Received (รับ)</span>
+                        <span className="text-[9.5px] font-bold text-emerald-700 uppercase block">
+                          {dateFrom || dateTo ? "Received (รับในงวด)" : "Received (รับสะสม)"}
+                        </span>
                         <span className="font-mono font-black text-xs text-emerald-700">
                           +฿{h.totalTopup.toLocaleString()}
                         </span>
                       </div>
                       <div className="bg-rose-50/50 border border-rose-100 rounded-lg py-1.5 px-2">
-                        <span className="text-[9.5px] font-bold text-rose-700 uppercase block">Spent (จ่าย)</span>
+                        <span className="text-[9.5px] font-bold text-rose-700 uppercase block">
+                          {dateFrom || dateTo ? "Spent (ใช้ในงวด)" : "Spent (ใช้สะสม)"}
+                        </span>
                         <span className="font-mono font-black text-xs text-rose-600">
                           -฿{h.totalExpense.toLocaleString()}
                         </span>
@@ -2224,6 +2610,283 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* ── 3B. PETTY CASH REPLENISHMENT & USAGE SUMMARY REPORT TABLE (ตารางสรุปยอดเติมเข้า vs ใช้ไป & ยอดต้องเบิกชดเชย) ─── */}
+      {showSummaryTable && dashboardDetails.visibleHolderSummaries.length > 0 && (
+        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+            <div className="flex items-start sm:items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-100 flex items-center justify-center shrink-0">
+                <FileText size={16} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-xs sm:text-sm font-black uppercase tracking-wider text-slate-800">
+                    รายงานสรุปยอดเติมเงิน vs ยอดใช้จ่าย & ยอดต้องเบิกชดเชย (Replenishment & Usage Report)
+                  </h2>
+                  <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/70">
+                    ช่วงเวลา: {periodLabel}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  สรุปเปรียบเทียบวงเงินตั้งต้น ยอดยกมา ยอดเติมเงินเข้าในงวด ยอดเบิกจ่ายจริง คงเหลือปัจจุบัน และยอดที่ต้องเบิกชดเชยคืนเข้าวงเงินรายกระเป๋า
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleExportCsv}
+                className="h-8 text-xs font-bold border-emerald-200 bg-emerald-50/60 text-emerald-700 hover:bg-emerald-100 rounded-xl gap-1.5 cursor-pointer"
+              >
+                <Download size={13} />
+                Export Excel (.csv)
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleExportPdf}
+                className="h-8 text-xs font-bold border-indigo-200 bg-indigo-50/60 text-indigo-700 hover:bg-indigo-100 rounded-xl gap-1.5 cursor-pointer"
+              >
+                <FileText size={13} />
+                Print / Export PDF Report
+              </Button>
+            </div>
+          </div>
+
+          {/* Executive Flow Summary Strip (Top-up vs Spent vs Replenishment Needed) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="p-3 rounded-xl bg-emerald-50/60 border border-emerald-200/70 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700 block">
+                  1. เติมเงินจากบริษัทในงวด (+Company Top-up)
+                </span>
+                <span className="font-mono font-black text-base text-emerald-700">
+                  +฿{kpiStats.companyTopupTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+                <span className="text-[10px] text-emerald-600/90 block">
+                  {dashboardDetails.topupTxCount} รายการเติมเข้าฝ่ายบัญชี
+                </span>
+              </div>
+              <ArrowDownLeft size={20} className="text-emerald-600 shrink-0" />
+            </div>
+
+            <div className="p-3 rounded-xl bg-sky-50/60 border border-sky-200/70 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-sky-700 block">
+                  2. โอนเติมให้หน้าร้านในงวด (Store Transfers)
+                </span>
+                <span className="font-mono font-black text-base text-sky-700">
+                  ฿{kpiStats.transferredToStoreTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+                <span className="text-[10px] text-sky-600/90 block">
+                  {dashboardDetails.transferTxCount} รายการโอนวงเงินให้สาขา
+                </span>
+              </div>
+              <ArrowLeftRight size={20} className="text-sky-600 shrink-0" />
+            </div>
+
+            <div className="p-3 rounded-xl bg-rose-50/60 border border-rose-200/70 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-rose-700 block">
+                  3. ใช้จ่ายจริงรวมในงวด (-Total Spent)
+                </span>
+                <span className="font-mono font-black text-base text-rose-600">
+                  -฿{kpiStats.realExpenseTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+                <span className="text-[10px] text-rose-600/90 block">
+                  {dashboardDetails.expenseTxCount} บิล (อนุมัติแล้ว ฿{dashboardDetails.approvedExpenseTotal.toLocaleString()})
+                </span>
+              </div>
+              <ArrowUpRight size={20} className="text-rose-600 shrink-0" />
+            </div>
+
+            <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200/80 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-amber-800 block">
+                  4. ต้องเบิกชดเชยเข้าวงเงิน (Replenishment Needed)
+                </span>
+                <span className="font-mono font-black text-base text-amber-700">
+                  ฿{dashboardDetails.totalShortfallAll.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+                <span className="text-[10px] text-amber-700/90 block">
+                  เพื่อให้ครบวงเงินรวม ฿{dashboardDetails.totalLimitAll.toLocaleString()}
+                </span>
+              </div>
+              <Wallet size={20} className="text-amber-600 shrink-0" />
+            </div>
+          </div>
+
+          {/* Custodian Summary Table */}
+          <div className="overflow-x-auto border border-slate-200/80 rounded-xl">
+            <table className="w-full text-xs text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200 text-[10.5px] font-black uppercase tracking-wider text-slate-600">
+                  <th className="py-2.5 px-3 text-center w-9">#</th>
+                  <th className="py-2.5 px-3">ผู้ถือเงินสดย่อย (Custodian)</th>
+                  <th className="py-2.5 px-3">แผนก / สาขา</th>
+                  <th className="py-2.5 px-3 text-right">วงเงินตั้งต้น (Quota)</th>
+                  <th className="py-2.5 px-3 text-right">ยอดยกมาต้นงวด</th>
+                  <th className="py-2.5 px-3 text-right text-emerald-700">เติมจากบริษัท (+)</th>
+                  <th className="py-2.5 px-3 text-right text-sky-700">รับโอนจากบัญชี (+)</th>
+                  <th className="py-2.5 px-3 text-right text-emerald-800 bg-emerald-50/40">รวมเติมเข้าในงวด (+)</th>
+                  <th className="py-2.5 px-3 text-right text-indigo-700">โอนให้สาขา (-)</th>
+                  <th className="py-2.5 px-3 text-right text-rose-700 bg-rose-50/40">ใช้จ่ายจริงในงวด (-)</th>
+                  <th className="py-2.5 px-3 text-right">คงเหลือปัจจุบัน</th>
+                  <th className="py-2.5 px-3 text-right text-amber-700 bg-amber-50/40">ต้องเติมเพิ่ม (Shortfall)</th>
+                  {canApproveOrTopUp && <th className="py-2.5 px-3 text-center">เติมวงเงิน</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {dashboardDetails.visibleHolderSummaries.map((h, idx) => {
+                  const branchName = getBranchDisplayName(h.branchId);
+                  const limit = getHolderLimit(h.holderId, h.isAccounting);
+                  const shortfall = Math.max(0, Math.round((limit - h.currentBalance) * 100) / 100);
+                  const isSelected = holderFilter === h.holderId;
+
+                  return (
+                    <tr
+                      key={h.holderId}
+                      onClick={() => setHolderFilter(isSelected ? "ALL" : h.holderId)}
+                      className={`transition-colors cursor-pointer ${
+                        isSelected ? "bg-indigo-50/60" : "hover:bg-slate-50/80"
+                      }`}
+                    >
+                      <td className="py-2.5 px-3 text-center font-mono text-slate-400">{idx + 1}</td>
+                      <td className="py-2.5 px-3">
+                        <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                          <span>{h.holderName}</span>
+                          {h.pendingCount > 0 && (
+                            <span className="px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 text-[9.5px] font-bold">
+                              รอตรวจ {h.pendingCount} บิล
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span className="font-semibold text-slate-700">{h.department || h.roleLabel}</span>
+                        <span className="text-slate-400 mx-1">•</span>
+                        <span className="text-slate-500 text-[11px]">{branchName}</span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-700">
+                        ฿{limit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-slate-600">
+                        ฿{h.openingBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-emerald-600">
+                        {h.companyTopup > 0
+                          ? `+฿${h.companyTopup.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : "-"}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-sky-600">
+                        {h.transferIn > 0
+                          ? `+฿${h.transferIn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : "-"}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono font-black text-emerald-700 bg-emerald-50/30">
+                        +฿{h.totalTopup.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-indigo-600">
+                        {h.transferOut > 0
+                          ? `-฿${h.transferOut.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : "-"}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono font-black text-rose-600 bg-rose-50/30">
+                        -฿{h.totalExpense.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td
+                        className={`py-2.5 px-3 text-right font-mono font-black ${
+                          h.currentBalance < 0 ? "text-rose-600" : "text-slate-900"
+                        }`}
+                      >
+                        ฿{h.currentBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono font-black text-amber-700 bg-amber-50/30">
+                        ฿{shortfall.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      {canApproveOrTopUp && (
+                        <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleOpenCreateModal("TOPUP", {
+                                id: h.holderId,
+                                name: h.holderName,
+                                branchId: h.branchId,
+                              })
+                            }
+                            className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] transition-colors cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <Plus size={10} /> เติมเงิน
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                {(() => {
+                  const list = dashboardDetails.visibleHolderSummaries;
+                  const totLimit = list.reduce((s, h) => s + getHolderLimit(h.holderId, h.isAccounting), 0);
+                  const totOpening = list.reduce((s, h) => s + h.openingBalance, 0);
+                  const totCompTopup = list.reduce((s, h) => s + h.companyTopup, 0);
+                  const totTransIn = list.reduce((s, h) => s + h.transferIn, 0);
+                  const totTopup = list.reduce((s, h) => s + h.totalTopup, 0);
+                  const totTransOut = list.reduce((s, h) => s + h.transferOut, 0);
+                  const totExp = list.reduce((s, h) => s + h.totalExpense, 0);
+                  const totBal = list.reduce((s, h) => s + h.currentBalance, 0);
+                  const totShortfall = list.reduce((s, h) => {
+                    const lim = getHolderLimit(h.holderId, h.isAccounting);
+                    return s + Math.max(0, lim - h.currentBalance);
+                  }, 0);
+
+                  return (
+                    <tr className="bg-slate-100/90 border-t-2 border-slate-300 font-black text-slate-900">
+                      <td colSpan={3} className="py-2.5 px-3 text-right">
+                        รวมทั้งหมด ({list.length} กระเป๋า):
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono">
+                        ฿{totLimit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-slate-700">
+                        ฿{totOpening.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-emerald-700">
+                        +฿{totCompTopup.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-sky-700">
+                        +฿{totTransIn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-emerald-800 bg-emerald-100/50">
+                        +฿{totTopup.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-indigo-700">
+                        -฿{totTransOut.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-rose-700 bg-rose-100/50">
+                        -฿{totExp.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-slate-900">
+                        ฿{totBal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-amber-800 bg-amber-100/50">
+                        ฿{totShortfall.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      {canApproveOrTopUp && <td />}
+                    </tr>
+                  );
+                })()}
+              </tfoot>
+            </table>
           </div>
         </div>
       )}

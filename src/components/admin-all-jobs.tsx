@@ -1115,13 +1115,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
   const isShiftFromPreviousDay = useMemo(() => {
     if (!currentBranchShift?.openedAt) return false;
-    const openedDate = new Date(currentBranchShift.openedAt);
-    const now = new Date();
-    return (
-      openedDate.getFullYear() !== now.getFullYear() ||
-      openedDate.getMonth() !== now.getMonth() ||
-      openedDate.getDate() !== now.getDate()
-    );
+    const openedDateStr = new Date(currentBranchShift.openedAt).toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+    const nowDateStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+    return openedDateStr !== nowDateStr;
   }, [currentBranchShift]);
 
   const currentBranchShiftStats = useMemo(
@@ -5810,7 +5806,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
       {/* Open Cashier Shift Dialog (for All Jobs & Create/Pay Guard) */}
       <Dialog open={isOpenShiftModalOpen} onOpenChange={setIsOpenShiftModalOpen}>
-        <DialogContent className="max-w-md p-5 bg-white border border-slate-200 shadow-2xl rounded-2xl">
+        <DialogContent className="z-[110] max-w-md p-5 bg-white border border-slate-200 shadow-2xl rounded-2xl">
           <DialogHeader className="mb-2">
             <DialogTitle className="text-base font-black text-slate-900 flex items-center gap-2">
               <Banknote className="text-emerald-600" size={18} />
@@ -5881,7 +5877,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
       {/* Close Cashier Shift & Drawer Summary Dialog */}
       <Dialog open={isCloseShiftModalOpen} onOpenChange={setIsCloseShiftModalOpen}>
-        <DialogContent className="max-w-md p-5 bg-white border border-slate-200 shadow-2xl rounded-2xl">
+        <DialogContent className="z-[110] max-w-md p-5 bg-white border border-slate-200 shadow-2xl rounded-2xl">
           <DialogHeader className="mb-2">
             <DialogTitle className="text-base font-black text-slate-900 flex items-center gap-2">
               <Banknote className="text-rose-600" size={18} />

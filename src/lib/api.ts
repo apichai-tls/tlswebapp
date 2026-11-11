@@ -1691,25 +1691,42 @@ export const api = {
     }
 
     const invokeUpdateJobWithFallback = async (jobId: string, payload: Record<string, any>) => {
+      let actionRes: any = null;
       try {
-        return await withActionTimeout(
+        actionRes = await withActionTimeout(
           dbActions.updateJobAction(jobId, { ...payload, __returnErrorObject: true }),
           25000
         );
-      } catch (actionErr: any) {
-        if (typeof window !== 'undefined') {
-          try {
-            const resp = await authFetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-            });
-            const data = await resp.json().catch(() => null);
-            if (data) return data;
-          } catch {}
+        if (!actionRes || !actionRes.__actionError) {
+          return actionRes;
         }
-        throw actionErr;
+        if (actionRes.isConflict) {
+          return actionRes;
+        }
+      } catch (actionErr: any) {
+        if (typeof window === 'undefined') {
+          throw actionErr;
+        }
+        actionRes = {
+          __actionError: true,
+          error: actionErr?.message || 'Save failed',
+          isConflict: Boolean(actionErr?.isConflict),
+        };
       }
+
+      if (typeof window !== 'undefined') {
+        try {
+          const resp = await authFetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const data = await resp.json().catch(() => null);
+          if (data) return data;
+        } catch {}
+      }
+
+      return actionRes;
     };
 
     const isEarlySilentMediaUpdate = Boolean(

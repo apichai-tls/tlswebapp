@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
+import { uploadBufferToGcs } from "@/lib/gcs";
 import { resolveRequestUser, canUserAccessJob, canAccessCustomerRecords } from "@/lib/server-auth";
 import { verifyCustomerToken, verifyServiceApiKey } from "@/lib/external-api-auth";
 
@@ -169,6 +170,25 @@ export async function POST(request: NextRequest) {
     const filename = isSafeReceiptOrProforma
       ? baseFileName
       : `${entityId}-${now}.${normalizedExt}`;
+
+    // When uploading chat images/files (or when GCS is configured for chat), store permanently in Google Cloud Storage first
+    if (subType === "chat" || subType.startsWith("chat_")) {
+      const gcsUrl = await uploadBufferToGcs(buffer, {
+        entityType: "system",
+        entityId,
+        subType: "chat",
+        contentType: file.type || "image/jpeg",
+        extension: normalizedExt,
+        customFileName: filename,
+      });
+      if (gcsUrl) {
+        return NextResponse.json({
+          success: true,
+          publicUrl: gcsUrl,
+          filePath: gcsUrl,
+        });
+      }
+    }
 
     const baseUploadsRoot = path.resolve(process.cwd(), "storage", "uploads");
     const uploadDir = path.resolve(baseUploadsRoot, entityType, subType);

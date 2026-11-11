@@ -1806,6 +1806,35 @@ export async function addJobAction(data: any) {
       const fallbackScheduledAt =
         data.scheduledAt || data.pickupScheduledAt || data.deliveryScheduledAt || new Date();
 
+      const isCreateNoCharge = Boolean(
+        data.paymentChannel === 'Rewash / No Charge' ||
+        data.paymentChannel === 'Pre-paid / Split Delivery' ||
+        (typeof data.remark === 'string' && (/\bRewash\b/i.test(data.remark) || /Split Delivery\s*\(Part\s*2\)/i.test(data.remark)))
+      );
+      if (data.isShopPaid === true && !isCreateNoCharge && data.actorId !== 'system' && resolvedBranchId) {
+        const targetShop = await tx.shopLocation.findUnique({
+          where: { id: resolvedBranchId },
+          select: { name: true, isPosEnabled: true }
+        });
+        if (targetShop?.isPosEnabled) {
+          const openShift = await tx.cashierShift.findFirst({
+            where: { branchId: resolvedBranchId, status: 'open' },
+            orderBy: { openedAt: 'desc' }
+          });
+          if (!openShift) {
+            throw new Error(`สาขา "${targetShop.name}" ยังไม่ได้เปิดกะลิ้นชักเงินสดของวันนี้ กรุณาเปิดกะก่อนกด Pay รับชำระเงิน`);
+          }
+          const openedDateStr = new Date(openShift.openedAt).toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+          const todayDateStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+          if (openedDateStr !== todayDateStr) {
+            throw new Error(`สาขา "${targetShop.name}" มีกะค้างจากวันก่อนหน้า กรุณาปิดกะเก่าและเปิดกะของวันนี้ก่อนรับชำระเงิน`);
+          }
+          if (!data.shiftId) {
+            data.shiftId = openShift.id;
+          }
+        }
+      }
+
       const jobRow = await tx.job.create({
         data: {
           id: jobId,
@@ -2938,6 +2967,33 @@ async function updateJobActionInternal(id: string, updates: any) {
   const isAlreadyShopSettled = Boolean(existingJob && !isExistingRewash && (isPosJob ? (existingJob.isPaid || existingJob.isShopPaid) : existingJob.isShopPaid));
   const isUnlockingPayment = updates.isShopPaid === false || (isPosJob && updates.isPaid === false);
   const isSettlingShopPaymentNow = Boolean(updates.isShopPaid === true && existingJob && !existingJob.isShopPaid);
+
+  if (isSettlingShopPaymentNow && !isExistingRewash && updates.actorId !== 'system') {
+    const targetBranchId = updates.branchId || existingJob?.branchId;
+    if (targetBranchId) {
+      const targetShop = await tx.shopLocation.findUnique({
+        where: { id: targetBranchId },
+        select: { name: true, isPosEnabled: true }
+      });
+      if (targetShop?.isPosEnabled) {
+        const openShift = await tx.cashierShift.findFirst({
+          where: { branchId: targetBranchId, status: 'open' },
+          orderBy: { openedAt: 'desc' }
+        });
+        if (!openShift) {
+          throw new Error(`สาขา "${targetShop.name}" ยังไม่ได้เปิดกะลิ้นชักเงินสดของวันนี้ กรุณาเปิดกะก่อนกด Pay รับชำระเงิน`);
+        }
+        const openedDateStr = new Date(openShift.openedAt).toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+        const todayDateStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+        if (openedDateStr !== todayDateStr) {
+          throw new Error(`สาขา "${targetShop.name}" มีกะค้างจากวันก่อนหน้า กรุณาปิดกะเก่าและเปิดกะของวันนี้ก่อนรับชำระเงิน`);
+        }
+        if (!updates.shiftId) {
+          updates.shiftId = openShift.id;
+        }
+      }
+    }
+  }
 
   const isPaidLockedJob = isAlreadyShopSettled && !isUnlockingPayment && !isSettlingShopPaymentNow;
 
@@ -5062,15 +5118,6 @@ export async function openShiftAction(data: { userId: string, userName: string, 
       const lockKeys = [`shift:branch:${data.branchId}`, `shift:user:${data.userId}`].sort();
       for (const k of lockKeys) {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${k}))`;
-      }
-
-      // Check if there is already an open shift for this user
-      const existingUserOpen = await tx.cashierShift.findFirst({
-        where: { userId: data.userId, status: 'open' },
-        orderBy: { openedAt: 'desc' }
-      });
-      if (existingUserOpen) {
-        throw new Error("You already have an open shift.");
       }
 
       // Check if there is already an open shift for this branch

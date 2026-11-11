@@ -131,13 +131,16 @@ export function A5ReceiptDialog({
     capturedKeysRef.current.add(captureKey); // Lock immediately to prevent duplicate runs on re-render
 
     const uploadAndSave = async (blob: Blob) => {
-      const { jobStore } = await import("@/lib/store");
+      const [{ jobStore }, { getClientAuthHeaders }] = await Promise.all([
+        import("@/lib/store"),
+        import("@/lib/api"),
+      ]);
 
       let uploadResult: { success: boolean; publicUrl?: string } = { success: false };
       try {
         const signRes = await fetch("/api/upload-url", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: getClientAuthHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({
             entityType: "job",
             entityId: rawJobId || targetJobId || "unknown",
@@ -155,7 +158,7 @@ export function A5ReceiptDialog({
             body: blob,
           });
           if (putRes.ok) {
-            uploadResult = { success: true, publicUrl: snapshotData.isDraft ? signData.publicUrl : `${signData.publicUrl}?v=${Date.now()}` };
+            uploadResult = { success: true, publicUrl: `${signData.publicUrl}?v=${Date.now()}` };
           } else {
             throw new Error(`GCS PUT failed: ${putRes.status}`);
           }
@@ -168,7 +171,11 @@ export function A5ReceiptDialog({
         formData.append("entityType", "jobs");
         formData.append("entityId", rawJobId || targetJobId || "unknown");
         formData.append("subType", "proofs");
-        const res = await fetch("/api/upload-local", { method: "POST", body: formData });
+        const res = await fetch("/api/upload-local", {
+          method: "POST",
+          headers: getClientAuthHeaders(),
+          body: formData,
+        });
         uploadResult = await res.json();
       }
 
@@ -176,15 +183,20 @@ export function A5ReceiptDialog({
         capturedKeysRef.current.add(captureKey);
         if (onBillImageUploadedRef.current) onBillImageUploadedRef.current(uploadResult.publicUrl);
 
-        const targetId = rawJobId || targetJobId;
-        const targetJob =
-          targetId && targetId !== "DRAFT"
-            ? jobStore.getSnapshot().find((j: any) => j.id === targetId)
+        const rawTargetId = rawJobId || targetJobId;
+        const normalizedTargetId =
+          rawTargetId && rawTargetId !== "DRAFT"
+            ? String(rawTargetId).replace(/^#/, "").replace(/^PR-(?!RF-)/i, "").replace(/-R\d+$/i, "").trim()
             : null;
-        if (targetJob) {
+        const targetJob =
+          normalizedTargetId
+            ? jobStore.getSnapshot().find((j: any) => j.id === rawTargetId || j.id === normalizedTargetId)
+            : null;
+        const effectiveJobId = targetJob?.id || normalizedTargetId;
+        if (effectiveJobId && effectiveJobId !== "DRAFT") {
           let existingBills: string[] = [];
           try {
-            if (targetJob.billImageUrl) {
+            if (targetJob?.billImageUrl) {
               const parsed = JSON.parse(targetJob.billImageUrl);
               if (Array.isArray(parsed)) existingBills = parsed;
               else if (typeof parsed === "string") existingBills = [parsed];
@@ -192,12 +204,18 @@ export function A5ReceiptDialog({
           } catch {}
           if (!existingBills.includes(uploadResult.publicUrl)) {
             const isProforma = uploadResult.publicUrl.includes("proforma-");
-            if (!isProforma && !snapshotData.autoCapture && !targetJob.isShopPaid && !(targetJob.source === "pos" && targetJob.isPaid)) {
+            if (
+              !isProforma &&
+              !snapshotData.autoCapture &&
+              !snapshotData.isPaid &&
+              !targetJob?.isShopPaid &&
+              !(targetJob?.source === "pos" && targetJob?.isPaid)
+            ) {
               return;
             }
             let newBills: string[];
             if (isProforma) {
-              const cleanBase = snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : targetJob.id;
+              const cleanBase = snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : effectiveJobId;
               const curRev = snapshotData.proformaRevision || 0;
               const filtered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBase}-rev${curRev}.png`) && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
               newBills = Array.from(new Set([uploadResult.publicUrl, ...filtered]));
@@ -218,10 +236,10 @@ export function A5ReceiptDialog({
                 return 0;
               });
             } else {
-              const filtered = existingBills.filter((u: string) => !u.includes(`receipt-${targetJob.id}`) && !u.includes("/receipt-") && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
+              const filtered = existingBills.filter((u: string) => !u.includes(`receipt-${effectiveJobId}`) && !u.includes("/receipt-") && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
               newBills = [uploadResult.publicUrl, ...filtered];
             }
-            await jobStore.updateJobDetails(targetJob.id, {
+            await jobStore.updateJobDetails(effectiveJobId, {
               billImageUrl: JSON.stringify(newBills),
             });
           }

@@ -4,6 +4,7 @@ import path from 'path';
 import QRCode from 'qrcode';
 import pino from 'pino';
 import { prisma } from '@/lib/prisma';
+import { uploadBufferToGcs } from '@/lib/gcs';
 import { formatDisplayPhone, formatPhoneForWhatsApp } from '@/lib/social-helpers';
 import { SocialMessageAttachment } from '@/types/social-inbox';
 
@@ -527,18 +528,31 @@ export async function startWhatsAppQrConnection(
                   { logger, reuploadRequest: sock.updateMediaMessage }
                 );
                 if (buffer) {
-                  let imageUrl: string | null = null;
-                  try {
-                    const uploadDir = path.resolve(process.cwd(), 'storage', 'uploads', 'system', 'chat');
-                    await fs.promises.mkdir(uploadDir, { recursive: true });
-                    const safeId = (msgId || `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '');
-                    const filename = `wa-${safeId}.jpg`;
-                    await fs.promises.writeFile(path.join(uploadDir, filename), Buffer.from(buffer));
-                    imageUrl = `/uploads/system/chat/${filename}`;
-                  } catch {
-                    // Fallback to inline base64 data URL if container storage is read-only
-                    const mime = inner.imageMessage.mimetype || 'image/jpeg';
-                    imageUrl = `data:${mime};base64,${Buffer.from(buffer).toString('base64')}`;
+                  const rawBuffer = Buffer.from(buffer);
+                  const mime = inner.imageMessage.mimetype || 'image/jpeg';
+                  const safeId = (msgId || `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '');
+                  const filename = `wa-${safeId}.jpg`;
+
+                  // 1. Primary: Upload directly to Google Cloud Storage for permanent retention
+                  let imageUrl: string | null = await uploadBufferToGcs(rawBuffer, {
+                    entityType: 'system',
+                    entityId: `wa_${phoneDigits}`,
+                    subType: 'chat',
+                    contentType: mime,
+                    extension: 'jpg',
+                    customFileName: filename,
+                  });
+
+                  // 2. Fallback: Local storage or inline base64 if GCS is unavailable
+                  if (!imageUrl) {
+                    try {
+                      const uploadDir = path.resolve(process.cwd(), 'storage', 'uploads', 'system', 'chat');
+                      await fs.promises.mkdir(uploadDir, { recursive: true });
+                      await fs.promises.writeFile(path.join(uploadDir, filename), rawBuffer);
+                      imageUrl = `/uploads/system/chat/${filename}`;
+                    } catch {
+                      imageUrl = `data:${mime};base64,${rawBuffer.toString('base64')}`;
+                    }
                   }
                   if (imageUrl) {
                     imageUrls.push(imageUrl);

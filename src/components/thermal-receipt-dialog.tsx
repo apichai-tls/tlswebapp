@@ -565,11 +565,12 @@ export function ThermalReceiptDialog({
 
         // Upload to Google Cloud Storage asynchronously in background
         const uploadAndSave = async (b: Blob) => {
+          const { getClientAuthHeaders } = await import("@/lib/api");
           let uploadResult: { success: boolean; publicUrl?: string } = { success: false };
           try {
             const signRes = await fetch("/api/upload-url", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: getClientAuthHeaders({ "Content-Type": "application/json" }),
               body: JSON.stringify({
                 entityType: "job",
                 entityId: rawJobId || targetJobId || "unknown",
@@ -587,7 +588,7 @@ export function ThermalReceiptDialog({
                 body: b
               });
               if (putRes.ok) {
-                uploadResult = { success: true, publicUrl: snapshotData.isDraft ? signData.publicUrl : `${signData.publicUrl}?v=${Date.now()}` };
+                uploadResult = { success: true, publicUrl: `${signData.publicUrl}?v=${Date.now()}` };
               } else {
                 throw new Error(`GCS PUT failed: ${putRes.status}`);
               }
@@ -602,7 +603,11 @@ export function ThermalReceiptDialog({
             formData.append("entityType", "jobs");
             formData.append("entityId", rawJobId || targetJobId || "unknown");
             formData.append("subType", "proofs");
-            const res = await fetch("/api/upload-local", { method: "POST", body: formData });
+            const res = await fetch("/api/upload-local", {
+              method: "POST",
+              headers: getClientAuthHeaders(),
+              body: formData,
+            });
             uploadResult = await res.json();
           }
           if (uploadResult.success && uploadResult.publicUrl) {
@@ -610,11 +615,21 @@ export function ThermalReceiptDialog({
             if (onBillImageUploaded) {
               onBillImageUploaded(uploadResult.publicUrl);
             }
-            const targetJob = currentJob || jobStore.getSnapshot().find(j => j.id === rawJobId || j.id === targetJobId);
-            if (targetJob) {
+            const rawTargetId = rawJobId || targetJobId;
+            const normalizedTargetId =
+              rawTargetId && rawTargetId !== "DRAFT"
+                ? String(rawTargetId).replace(/^#/, "").replace(/^PR-(?!RF-)/i, "").replace(/-R\d+$/i, "").trim()
+                : null;
+            const targetJob =
+              currentJob ||
+              (normalizedTargetId
+                ? jobStore.getSnapshot().find(j => j.id === rawTargetId || j.id === normalizedTargetId)
+                : null);
+            const effectiveJobId = targetJob?.id || normalizedTargetId;
+            if (effectiveJobId && effectiveJobId !== "DRAFT") {
               let existingBills: string[] = [];
               try {
-                if (targetJob.billImageUrl) {
+                if (targetJob?.billImageUrl) {
                   const parsed = JSON.parse(targetJob.billImageUrl);
                   if (Array.isArray(parsed)) existingBills = parsed;
                   else if (typeof parsed === 'string') existingBills = [parsed];
@@ -623,20 +638,26 @@ export function ThermalReceiptDialog({
               
               if (!existingBills.includes(uploadResult.publicUrl)) {
                 const isProforma = uploadResult.publicUrl.includes("proforma-");
-                if (!isProforma && !snapshotData.autoCapture && !targetJob.isShopPaid && !(targetJob.source === "pos" && targetJob.isPaid)) {
+                if (
+                  !isProforma &&
+                  !snapshotData.autoCapture &&
+                  !snapshotData.isPaid &&
+                  !targetJob?.isShopPaid &&
+                  !(targetJob?.source === "pos" && targetJob?.isPaid)
+                ) {
                   return;
                 }
                 let newBills: string[];
                 if (isProforma) {
-                  const cleanBase = snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : targetJob.id;
+                  const cleanBase = snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : effectiveJobId;
                   const curRev = snapshotData.proformaRevision || 0;
                   const filtered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBase}-rev${curRev}.png`) && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
                   newBills = [uploadResult.publicUrl, ...filtered];
                 } else {
-                  const filtered = existingBills.filter((u: string) => !u.includes(`receipt-${targetJob.id}`) && !u.includes("/receipt-") && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
+                  const filtered = existingBills.filter((u: string) => !u.includes(`receipt-${effectiveJobId}`) && !u.includes("/receipt-") && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
                   newBills = [uploadResult.publicUrl, ...filtered];
                 }
-                await jobStore.updateJobDetails(targetJob.id, {
+                await jobStore.updateJobDetails(effectiveJobId, {
                   billImageUrl: JSON.stringify(newBills)
                 });
               }

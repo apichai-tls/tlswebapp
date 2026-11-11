@@ -47,6 +47,10 @@ export function AdminCustomerDialog({
   customer, 
   onSaved,
   onTopUpCustomer,
+  initialName,
+  initialPhone,
+  initialLineId,
+  initialWhatsappId,
   initialAddress,
   initialCoords,
   initialRoomNo,
@@ -58,6 +62,10 @@ export function AdminCustomerDialog({
   customer?: Customer | null;
   onSaved?: (c: Customer) => void;
   onTopUpCustomer?: (c: Customer) => void;
+  initialName?: string | null;
+  initialPhone?: string | null;
+  initialLineId?: string | null;
+  initialWhatsappId?: string | null;
   initialAddress?: string | null;
   initialCoords?: { lat: number; lng: number } | null;
   initialRoomNo?: string | null;
@@ -454,20 +462,36 @@ export function AdminCustomerDialog({
       applyCustomerToForm(customer);
     } else {
       originalCustomerRef.current = null;
-      // Reset all states cleanly - no mock defaults
-      setName("");
+      // Reset all states cleanly - prefill from initial props if provided
+      setName((initialName || "").trim());
       setNickName("");
       setGender("Rather not say");
       setDob("");
       setCustomerTier(initialIsVip ? "vip" : "standard");
 
-      setPhone("");
-      setIsWhatsapp(true);
-      setSecondaryPhone("");
-      setIntlCountryCode("+1");
-      setIsSecondaryWhatsapp(false);
-      setWhatsappId("");
-      setLineId("");
+      const rawInitPhone = (initialPhone || "").trim();
+      if (rawInitPhone && isThaiPhoneNumber(rawInitPhone)) {
+        setPhone(normalizeThaiPhone(rawInitPhone));
+        setIsWhatsapp(true);
+        setSecondaryPhone("");
+        setIntlCountryCode("+1");
+        setIsSecondaryWhatsapp(false);
+      } else if (rawInitPhone) {
+        setPhone("");
+        setIsWhatsapp(false);
+        const { countryCode, nationalNumber } = parseFullPhone(rawInitPhone);
+        setIntlCountryCode(countryCode || "+1");
+        setSecondaryPhone(nationalNumber || rawInitPhone);
+        setIsSecondaryWhatsapp(true);
+      } else {
+        setPhone("");
+        setIsWhatsapp(true);
+        setSecondaryPhone("");
+        setIntlCountryCode("+1");
+        setIsSecondaryWhatsapp(false);
+      }
+      setWhatsappId((initialWhatsappId || "").trim());
+      setLineId((initialLineId || "").trim());
       setEmail("");
       setInitialPin("");
 

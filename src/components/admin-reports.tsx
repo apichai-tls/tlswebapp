@@ -55,6 +55,7 @@ import { ReportsSalesByEmployee } from "@/components/reports-sales-by-employee";
 import { ReportsSalesByPaymentType } from "@/components/reports-sales-by-payment-type";
 import { ReportsReceipts } from "@/components/reports-receipts";
 import { ReportsTaxes } from "@/components/reports-taxes";
+import { AdminPettyCash } from "@/components/admin-petty-cash";
 
 function normalizeReportChannelName(name?: string | null): string {
   if (!name || !name.trim()) return "Unspecified";
@@ -111,9 +112,10 @@ function getChannelBadgeStyle(channelName: string) {
 
 interface AdminReportsProps {
   onViewJob?: (job: any) => void;
+  currentUser?: any;
 }
 
-export function AdminReports({ onViewJob }: AdminReportsProps) {
+export function AdminReports({ onViewJob, currentUser }: AdminReportsProps) {
   const jobs = useJobs();
   const customers = useCustomers();
   const riders = useRiders();
@@ -121,7 +123,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
   const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
 
   // Sub-tabs state
-  const [subTab, setSubTab] = useState<"overview" | "sales-summary" | "sale-report" | "sales-by-item" | "sales-by-category" | "sales-by-employee" | "sales-by-payment-type" | "receipts" | "taxes" | "shift" | "order" | "pos">("overview");
+  const [subTab, setSubTab] = useState<"overview" | "sales-summary" | "sale-report" | "sales-by-item" | "sales-by-category" | "sales-by-employee" | "sales-by-payment-type" | "receipts" | "taxes" | "shift" | "order" | "pos" | "petty-cash">("overview");
   const [saleReportSubTab, setSaleReportSubTab] = useState<"item" | "category" | "employee" | "payment-type">("item");
 
   // Filters State
@@ -1437,7 +1439,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
           </div>
 
           {/* Filter Toolbar Controls */}
-          {subTab !== "sales-summary" && subTab !== "sale-report" && subTab !== "sales-by-item" && subTab !== "sales-by-category" && subTab !== "sales-by-employee" && subTab !== "sales-by-payment-type" && subTab !== "receipts" && subTab !== "taxes" && (
+          {subTab !== "sales-summary" && subTab !== "sale-report" && subTab !== "sales-by-item" && subTab !== "sales-by-category" && subTab !== "sales-by-employee" && subTab !== "sales-by-payment-type" && subTab !== "receipts" && subTab !== "taxes" && subTab !== "petty-cash" && (
             <div className="flex flex-wrap items-center gap-2">
               {/* Branch Select */}
               <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200/90 dark:border-slate-700 rounded-xl px-3 py-1.5 shadow-2xs">
@@ -1541,6 +1543,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
             { id: "shift", label: "Shift Report", icon: History, activeMatch: (t: string) => t === "shift" },
             { id: "order", label: "Order Report", icon: ClipboardList, activeMatch: (t: string) => t === "order" },
             { id: "pos", label: "POS Report", icon: Store, activeMatch: (t: string) => t === "pos" },
+            { id: "petty-cash", label: "Petty Cash Report", icon: Wallet, activeMatch: (t: string) => t === "petty-cash" },
           ].map((tab) => {
             const Icon = tab.icon;
             const isActive = tab.activeMatch(subTab);
@@ -3114,6 +3117,11 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 5. PETTY CASH REPORT */}
+      {subTab === "petty-cash" && (
+        <AdminPettyCash currentUser={currentUser} />
       )}
 
 
