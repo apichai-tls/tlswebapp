@@ -161,6 +161,15 @@ export async function addCustomerAction(data: any): Promise<{ success: boolean; 
         }
       }
 
+      const normalizedCreateRoomNo = (
+        data.roomNo ||
+        (data.secondaryAddress ? String(data.secondaryAddress).replace(/^Room\s+/i, '') : '') ||
+        ''
+      ).trim() || null;
+      const normalizedCreateSecAddr =
+        (data.secondaryAddress ? String(data.secondaryAddress).trim() : '') ||
+        (normalizedCreateRoomNo ? `Room ${normalizedCreateRoomNo}` : null);
+
       try {
         c = await prisma.customer.create({
           data: {
@@ -182,7 +191,7 @@ export async function addCustomerAction(data: any): Promise<{ success: boolean; 
             whatsappId: data.whatsappId || null,
             language: data.language,
             remark: data.remark,
-            secondaryAddress: data.secondaryAddress,
+            secondaryAddress: normalizedCreateSecAddr,
             dob: data.dob,
             taxId: data.taxId,
             companyName: data.companyName,
@@ -199,7 +208,7 @@ export async function addCustomerAction(data: any): Promise<{ success: boolean; 
             isVerified: Boolean(data.isVerified),
             verifiedVia: data.verifiedVia || null,
             sourceSystem: data.sourceSystem || 'web_booking',
-            roomNo: data.roomNo || null,
+            roomNo: normalizedCreateRoomNo,
             branchId: data.branchId || null,
             memberStartDate: resolvedStartDate,
             memberExpiryDate: resolvedExpiryDate,
@@ -694,7 +703,30 @@ export async function updateCustomerAction(
           if (updates.whatsappId !== undefined) data.whatsappId = updates.whatsappId;
           if (updates.language !== undefined) data.language = updates.language;
           if (updates.remark !== undefined) data.remark = updates.remark;
-          if (updates.secondaryAddress !== undefined) data.secondaryAddress = updates.secondaryAddress;
+          if (updates.secondaryAddress !== undefined || updates.roomNo !== undefined) {
+            if (
+              updates.secondaryAddress === null &&
+              updates.roomNo === undefined &&
+              lockedCustomer.secondaryAddress &&
+              !lockedCustomer.roomNo
+            ) {
+              // Guard against legacy UI bug where empty roomNo caused secondaryAddress to be overwritten with null
+              const recoveredRoom = String(lockedCustomer.secondaryAddress).replace(/^Room\s+/i, '').trim() || null;
+              data.roomNo = recoveredRoom;
+            } else {
+              if (updates.roomNo !== undefined) {
+                data.roomNo = updates.roomNo ? String(updates.roomNo).trim() : null;
+              }
+              if (updates.secondaryAddress !== undefined) {
+                data.secondaryAddress = updates.secondaryAddress ? String(updates.secondaryAddress).trim() : null;
+              }
+              if (updates.roomNo !== undefined && updates.secondaryAddress === undefined) {
+                data.secondaryAddress = data.roomNo ? `Room ${data.roomNo}` : null;
+              } else if (updates.secondaryAddress !== undefined && updates.roomNo === undefined) {
+                data.roomNo = data.secondaryAddress ? String(data.secondaryAddress).replace(/^Room\s+/i, '').trim() || null : null;
+              }
+            }
+          }
           if (updates.dob !== undefined) data.dob = updates.dob;
           if (updates.taxId !== undefined) data.taxId = updates.taxId;
           if (updates.companyName !== undefined) data.companyName = updates.companyName;
@@ -718,7 +750,6 @@ export async function updateCustomerAction(
           if (updates.verifiedVia !== undefined) data.verifiedVia = updates.verifiedVia;
           if (updates.sourceSystem !== undefined) data.sourceSystem = updates.sourceSystem;
           if (updates.passwordHash !== undefined) data.passwordHash = updates.passwordHash;
-          if (updates.roomNo !== undefined) data.roomNo = updates.roomNo;
           if (updates.memberStartDate !== undefined) {
             data.memberStartDate = updates.memberStartDate ? new Date(updates.memberStartDate) : null;
           } else if (data.isMember && !lockedCustomer.memberStartDate && !lockedCustomer.isMember) {
@@ -3046,12 +3077,32 @@ async function updateJobActionInternal(id: string, updates: any) {
       try {
         const mergedLegs = JSON.parse(existingJob.legsJson);
         if (updates.pickupRiderId !== undefined) {
-          if (mergedLegs.pickupOutbound) mergedLegs.pickupOutbound.riderId = updates.pickupRiderId || "";
-          if (mergedLegs.pickupInbound) mergedLegs.pickupInbound.riderId = updates.pickupRiderId || "";
+          if (mergedLegs.pickupOutbound) {
+            mergedLegs.pickupOutbound.riderId = updates.pickupRiderId || "";
+            if (!updates.pickupRiderId && updates.legs?.pickupOutbound?.status) {
+              mergedLegs.pickupOutbound.status = updates.legs.pickupOutbound.status;
+            }
+          }
+          if (mergedLegs.pickupInbound) {
+            mergedLegs.pickupInbound.riderId = updates.pickupRiderId || "";
+            if (!updates.pickupRiderId && updates.legs?.pickupInbound?.status) {
+              mergedLegs.pickupInbound.status = updates.legs.pickupInbound.status;
+            }
+          }
         }
         if (updates.deliveryRiderId !== undefined) {
-          if (mergedLegs.deliveryOutbound) mergedLegs.deliveryOutbound.riderId = updates.deliveryRiderId || "";
-          if (mergedLegs.deliveryInbound) mergedLegs.deliveryInbound.riderId = updates.deliveryRiderId || "";
+          if (mergedLegs.deliveryOutbound) {
+            mergedLegs.deliveryOutbound.riderId = updates.deliveryRiderId || "";
+            if (!updates.deliveryRiderId && updates.legs?.deliveryOutbound?.status) {
+              mergedLegs.deliveryOutbound.status = updates.legs.deliveryOutbound.status;
+            }
+          }
+          if (mergedLegs.deliveryInbound) {
+            mergedLegs.deliveryInbound.riderId = updates.deliveryRiderId || "";
+            if (!updates.deliveryRiderId && updates.legs?.deliveryInbound?.status) {
+              mergedLegs.deliveryInbound.status = updates.legs.deliveryInbound.status;
+            }
+          }
         }
         if (updates.pickupScheduledAt !== undefined && updates.pickupScheduledAt) {
           if (mergedLegs.pickupOutbound) mergedLegs.pickupOutbound.scheduledAt = updates.pickupScheduledAt;
@@ -3131,6 +3182,53 @@ async function updateJobActionInternal(id: string, updates: any) {
   }
   if (updates.bagImageUrl !== undefined) data.bagImageUrl = updates.bagImageUrl;
   if (updates.billImageUrl !== undefined) {
+    const getBillUrlCanonicalKey = (u: string): string => {
+      const pfMatch = u.match(/proforma-(?:PR-)?([a-zA-Z0-9_-]+?-rev\d+\.png)/i);
+      if (pfMatch) return `pf:${pfMatch[1].toLowerCase()}`;
+      const rcMatch = u.match(/(receipt-[a-zA-Z0-9_-]+\.png)/i);
+      if (rcMatch) return `rc:${rcMatch[1].toLowerCase()}`;
+      return u.split("?")[0];
+    };
+    const getBillUrlVersionTs = (u: string): number => {
+      const vMatch = u.match(/[?&]v=(\d+)/);
+      return vMatch ? parseInt(vMatch[1], 10) : 0;
+    };
+    const deduplicateAndSortBillUrls = (urls: string[]): string[] => {
+      const byKey = new Map<string, string>();
+      for (const u of urls) {
+        if (typeof u !== "string" || !u.trim()) continue;
+        const key = getBillUrlCanonicalKey(u);
+        const prev = byKey.get(key);
+        if (!prev) {
+          byKey.set(key, u);
+        } else {
+          const prevTs = getBillUrlVersionTs(prev);
+          const nextTs = getBillUrlVersionTs(u);
+          if (nextTs >= prevTs) {
+            byKey.set(key, u);
+          }
+        }
+      }
+      const merged = Array.from(byKey.values());
+      merged.sort((a, b) => {
+        const aIsPf = a.includes("proforma-");
+        const bIsPf = b.includes("proforma-");
+        if (aIsPf && !bIsPf) return -1;
+        if (!aIsPf && bIsPf) return 1;
+        if (aIsPf && bIsPf) {
+          const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+          const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+          return bRev - aRev;
+        }
+        const aIsRc = a.includes("receipt-");
+        const bIsRc = b.includes("receipt-");
+        if (aIsRc && !bIsRc) return 1;
+        if (!aIsRc && bIsRc) return -1;
+        return 0;
+      });
+      return merged;
+    };
+
     if (updates.billImageUrl && existingJob?.billImageUrl) {
       try {
         const incomingUrls = JSON.parse(updates.billImageUrl);
@@ -3142,36 +3240,21 @@ async function updateJobActionInternal(id: string, updates: any) {
             ? existingUrls.filter(u => typeof u === "string" && !u.includes("/receipt-") && !u.includes("receipt-"))
             : existingUrls;
 
-          // If incoming has a proforma, only replace duplicate of that exact same revision if present, preserving historical revisions (rev0, rev1, etc.)
-          const incomingProforma = incomingUrls.find(u => typeof u === "string" && u.includes("proforma-"));
-          if (incomingProforma) {
-            const match = incomingProforma.match(/proforma-([a-zA-Z0-9_-]+?-rev\d+\.png)/i);
-            if (match) {
-              baseExisting = baseExisting.filter(u => typeof u === "string" && !u.includes(match[1]));
-            }
-          }
-
           // Merge unique URLs so concurrent background uploads (e.g. proforma and receipt) never clobber each other
           const filteredBaseExisting = isMediaOrProformaOnlyUpdate ? baseExisting : baseExisting.filter(u => typeof u === "string" && (u.includes("proforma-") || u.includes("receipt-")));
-          const merged = Array.from(new Set([...filteredBaseExisting, ...incomingUrls]));
-          // Sort so highest revision proforma always comes first, followed by receipt, then other proofs
-          merged.sort((a, b) => {
-            const aIsPf = a.includes("proforma-");
-            const bIsPf = b.includes("proforma-");
-            if (aIsPf && !bIsPf) return -1;
-            if (!aIsPf && bIsPf) return 1;
-            if (aIsPf && bIsPf) {
-              const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
-              const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
-              return bRev - aRev;
-            }
-            const aIsRc = a.includes("receipt-");
-            const bIsRc = b.includes("receipt-");
-            if (aIsRc && !bIsRc) return 1;
-            if (!aIsRc && bIsRc) return -1;
-            return 0;
-          });
+          const merged = deduplicateAndSortBillUrls([...filteredBaseExisting, ...incomingUrls]);
           data.billImageUrl = JSON.stringify(merged);
+        } else {
+          data.billImageUrl = updates.billImageUrl;
+        }
+      } catch {
+        data.billImageUrl = updates.billImageUrl;
+      }
+    } else if (updates.billImageUrl) {
+      try {
+        const incomingUrls = JSON.parse(updates.billImageUrl);
+        if (Array.isArray(incomingUrls)) {
+          data.billImageUrl = JSON.stringify(deduplicateAndSortBillUrls(incomingUrls));
         } else {
           data.billImageUrl = updates.billImageUrl;
         }
@@ -9436,6 +9519,39 @@ async function ensurePettyCashTableExists() {
     await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "counterpartyId" TEXT;`);
     await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "counterpartyName" TEXT;`);
     await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "vehiclePlate" TEXT;`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "replenishmentReportId" TEXT;`);
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "PettyCashReplenishmentReport" (
+        "id" TEXT NOT NULL,
+        "reportNumber" TEXT NOT NULL,
+        "holderId" TEXT NOT NULL,
+        "holderName" TEXT NOT NULL,
+        "branchId" TEXT,
+        "periodStart" TIMESTAMP(3),
+        "periodEnd" TIMESTAMP(3),
+        "quotaLimit" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "currentBalanceAtSubmit" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "totalExpenseAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "requestedAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "expenseTxIds" TEXT,
+        "categorySummary" TEXT,
+        "note" TEXT,
+        "status" TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+        "submittedById" TEXT,
+        "submittedByName" TEXT,
+        "submittedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "reviewedById" TEXT,
+        "reviewedByName" TEXT,
+        "reviewedAt" TIMESTAMP(3),
+        "rejectReason" TEXT,
+        "topupTxId" TEXT,
+        "topupChannel" TEXT,
+        "slipUrls" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "PettyCashReplenishmentReport_pkey" PRIMARY KEY ("id")
+      );
+    `);
     pettyCashTableReady = true;
   } catch (e) {
     console.warn("[ensurePettyCashTableExists]", e);
@@ -9566,13 +9682,14 @@ export async function getPettyCashDataAction(): Promise<{
   categories: string[];
   holderLimits?: Record<string, number>;
   vehiclePlates?: string[];
+  replenishmentReports?: any[];
 }> {
   try {
     await assertServerActionAuthorized({ forbidRoles: ["rider"] });
     await ensurePettyCashTableExists();
     await ensureSequentialPettyCashTxNumbers();
 
-    const [rows, catSetting, limitSetting, plateSetting, ridersList] = await Promise.all([
+    const [rows, catSetting, limitSetting, plateSetting, ridersList, reportRows] = await Promise.all([
       prisma.$queryRaw<any[]>`
         SELECT * FROM "PettyCashTransaction"
         ORDER BY "transactionDate" DESC, "createdAt" DESC
@@ -9581,6 +9698,10 @@ export async function getPettyCashDataAction(): Promise<{
       prisma.setting.findUnique({ where: { key: "pettyCashHolderLimits" } }),
       prisma.setting.findUnique({ where: { key: "pettyCashVehiclePlates" } }),
       prisma.rider.findMany({ where: { isActive: true }, select: { name: true, nickname: true, vehiclePlate: true } }),
+      prisma.$queryRaw<any[]>`
+        SELECT * FROM "PettyCashReplenishmentReport"
+        ORDER BY "submittedAt" DESC, "createdAt" DESC
+      `.catch(() => []),
     ]);
 
     let categories = DEFAULT_PETTY_CASH_CATEGORIES;
@@ -9636,12 +9757,32 @@ export async function getPettyCashDataAction(): Promise<{
     }
     const vehiclePlates = Array.from(plateSet);
 
+    const replenishmentReports = (reportRows || []).map((rep: any) => {
+      let expenseTxIds: string[] = [];
+      let categorySummary: Array<{ category: string; amount: number; count: number }> = [];
+      let slipUrls: string[] = [];
+      try { if (rep.expenseTxIds) expenseTxIds = JSON.parse(rep.expenseTxIds); } catch {}
+      try { if (rep.categorySummary) categorySummary = JSON.parse(rep.categorySummary); } catch {}
+      try { if (rep.slipUrls) slipUrls = JSON.parse(rep.slipUrls); } catch {}
+      return {
+        ...rep,
+        quotaLimit: Number(rep.quotaLimit) || 0,
+        currentBalanceAtSubmit: Number(rep.currentBalanceAtSubmit) || 0,
+        totalExpenseAmount: Number(rep.totalExpenseAmount) || 0,
+        requestedAmount: Number(rep.requestedAmount) || 0,
+        expenseTxIds: Array.isArray(expenseTxIds) ? expenseTxIds : [],
+        categorySummary: Array.isArray(categorySummary) ? categorySummary : [],
+        slipUrls: Array.isArray(slipUrls) ? slipUrls : [],
+      };
+    });
+
     return {
       success: true,
       transactions,
       categories,
       holderLimits,
       vehiclePlates,
+      replenishmentReports,
     };
   } catch (err: any) {
     console.error("[getPettyCashDataAction] Error:", err);
@@ -10200,6 +10341,325 @@ export async function savePettyCashHolderLimitAction(
   } catch (err: any) {
     console.error("[savePettyCashHolderLimitAction] Error:", err);
     return { success: false, error: err?.message || "Failed to save holder limit" };
+  }
+}
+
+export async function submitPettyCashReplenishmentReportAction(data: {
+  holderId: string;
+  holderName: string;
+  branchId?: string | null;
+  periodStart?: string | Date | null;
+  periodEnd?: string | Date | null;
+  quotaLimit: number;
+  currentBalanceAtSubmit: number;
+  totalExpenseAmount: number;
+  requestedAmount: number;
+  expenseTxIds: string[];
+  categorySummary: Array<{ category: string; amount: number; count: number }>;
+  note?: string;
+}): Promise<{ success: boolean; error?: string; report?: any }> {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    await ensurePettyCashTableExists();
+
+    if (!data.holderId || !data.holderName) {
+      return { success: false, error: "ไม่พบข้อมูลผู้ขอเบิกชดเชยเงินสดย่อย" };
+    }
+    const txIds = Array.from(new Set((data.expenseTxIds || []).filter(Boolean)));
+    if (txIds.length === 0) {
+      return { success: false, error: "กรุณาเลือกรายการใช้จ่ายอย่างน้อย 1 รายการเพื่อสรุป Report ขอเบิกเงินสดย่อย" };
+    }
+    const reqAmt = Math.round((Number(data.requestedAmount) || 0) * 100) / 100;
+    if (isNaN(reqAmt) || reqAmt <= 0) {
+      return { success: false, error: "ยอดขอเบิกชดเชยต้องมากกว่า 0 บาท" };
+    }
+
+    // Prevent duplicate submission of expense bills already attached to another active report
+    for (const txId of txIds) {
+      const existingTxRows: any[] = await prisma.$queryRaw`
+        SELECT "id", "replenishmentReportId" FROM "PettyCashTransaction"
+        WHERE "id" = ${txId}
+        LIMIT 1
+      `;
+      if (existingTxRows[0]?.replenishmentReportId) {
+        return {
+          success: false,
+          error: "มีบางรายการใช้จ่ายถูกส่งในใบสรุป Report อื่นไปแล้ว กรุณารีเฟรชหน้าแล้วเลือกใหม่",
+        };
+      }
+    }
+
+    const now = new Date();
+    const ym = `${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const likePattern = `PCR-${ym}-%`;
+    const existingReps: any[] = await prisma.$queryRaw`
+      SELECT "reportNumber" FROM "PettyCashReplenishmentReport"
+      WHERE "reportNumber" LIKE ${likePattern}
+    `;
+    let maxSeq = 0;
+    const regex = new RegExp(`^PCR-${ym}-(\\d+)$`);
+    for (const r of existingReps) {
+      const m = String(r.reportNumber || "").match(regex);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (!isNaN(n) && n > maxSeq) maxSeq = n;
+      }
+    }
+    const reportNumber = `PCR-${ym}-${String(maxSeq + 1).padStart(4, "0")}`;
+    const id = crypto.randomUUID();
+    const actorName = authUser.name || authUser.email || data.holderName;
+    const pStart = data.periodStart ? new Date(data.periodStart) : null;
+    const pEnd = data.periodEnd ? new Date(data.periodEnd) : null;
+    const quota = Math.round((Number(data.quotaLimit) || 0) * 100) / 100;
+    const curBal = Math.round((Number(data.currentBalanceAtSubmit) || 0) * 100) / 100;
+    const totExp = Math.round((Number(data.totalExpenseAmount) || 0) * 100) / 100;
+    const txIdsJson = JSON.stringify(txIds);
+    const catSumJson = JSON.stringify(Array.isArray(data.categorySummary) ? data.categorySummary : []);
+    const cleanNote = data.note?.trim() || null;
+
+    await prisma.$executeRaw`
+      INSERT INTO "PettyCashReplenishmentReport" (
+        "id", "reportNumber", "holderId", "holderName", "branchId",
+        "periodStart", "periodEnd", "quotaLimit", "currentBalanceAtSubmit",
+        "totalExpenseAmount", "requestedAmount", "expenseTxIds", "categorySummary",
+        "note", "status", "submittedById", "submittedByName", "submittedAt",
+        "createdAt", "updatedAt"
+      ) VALUES (
+        ${id}, ${reportNumber}, ${data.holderId}, ${data.holderName}, ${data.branchId || "HQ"},
+        ${pStart}, ${pEnd}, ${quota}, ${curBal},
+        ${totExp}, ${reqAmt}, ${txIdsJson}, ${catSumJson},
+        ${cleanNote}, 'PENDING_APPROVAL', ${authUser.id}, ${actorName}, ${now},
+        ${now}, ${now}
+      )
+    `;
+
+    for (const txId of txIds) {
+      await prisma.$executeRaw`
+        UPDATE "PettyCashTransaction"
+        SET "replenishmentReportId" = ${id}, "updatedAt" = ${now}
+        WHERE "id" = ${txId}
+      `;
+    }
+
+    await prisma.activityLog.create({
+      data: {
+        userId: authUser.id,
+        userName: actorName,
+        action: "PETTY_CASH_REPORT_SUBMIT",
+        entityType: "petty_cash_report",
+        entityId: id,
+        details: `[${reportNumber}] ส่งสรุป Report ขอเบิกชดเชยเงินสดย่อย ฿${reqAmt.toLocaleString()} (${txIds.length} บิล) ของ ${data.holderName}`,
+      },
+    }).catch(() => {});
+
+    return {
+      success: true,
+      report: {
+        id,
+        reportNumber,
+        holderId: data.holderId,
+        holderName: data.holderName,
+        branchId: data.branchId || "HQ",
+        requestedAmount: reqAmt,
+        totalExpenseAmount: totExp,
+        status: "PENDING_APPROVAL",
+      },
+    };
+  } catch (err: any) {
+    console.error("[submitPettyCashReplenishmentReportAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to submit replenishment report" };
+  }
+}
+
+export async function reviewPettyCashReplenishmentReportAction(data: {
+  reportId: string;
+  action: "APPROVE" | "APPROVE_AND_DISBURSE" | "REJECT";
+  approvedAmount?: number;
+  rejectReason?: string;
+  topupSourceAccount?: string;
+  sourceHolderId?: string;
+  sourceHolderName?: string;
+  sourceBranchId?: string | null;
+  slipUrls?: string[];
+  remark?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const role = (authUser.role || "").toLowerCase();
+    const canApprove =
+      role === "admin" ||
+      role === "superadmin" ||
+      role === "accounting" ||
+      (authUser.permissions || []).includes("approve-petty-cash");
+    if (!canApprove) {
+      return { success: false, error: "เฉพาะฝ่ายบัญชีหรือผู้ดูแลระบบเท่านั้นที่สามารถตรวจสอบและอนุมัติ Report เงินสดย่อยได้" };
+    }
+    await ensurePettyCashTableExists();
+
+    const rows: any[] = await prisma.$queryRaw`
+      SELECT * FROM "PettyCashReplenishmentReport"
+      WHERE "id" = ${data.reportId}
+      LIMIT 1
+    `;
+    const rep = rows[0];
+    if (!rep) {
+      return { success: false, error: "ไม่พบเอกสารสรุป Report ขอเบิกเงินสดย่อยนี้" };
+    }
+
+    if (rep.status === "DISBURSED" || rep.topupTxId) {
+      return {
+        success: false,
+        error: `เอกสารสรุป #${rep.reportNumber} ได้รับการโอนเติมเงินชดเชยเรียบร้อยแล้ว ไม่สามารถทำรายการซ้ำได้`,
+      };
+    }
+    if (rep.status === "REJECTED" && data.action !== "REJECT") {
+      return {
+        success: false,
+        error: `เอกสารสรุป #${rep.reportNumber} ถูกปฏิเสธไปแล้ว กรุณาให้ผู้ขอเบิกส่งใบสรุปใหม่`,
+      };
+    }
+
+    let txIds: string[] = [];
+    try { if (rep.expenseTxIds) txIds = JSON.parse(rep.expenseTxIds); } catch {}
+    const now = new Date();
+    const actorName = authUser.name || authUser.email || "Accounting";
+
+    if (data.action === "REJECT") {
+      const reason = data.rejectReason?.trim() || "ไม่ผ่านการอนุมัติจากฝ่ายบัญชี";
+      await prisma.$executeRaw`
+        UPDATE "PettyCashReplenishmentReport"
+        SET
+          "status" = 'REJECTED',
+          "reviewedById" = ${authUser.id},
+          "reviewedByName" = ${actorName},
+          "reviewedAt" = ${now},
+          "rejectReason" = ${reason},
+          "updatedAt" = ${now}
+        WHERE "id" = ${rep.id}
+      `;
+      // Unlink transactions so user can edit and re-submit a new report
+      for (const txId of txIds) {
+        await prisma.$executeRaw`
+          UPDATE "PettyCashTransaction"
+          SET "replenishmentReportId" = NULL, "updatedAt" = ${now}
+          WHERE "id" = ${txId} AND "replenishmentReportId" = ${rep.id}
+        `;
+      }
+      await prisma.activityLog.create({
+        data: {
+          userId: authUser.id,
+          userName: actorName,
+          action: "PETTY_CASH_REPORT_REJECTED",
+          entityType: "petty_cash_report",
+          entityId: rep.id,
+          details: `[${rep.reportNumber}] ปฏิเสธ Report ขอเบิกเงินสดย่อยของ ${rep.holderName} เหตุผล: ${reason}`,
+        },
+      }).catch(() => {});
+      return { success: true };
+    }
+
+    // 1. Approve all PENDING expense transactions included in this report
+    for (const txId of txIds) {
+      await prisma.$executeRaw`
+        UPDATE "PettyCashTransaction"
+        SET
+          "status" = 'APPROVED',
+          "approvedById" = ${authUser.id},
+          "approvedByName" = ${actorName},
+          "approvedAt" = ${now},
+          "updatedAt" = ${now}
+        WHERE "id" = ${txId} AND "status" = 'PENDING'
+      `;
+    }
+    await recalculateHolderPettyCashBalances(rep.holderId);
+
+    const finalAmount =
+      data.approvedAmount !== undefined && Number(data.approvedAmount) > 0
+        ? Math.round(Number(data.approvedAmount) * 100) / 100
+        : Number(rep.requestedAmount) || 0;
+
+    let createdTopupTxId: string | null = null;
+    let nextStatus = "APPROVED";
+    const slipList = Array.isArray(data.slipUrls) ? data.slipUrls : [];
+    const slipJson = JSON.stringify(slipList);
+    const channel = data.topupSourceAccount || "Bank Account";
+
+    // 2. If APPROVE_AND_DISBURSE, automatically create the Top-up / Transfer transaction
+    if (data.action === "APPROVE_AND_DISBURSE" && finalAmount > 0) {
+      const descText =
+        data.remark?.trim() ||
+        `Replenishment per Approved Report #${rep.reportNumber} (${txIds.length} bills)`;
+
+      if (channel === "Petty Cash Wallet" && data.sourceHolderId && data.sourceHolderId !== rep.holderId) {
+        const trRes = await transferPettyCashAction({
+          fromHolderId: data.sourceHolderId,
+          fromHolderName: data.sourceHolderName || actorName,
+          fromBranchId: data.sourceBranchId || "HQ",
+          toHolderId: rep.holderId,
+          toHolderName: rep.holderName,
+          toBranchId: rep.branchId || "HQ",
+          amount: finalAmount,
+          description: descText,
+          paymentMethod: "Transfer",
+          slipUrls: slipList,
+          transactionDate: now,
+        });
+        if (!trRes.success) {
+          return { success: false, error: trRes.error || "อนุมัติสำเร็จ แต่โอนเงินจากกระเป๋าต้นทางไม่สำเร็จ" };
+        }
+        createdTopupTxId = trRes.inId || trRes.outId || null;
+      } else {
+        const topupRes = await createPettyCashTransactionAction({
+          type: "TOPUP",
+          amount: finalAmount,
+          holderId: rep.holderId,
+          holderName: rep.holderName,
+          branchId: rep.branchId || "HQ",
+          category: `Company Top-up (${channel})`,
+          description: descText,
+          invoiceNo: rep.reportNumber,
+          paymentMethod: channel === "Cash" ? "Cash" : "Transfer",
+          slipUrls: slipList,
+          transactionDate: now,
+        });
+        if (!topupRes.success) {
+          return { success: false, error: topupRes.error || "อนุมัติสำเร็จ แต่สร้างรายการเติมเงินไม่สำเร็จ" };
+        }
+        createdTopupTxId = topupRes.id || null;
+      }
+      nextStatus = "DISBURSED";
+    }
+
+    await prisma.$executeRaw`
+      UPDATE "PettyCashReplenishmentReport"
+      SET
+        "status" = ${nextStatus},
+        "requestedAmount" = ${finalAmount},
+        "reviewedById" = ${authUser.id},
+        "reviewedByName" = ${actorName},
+        "reviewedAt" = ${now},
+        "topupTxId" = ${createdTopupTxId},
+        "topupChannel" = ${data.action === "APPROVE_AND_DISBURSE" ? channel : rep.topupChannel},
+        "slipUrls" = ${slipList.length > 0 ? slipJson : rep.slipUrls},
+        "updatedAt" = ${now}
+      WHERE "id" = ${rep.id}
+    `;
+
+    await prisma.activityLog.create({
+      data: {
+        userId: authUser.id,
+        userName: actorName,
+        action: `PETTY_CASH_REPORT_${nextStatus}`,
+        entityType: "petty_cash_report",
+        entityId: rep.id,
+        details: `[${rep.reportNumber}] ${nextStatus === "DISBURSED" ? "อนุมัติและโอนเติมเงินชดเชย" : "อนุมัติ Report"} ฿${finalAmount.toLocaleString()} ให้ ${rep.holderName}`,
+      },
+    }).catch(() => {});
+
+    return { success: true };
+  } catch (err: any) {
+    console.error("[reviewPettyCashReplenishmentReportAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to review replenishment report" };
   }
 }
 
@@ -10986,6 +11446,17 @@ export async function updateSupplyOrderStatusAction(
     vendorPoNumber?: string;
     trackingNumber?: string;
     estimatedDeliveryDate?: string;
+    deliveryNoteNumber?: string;
+    receiptImageUrls?: string[];
+    receivedNotes?: string;
+    pettyCashTxId?: string;
+    telegramSentAt?: string;
+    receivedItems?: {
+      id: string;
+      receivedQuantity: number;
+      actualUnitPrice?: number;
+      receiveNote?: string;
+    }[];
   }
 ) {
   try {
@@ -11012,10 +11483,16 @@ export async function updateSupplyOrderStatusAction(
     const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
     const { perms } = await getResolvedSupplyPermsForUser(authUser);
     const canProcess = isAdmin || perms.canProcessOrder;
+    const isSameBranchOrRequester =
+      order.requesterId === authUser.id ||
+      (authUser.branchId && order.branchId === authUser.branchId);
 
     if (!canProcess) {
-      if (status !== 'cancelled' || order.requesterId !== authUser.id || order.status !== 'pending') {
-        return { success: false, error: "Only authorized Order Processors (e.g. Admin / CSO) can process or update this order." };
+      const canBranchCancel = status === 'cancelled' && isSameBranchOrRequester && order.status === 'pending';
+      const canBranchReceive = status === 'completed' && isSameBranchOrRequester;
+      const canBranchUpdateMeta = status === order.status && isSameBranchOrRequester;
+      if (!canBranchCancel && !canBranchReceive && !canBranchUpdateMeta) {
+        return { success: false, error: "Only authorized Order Processors (e.g. Admin / CSO) or the destination branch can update this order." };
       }
     }
 
@@ -11031,6 +11508,33 @@ export async function updateSupplyOrderStatusAction(
     if (updates?.vendorPoNumber !== undefined) order.vendorPoNumber = updates.vendorPoNumber;
     if (updates?.trackingNumber !== undefined) order.trackingNumber = updates.trackingNumber;
     if (updates?.estimatedDeliveryDate !== undefined) order.estimatedDeliveryDate = updates.estimatedDeliveryDate;
+    if (updates?.deliveryNoteNumber !== undefined) order.deliveryNoteNumber = updates.deliveryNoteNumber;
+    if (updates?.receiptImageUrls !== undefined) order.receiptImageUrls = updates.receiptImageUrls;
+    if (updates?.receivedNotes !== undefined) order.receivedNotes = updates.receivedNotes;
+    if (updates?.pettyCashTxId !== undefined) order.pettyCashTxId = updates.pettyCashTxId;
+    if (updates?.telegramSentAt !== undefined) order.telegramSentAt = updates.telegramSentAt;
+
+    if (Array.isArray(updates?.receivedItems) && updates.receivedItems.length > 0) {
+      const recMap = new Map(updates.receivedItems.map((r) => [r.id, r]));
+      order.items = (order.items || []).map((it: any) => {
+        const matched = recMap.get(it.id) || (it.catalogItemId ? recMap.get(it.catalogItemId) : undefined);
+        if (!matched) return it;
+        return {
+          ...it,
+          receivedQuantity: Math.max(0, Number(matched.receivedQuantity) || 0),
+          actualUnitPrice:
+            matched.actualUnitPrice !== undefined
+              ? Math.max(0, Number(matched.actualUnitPrice) || 0)
+              : it.actualUnitPrice ?? it.estimatedPrice,
+          receiveNote: matched.receiveNote !== undefined ? matched.receiveNote : it.receiveNote,
+        };
+      });
+      order.actualTotalCost = (order.items || []).reduce((sum: number, it: any) => {
+        const q = it.receivedQuantity !== undefined ? Number(it.receivedQuantity) : Number(it.quantity) || 0;
+        const p = it.actualUnitPrice !== undefined ? Number(it.actualUnitPrice) : Number(it.estimatedPrice) || 0;
+        return sum + q * p;
+      }, 0);
+    }
 
     if (status === 'processing' || status === 'approved') {
       order.processedBy = authUser.id;
@@ -11040,6 +11544,7 @@ export async function updateSupplyOrderStatusAction(
       order.dispatchedAt = nowIso;
     } else if (status === 'completed') {
       order.completedAt = nowIso;
+      order.receivedByName = authUser.name || authUser.email || 'Branch Staff';
     }
 
     // Auto-increment Branch Stock when order transitions to 'completed' for the first time
@@ -11072,7 +11577,10 @@ export async function updateSupplyOrderStatusAction(
         for (const it of order.items || []) {
           const catalogId = it.catalogItemId || it.id;
           if (!catalogId) continue;
-          const qtyToAdd = Math.max(0, Number(it.quantity) || 0);
+          const qtyToAdd = Math.max(
+            0,
+            it.receivedQuantity !== undefined ? Number(it.receivedQuantity) : Number(it.quantity) || 0
+          );
           if (qtyToAdd <= 0) continue;
 
           const idx = stockList.findIndex(
@@ -11087,7 +11595,7 @@ export async function updateSupplyOrderStatusAction(
               quantity: nextQty,
               updatedAt: nowIso,
               updatedBy: authUser.name || authUser.email,
-              lastNote: `Auto-received from Order ${order.orderNumber} (+${qtyToAdd})`,
+              lastNote: `Verified & received from Order ${order.orderNumber} (+${qtyToAdd})${it.receiveNote ? ` [${it.receiveNote}]` : ''}`,
             };
           } else {
             stockList.push({
@@ -11097,11 +11605,14 @@ export async function updateSupplyOrderStatusAction(
               minStock: 2,
               updatedAt: nowIso,
               updatedBy: authUser.name || authUser.email,
-              lastNote: `Auto-received from Order ${order.orderNumber} (+${qtyToAdd})`,
+              lastNote: `Verified & received from Order ${order.orderNumber} (+${qtyToAdd})${it.receiveNote ? ` [${it.receiveNote}]` : ''}`,
             });
           }
 
-          const unitPrice = Number(it.estimatedPrice) || 0;
+          const unitPrice =
+            it.actualUnitPrice !== undefined
+              ? Number(it.actualUnitPrice) || 0
+              : Number(it.estimatedPrice) || 0;
           movements.unshift({
             id: `mov_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
             branchId: order.branchId,
@@ -11117,7 +11628,7 @@ export async function updateSupplyOrderStatusAction(
             previousQty: prevQty,
             newQty: nextQty,
             estimatedCostImpact: qtyToAdd * unitPrice,
-            note: `รับของเข้าสต็อกจากใบสั่งซื้อ ${order.orderNumber}`,
+            note: `ตรวจรับของเข้าสต็อกจากใบสั่งซื้อ ${order.orderNumber}${order.deliveryNoteNumber ? ` (บิล #${order.deliveryNoteNumber})` : ''}${it.receiveNote ? ` - ${it.receiveNote}` : ''}`,
             orderNumber: order.orderNumber,
             userId: authUser.id,
             userName: authUser.name || authUser.email || 'Admin',
@@ -11183,6 +11694,164 @@ export async function updateSupplyOrderStatusAction(
   } catch (err: any) {
     console.error("[updateSupplyOrderStatusAction] Error:", err);
     return { success: false, error: err?.message || "Failed to update supply order status" };
+  }
+}
+
+export async function sendSupplyOrderToTelegramAction(orderId: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const [orderSetting, convSetting, msgSetting, cfgSetting] = await Promise.all([
+      prisma.setting.findUnique({ where: { key: SUPPLY_ORDERS_SETTING_KEY } }),
+      prisma.setting.findUnique({ where: { key: "TLS_SOCIAL_CONVERSATIONS_V1" } }),
+      prisma.setting.findUnique({ where: { key: "TLS_SOCIAL_MESSAGES_V1" } }),
+      prisma.setting.findUnique({ where: { key: "TLS_SOCIAL_CONFIG_V1" } }),
+    ]);
+
+    let orders: any[] = [];
+    try { if (orderSetting?.value) orders = JSON.parse(orderSetting.value); } catch {}
+    const orderIdx = orders.findIndex((o: any) => o.id === orderId);
+    if (orderIdx === -1) {
+      return { success: false, error: "Supply order not found" };
+    }
+    const order = orders[orderIdx];
+
+    let conversations: any[] = [];
+    let messages: any[] = [];
+    let config: any = {};
+    try { if (convSetting?.value) conversations = JSON.parse(convSetting.value); } catch {}
+    try { if (msgSetting?.value) messages = JSON.parse(msgSetting.value); } catch {}
+    try { if (cfgSetting?.value) config = JSON.parse(cfgSetting.value); } catch {}
+
+    const lines = [
+      `🧾 PURCHASE ORDER / ใบสั่งเบิกวัสดุซักรีด`,
+      `📌 Order #: ${order.orderNumber} [${String(order.priority || 'normal').toUpperCase()}]`,
+      `🏪 Branch (สาขา): ${order.branchName}`,
+      `👤 Requested by: ${order.requesterName}${order.neededByDate ? ` (Needed by: ${order.neededByDate})` : ''}`,
+      order.vendorName ? `🏢 Vendor (ร้านค้า): ${order.vendorName}` : null,
+      order.vendorPoNumber ? `📄 PO #: ${order.vendorPoNumber}` : null,
+      `--------------------------------`,
+      ...(order.items || []).map(
+        (it: any, i: number) =>
+          `${i + 1}. ${it.name}${it.nameTh ? ` (${it.nameTh})` : ''} — ${it.quantity} ${it.unit}${
+            it.estimatedPrice ? ` (~฿${(Number(it.estimatedPrice) * Number(it.quantity)).toLocaleString()})` : ''
+          }`
+      ),
+      `--------------------------------`,
+      `📦 Total Units: ${order.totalItemsCount} units`,
+      `💰 Est. Total Cost: ฿${Number(order.totalEstimatedCost || 0).toLocaleString()}`,
+      order.notes ? `📝 Notes: ${order.notes}` : null,
+      order.adminNotes ? `🛡️ Admin Note: ${order.adminNotes}` : null,
+    ].filter(Boolean);
+
+    const poMessageText = lines.join('\n');
+    const nowIso = new Date().toISOString();
+
+    // Find existing Telegram conversation (preferring "Purchase Document" group)
+    let tgConvIdx = conversations.findIndex(
+      (c: any) =>
+        c.channel === 'telegram' &&
+        (String(c.contactName || '').toLowerCase().includes('purchase') ||
+          String(c.externalContactId || '').startsWith('-'))
+    );
+    if (tgConvIdx === -1) {
+      tgConvIdx = conversations.findIndex((c: any) => c.channel === 'telegram');
+    }
+
+    let tgConv: any;
+    if (tgConvIdx >= 0) {
+      tgConv = {
+        ...conversations[tgConvIdx],
+        lastMessageText: poMessageText,
+        lastMessageAt: nowIso,
+        lastMessageDirection: 'outbound',
+        updatedAt: nowIso,
+      };
+      conversations.splice(tgConvIdx, 1);
+      conversations.unshift(tgConv);
+    } else {
+      tgConv = {
+        id: `conv_tg_purchase_doc`,
+        channel: 'telegram',
+        externalContactId: '-1000000000000',
+        contactName: '👥 Purchase Document',
+        contactHandle: 'Telegram Group Chat',
+        status: 'open',
+        unreadCount: 0,
+        lastMessageText: poMessageText,
+        lastMessageAt: nowIso,
+        lastMessageDirection: 'outbound',
+        brand: 'that_laundry_shop',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      conversations.unshift(tgConv);
+    }
+
+    let deliveredViaBotApi = false;
+    const botToken = config?.telegram?.botToken?.trim();
+    const targetChatId = tgConv.externalContactId;
+    if (botToken && targetChatId && targetChatId !== '-1000000000000') {
+      try {
+        const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: targetChatId,
+            text: poMessageText,
+          }),
+        });
+        if (tgRes.ok) deliveredViaBotApi = true;
+      } catch (e) {
+        console.warn("[sendSupplyOrderToTelegramAction] Telegram API error:", e);
+      }
+    }
+
+    messages.push({
+      id: `msg_po_${Date.now()}`,
+      conversationId: tgConv.id,
+      channel: 'telegram',
+      direction: 'outbound',
+      text: poMessageText,
+      senderName: authUser.name || authUser.email || 'Admin',
+      senderId: authUser.id,
+      senderRole: authUser.role,
+      status: 'delivered',
+      deliveryMethod: deliveredViaBotApi ? 'telegram_bot_api' : 'social_api',
+      createdAt: nowIso,
+    });
+
+    order.telegramSentAt = nowIso;
+    order.updatedAt = nowIso;
+    orders[orderIdx] = order;
+
+    await Promise.all([
+      prisma.setting.upsert({
+        where: { key: SUPPLY_ORDERS_SETTING_KEY },
+        update: { value: JSON.stringify(orders) },
+        create: { key: SUPPLY_ORDERS_SETTING_KEY, value: JSON.stringify(orders) },
+      }),
+      prisma.setting.upsert({
+        where: { key: "TLS_SOCIAL_CONVERSATIONS_V1" },
+        update: { value: JSON.stringify(conversations.slice(0, 1000)) },
+        create: { key: "TLS_SOCIAL_CONVERSATIONS_V1", value: JSON.stringify(conversations.slice(0, 1000)) },
+      }),
+      prisma.setting.upsert({
+        where: { key: "TLS_SOCIAL_MESSAGES_V1" },
+        update: { value: JSON.stringify(messages.slice(-5000)) },
+        create: { key: "TLS_SOCIAL_MESSAGES_V1", value: JSON.stringify(messages.slice(-5000)) },
+      }),
+    ]);
+
+    return {
+      success: true,
+      order,
+      orders,
+      groupName: tgConv.contactName,
+      deliveredViaBotApi,
+    };
+  } catch (err: any) {
+    console.error("[sendSupplyOrderToTelegramAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to send supply order to Telegram" };
   }
 }
 

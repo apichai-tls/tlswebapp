@@ -28,6 +28,8 @@ import {
   Sparkles,
   Route,
   ExternalLink,
+  CheckCircle2,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -1509,6 +1511,16 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                         task.legType === "delivery" &&
                         ["picked_up", "billing", "active", "ready_to_wash"].includes(task.job.status);
 
+                      let cancelAlertInfo: any = null;
+                      if (task.job.adminNotesJson) {
+                        try {
+                          const parsedNotes = JSON.parse(task.job.adminNotesJson);
+                          if (parsedNotes?.riderCancelAlert && parsedNotes.riderCancelAlert.legType === task.legType) {
+                            cancelAlertInfo = parsedNotes.riderCancelAlert;
+                          }
+                        } catch {}
+                      }
+
                       return (
                         <div
                           key={task.taskId}
@@ -1555,6 +1567,16 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                               {isInProcessWash && (
                                 <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-sky-50 text-sky-700 border border-sky-200 shrink-0">
                                   กำลังซัก
+                                </span>
+                              )}
+
+                              {cancelAlertInfo && (
+                                <span
+                                  title={`Cancelled by ${cancelAlertInfo.riderName}: ${cancelAlertInfo.reason}`}
+                                  className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-black bg-rose-100 text-rose-800 border border-rose-300 shrink-0"
+                                >
+                                  <AlertTriangle size={9} className="text-rose-600 shrink-0" />
+                                  Cancelled (Rider ยกเลิก)
                                 </span>
                               )}
                             </div>
@@ -1853,6 +1875,16 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                               : Math.max(3, Math.round((task.distanceFromPrevKm || 0) * 2.4 + 4));
                             const isBeingDragged = draggedTask?.taskId === task.taskId;
                             const exp = task.expressInfo;
+                            let isLoadedOnVehicle = false;
+                            if (task.legType === "delivery" && task.job.adminNotesJson) {
+                              try {
+                                const parsedNotes = JSON.parse(task.job.adminNotesJson);
+                                isLoadedOnVehicle = Boolean(
+                                  parsedNotes?.deliveryLoadedOnVehicleAt ||
+                                  (Array.isArray(parsedNotes?.deliveryLoadedImageUrls) && parsedNotes.deliveryLoadedImageUrls.length > 0)
+                                );
+                              } catch {}
+                            }
 
                             return (
                               <div
@@ -1890,6 +1922,32 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                                     >
                                       {isPickup ? "Pickup" : "Delivery"}
                                     </span>
+                                    {!isPickup && isLoadedOnVehicle && (
+                                      <span
+                                        title="Loaded on Vehicle (เอาผ้าขึ้นรถแล้ว)"
+                                        className="inline-flex items-center justify-center p-0.5 rounded bg-teal-600 text-white shadow-2xs shrink-0"
+                                      >
+                                        <svg
+                                          xmlns="http://www.w3.org/2000/svg"
+                                          width="12"
+                                          height="12"
+                                          viewBox="0 0 24 24"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          strokeWidth="2.4"
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          className="shrink-0"
+                                        >
+                                          <path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14" />
+                                          <path d="m7.5 4.27 9 5.15" />
+                                          <polyline points="3.29 7 12 12 20.71 7" />
+                                          <line x1="12" x2="12" y1="22" y2="12" />
+                                          <path d="M19 22v-7" strokeWidth="2.8" />
+                                          <path d="m16 18 3-3 3 3" strokeWidth="2.8" />
+                                        </svg>
+                                      </span>
+                                    )}
                                     {exp?.isExpress && (
                                       <span
                                         className={`inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase shrink-0 ${

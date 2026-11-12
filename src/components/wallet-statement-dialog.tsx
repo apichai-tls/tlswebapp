@@ -353,11 +353,17 @@ export function WalletStatementDialog({
     setIsExportingPng(true);
     try {
       const html2canvas = (await import("html2canvas-pro")).default;
-      const canvas = await html2canvas(statementRef.current, {
+      const targetEl = statementRef.current;
+      const canvas = await html2canvas(targetEl, {
         scale: 2,
         useCORS: true,
         backgroundColor: "#ffffff",
         logging: false,
+        ignoreElements: (el) => {
+          if (el.tagName === "HEAD" || el.tagName === "STYLE" || el.tagName === "LINK" || el.closest?.("head")) return false;
+          if (targetEl.contains(el) || el.contains(targetEl)) return false;
+          return true;
+        },
       });
       const dataUrl = canvas.toDataURL("image/png");
       const link = document.createElement("a");

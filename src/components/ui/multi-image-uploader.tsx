@@ -185,7 +185,8 @@ function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 
           if (!blob) {
             return resolve(file);
           }
-          const compressedFile = new File([blob], file.name, {
+          const baseName = (file.name || "image").replace(/\.[^.]+$/, "");
+          const compressedFile = new File([blob], `${baseName}.jpg`, {
             type: "image/jpeg",
             lastModified: Date.now(),
           });
@@ -272,24 +273,20 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
             try {
               updateFileStatus(uploadData.id, { status: "uploading", progress: 10 });
 
-              const expectedContentType = uploadData.file.type.startsWith("image/")
-                ? "image/jpeg"
-                : uploadData.file.type || "image/jpeg";
-
-              // Compress image (1280px, 82% JPEG quality for fast upload) AND request Signed URL in parallel!
-              const [compressedFile, signedUrlResponse] = await Promise.all([
-                compressImage(uploadData.file, 1280, 1280, 0.82),
-                fetchWithUploadTimeout("/api/upload-url", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    entityType,
-                    entityId,
-                    subType,
-                    contentType: expectedContentType,
-                  }),
-                }).catch(() => null),
-              ]);
+              // Compress image first so signed URL always uses the exact final MIME type of compressedFile
+              const compressedFile = await compressImage(uploadData.file, 1280, 1280, 0.82);
+              const actualContentType = compressedFile.type || "image/jpeg";
+              const signedUrlResponse = await fetchWithUploadTimeout("/api/upload-url", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  entityType,
+                  entityId,
+                  subType,
+                  contentType: actualContentType,
+                  fileName: compressedFile.name,
+                }),
+              }).catch(() => null);
               let finalUrl = "";
 
               try {

@@ -103,9 +103,13 @@ export interface SupplyOrderItem {
   nameTh?: string;
   category: SupplyItemCategory;
   quantity: number;
+  receivedQuantity?: number; // actual verified quantity received on delivery
   unit: string;
   estimatedPrice?: number;
+  actualUnitPrice?: number;  // actual unit price per invoice on delivery
   notes?: string;
+  receiveNote?: string;      // shortage / damage note on delivery
+  imageUrl?: string;         // reference photo for custom item request
 }
 
 export interface SupplyOrder {
@@ -123,6 +127,7 @@ export interface SupplyOrder {
   items: SupplyOrderItem[];
   totalItemsCount: number;
   totalEstimatedCost: number;
+  actualTotalCost?: number;
   notes?: string;
   status: SupplyOrderStatus;
   adminNotes?: string;
@@ -131,6 +136,12 @@ export interface SupplyOrder {
   vendorPoNumber?: string;
   trackingNumber?: string;
   estimatedDeliveryDate?: string;
+  deliveryNoteNumber?: string;
+  receiptImageUrls?: string[];
+  receivedByName?: string;
+  receivedNotes?: string;
+  pettyCashTxId?: string;
+  telegramSentAt?: string;
   processedBy?: string;
   processedByName?: string;
   processedAt?: string;

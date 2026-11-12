@@ -26,17 +26,66 @@ export interface OptimizedRouteResult<T = any> {
 }
 
 /**
- * Returns the Express priority tier for a route task:
- * - 2: EXP 100% (Highest priority — customer paid +100% for fastest turnaround)
- * - 1: EXP 50% / Express (High priority — customer paid +50% for faster turnaround)
- * - 0: Standard order
+ * Checks whether a delivery task has already been loaded onto the rider's vehicle
+ * (confirmed with vehicle loading photo).
+ */
+export function isTaskLoadedOnVehicle(task: any): boolean {
+  if (!task) return false;
+  if (typeof task.isLoadedOnVehicle === "boolean") return task.isLoadedOnVehicle;
+
+  const legType = task.legType || task.type;
+  if (legType && legType !== "delivery") return false;
+
+  const job = task.job || task;
+  const adminNotesJson = job?.adminNotesJson;
+  if (!adminNotesJson || typeof adminNotesJson !== "string") return false;
+
+  try {
+    const parsed = JSON.parse(adminNotesJson);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return Boolean(
+        parsed.deliveryLoadedOnVehicleAt ||
+          (Array.isArray(parsed.deliveryLoadedImageUrls) && parsed.deliveryLoadedImageUrls.length > 0)
+      );
+    }
+  } catch {}
+  return false;
+}
+
+/**
+ * Checks whether a task is ready to be run immediately in the primary active pool:
+ * - Pickup tasks (`legType === "pickup"`) are always ready to run immediately.
+ * - Delivery tasks (`legType === "delivery"`) are ready to run once the laundry has been
+ *   loaded onto the vehicle (`isTaskLoadedOnVehicle(task)` is true).
+ *   Unloaded delivery tasks wait in the secondary pool after Group 1 (Pickup + Loaded Delivery).
+ */
+export function isTaskReadyToRunNow(task: any): boolean {
+  if (!task) return false;
+  const legType = task.legType || task.type;
+  if (legType === "pickup") return true;
+  if (legType === "delivery") return isTaskLoadedOnVehicle(task);
+  const job = task.job || task;
+  if (["pending", "accepted", "pickup"].includes(job?.status)) return true;
+  return isTaskLoadedOnVehicle(task);
+}
+
+/**
+ * Returns the route priority tier for a task:
+ * - Group 1 (+10 boost): Tasks ready to run immediately — ALL Pickup tasks AND Delivery tasks
+ *   whose laundry is already loaded onto the rider's vehicle (ขึ้นรถแล้ว).
+ *   Within Group 1, Pickup and Loaded Delivery tasks interleave and compete fairly using the
+ *   normal priority logic (EXP 100% -> EXP 50% -> Standard, then shortest distance or scheduled time).
+ * - Group 2 (+0 base): Unloaded Delivery tasks (รอถ่ายรูปขึ้นรถ) come after Group 1, and within
+ *   Group 2 also follow the normal priority logic (EXP 100% -> EXP 50% -> Standard).
  */
 export function getTaskExpressPriorityTier(task: any): number {
   if (!task) return 0;
   if (typeof task.priorityTier === "number") return task.priorityTier;
 
+  const readyBoost = isTaskReadyToRunNow(task) ? 10 : 0;
+
   if (task.expressInfo?.isExpress) {
-    return task.expressInfo.is100 ? 2 : 1;
+    return readyBoost + (task.expressInfo.is100 ? 2 : 1);
   }
 
   const job = task.job || task;
@@ -44,16 +93,16 @@ export function getTaskExpressPriorityTier(task: any): number {
   const remark = String(job?.remark || task?.remark || task?.title || "");
 
   if (speed === "express_100" || /express\s*100%|exp\s*100%/i.test(remark)) {
-    return 2;
+    return readyBoost + 2;
   }
   if (
     speed === "express_50" ||
     /express\s*50%|exp\s*50%|express\s*\d+%/i.test(remark) ||
     (speed && speed !== "standard" && speed.includes("express"))
   ) {
-    return 1;
+    return readyBoost + 1;
   }
-  return 0;
+  return readyBoost;
 }
 
 /**
@@ -119,7 +168,11 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
   const getEffectiveTier = (t: T): number => {
     const base = getTaskExpressPriorityTier(t);
     const jid = t.job?.id;
-    return jid ? Math.max(base, jobMaxTier.get(jid) ?? base) : base;
+    const legType = t.legType || (t as any).type;
+    if (legType === "pickup" && jid) {
+      return Math.max(base, jobMaxTier.get(jid) ?? base);
+    }
+    return base;
   };
 
   // Partition tasks into those with valid coordinates vs missing coordinates
@@ -286,12 +339,15 @@ export function optimizeRiderRoute<T extends { targetCoords?: LatLng | null; leg
     }
   }
 
-  // Insert any fallbackTasks (missing coordinates) at the end of their respective Express priority tier
+  // Insert any fallbackTasks (missing coordinates) at the end of their respective priority tier
   const finalSequence: T[] = [];
   if (fallbackTasks.length === 0) {
     finalSequence.push(...route);
   } else {
-    for (const tier of [2, 1, 0]) {
+    const distinctTiers = Array.from(
+      new Set([...route, ...fallbackTasks].map((t) => getEffectiveTier(t)))
+    ).sort((a, b) => b - a);
+    for (const tier of distinctTiers) {
       finalSequence.push(...route.filter((t) => getEffectiveTier(t) === tier));
       finalSequence.push(...fallbackTasks.filter((t) => getEffectiveTier(t) === tier));
     }

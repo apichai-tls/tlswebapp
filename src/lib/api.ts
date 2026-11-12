@@ -1792,6 +1792,53 @@ export const api = {
       delete cleanUpdates.billNo;
     }
 
+    const deduplicateAndSortBillUrls = (urls: string[]): string[] => {
+      const getBillUrlCanonicalKey = (u: string): string => {
+        const pfMatch = u.match(/proforma-(?:PR-)?([a-zA-Z0-9_-]+?-rev\d+\.png)/i);
+        if (pfMatch) return `pf:${pfMatch[1].toLowerCase()}`;
+        const rcMatch = u.match(/(receipt-[a-zA-Z0-9_-]+\.png)/i);
+        if (rcMatch) return `rc:${rcMatch[1].toLowerCase()}`;
+        return u.split('?')[0];
+      };
+      const getBillUrlVersionTs = (u: string): number => {
+        const vMatch = u.match(/[?&]v=(\d+)/);
+        return vMatch ? parseInt(vMatch[1], 10) : 0;
+      };
+      const byKey = new Map<string, string>();
+      for (const u of urls) {
+        if (typeof u !== 'string' || !u.trim()) continue;
+        const key = getBillUrlCanonicalKey(u);
+        const prev = byKey.get(key);
+        if (!prev) {
+          byKey.set(key, u);
+        } else {
+          const prevTs = getBillUrlVersionTs(prev);
+          const nextTs = getBillUrlVersionTs(u);
+          if (nextTs >= prevTs) {
+            byKey.set(key, u);
+          }
+        }
+      }
+      const merged = Array.from(byKey.values());
+      merged.sort((a, b) => {
+        const aIsPf = a.includes('proforma-');
+        const bIsPf = b.includes('proforma-');
+        if (aIsPf && !bIsPf) return -1;
+        if (!aIsPf && bIsPf) return 1;
+        if (aIsPf && bIsPf) {
+          const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
+          const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
+          return bRev - aRev;
+        }
+        const aIsRc = a.includes('receipt-');
+        const bIsRc = b.includes('receipt-');
+        if (aIsRc && !bIsRc) return 1;
+        if (!aIsRc && bIsRc) return -1;
+        return 0;
+      });
+      return merged;
+    };
+
     // Safely merge billImageUrl arrays so concurrent uploads do not overwrite each other in memory
     if (cleanUpdates.billImageUrl !== undefined && cleanUpdates.billImageUrl && existingJob.billImageUrl) {
       try {
@@ -1807,24 +1854,15 @@ export const api = {
           if (!isMediaOnly) {
             baseExisting = baseExisting.filter((u: string) => typeof u === 'string' && (u.includes('proforma-') || u.includes('receipt-')));
           }
-          const merged = Array.from(new Set([...baseExisting, ...incomingUrls]));
-          merged.sort((a, b) => {
-            const aIsPf = a.includes('proforma-');
-            const bIsPf = b.includes('proforma-');
-            if (aIsPf && !bIsPf) return -1;
-            if (!aIsPf && bIsPf) return 1;
-            if (aIsPf && bIsPf) {
-              const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
-              const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
-              return bRev - aRev;
-            }
-            const aIsRc = a.includes('receipt-');
-            const bIsRc = b.includes('receipt-');
-            if (aIsRc && !bIsRc) return 1;
-            if (!aIsRc && bIsRc) return -1;
-            return 0;
-          });
+          const merged = deduplicateAndSortBillUrls([...baseExisting, ...incomingUrls]);
           cleanUpdates.billImageUrl = JSON.stringify(merged);
+        }
+      } catch {}
+    } else if (cleanUpdates.billImageUrl !== undefined && cleanUpdates.billImageUrl) {
+      try {
+        const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
+        if (Array.isArray(incomingUrls)) {
+          cleanUpdates.billImageUrl = JSON.stringify(deduplicateAndSortBillUrls(incomingUrls));
         }
       } catch {}
     }
@@ -2004,6 +2042,53 @@ export const api = {
     }
     pendingFieldEdits.set(id, dirtySet);
 
+    const deduplicateAndSortBillUrls = (urls: string[]): string[] => {
+      const getBillUrlCanonicalKey = (u: string): string => {
+        const pfMatch = u.match(/proforma-(?:PR-)?([a-zA-Z0-9_-]+?-rev\d+\.png)/i);
+        if (pfMatch) return `pf:${pfMatch[1].toLowerCase()}`;
+        const rcMatch = u.match(/(receipt-[a-zA-Z0-9_-]+\.png)/i);
+        if (rcMatch) return `rc:${rcMatch[1].toLowerCase()}`;
+        return u.split('?')[0];
+      };
+      const getBillUrlVersionTs = (u: string): number => {
+        const vMatch = u.match(/[?&]v=(\d+)/);
+        return vMatch ? parseInt(vMatch[1], 10) : 0;
+      };
+      const byKey = new Map<string, string>();
+      for (const u of urls) {
+        if (typeof u !== 'string' || !u.trim()) continue;
+        const key = getBillUrlCanonicalKey(u);
+        const prev = byKey.get(key);
+        if (!prev) {
+          byKey.set(key, u);
+        } else {
+          const prevTs = getBillUrlVersionTs(prev);
+          const nextTs = getBillUrlVersionTs(u);
+          if (nextTs >= prevTs) {
+            byKey.set(key, u);
+          }
+        }
+      }
+      const merged = Array.from(byKey.values());
+      merged.sort((a, b) => {
+        const aIsPf = a.includes('proforma-');
+        const bIsPf = b.includes('proforma-');
+        if (aIsPf && !bIsPf) return -1;
+        if (!aIsPf && bIsPf) return 1;
+        if (aIsPf && bIsPf) {
+          const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
+          const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
+          return bRev - aRev;
+        }
+        const aIsRc = a.includes('receipt-');
+        const bIsRc = b.includes('receipt-');
+        if (aIsRc && !bIsRc) return 1;
+        if (!aIsRc && bIsRc) return -1;
+        return 0;
+      });
+      return merged;
+    };
+
     if (cleanUpdates.billImageUrl !== undefined && cleanUpdates.billImageUrl && existingJob.billImageUrl) {
       try {
         const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
@@ -2018,24 +2103,15 @@ export const api = {
           if (!isMediaOnly) {
             baseExisting = baseExisting.filter((u: string) => typeof u === 'string' && (u.includes('proforma-') || u.includes('receipt-')));
           }
-          const merged = Array.from(new Set([...baseExisting, ...incomingUrls]));
-          merged.sort((a, b) => {
-            const aIsPf = a.includes('proforma-');
-            const bIsPf = b.includes('proforma-');
-            if (aIsPf && !bIsPf) return -1;
-            if (!aIsPf && bIsPf) return 1;
-            if (aIsPf && bIsPf) {
-              const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
-              const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
-              return bRev - aRev;
-            }
-            const aIsRc = a.includes('receipt-');
-            const bIsRc = b.includes('receipt-');
-            if (aIsRc && !bIsRc) return 1;
-            if (!aIsRc && bIsRc) return -1;
-            return 0;
-          });
+          const merged = deduplicateAndSortBillUrls([...baseExisting, ...incomingUrls]);
           cleanUpdates.billImageUrl = JSON.stringify(merged);
+        }
+      } catch {}
+    } else if (cleanUpdates.billImageUrl !== undefined && cleanUpdates.billImageUrl) {
+      try {
+        const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
+        if (Array.isArray(incomingUrls)) {
+          cleanUpdates.billImageUrl = JSON.stringify(deduplicateAndSortBillUrls(incomingUrls));
         }
       } catch {}
     }

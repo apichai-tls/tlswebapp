@@ -1428,6 +1428,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     setPromoCodeInput("");
     setAppliedPromo(null);
     setPromoError(null);
+    setUserDismissedPromo(false);
     setDeliveryScheduledTime(getTomorrowDateTimeString());
     setReceivedCash("");
     setLocalDeliveryPrice("");
@@ -1517,10 +1518,25 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const autoApplyVoucher = settings?.posAutoApplyVoucher === "true";
   const [userDismissedPromo, setUserDismissedPromo] = useState<boolean>(false);
 
-  // Reset user dismissed state when customer changes
+  const isPosAutoPromoDismissed = useMemo(() => {
+    if (userDismissedPromo) return true;
+    if (!loadedJobId) return false;
+    const loadedJob = jobs.find(j => j.id === loadedJobId);
+    if (!loadedJob?.adminNotesJson) return false;
+    try {
+      const parsed = JSON.parse(loadedJob.adminNotesJson);
+      return Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.dismissedAutoPromo);
+    } catch {
+      return false;
+    }
+  }, [userDismissedPromo, loadedJobId, jobs]);
+
+  // Reset user dismissed state when customer changes on a new (unloaded) cart
   useEffect(() => {
-    setUserDismissedPromo(false);
-  }, [selectedCustomer?.id]);
+    if (!loadedJobId) {
+      setUserDismissedPromo(false);
+    }
+  }, [selectedCustomer?.id, loadedJobId]);
 
   // Cashier Shift States (Branch-scoped: all staff in the same branch share the branch's active shift)
   const { activeShift: rawUserShift, branchActiveShift, allOpenShifts: storeOpenShifts, hasLoaded: hasLoadedShift } = useSyncExternalStore(
@@ -2429,7 +2445,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   // Auto-apply Instant Service Promo Campaign in POS (e.g., 11.11 WIF120 when WASH/IRON >= 4 Kg)
   useEffect(() => {
-    if (isPaidJob || appliedPromo || promoLoading || userDismissedPromo) return;
+    if (isPaidJob || appliedPromo || promoLoading || isPosAutoPromoDismissed) return;
     if (!selectedCustomer || cart.length === 0) return;
 
     for (const c of activePromoCampaigns) {
@@ -2478,6 +2494,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     appliedPromo,
     promoLoading,
     userDismissedPromo,
+    isPosAutoPromoDismissed,
     selectedCustomer,
     cart,
     activePromoCampaigns,
@@ -2491,7 +2508,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   // Auto-apply best eligible voucher when enabled
   useEffect(() => {
     if (!autoApplyVoucher || isPaidJob) return;
-    if (appliedPromo || promoLoading || userDismissedPromo) return;
+    if (appliedPromo || promoLoading || isPosAutoPromoDismissed) return;
     if (!selectedCustomer?.id || availableCoupons.length === 0 || cart.length === 0) return;
 
     const deliveryFee = Number(localDeliveryPrice) || 0;
@@ -2554,6 +2571,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     appliedPromo,
     promoLoading,
     userDismissedPromo,
+    isPosAutoPromoDismissed,
     selectedCustomer?.id,
     availableCoupons,
     cart,
@@ -2597,7 +2615,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   }, [selectedCustomer, cart]);
 
   const hasEligibleMemberInstantPromo = useMemo(() => {
-    if (isPaidJob) return false;
+    if (isPaidJob || isPosAutoPromoDismissed) return false;
     if (!selectedCustomer?.isMember) return false;
     if (cart.length === 0) return false;
     for (const c of activePromoCampaigns) {
@@ -2609,7 +2627,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       if (calc.meetsMinQuantity && calc.discountAmount > 0) return true;
     }
     return false;
-  }, [isPaidJob, selectedCustomer?.isMember, cart, activePromoCampaigns]);
+  }, [isPaidJob, isPosAutoPromoDismissed, selectedCustomer?.isMember, cart, activePromoCampaigns]);
 
   const forceMemberPayment = useMemo(() => {
     if (hasEligibleMemberInstantPromo) return false;
@@ -3122,12 +3140,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       const loadedJob = jobs.find(j => j.id === loadedJobId);
       let existingPayments: any[] = [];
       let existingNotes: any[] = [];
+      let existingNotesObj: Record<string, any> = {};
       if (loadedJob && loadedJob.adminNotesJson) {
         try {
           const parsed = JSON.parse(loadedJob.adminNotesJson);
           if (Array.isArray(parsed)) {
             existingNotes = parsed;
           } else if (parsed && typeof parsed === "object") {
+            existingNotesObj = parsed;
             if (Array.isArray(parsed.payments)) existingPayments = parsed.payments;
             if (Array.isArray(parsed.notes)) existingNotes = parsed.notes;
           }
@@ -3193,9 +3213,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       }
 
 
-      const paymentsJsonStr = existingNotes.length > 0
-        ? JSON.stringify({ payments: finalPayments, notes: existingNotes })
-        : JSON.stringify({ payments: finalPayments });
+      const isDismissedAutoPromoToSave = Boolean(
+        !appliedPromo && !promoCodeInput.trim() && (userDismissedPromo || existingNotesObj?.dismissedAutoPromo)
+      );
+      const paymentsJsonStr = JSON.stringify({
+        ...existingNotesObj,
+        payments: finalPayments,
+        ...(existingNotes.length > 0 ? { notes: existingNotes } : {}),
+        dismissedAutoPromo: isDismissedAutoPromoToSave,
+      });
 
       const isDelivery = Boolean(deliveryServiceType);
       const isPickupAndDelivery = deliveryServiceType === "both";
@@ -6003,6 +6029,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         const checked = e.target.checked;
                         setShowDiscount(checked);
                         if (!checked) {
+                          if (appliedPromo || promoCodeInput.trim()) {
+                            setUserDismissedPromo(true);
+                          }
                           setDiscountPercent(0);
                           setManualAdjustment(0);
                           setAppliedPromo(null);
@@ -6502,6 +6531,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                                 setAppliedPromo(null);
                                 setPromoError(null);
                               }
+
+                              let recalledDismissedPromo = false;
+                              if (job.adminNotesJson) {
+                                try {
+                                  const parsedNotes = JSON.parse(job.adminNotesJson);
+                                  if (parsedNotes && typeof parsedNotes === "object" && !Array.isArray(parsedNotes)) {
+                                    recalledDismissedPromo = Boolean(parsedNotes.dismissedAutoPromo);
+                                  }
+                                } catch {}
+                              }
+                              setUserDismissedPromo(recalledDismissedPromo);
 
                               const promoAmt = hasValidPromo ? pAmount : 0;
                               const baseTotalForDiscount = cartItems.reduce((sum: number, item: any) => {

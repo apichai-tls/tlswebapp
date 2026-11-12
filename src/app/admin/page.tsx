@@ -73,6 +73,7 @@ import { AdminSuppliesOrders } from "@/components/admin-supplies-orders";
 import { AdminSocialInbox } from "@/components/admin-social-inbox";
 import { FitScreenToggle } from "@/components/fit-screen-toggle";
 import { NotificationBell } from "@/components/notification-bell";
+import { RiderCancelAlertModal } from "@/components/rider-cancel-alert-modal";
 import { TopUpDialog } from "@/components/top-up-dialog";
 import { RefundCorrectDialog } from "@/components/refund-correct-dialog";
 import { SplitPaymentDialog, type SplitPaymentLine } from "@/components/split-payment-dialog";
@@ -1695,6 +1696,7 @@ function AdminPageContent() {
   } | null>(null);
   const [promoLoading, setPromoLoading] = useState<boolean>(false);
   const [promoError, setPromoError] = useState<string | null>(null);
+  const [userDismissedPromo, setUserDismissedPromo] = useState<boolean>(false);
 
   useEffect(() => {
     if (dialogOpen) {
@@ -1728,8 +1730,21 @@ function AdminPageContent() {
     );
   }, [selectedProfileCustomer, dialogCart, isRewashJob]);
 
+  const isJobAutoPromoDismissed = useMemo(() => {
+    if (userDismissedPromo) return true;
+    if (!editingJobId) return false;
+    const rawNotes = activeJob?.adminNotesJson || (originalJobRef.current as any)?.adminNotesJson;
+    if (!rawNotes) return false;
+    try {
+      const parsed = typeof rawNotes === "string" ? JSON.parse(rawNotes) : rawNotes;
+      return Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.dismissedAutoPromo);
+    } catch {
+      return false;
+    }
+  }, [userDismissedPromo, editingJobId, activeJob?.adminNotesJson]);
+
   const hasEligibleMemberInstantPromo = useMemo(() => {
-    if (isRewashJob || isPaidJob) return false;
+    if (isRewashJob || isPaidJob || isJobAutoPromoDismissed) return false;
     if (!selectedProfileCustomer?.isMember) return false;
     if (dialogCart.length === 0) return false;
     const nowBkkStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
@@ -1750,7 +1765,7 @@ function AdminPageContent() {
       if (calc.meetsMinQuantity && calc.discountAmount > 0) return true;
     }
     return false;
-  }, [isRewashJob, isPaidJob, selectedProfileCustomer?.isMember, dialogCart, pickupScheduledTime, promoCampaigns]);
+  }, [isRewashJob, isPaidJob, isJobAutoPromoDismissed, selectedProfileCustomer?.isMember, dialogCart, pickupScheduledTime, promoCampaigns]);
 
   const forceMemberPaymentDialog = useMemo(() => {
     if (hasEligibleMemberInstantPromo) return false;
@@ -2290,6 +2305,7 @@ function AdminPageContent() {
     setPromoCodeInput("");
     setAppliedPromo(null);
     setPromoError(null);
+    setUserDismissedPromo(false);
     setShowDialogDiscount(false);
     setDialogDiscountPercent(0);
     setDbCustomerJobs([]);
@@ -2386,6 +2402,7 @@ function AdminPageContent() {
     setPromoCodeInput("");
     setAppliedPromo(null);
     setPromoError(null);
+    setUserDismissedPromo(false);
     const defaultVatType = (systemSettings?.vatType as any) || "none";
     const defaultVatRate = parseFloat(systemSettings?.vatRate || "7") || 7;
     setDialogVatType(defaultVatType);
@@ -2961,13 +2978,14 @@ function AdminPageContent() {
     }
   };
 
-  // Auto-apply best eligible voucher in admin order dialog when enabled in settings
-  const [userDismissedPromo, setUserDismissedPromo] = useState<boolean>(false);
-
-  // Reset user dismissed state when customer or modal state changes
+  // Reset user dismissed state when modal closes or when switching customer on a new (unsaved) job
   useEffect(() => {
-    setUserDismissedPromo(false);
-  }, [selectedProfileCustomer?.id, dialogOpen]);
+    if (!dialogOpen) {
+      setUserDismissedPromo(false);
+    } else if (!editingJobId) {
+      setUserDismissedPromo(false);
+    }
+  }, [selectedProfileCustomer?.id, dialogOpen, editingJobId]);
 
   // Auto-clear Instant Service Campaign promo if cart quantity drops below minQuantity
   useEffect(() => {
@@ -2987,7 +3005,7 @@ function AdminPageContent() {
   // Auto-apply Instant Service Promo Campaign (e.g., 11.11 WIF120 when WASH/IRON >= 4 Kg)
   useEffect(() => {
     if (!dialogOpen || isPaidJob || isRewashJob) return;
-    if (appliedPromo || promoLoading || userDismissedPromo) return;
+    if (appliedPromo || promoLoading || isJobAutoPromoDismissed) return;
     if (dialogCart.length === 0) return;
 
     const custId = selectedProfileCustomer?.id;
@@ -3052,6 +3070,7 @@ function AdminPageContent() {
     appliedPromo,
     promoLoading,
     userDismissedPromo,
+    isJobAutoPromoDismissed,
     dialogCart,
     selectedProfileCustomer,
     customerPhone,
@@ -3069,7 +3088,7 @@ function AdminPageContent() {
   useEffect(() => {
     const isAutoApply = systemSettings?.posAutoApplyVoucher === "true";
     if (!isAutoApply || isPaidJob) return;
-    if (appliedPromo || promoLoading || userDismissedPromo) return;
+    if (appliedPromo || promoLoading || isJobAutoPromoDismissed) return;
     if (!selectedProfileCustomer?.id || dialogAvailableCoupons.length === 0 || dialogCart.length === 0) return;
 
     const deliveryFee = fee || 0;
@@ -3136,6 +3155,7 @@ function AdminPageContent() {
     appliedPromo,
     promoLoading,
     userDismissedPromo,
+    isJobAutoPromoDismissed,
     selectedProfileCustomer?.id,
     dialogAvailableCoupons,
     dialogCart,
@@ -3221,7 +3241,15 @@ function AdminPageContent() {
             orig.isPaid = Boolean(fresh.isPaid);
             orig.isShopPaid = Boolean(fresh.isShopPaid);
             if (fresh.paymentChannel !== undefined) orig.paymentChannel = fresh.paymentChannel;
-            if (fresh.adminNotesJson !== undefined) orig.adminNotesJson = fresh.adminNotesJson;
+            if (fresh.adminNotesJson !== undefined) {
+              orig.adminNotesJson = fresh.adminNotesJson;
+              try {
+                const freshParsed = fresh.adminNotesJson ? JSON.parse(fresh.adminNotesJson) : null;
+                if (freshParsed && typeof freshParsed === "object" && !Array.isArray(freshParsed) && freshParsed.dismissedAutoPromo) {
+                  setUserDismissedPromo(true);
+                }
+              } catch {}
+            }
             if (fresh.billNo !== undefined) orig.billNo = fresh.billNo;
             if (paidChanged) {
               setPaymentMethod(fresh.isPaid ? "paid" : "unpaid");
@@ -3235,6 +3263,16 @@ function AdminPageContent() {
     originalJobRef.current = JSON.parse(JSON.stringify(job));
     editingJobIdRef.current = job.id;
     setEditingJobId(job.id);
+    let initialDismissedAutoPromo = false;
+    if (job.adminNotesJson) {
+      try {
+        const parsedNotes = JSON.parse(job.adminNotesJson);
+        if (parsedNotes && typeof parsedNotes === "object" && !Array.isArray(parsedNotes)) {
+          initialDismissedAutoPromo = Boolean(parsedNotes.dismissedAutoPromo);
+        }
+      } catch {}
+    }
+    setUserDismissedPromo(initialDismissedAutoPromo);
     setDialogDiscountPercent(job.discountPercent || 0);
     const hasDiscountOn = job.remark ? job.remark.includes("Discount: on") : false;
     const promoMatch = job.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\))?/i);
@@ -3651,7 +3689,22 @@ function AdminPageContent() {
         return [];
       };
 
-      return flattenAndResolve(imgUrl).filter(Boolean);
+      const rawList = flattenAndResolve(imgUrl).filter(Boolean);
+      const byKey = new globalThis.Map<string, string>();
+      for (const u of rawList) {
+        const pfMatch = u.match(/proforma-(?:PR-)?([a-zA-Z0-9_-]+?-rev\d+\.png)/i);
+        const rcMatch = !pfMatch ? u.match(/(receipt-[a-zA-Z0-9_-]+\.png)/i) : null;
+        const key = pfMatch ? `pf:${pfMatch[1].toLowerCase()}` : rcMatch ? `rc:${rcMatch[1].toLowerCase()}` : u.split("?")[0];
+        const prev = byKey.get(key);
+        if (!prev) {
+          byKey.set(key, u);
+        } else {
+          const prevV = parseInt((prev.match(/[?&]v=(\d+)/) || [])[1] || "0", 10);
+          const nextV = parseInt((u.match(/[?&]v=(\d+)/) || [])[1] || "0", 10);
+          if (nextV >= prevV) byKey.set(key, u);
+        }
+      }
+      return Array.from(byKey.values());
     };
 
     // 🚀 Load images INSTANTLY from the local in-memory job object
@@ -4402,6 +4455,9 @@ function AdminPageContent() {
         }
 
         const cleanLogs = finalAdminLogs.map(({ isNew, ...rest }) => rest);
+        const isDismissedAutoPromoToSave = Boolean(
+          !appliedPromo && !promoCodeInput.trim() && (userDismissedPromo || existingParsedNotes?.dismissedAutoPromo)
+        );
         const notesObj: any = {
           ...existingParsedNotes,
           notes: cleanLogs,
@@ -4415,6 +4471,7 @@ function AdminPageContent() {
           contactChannel: dialogContactChannel || existingParsedNotes?.contactChannel || null,
           customerLineId: dialogLineProfileId.trim() || existingParsedNotes?.customerLineId || null,
           customerWhatsappId: dialogWhatsappId.trim() || existingParsedNotes?.customerWhatsappId || null,
+          dismissedAutoPromo: isDismissedAutoPromoToSave,
         };
         if (isPayment) {
           notesObj.shopPaidBy = user?.name || user?.email || "Admin";
@@ -4501,7 +4558,7 @@ function AdminPageContent() {
           }
 
           const normAdminNotes = (raw: any) => {
-            if (!raw) return JSON.stringify({ notes: [], payments: [], isTaxInvoiceRequested: false, isRewash: false, rewashFromJobId: null, noRiderCommission: false, hangerCount: 0, foldedCount: 0, processingBranchId: null });
+            if (!raw) return JSON.stringify({ notes: [], payments: [], isTaxInvoiceRequested: false, isRewash: false, rewashFromJobId: null, noRiderCommission: false, hangerCount: 0, foldedCount: 0, processingBranchId: null, dismissedAutoPromo: false });
             try {
               const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
               const notes = (Array.isArray(p) ? p : (Array.isArray(p?.notes) ? p.notes : [])).map(({ isNew, ...rest }: any) => rest);
@@ -4516,7 +4573,8 @@ function AdminPageContent() {
               const contactChannelVal = p?.contactChannel ?? orig._initialContactChannel ?? null;
               const customerLineIdVal = p?.customerLineId ?? orig._initialLineId ?? null;
               const customerWhatsappIdVal = p?.customerWhatsappId ?? orig._initialWhatsappId ?? null;
-              return JSON.stringify({ notes, payments, isTaxInvoiceRequested: isTax, isRewash, rewashFromJobId, noRiderCommission, hangerCount: hangerCountVal, foldedCount: foldedCountVal, processingBranchId: processingBranchIdVal, contactChannel: contactChannelVal, customerLineId: customerLineIdVal, customerWhatsappId: customerWhatsappIdVal });
+              const dismissedAutoPromoVal = Boolean(p?.dismissedAutoPromo);
+              return JSON.stringify({ notes, payments, isTaxInvoiceRequested: isTax, isRewash, rewashFromJobId, noRiderCommission, hangerCount: hangerCountVal, foldedCount: foldedCountVal, processingBranchId: processingBranchIdVal, contactChannel: contactChannelVal, customerLineId: customerLineIdVal, customerWhatsappId: customerWhatsappIdVal, dismissedAutoPromo: dismissedAutoPromoVal });
             } catch {
               return String(raw);
             }
@@ -4898,17 +4956,26 @@ function AdminPageContent() {
               walletBalanceAfter: undefined,
             };
             const baseBillsForCapture = [...safeBillUrls];
-            // Offload to microtask so it doesn't block dialog close
-            Promise.resolve().then(async () => {
+            // Defer until after modal closes & unmounts so it never contends with UI teardown
+            setTimeout(async () => {
+              const proformaFilename = `proforma-${finalProformaNum}-rev${finalRevision}.png`;
               try {
+                const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
                 const { uploadReceiptImage, generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
+                if (!markReceiptCaptureStarted(proformaFilename)) return;
                 const proformaBlob = systemSettings?.receiptPaperSize === "A5"
-                  ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaCapData, activeShop)
+                  ? await generateA5ReceiptImage(proformaCapData, activeShop)
                   : await generateThermalReceiptImage(proformaCapData, activeShop);
-                if (proformaBlob) {
-                  const proformaFilename = `proforma-${finalProformaNum}-rev${finalRevision}.png`;
-                  const proformaUrl = await uploadReceiptImage(proformaBlob, targetEditingJobId, proformaFilename);
-                  if (proformaUrl) {
+                if (!proformaBlob) {
+                  clearReceiptCaptureLock(proformaFilename);
+                  return;
+                }
+                const proformaUrl = await uploadReceiptImage(proformaBlob, targetEditingJobId, proformaFilename);
+                if (!proformaUrl) {
+                  clearReceiptCaptureLock(proformaFilename);
+                  return;
+                }
+                if (proformaUrl) {
                     const capturedUrl = proformaUrl;
                     const cleanBase = finalProformaNum;
                     const sortBills = (arr: string[]) => {
@@ -4957,12 +5024,11 @@ function AdminPageContent() {
                         return sortBills(Array.from(new Set([capturedUrl, ...filtered])));
                       });
                     }
-                  }
                 }
               } catch (e) {
                 console.warn("[AutoProforma] Background proforma capture failed:", e);
               }
-            });
+            }, 150);
           }
         }
 
@@ -4971,7 +5037,7 @@ function AdminPageContent() {
         if (isPayment && isShopPaidNow && hasActualItems) {
           const receiptFilename = `receipt-${targetEditingJobId}.png`;
           const baseBillsForRec = [...safeBillUrls];
-          Promise.resolve().then(async () => {
+          setTimeout(async () => {
             try {
               const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
               const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
@@ -5036,7 +5102,7 @@ function AdminPageContent() {
             } catch (e) {
               console.warn("[AutoReceipt] Background existing-job receipt capture failed:", e);
             }
-          });
+          }, 150);
         }
 
         // 4. Close dialog ONLY AFTER DB save succeeds!
@@ -5238,39 +5304,47 @@ function AdminPageContent() {
             walletBalanceAfter: undefined,
           };
           const capturedSavedJobId = savedJobId;
-          Promise.resolve().then(async () => {
+          setTimeout(async () => {
+            const proformaFilename = `proforma-${autoProformaNum}-rev0.png`;
             try {
+              const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
               const { uploadReceiptImage, generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
+              if (!markReceiptCaptureStarted(proformaFilename)) return;
               const proformaBlob = systemSettings?.receiptPaperSize === "A5"
-                ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaCapData, activeShop)
+                ? await generateA5ReceiptImage(proformaCapData, activeShop)
                 : await generateThermalReceiptImage(proformaCapData, activeShop);
-              if (proformaBlob) {
-                const proformaFilename = `proforma-${autoProformaNum}-rev0.png`;
-                const proformaUrl = await uploadReceiptImage(proformaBlob, capturedSavedJobId, proformaFilename);
-                if (proformaUrl) {
-                  const capturedUrl = proformaUrl;
-                  const currentTargetJob = jobStore.getSnapshot().find(j => j.id === capturedSavedJobId);
-                  let targetCurrentBills = [...safeNewBillUrls];
-                  try {
-                    if (currentTargetJob?.billImageUrl) {
-                      const parsed = JSON.parse(currentTargetJob.billImageUrl);
-                      if (Array.isArray(parsed)) targetCurrentBills = parsed;
-                    }
-                  } catch {}
-                  const nextTargetBills = targetCurrentBills.includes(capturedUrl)
-                    ? targetCurrentBills
-                    : [capturedUrl, ...targetCurrentBills];
-                  jobStore.updateJobDetails(capturedSavedJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any).catch(() => {});
-
-                  if (editingJobIdRef.current === capturedSavedJobId) {
-                    setBillImageUrls(prev => prev.includes(capturedUrl) ? prev : [capturedUrl, ...prev]);
+              if (!proformaBlob) {
+                clearReceiptCaptureLock(proformaFilename);
+                return;
+              }
+              const proformaUrl = await uploadReceiptImage(proformaBlob, capturedSavedJobId, proformaFilename);
+              if (!proformaUrl) {
+                clearReceiptCaptureLock(proformaFilename);
+                return;
+              }
+              if (proformaUrl) {
+                const capturedUrl = proformaUrl;
+                const currentTargetJob = jobStore.getSnapshot().find(j => j.id === capturedSavedJobId);
+                let targetCurrentBills = [...safeNewBillUrls];
+                try {
+                  if (currentTargetJob?.billImageUrl) {
+                    const parsed = JSON.parse(currentTargetJob.billImageUrl);
+                    if (Array.isArray(parsed)) targetCurrentBills = parsed;
                   }
+                } catch {}
+                const nextTargetBills = targetCurrentBills.includes(capturedUrl)
+                  ? targetCurrentBills
+                  : [capturedUrl, ...targetCurrentBills];
+                jobStore.updateJobDetails(capturedSavedJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any).catch(() => {});
+
+                if (editingJobIdRef.current === capturedSavedJobId) {
+                  setBillImageUrls(prev => prev.includes(capturedUrl) ? prev : [capturedUrl, ...prev]);
                 }
               }
             } catch (e) {
               console.warn("[AutoProforma] Background new-job proforma capture failed:", e);
             }
-          });
+          }, 150);
         }
 
         // Update local customer state if wallet was pre-deducted
@@ -5317,7 +5391,7 @@ function AdminPageContent() {
           const capturedNewJobId = savedJobId;
           const receiptFilename = `receipt-${capturedNewJobId}.png`;
           const baseNewBills = [...safeNewBillUrls];
-          Promise.resolve().then(async () => {
+          setTimeout(async () => {
             try {
               const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
               const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
@@ -5379,7 +5453,7 @@ function AdminPageContent() {
             } catch (e) {
               console.warn("[AutoReceipt] Background new-job receipt capture failed:", e);
             }
-          });
+          }, 150);
         }
 
         // Sync pasted LINE Profile ID or WhatsApp ID onto the selected customer's CRM record as well
@@ -6361,7 +6435,7 @@ function AdminPageContent() {
                       ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
                       : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
                   }`}
-                  title="Petty Cash (เงินสดย่อย)"
+                  title="Petty Cash Management (ระบบบริหารเงินสดย่อย)"
                 >
                   {activeTab === "petty-cash" && !isSidebarCollapsed && (
                     <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
@@ -6997,7 +7071,7 @@ function AdminPageContent() {
                 calculator: { section: "Fleet & Map", title: "Distance Calculator", subtitle: "Route fee estimation & POI management" },
                 pois: { section: "Fleet & Map", title: "POI Locations", subtitle: "Saved buildings, condos & coordinates" },
                 reports: { section: "Management", title: "Reports & Analytics", subtitle: "Revenue, payment splits & historical insights" },
-                "petty-cash": { section: "Management", title: "Petty Cash (ระบบเงินสดย่อยรายบุคคล)", subtitle: "Individual petty cash wallets, immediate expense deduction & accounting approvals" },
+                "petty-cash": { section: "Management", title: "Petty Cash Management (ระบบบริหารเงินสดย่อย)", subtitle: "Individual custodian wallets, replenishment & expense audit trail (กระเป๋าเงินสดย่อยรายบุคคล เติมเงิน และบันทึกค่าใช้จ่าย)" },
                 "building-report": { section: "Management", title: "Building Sales & BD Report", subtitle: "Top condos, hotels & buildings in Bangkok & Pattaya for B2B outreach" },
                 "activity-logs": { section: "Management", title: "Activity Logs", subtitle: "System audit trail & staff actions" },
                 users: { section: "Management", title: "Manage Users", subtitle: "Staff accounts, roles & branch permissions" },
@@ -10480,6 +10554,9 @@ function AdminPageContent() {
                                     const checked = e.target.checked;
                                     setShowDialogDiscount(checked);
                                     if (!checked) {
+                                      if (appliedPromo || promoCodeInput.trim()) {
+                                        setUserDismissedPromo(true);
+                                      }
                                       setDialogDiscountPercent(0);
                                       setAppliedPromo(null);
                                       setPromoCodeInput("");
@@ -11696,7 +11773,7 @@ function AdminPageContent() {
                               <span>{currentLanguage === "en" ? "Rewash / Re-process (฿0)" : "เปิดบิลซักซ้ำ / เคลมฟรี (฿0)"}</span>
                             </Button>
                           )}
-                          {editingJobId && activeJob && activeJob.status !== 'completed' && activeJob.status !== 'cancel' && (
+                          {editingJobId && activeJob && activeJob.status !== 'cancel' && !isSplitDeliveryChildJob(activeJob) && (
                             <Button
                               type="button"
                               variant="outline"
@@ -12599,7 +12676,7 @@ function AdminPageContent() {
           {activeTab === "tasks" && hasAccess("tasks") && <AdminTasks />}
 
           {activeTab === "supplies" && hasAccess("supplies") && (
-            <AdminSuppliesOrders currentUser={user} shops={shopLocations} />
+            <AdminSuppliesOrders currentUser={user} shops={shopLocations} jobs={jobs} />
           )}
 
           {activeTab === "inbox" && hasAccess("inbox") && (
@@ -12796,11 +12873,20 @@ function AdminPageContent() {
               if ((newUrl.includes("proforma-") || newUrl.includes("receipt-")) && !newUrl.includes(currentEditId) && !newUrl.includes(cleanEditId)) {
                 return;
               }
+              const pfMatch = newUrl.match(/proforma-(?:PR-)?([a-zA-Z0-9_-]+?-rev\d+\.png)/i);
+              const rcMatch = !pfMatch ? newUrl.match(/(receipt-[a-zA-Z0-9_-]+\.png)/i) : null;
               setBillImageUrls(prev => {
-                if (!prev.includes(newUrl)) {
-                  return [...prev, newUrl];
-                }
-                return prev;
+                const filtered = prev.filter(u => {
+                  if (pfMatch) {
+                    const m = u.match(/proforma-(?:PR-)?([a-zA-Z0-9_-]+?-rev\d+\.png)/i);
+                    if (m && m[1].toLowerCase() === pfMatch[1].toLowerCase()) return false;
+                  } else if (rcMatch) {
+                    const m = u.match(/(receipt-[a-zA-Z0-9_-]+\.png)/i);
+                    if (m && m[1].toLowerCase() === rcMatch[1].toLowerCase()) return false;
+                  }
+                  return u !== newUrl;
+                });
+                return [newUrl, ...filtered];
               });
             }}
           />
@@ -12831,11 +12917,20 @@ function AdminPageContent() {
               if ((newUrl.includes("proforma-") || newUrl.includes("receipt-")) && !newUrl.includes(currentEditId) && !newUrl.includes(cleanEditId)) {
                 return;
               }
+              const pfMatch = newUrl.match(/proforma-(?:PR-)?([a-zA-Z0-9_-]+?-rev\d+\.png)/i);
+              const rcMatch = !pfMatch ? newUrl.match(/(receipt-[a-zA-Z0-9_-]+\.png)/i) : null;
               setBillImageUrls(prev => {
-                if (!prev.includes(newUrl)) {
-                  return [...prev, newUrl];
-                }
-                return prev;
+                const filtered = prev.filter(u => {
+                  if (pfMatch) {
+                    const m = u.match(/proforma-(?:PR-)?([a-zA-Z0-9_-]+?-rev\d+\.png)/i);
+                    if (m && m[1].toLowerCase() === pfMatch[1].toLowerCase()) return false;
+                  } else if (rcMatch) {
+                    const m = u.match(/(receipt-[a-zA-Z0-9_-]+\.png)/i);
+                    if (m && m[1].toLowerCase() === rcMatch[1].toLowerCase()) return false;
+                  }
+                  return u !== newUrl;
+                });
+                return [newUrl, ...filtered];
               });
             }}
           />
@@ -13149,6 +13244,9 @@ function AdminPageContent() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Real-time Rider Cancellation Alert Popup */}
+      <RiderCancelAlertModal onOpenJobDetail={(job) => handleEditFullJob(job)} />
 
       {/* Silent Background Auto-Receipt Worker */}
       <AutoReceiptWorker />

@@ -63,7 +63,9 @@ import {
   Wind,
   RefreshCw,
   Camera,
-  Paperclip
+  Paperclip,
+  AlertTriangle,
+  RotateCcw
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -397,6 +399,12 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
   const isCash = job.paymentChannel === "Cash / COD" || (job.paymentMethod || "").toLowerCase() === "cash";
   const needsCashCollection = isCash && !isPaidEffective && legType === "delivery";
 
+  const rawNotesObj = extractAdminNotes(job.adminNotesJson).rawObject;
+  const isLoadedOnVehicle = Boolean(
+    rawNotesObj?.deliveryLoadedOnVehicleAt ||
+    (Array.isArray(rawNotesObj?.deliveryLoadedImageUrls) && rawNotesObj.deliveryLoadedImageUrls.length > 0)
+  );
+
   return (
     <div
       onClick={onClick}
@@ -444,6 +452,41 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            {legType === 'delivery' && !isHistory && !task.isCompleted && (
+              isLoadedOnVehicle ? (
+                <span
+                  title="Loaded on Vehicle (เอาผ้าขึ้นรถแล้ว)"
+                  className="inline-flex items-center justify-center p-1 rounded-lg border bg-teal-600 text-white border-teal-700 shadow-2xs shrink-0"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="shrink-0"
+                  >
+                    <path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14" />
+                    <path d="m7.5 4.27 9 5.15" />
+                    <polyline points="3.29 7 12 12 20.71 7" />
+                    <line x1="12" x2="12" y1="22" y2="12" />
+                    <path d="M19 22v-7" strokeWidth="2.8" />
+                    <path d="m16 18 3-3 3 3" strokeWidth="2.8" />
+                  </svg>
+                </span>
+              ) : (
+                <span
+                  title="Wait Load (รอถ่ายรูปเอาผ้าขึ้นรถ)"
+                  className="inline-flex items-center justify-center p-1 rounded-lg border bg-amber-50 text-amber-700 border-amber-300 shrink-0"
+                >
+                  <Camera size={12} />
+                </span>
+              )
+            )}
             <span
               className={`inline-flex items-center gap-1 text-[10px] font-extrabold py-0.5 px-2 rounded-lg border whitespace-nowrap ${
                 legType === 'pickup'
@@ -606,6 +649,11 @@ export default function RiderPage() {
   
   const [selectedJob, setSelectedJob] = useState<RiderTask | null>(null);
   const [jobToComplete, setJobToComplete] = useState<RiderTask | null>(null);
+  const [jobToLoadVehicle, setJobToLoadVehicle] = useState<RiderTask | null>(null);
+  const [isUploadingVehicleLoad, setIsUploadingVehicleLoad] = useState(false);
+  const [jobToCancel, setJobToCancel] = useState<RiderTask | null>(null);
+  const [cancelReason, setCancelReason] = useState<string>("");
+  const [isCancellingJob, setIsCancellingJob] = useState(false);
   const [historyDate, setHistoryDate] = useState<Date>(new Date());
   const [historyMode, setHistoryMode] = useState<"daily" | "monthly">("daily");
   const [riderNoteInput, setRiderNoteInput] = useState("");
@@ -1254,12 +1302,15 @@ export default function RiderPage() {
           } catch {}
         }
         const isTerminal = ["delivered", "completed", "cancel"].includes(j.status) || isDeliveredStage || j.legs?.deliveryOutbound?.status === "completed";
+        const isDeliveryReady =
+          j.subStatus === "ready" &&
+          !["tba", "pending", "pickup", "cancel", "return", "topup"].includes(j.status);
         allTasks.push({
           taskId: `${j.id}-delivery`,
           job: j,
           legType: "delivery",
           isCompleted: isTerminal,
-          isActive: ["washed", "delivery"].includes(j.status) || j.subStatus === "ready",
+          isActive: isDeliveryReady,
           scheduledAt: j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()),
           // For history: use actual deliveryOutbound completion time, fallback to job.completedAt, then scheduled times
           completedAt: isTerminal ? (
@@ -1336,7 +1387,7 @@ export default function RiderPage() {
           dropoffLocation: "Park Origin Thonglor (Room 4011 ตึก B)",
           dropoffCoords: { lat: 13.7317104, lng: 100.5848328 },
           status: "delivery",
-          subStatus: "wash",
+          subStatus: "ready",
           laundryTypes: ["kilo"],
           totalAmount: 543,
           isPaid: true,
@@ -1365,7 +1416,7 @@ export default function RiderPage() {
           dropoffLocation: "15 Sukhumvit Residences (Room 1204)",
           dropoffCoords: { lat: 13.7418765, lng: 100.5580877 },
           status: "delivery",
-          subStatus: "iron",
+          subStatus: "ready",
           laundryTypes: ["kilo", "dry"],
           totalAmount: 904,
           isPaid: true,
@@ -1394,7 +1445,7 @@ export default function RiderPage() {
           dropoffLocation: "NIA by Sansiri Phra Khanong (Room 99)",
           dropoffCoords: { lat: 13.7149103, lng: 100.6000502 },
           status: "delivery",
-          subStatus: "wash",
+          subStatus: "ready",
           laundryTypes: ["kilo", "others"],
           totalAmount: 836,
           isPaid: true,
@@ -1452,7 +1503,7 @@ export default function RiderPage() {
           dropoffLocation: "Raveevan Space Sukhumvit 39 (Room 6A)",
           dropoffCoords: { lat: 13.7399234, lng: 100.570521 },
           status: "delivery",
-          subStatus: "wash",
+          subStatus: "ready",
           laundryTypes: ["linens"],
           totalAmount: 723,
           isPaid: true,
@@ -1474,7 +1525,7 @@ export default function RiderPage() {
   const readyOptimizableJobs = useMemo(() => {
     return effectiveMyJobs.filter((t) => {
       if (t.legType === "delivery") {
-        return (["washed", "delivery"].includes(t.job.status) || t.job.subStatus === "ready") && !t.job.isStuck;
+        return t.job.subStatus === "ready" && !t.job.isStuck;
       }
       return ["pickup", "accepted"].includes(t.job.status);
     });
@@ -1630,6 +1681,252 @@ export default function RiderPage() {
       toast.error(`Failed to upload proof: ${error instanceof Error ? error.message : "Unknown error"}`);
     } finally {
       setIsUploadingProof(false);
+    }
+  }
+
+  async function handleConfirmVehicleLoad(task: RiderTask) {
+    const captureKey = `${task.taskId}-load`;
+    const jobId = task.job.id;
+    const loadUrls = capturedImages[captureKey];
+    const loadFiles = capturedFiles[captureKey];
+
+    if (!loadUrls || loadUrls.length === 0 || !loadFiles || loadFiles.length === 0) {
+      toast.error("Please take at least 1 loading photo first (กรุณาถ่ายรูปขึ้นรถอย่างน้อย 1 รูป)");
+      return;
+    }
+
+    setIsUploadingVehicleLoad(true);
+    let finalLoadUrls: string[] = [];
+
+    try {
+      const uploadPromises = loadFiles.map(async (loadFile, index) => {
+        const actualContentType = loadFile.type || "image/jpeg";
+        const response = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entityType: "job",
+            entityId: jobId,
+            subType: `proofs-load-${Date.now()}-${index}`,
+            contentType: actualContentType,
+          }),
+        });
+
+        if (!response.ok) throw new Error("Failed to get upload authorization for vehicle loading photo");
+        const { uploadUrl, publicUrl } = await response.json();
+
+        const uploadResponse = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": actualContentType },
+          body: loadFile,
+        });
+
+        if (!uploadResponse.ok) throw new Error("Upload failed: " + uploadResponse.statusText);
+        return publicUrl;
+      });
+
+      finalLoadUrls = await Promise.all(uploadPromises);
+
+      const nowIso = new Date().toISOString();
+      const riderIdVal = activeRider?.id || user?.id || "rider";
+      const riderNameVal = activeRider?.nickname
+        ? `${activeRider.nickname} (${activeRider.name})`
+        : activeRider?.name || (user as any)?.name || user?.email || "Rider";
+
+      const { notes: existingNotes, rawObject } = extractAdminNotes(task.job.adminNotesJson);
+      const existingLoadedUrls = Array.isArray(rawObject?.deliveryLoadedImageUrls)
+        ? rawObject.deliveryLoadedImageUrls
+        : [];
+      const mergedLoadedUrls = [...existingLoadedUrls, ...finalLoadUrls];
+
+      const newLog: AdminNoteLog = {
+        id: Math.random().toString(36).substring(7),
+        userId: riderIdVal,
+        userName: riderNameVal,
+        text: "📦 Confirmed Loaded on Vehicle (ยืนยันเอาผ้าขึ้นรถแล้ว เตรียมจัดส่ง)",
+        imageUrls: finalLoadUrls,
+        timestamp: nowIso,
+      };
+
+      const updatedNotes = [...existingNotes, newLog];
+      const nextAdminNotesObj: Record<string, any> = {
+        ...(rawObject && typeof rawObject === "object" ? rawObject : {}),
+        deliveryLoadedOnVehicleAt: nowIso,
+        deliveryLoadedByRiderId: riderIdVal,
+        deliveryLoadedByRiderName: riderNameVal,
+        deliveryLoadedImageUrls: mergedLoadedUrls,
+        notes: updatedNotes,
+      };
+      const nextAdminNotesJson = JSON.stringify(nextAdminNotesObj);
+
+      const nextStatus = (task.job.status as string) === "washed" ? "delivery" : task.job.status;
+      const updatedLegs = task.job.legs
+        ? {
+            ...task.job.legs,
+            deliveryOutbound: {
+              ...task.job.legs.deliveryOutbound,
+              status: "in_transit" as const,
+            },
+          }
+        : undefined;
+
+      await jobStore.updateJobDetails(
+        jobId,
+        {
+          status: nextStatus as any,
+          adminNotesJson: nextAdminNotesJson,
+          ...(updatedLegs ? { legs: updatedLegs } : {}),
+        },
+        {
+          actorId: riderIdVal,
+          actorName: riderNameVal,
+          actorRole: user?.role || "rider",
+        }
+      );
+
+      // Clear temporary capture state
+      setCapturedImages((prev) => {
+        const copy = { ...prev };
+        delete copy[captureKey];
+        return copy;
+      });
+      setCapturedFiles((prev) => {
+        const copy = { ...prev };
+        delete copy[captureKey];
+        return copy;
+      });
+
+      if (selectedJob && selectedJob.job.id === jobId) {
+        setSelectedJob({
+          ...selectedJob,
+          job: {
+            ...selectedJob.job,
+            status: nextStatus as any,
+            adminNotesJson: nextAdminNotesJson,
+            ...(updatedLegs ? { legs: updatedLegs } : {}),
+          },
+        });
+      }
+
+      if (activeRider) {
+        riderStore.updateRider(activeRider.id, { status: "busy" });
+      }
+
+      toast.success("Loaded on vehicle confirmed! Ready for delivery (ยืนยันเอาผ้าขึ้นรถแล้ว) 🚚");
+      setJobToLoadVehicle(null);
+    } catch (error) {
+      console.error(error);
+      toast.error(`Upload failed (อัปโหลดไม่สำเร็จ): ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      setIsUploadingVehicleLoad(false);
+    }
+  }
+
+  async function handleConfirmCancelTask() {
+    if (!jobToCancel) return;
+    const trimmedReason = cancelReason.trim();
+    if (!trimmedReason) {
+      toast.error("Please enter a cancellation reason (กรุณาระบุเหตุผลยกเลิกงาน)");
+      return;
+    }
+
+    setIsCancellingJob(true);
+    try {
+      const job = jobToCancel.job;
+      const legType = jobToCancel.legType;
+      const nowIso = new Date().toISOString();
+      const riderIdVal = activeRider?.id || user?.id || "rider";
+      const riderNameVal = activeRider?.nickname
+        ? `${activeRider.nickname} (${activeRider.name})`
+        : activeRider?.name || (user as any)?.name || user?.email || "Rider";
+
+      const cancelAlertObj = {
+        id: `cancel-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        jobId: job.id,
+        customerName: job.customerName || "Customer Guest",
+        customerPhone: job.customerPhone || "",
+        targetLocation: jobToCancel.targetLocation || (legType === "pickup" ? job.pickupLocation : job.dropoffLocation) || "-",
+        legType,
+        riderId: riderIdVal,
+        riderName: riderNameVal,
+        reason: trimmedReason,
+        cancelledAt: nowIso,
+        acknowledged: false,
+      };
+
+      const { notes: existingNotes, rawObject } = extractAdminNotes(job.adminNotesJson);
+      const cancelLog: AdminNoteLog = {
+        id: Math.random().toString(36).substring(7),
+        userId: riderIdVal,
+        userName: riderNameVal,
+        text: `🚨 Rider Cancelled Task (${legType === "pickup" ? "Pickup" : "Delivery"}) — Reason: ${trimmedReason}`,
+        timestamp: nowIso,
+      };
+
+      const existingCancelHistory = Array.isArray(rawObject?.riderCancelHistory)
+        ? rawObject.riderCancelHistory
+        : [];
+
+      const nextAdminNotesObj: Record<string, any> = {
+        ...(rawObject && typeof rawObject === "object" ? rawObject : {}),
+        riderCancelAlert: cancelAlertObj,
+        riderCancelHistory: [...existingCancelHistory, cancelAlertObj],
+        notes: [...existingNotes, cancelLog],
+      };
+
+      if (legType === "delivery") {
+        // Clear vehicle loaded state when delivery rider cancels so the new rider loads fresh
+        nextAdminNotesObj.deliveryLoadedOnVehicleAt = null;
+        nextAdminNotesObj.deliveryLoadedByRiderId = null;
+        nextAdminNotesObj.deliveryLoadedByRiderName = null;
+        nextAdminNotesObj.deliveryLoadedImageUrls = [];
+      }
+
+      const nextAdminNotesJson = JSON.stringify(nextAdminNotesObj);
+
+      const updatedLegs = job.legs ? { ...job.legs } : undefined;
+      const updates: Partial<Job> = {
+        adminNotesJson: nextAdminNotesJson,
+      };
+
+      if (legType === "pickup") {
+        updates.pickupRiderId = "" as any;
+        if (job.riderId === activeRider?.id) {
+          updates.riderId = "" as any;
+        }
+        if (updatedLegs) {
+          updatedLegs.pickupOutbound = { ...updatedLegs.pickupOutbound, riderId: "", status: "pending" };
+          updatedLegs.pickupInbound = { ...updatedLegs.pickupInbound, riderId: "", status: "pending" };
+          updates.legs = updatedLegs;
+        }
+      } else {
+        updates.deliveryRiderId = "" as any;
+        if (updatedLegs) {
+          updatedLegs.deliveryOutbound = { ...updatedLegs.deliveryOutbound, riderId: "", status: "pending" };
+          updatedLegs.deliveryInbound = { ...updatedLegs.deliveryInbound, riderId: "", status: "pending" };
+          updates.legs = updatedLegs;
+        }
+      }
+
+      await jobStore.updateJobDetails(job.id, updates, {
+        actorId: riderIdVal,
+        actorName: riderNameVal,
+        actorRole: user?.role || "rider",
+      });
+
+      toast.success("Task cancelled & Dispatcher notified (ยกเลิกงานและแจ้งจัดคิวแล้ว)");
+      setJobToCancel(null);
+      setCancelReason("");
+      setSelectedJob(null);
+
+      if (activeRider && myJobs.filter((t) => !t.isCompleted && t.taskId !== jobToCancel.taskId).length === 0) {
+        riderStore.updateRider(activeRider.id, { status: "online" });
+      }
+    } catch (err: any) {
+      console.error(err);
+      toast.error(`Failed to cancel task (ยกเลิกไม่สำเร็จ): ${err?.message || "Unknown error"}`);
+    } finally {
+      setIsCancellingJob(false);
     }
   }
 
@@ -2681,6 +2978,59 @@ export default function RiderPage() {
                       <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-0.5">Pickup Proof (รูปตอนไปรับ)</p>
                       <RiderJobImages jobId={selectedJob.job.id} imageType="pickupProofImageUrl" initialValue={selectedJob.job.pickupProofImageUrl} allowUpload={true} />
                     </div>
+
+                    {legType === "delivery" && (() => {
+                      const rawObj = extractAdminNotes(selectedJob.job.adminNotesJson).rawObject;
+                      const loadedUrls: string[] = Array.isArray(rawObj?.deliveryLoadedImageUrls) ? rawObj.deliveryLoadedImageUrls : [];
+                      const loadedAt = rawObj?.deliveryLoadedOnVehicleAt ? new Date(rawObj.deliveryLoadedOnVehicleAt) : null;
+                      const isLoaded = Boolean(loadedAt || loadedUrls.length > 0);
+                      return (
+                        <div className={`p-2.5 border shadow-sm rounded-xl ${isLoaded ? "bg-teal-50/90 border-teal-200" : "bg-amber-50/90 border-amber-200"}`}>
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <p className={`text-[10px] font-black uppercase tracking-wider flex items-center gap-1 ${isLoaded ? "text-teal-700" : "text-amber-700"}`}>
+                              <Truck size={12} />
+                              <span>Vehicle Loading Proof (รูปเอาผ้าขึ้นรถ)</span>
+                            </p>
+                            {isLoaded ? (
+                              <span className="inline-flex items-center gap-1 text-[9.5px] font-black bg-teal-600 text-white px-2 py-0.5 rounded-full">
+                                <CheckCircle2 size={10} /> Loaded (ขึ้นรถแล้ว) {loadedAt && !isNaN(loadedAt.getTime()) ? format(loadedAt, "HH:mm") : ""}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[9.5px] font-black bg-amber-200/80 text-amber-900 px-2 py-0.5 rounded-full">
+                                Wait Load (รอถ่ายรูปขึ้นรถ)
+                              </span>
+                            )}
+                          </div>
+                          {loadedUrls.length > 0 ? (
+                            <div className="flex gap-2 overflow-x-auto pt-1 pb-0.5">
+                              {loadedUrls.map((url, idx) => (
+                                <div
+                                  key={idx}
+                                  onClick={() => setPreviewChatImage(url)}
+                                  className="w-16 h-16 rounded-xl border border-teal-300 overflow-hidden bg-white shrink-0 cursor-pointer shadow-xs relative group"
+                                >
+                                  <img src={url} alt={`Loaded ${idx + 1}`} className="w-full h-full object-cover" />
+                                </div>
+                              ))}
+                              {!selectedJob.isCompleted && (
+                                <button
+                                  type="button"
+                                  onClick={() => setJobToLoadVehicle(selectedJob)}
+                                  className="w-16 h-16 rounded-xl border-2 border-dashed border-teal-300 hover:border-teal-500 bg-white/80 flex flex-col items-center justify-center text-teal-600 shrink-0 cursor-pointer"
+                                >
+                                  <Camera size={15} />
+                                  <span className="text-[8.5px] font-bold mt-0.5">+ Photo</span>
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-[11px] font-medium text-amber-800">
+                              Please take a photo when loading laundry onto vehicle before delivery (ถ่ายรูปผ้าขึ้นรถก่อนออกจัดส่ง)
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {selectedJob.job.status === 'completed' && (
@@ -2691,19 +3041,67 @@ export default function RiderPage() {
                   )}
                 </div>
 
-                <DialogFooter className="p-3 bg-white border-t border-slate-100 sticky bottom-0 z-10 shrink-0">
-                  {["active", "pickup", "delivery"].includes(selectedJob.job.status) ? (
-                    <Button
-                      className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-sm h-12 rounded-xl text-base"
-                      onClick={() => {
-                        setSelectedJob(null);
-                        setJobToComplete(selectedJob);
-                      }}
-                    >
-                      <CheckCircle2 size={20} className="mr-2" />
-                      {["pending", "accepted", "active", "pickup"].includes(selectedJob.job.status) ? "Mark as Picked Up" : "Mark as Delivered"}
-                    </Button>
-                  ) : null}
+                <DialogFooter className="p-3 bg-white border-t border-slate-100 sticky bottom-0 z-10 shrink-0 flex-col sm:flex-col gap-2">
+                  {!selectedJob.isCompleted && (
+                    (() => {
+                      const rawObj = extractAdminNotes(selectedJob.job.adminNotesJson).rawObject;
+                      const isLoadedOnVehicle = Boolean(
+                        rawObj?.deliveryLoadedOnVehicleAt ||
+                        (Array.isArray(rawObj?.deliveryLoadedImageUrls) && rawObj.deliveryLoadedImageUrls.length > 0)
+                      );
+
+                      return (
+                        <div className="w-full space-y-2">
+                          {legType === "pickup" ? (
+                            <Button
+                              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-sm h-12 rounded-xl text-base cursor-pointer"
+                              onClick={() => {
+                                setSelectedJob(null);
+                                setJobToComplete(selectedJob);
+                              }}
+                            >
+                              <CheckCircle2 size={20} className="mr-2" />
+                              Mark as Picked Up (รับผ้าเรียบร้อย)
+                            </Button>
+                          ) : !isLoadedOnVehicle ? (
+                            <Button
+                              className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-black shadow-sm h-12 rounded-xl text-sm sm:text-base cursor-pointer"
+                              onClick={() => {
+                                setJobToLoadVehicle(selectedJob);
+                              }}
+                            >
+                              <Camera size={19} className="mr-2 shrink-0" />
+                              Load on Vehicle (ถ่ายรูปขึ้นรถก่อนส่ง)
+                            </Button>
+                          ) : (
+                            <Button
+                              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-sm h-12 rounded-xl text-base cursor-pointer"
+                              onClick={() => {
+                                setSelectedJob(null);
+                                setJobToComplete(selectedJob);
+                              }}
+                            >
+                              <CheckCircle2 size={20} className="mr-2" />
+                              Mark as Delivered (ส่งผ้าถึงลูกค้าแล้ว)
+                            </Button>
+                          )}
+
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="w-full h-9 rounded-xl border-rose-200 text-rose-600 hover:bg-rose-50 hover:text-rose-700 font-bold text-xs cursor-pointer"
+                            onClick={() => {
+                              setCancelReason("");
+                              setJobToCancel(selectedJob);
+                            }}
+                          >
+                            <RotateCcw size={14} className="mr-1.5" />
+                            Cancel Task (ยกเลิก / คืนงานจัดคิว)
+                          </Button>
+                        </div>
+                      );
+                    })()
+                  )}
                 </DialogFooter>
               </>
             );
@@ -2911,6 +3309,233 @@ export default function RiderPage() {
               </>
             );
           })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Vehicle Loading Photo & Confirmation Modal (สำหรับงานขาไปส่ง Delivery) */}
+      <Dialog
+        open={!!jobToLoadVehicle}
+        onOpenChange={(open) => {
+          if (!open && !isUploadingVehicleLoad) {
+            setJobToLoadVehicle(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md w-[95vw] rounded-2xl mx-auto p-0 bg-white border-none shadow-2xl overflow-hidden flex flex-col">
+          {jobToLoadVehicle && (() => {
+            const captureKey = `${jobToLoadVehicle.taskId}-load`;
+            const currentPhotos = capturedImages[captureKey] || [];
+            return (
+              <>
+                <DialogHeader className="p-4 bg-amber-50 border-b border-amber-200">
+                  <DialogTitle className="text-base font-black text-amber-950 flex items-center justify-center gap-2">
+                    <Truck size={19} className="text-amber-600" />
+                    <span>Load on Vehicle (ถ่ายรูปผ้าขึ้นรถ)</span>
+                  </DialogTitle>
+                  <DialogDescription className="text-xs text-amber-800 text-center font-medium">
+                    Order #{jobToLoadVehicle.job.id.split("-")[0].toUpperCase()} • {jobToLoadVehicle.job.customerName || "Customer"}
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="p-4 space-y-3">
+                  <p className="text-xs font-bold text-slate-600 text-center">
+                    Take up to 3 photos of loaded laundry ({currentPhotos.length}/3) • ถ่ายรูปผ้าที่ขึ้นรถแล้ว
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {currentPhotos.map((url, index) => (
+                      <div key={index} className="relative aspect-square rounded-xl overflow-hidden border border-slate-200">
+                        <img src={url} className="w-full h-full object-cover" alt={`Vehicle Load ${index + 1}`} />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCapturedImages((prev) => ({
+                              ...prev,
+                              [captureKey]: (prev[captureKey] || []).filter((_, i) => i !== index),
+                            }));
+                            setCapturedFiles((prev) => ({
+                              ...prev,
+                              [captureKey]: (prev[captureKey] || []).filter((_, i) => i !== index),
+                            }));
+                          }}
+                          className="absolute top-2 right-2 h-7 w-7 rounded-full bg-red-500/90 text-white flex items-center justify-center shadow-lg backdrop-blur cursor-pointer"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ))}
+
+                    {currentPhotos.length < 3 && (
+                      <div
+                        className="aspect-square rounded-xl border-2 border-dashed border-amber-300 bg-amber-50/50 flex flex-col items-center justify-center cursor-pointer hover:bg-amber-100/60 transition-colors group"
+                        onClick={async () => {
+                          const { Capacitor } = await import("@capacitor/core");
+                          if (Capacitor.isNativePlatform()) {
+                            await takePhotoNative(captureKey);
+                          } else {
+                            document.getElementById(`file-input-${captureKey}`)?.click();
+                          }
+                        }}
+                      >
+                        <div className="h-11 w-11 mb-2 rounded-full bg-white shadow-sm flex items-center justify-center text-amber-600 group-hover:scale-110 transition-all border border-amber-200">
+                          <Camera size={22} />
+                        </div>
+                        <p className="text-xs font-extrabold text-amber-900">Add Photo (ถ่ายรูป)</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <input
+                    id={`file-input-${captureKey}`}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={(e) => handleCapture(captureKey, e)}
+                  />
+                </div>
+
+                <DialogFooter className="p-4 pt-0 flex-col sm:flex-col gap-2">
+                  <Button
+                    className="w-full bg-teal-600 hover:bg-teal-700 text-white font-black shadow-sm h-12 rounded-xl text-sm sm:text-base disabled:opacity-50 cursor-pointer"
+                    disabled={currentPhotos.length === 0 || isUploadingVehicleLoad}
+                    onClick={() => handleConfirmVehicleLoad(jobToLoadVehicle)}
+                  >
+                    {isUploadingVehicleLoad ? (
+                      <Loader2 size={18} className="mr-2 animate-spin" />
+                    ) : (
+                      <CheckCircle2 size={18} className="mr-2" />
+                    )}
+                    {isUploadingVehicleLoad
+                      ? "Uploading... (กำลังบันทึก...)"
+                      : "Confirm Loaded (ยืนยันขึ้นรถแล้ว)"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={isUploadingVehicleLoad}
+                    onClick={() => setJobToLoadVehicle(null)}
+                    className="w-full h-10 rounded-xl text-xs font-bold text-slate-600 cursor-pointer"
+                  >
+                    Close (ปิด)
+                  </Button>
+                </DialogFooter>
+              </>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Rider Cancel Task Modal (ยกเลิกงานพร้อมระบุเหตุผล) */}
+      <Dialog
+        open={!!jobToCancel}
+        onOpenChange={(open) => {
+          if (!open && !isCancellingJob) {
+            setJobToCancel(null);
+            setCancelReason("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md w-[95vw] rounded-2xl mx-auto p-0 bg-white border-none shadow-2xl overflow-hidden flex flex-col">
+          {jobToCancel && (
+            <>
+              <DialogHeader className="p-4 bg-rose-50 border-b border-rose-200">
+                <DialogTitle className="text-base font-black text-rose-950 flex items-center gap-2">
+                  <AlertTriangle size={19} className="text-rose-600 shrink-0" />
+                  <span>Cancel & Return Task (ยกเลิก / คืนงาน)</span>
+                </DialogTitle>
+                <DialogDescription className="text-xs text-rose-800 font-medium text-left">
+                  Dispatcher will be notified immediately to assign a new rider (แจ้งคนจัดคิวทันทีเพื่อจัด Rider ใหม่)
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="p-4 space-y-3">
+                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-black text-slate-900">
+                      #{jobToCancel.job.id.split("-")[0].toUpperCase()} • {jobToCancel.job.customerName || "Customer"}
+                    </span>
+                    <span
+                      className={`text-[10px] font-black px-2 py-0.5 rounded-md uppercase ${
+                        jobToCancel.legType === "pickup"
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-indigo-100 text-indigo-800"
+                      }`}
+                    >
+                      {jobToCancel.legType}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 line-clamp-2">{jobToCancel.targetLocation}</p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-xs font-extrabold text-slate-700">Quick Reason or Type Below (เลือกเหตุผลหรือพิมพ์ระบุ) *</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      "Vehicle breakdown / Flat tire (รถเสีย/ยางรั่ว)",
+                      "Urgent delay / Cannot make time (ไปไม่ทันเวลา)",
+                      "Customer unreachable (ติดต่อลูกค้าไม่ได้)",
+                      "Over vehicle capacity (ผ้าเต็ม/เกินความจุรถ)",
+                      "Accident / Emergency (อุบัติเหตุ/ฉุกเฉิน)",
+                    ].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setCancelReason(preset)}
+                        className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border transition-colors cursor-pointer ${
+                          cancelReason === preset
+                            ? "bg-rose-600 text-white border-rose-600"
+                            : "bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200"
+                        }`}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-extrabold text-slate-700 block">
+                    Cancellation Reason (เหตุผลที่ยกเลิก) *
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={cancelReason}
+                    onChange={(e) => setCancelReason(e.target.value)}
+                    placeholder="Enter reason for dispatcher (ระบุเหตุผลแจ้งคนจัดคิว)..."
+                    className="w-full rounded-xl border border-slate-300 bg-white p-2.5 text-xs font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  />
+                </div>
+              </div>
+
+              <DialogFooter className="p-4 pt-0 flex-col sm:flex-col gap-2">
+                <Button
+                  type="button"
+                  disabled={!cancelReason.trim() || isCancellingJob}
+                  onClick={handleConfirmCancelTask}
+                  className="w-full h-11 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-black text-sm shadow-sm cursor-pointer"
+                >
+                  {isCancellingJob ? (
+                    <Loader2 size={18} className="mr-2 animate-spin" />
+                  ) : (
+                    <AlertTriangle size={18} className="mr-2" />
+                  )}
+                  {isCancellingJob ? "Notifying... (กำลังส่งแจ้งเตือน...)" : "Confirm Cancel & Notify (ยืนยันยกเลิกงาน)"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={isCancellingJob}
+                  onClick={() => {
+                    setJobToCancel(null);
+                    setCancelReason("");
+                  }}
+                  className="w-full h-10 rounded-xl text-xs font-bold text-slate-600 cursor-pointer"
+                >
+                  Back (กลับ)
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 

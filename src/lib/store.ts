@@ -737,7 +737,23 @@ export const jobStore = {
       pickupInbound: { ...job.legs.pickupInbound, riderId, scheduledAt: sched }
     };
 
-    await this.updateJobDetails(id, { legs: updatedLegs, pickupRiderId: riderId, pickupScheduledAt: sched }, actorDetails);
+    let nextAdminNotesJson = job.adminNotesJson;
+    if (riderId && job.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(job.adminNotesJson);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.riderCancelAlert?.legType === "pickup") {
+          parsed.riderCancelAlert = { ...parsed.riderCancelAlert, acknowledged: true, reassignedRiderId: riderId, reassignedAt: new Date().toISOString() };
+          nextAdminNotesJson = JSON.stringify(parsed);
+        }
+      } catch {}
+    }
+
+    await this.updateJobDetails(id, {
+      legs: updatedLegs,
+      pickupRiderId: riderId,
+      pickupScheduledAt: sched,
+      ...(nextAdminNotesJson !== job.adminNotesJson ? { adminNotesJson: nextAdminNotesJson } : {}),
+    }, actorDetails);
   },
 
   async assignDeliveryRider(id: string, riderId: string, scheduledAt: Date, actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {
@@ -751,7 +767,23 @@ export const jobStore = {
       deliveryInbound: { ...job.legs.deliveryInbound, riderId, scheduledAt }
     };
 
-    await this.updateJobDetails(id, { legs: updatedLegs, deliveryRiderId: riderId, deliveryScheduledAt: scheduledAt }, actorDetails);
+    let nextAdminNotesJson = job.adminNotesJson;
+    if (riderId && job.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(job.adminNotesJson);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.riderCancelAlert?.legType === "delivery") {
+          parsed.riderCancelAlert = { ...parsed.riderCancelAlert, acknowledged: true, reassignedRiderId: riderId, reassignedAt: new Date().toISOString() };
+          nextAdminNotesJson = JSON.stringify(parsed);
+        }
+      } catch {}
+    }
+
+    await this.updateJobDetails(id, {
+      legs: updatedLegs,
+      deliveryRiderId: riderId,
+      deliveryScheduledAt: scheduledAt,
+      ...(nextAdminNotesJson !== job.adminNotesJson ? { adminNotesJson: nextAdminNotesJson } : {}),
+    }, actorDetails);
   },
 
   async completeJob(id: string, proofImageUrl?: string, legType?: "pickup" | "delivery", actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {

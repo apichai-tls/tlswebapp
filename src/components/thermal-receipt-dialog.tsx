@@ -527,6 +527,11 @@ export function ThermalReceiptDialog({
               backgroundColor: "#ffffff",
               logging: false,
               imageTimeout: 5000,
+              ignoreElements: (el) => {
+                if (el.tagName === "HEAD" || el.tagName === "STYLE" || el.tagName === "LINK" || el.closest?.("head")) return false;
+                if (captureEl.contains(el) || el.contains(captureEl)) return false;
+                return true;
+              },
               onclone: (_clonedDoc: Document, clonedEl: HTMLElement) => {
                 const all = clonedEl.querySelectorAll("*");
                 all.forEach((el) => {

@@ -202,6 +202,10 @@ export interface JobBillingMeta {
   deliveryPhotoSentBy: string | null;
   isRiderDelivered: boolean;
   deliveredAt: string | null;
+  isLoadedOnVehicle: boolean;
+  loadedOnVehicleAt: string | null;
+  loadedOnVehicleBy: string | null;
+  loadedOnVehiclePhotoUrls: string[];
   contactChannel: "line" | "whatsapp" | "phone" | null;
   customerLineId: string | null;
   customerWhatsappId: string | null;
@@ -250,6 +254,10 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
   let deliveryPhotoSentBy: string | null = null;
   let isRiderDeliveredFlag = false;
   let deliveredAt: string | null = null;
+  let isLoadedOnVehicle = false;
+  let loadedOnVehicleAt: string | null = null;
+  let loadedOnVehicleBy: string | null = null;
+  let loadedOnVehiclePhotoUrls: string[] = [];
   let contactChannel: "line" | "whatsapp" | "phone" | null = null;
   let customerLineId: string | null = null;
   let customerWhatsappId: string | null = null;
@@ -311,6 +319,12 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
           isRiderDeliveredFlag = true;
           deliveredAt = parsed.deliveredAt || null;
         }
+        if (parsed.deliveryLoadedOnVehicleAt || (Array.isArray(parsed.deliveryLoadedImageUrls) && parsed.deliveryLoadedImageUrls.length > 0)) {
+          isLoadedOnVehicle = true;
+          loadedOnVehicleAt = parsed.deliveryLoadedOnVehicleAt || null;
+          loadedOnVehicleBy = parsed.deliveryLoadedByRiderName || null;
+          loadedOnVehiclePhotoUrls = Array.isArray(parsed.deliveryLoadedImageUrls) ? parsed.deliveryLoadedImageUrls : [];
+        }
         if (parsed.kanbanStage === "billing" || parsed.kanbanStage === "process") {
           kanbanStage = parsed.kanbanStage;
         }
@@ -356,6 +370,10 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
     deliveryPhotoSentBy,
     isRiderDelivered: deliveryPhotoUrls.length > 0 || isRiderDeliveredFlag || job.legs?.deliveryOutbound?.status === "completed" || job.status === "completed",
     deliveredAt: deliveredAt || (job.legs?.deliveryOutbound?.completedAt ? String(job.legs.deliveryOutbound.completedAt) : null) || (job.completedAt ? String(job.completedAt) : null),
+    isLoadedOnVehicle,
+    loadedOnVehicleAt,
+    loadedOnVehicleBy,
+    loadedOnVehiclePhotoUrls,
     contactChannel,
     customerLineId,
     customerWhatsappId,
@@ -3695,8 +3713,52 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           const hasPhoto = bMeta.hasDeliveryPhoto;
                           const isDelivered = bMeta.isRiderDelivered || hasPhoto || job.status === "completed";
                           const isPhotoSent = bMeta.isDeliveryPhotoSent;
+                          const isLoaded = bMeta.isLoadedOnVehicle;
+                          const loadedTimeStr = bMeta.loadedOnVehicleAt ? (() => {
+                            try { return format(new Date(bMeta.loadedOnVehicleAt), "HH:mm"); } catch { return ""; }
+                          })() : "";
                           return (
                             <div className="flex flex-col gap-1 mb-1.5 pb-1.5 border-b border-slate-100">
+                              {!isDelivered && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (onEditJob) onEditJob(job);
+                                  }}
+                                  className={`inline-flex items-center gap-1 text-[9.5px] font-black px-2 py-0.5 rounded-lg border w-fit cursor-pointer transition-colors ${
+                                    isLoaded
+                                      ? "bg-teal-600 text-white border-teal-700 shadow-2xs"
+                                      : "bg-amber-50 text-amber-800 border-amber-300"
+                                  }`}
+                                  title={
+                                    isLoaded
+                                      ? `Loaded on vehicle (เอาผ้าขึ้นรถแล้ว)${loadedTimeStr ? ` at ${loadedTimeStr}` : ""}${bMeta.loadedOnVehicleBy ? ` (${bMeta.loadedOnVehicleBy})` : ""}`
+                                      : "Waiting for vehicle loading photo (รอถ่ายรูปขึ้นรถ)"
+                                  }
+                                >
+                                  <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    width="12"
+                                    height="12"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2.4"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    className="shrink-0"
+                                  >
+                                    <path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14" />
+                                    <path d="m7.5 4.27 9 5.15" />
+                                    <polyline points="3.29 7 12 12 20.71 7" />
+                                    <line x1="12" x2="12" y1="22" y2="12" />
+                                    <path d="M19 22v-7" strokeWidth="2.8" />
+                                    <path d="m16 18 3-3 3 3" strokeWidth="2.8" />
+                                  </svg>
+                                  <span>{isLoaded ? `Loaded (ขึ้นรถแล้ว)${loadedTimeStr ? ` ${loadedTimeStr}` : ""}` : "Wait Load (รอขึ้นรถ)"}</span>
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -4878,6 +4940,41 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                 )}
                                 {job.pickupRiderId && <span className="text-[9px] font-bold text-amber-800 bg-amber-100/80 px-1.5 py-0.5 rounded-md border border-amber-200 flex items-center gap-1" title="Pickup Rider Assigned"><Package size={9} /> {(() => { const r = riders.find(r => r.id === job.pickupRiderId); return r?.nickname || r?.name || job.pickupRiderId; })()}</span>}
                                 {job.deliveryRiderId && <span className="text-[9px] font-bold text-teal-800 bg-teal-100/80 px-1.5 py-0.5 rounded-md border border-teal-200 flex items-center gap-1" title="Delivery Rider Assigned"><Truck size={9} /> {(() => { const r = riders.find(r => r.id === job.deliveryRiderId); return r?.nickname || r?.name || job.deliveryRiderId; })()}</span>}
+                                {status === 'delivery' && isRiderDeliveryJob(job) && !bMeta.isRiderDelivered && !bMeta.hasDeliveryPhoto && (
+                                  bMeta.isLoadedOnVehicle ? (
+                                    <span
+                                      className="text-[9px] font-black text-white bg-teal-600 p-1 rounded-md border border-teal-700 flex items-center justify-center shadow-2xs"
+                                      title={`Loaded on vehicle (${bMeta.loadedOnVehiclePhotoUrls.length} photo(s))${bMeta.loadedOnVehicleAt ? ` at ${format(new Date(bMeta.loadedOnVehicleAt), "HH:mm")}` : ""} • เอาผ้าขึ้นรถแล้ว`}
+                                    >
+                                      <svg
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        width="11"
+                                        height="11"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="2.4"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        className="shrink-0"
+                                      >
+                                        <path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14" />
+                                        <path d="m7.5 4.27 9 5.15" />
+                                        <polyline points="3.29 7 12 12 20.71 7" />
+                                        <line x1="12" x2="12" y1="22" y2="12" />
+                                        <path d="M19 22v-7" strokeWidth="2.8" />
+                                        <path d="m16 18 3-3 3 3" strokeWidth="2.8" />
+                                      </svg>
+                                    </span>
+                                  ) : (
+                                    <span
+                                      className="text-[9px] font-bold text-amber-800 bg-amber-50 p-1 rounded-md border border-amber-300 flex items-center justify-center"
+                                      title="Waiting for vehicle loading photo (รอถ่ายรูปขึ้นรถ)"
+                                    >
+                                      <Camera size={10} />
+                                    </span>
+                                  )
+                                )}
                                 {!job.pickupRiderId && !job.deliveryRiderId && job.riderId && (
                                   <span className="text-[9px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded-md border border-slate-200 flex items-center gap-1" title="Rider Assigned"><Truck size={9} /> {(() => { const r = riders.find(r => r.id === job.riderId); return r?.nickname || r?.name || job.riderId; })()}</span>
                                 )}

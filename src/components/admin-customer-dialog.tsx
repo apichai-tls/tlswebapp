@@ -312,6 +312,15 @@ export function AdminCustomerDialog({
     };
   };
 
+  const extractCustomerRoomNo = (cust: Customer): string => {
+    const direct = (cust.roomNo || "").trim();
+    if (direct && direct !== "--" && direct !== "-") return direct;
+    const sec = (cust.secondaryAddress || "").trim();
+    if (!sec) return "";
+    const cleaned = sec.replace(/^Room\s+/i, "").trim();
+    return cleaned === "--" || cleaned === "-" ? "" : cleaned;
+  };
+
   const buildNormalizedSnapshot = (cust: Customer) => {
     const resolvedTier: "member" | "vip" | "standard" | "corporate" =
       cust.isCorporate || cust.tier === "corporate"
@@ -325,7 +334,7 @@ export function AdminCustomerDialog({
     const isMemBool = resolvedTier === "member" || resolvedTier === "vip";
     const isVipBool = resolvedTier === "vip";
     const phones = resolveDualPhonesFromCustomer(cust);
-    const cleanRoom = (cust.roomNo || "").trim();
+    const cleanRoom = extractCustomerRoomNo(cust);
     const hasTax = Boolean(cust.taxId || cust.companyName);
     const commType = (cust.corporateCommissionType as any) || "default";
 
@@ -404,7 +413,7 @@ export function AdminCustomerDialog({
       setAddress(cust.defaultAddress || "");
       setTaxBillingAddress(cust.defaultAddress && cust.defaultAddress !== "--" ? cust.defaultAddress : "");
     }
-    if (shouldSet("roomNo")) setRoomNo(cust.roomNo || "");
+    if (shouldSet("roomNo") || shouldSet("secondaryAddress")) setRoomNo(extractCustomerRoomNo(cust));
     if (shouldSet("defaultCoords") || shouldSet("defaultLat") || shouldSet("defaultLng")) {
       setCoords(isValidPinnedCoords(cust.defaultCoords) ? cust.defaultCoords : null);
     }

@@ -171,23 +171,35 @@ export async function POST(request: NextRequest) {
       ? baseFileName
       : `${entityId}-${now}.${normalizedExt}`;
 
-    // When uploading chat images/files (or when GCS is configured for chat), store permanently in Google Cloud Storage first
-    if (subType === "chat" || subType.startsWith("chat_")) {
-      const gcsUrl = await uploadBufferToGcs(buffer, {
-        entityType: "system",
-        entityId,
-        subType: "chat",
-        contentType: file.type || "image/jpeg",
-        extension: normalizedExt,
-        customFileName: filename,
+    // Always store permanently in Google Cloud Storage first when GCS is configured (critical on Cloud Run where local disk is ephemeral)
+    const normalizedGcsEntityType = (
+      entityType === "jobs"
+        ? "job"
+        : entityType === "riders"
+          ? "rider"
+          : entityType === "tasks"
+            ? "task"
+            : entityType === "customers"
+              ? "customer"
+              : ["job", "rider", "system", "task", "customer"].includes(entityType)
+                ? entityType
+                : "system"
+    ) as "job" | "rider" | "system" | "task" | "customer";
+
+    const gcsUrl = await uploadBufferToGcs(buffer, {
+      entityType: normalizedGcsEntityType,
+      entityId,
+      subType,
+      contentType: file.type || "image/jpeg",
+      extension: normalizedExt,
+      customFileName: isSafeReceiptOrProforma ? filename : undefined,
+    });
+    if (gcsUrl) {
+      return NextResponse.json({
+        success: true,
+        publicUrl: gcsUrl,
+        filePath: gcsUrl,
       });
-      if (gcsUrl) {
-        return NextResponse.json({
-          success: true,
-          publicUrl: gcsUrl,
-          filePath: gcsUrl,
-        });
-      }
     }
 
     const baseUploadsRoot = path.resolve(process.cwd(), "storage", "uploads");

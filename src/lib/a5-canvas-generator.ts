@@ -114,6 +114,11 @@ async function generateA5ReceiptImageInternal(
       windowWidth: 559,
       windowHeight: 793,
       imageTimeout: 8000,
+      ignoreElements: (el) => {
+        if (el.tagName === "HEAD" || el.tagName === "STYLE" || el.tagName === "LINK" || el.closest?.("head")) return false;
+        if (target.contains(el) || el.contains(target)) return false;
+        return true;
+      },
     });
 
     return await new Promise<Blob | null>((resolve) =>

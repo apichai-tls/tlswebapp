@@ -14,7 +14,7 @@ export function parseImageArray(raw: string | null | undefined): string[] {
       }
     }
     const list: string[] = Array.isArray(parsed) ? parsed : [parsed]
-    return list
+    const resolved = list
       .filter((u): u is string => typeof u === 'string' && u.trim().length > 0)
       .map(u => {
         const clean = u.trim().replace(/^["'\\]+|["'\\]+$/g, '')
@@ -23,6 +23,21 @@ export function parseImageArray(raw: string | null | undefined): string[] {
         }
         return clean
       })
+    const byKey = new Map<string, string>()
+    for (const u of resolved) {
+      const pfMatch = u.match(/proforma-(?:PR-)?([a-zA-Z0-9_-]+?-rev\d+\.png)/i)
+      const rcMatch = !pfMatch ? u.match(/(receipt-[a-zA-Z0-9_-]+\.png)/i) : null
+      const key = pfMatch ? `pf:${pfMatch[1].toLowerCase()}` : rcMatch ? `rc:${rcMatch[1].toLowerCase()}` : u.split('?')[0]
+      const prev = byKey.get(key)
+      if (!prev) {
+        byKey.set(key, u)
+      } else {
+        const prevV = parseInt((prev.match(/[?&]v=(\d+)/) || [])[1] || '0', 10)
+        const nextV = parseInt((u.match(/[?&]v=(\d+)/) || [])[1] || '0', 10)
+        if (nextV >= prevV) byKey.set(key, u)
+      }
+    }
+    return Array.from(byKey.values())
   } catch {
     const clean = String(raw).trim().replace(/^["'\\]+|["'\\]+$/g, '')
     if (!clean) return []

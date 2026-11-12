@@ -228,13 +228,19 @@ async function generateThermalReceiptImageInternal(
     await ensureReceiptFontsLoaded();
 
     const html2canvas = (await import("html2canvas-pro")).default;
-    const canvas = await html2canvas(container.firstElementChild as HTMLElement, {
+    const targetEl = container.firstElementChild as HTMLElement;
+    const canvas = await html2canvas(targetEl, {
       scale: 2,
       useCORS: true,
       allowTaint: true,
       backgroundColor: "#ffffff",
       logging: false,
       imageTimeout: 5000,
+      ignoreElements: (el) => {
+        if (el.tagName === "HEAD" || el.tagName === "STYLE" || el.tagName === "LINK" || el.closest?.("head")) return false;
+        if (targetEl.contains(el) || el.contains(targetEl)) return false;
+        return true;
+      },
     });
 
     const blob = await new Promise<Blob | null>((resolve) =>

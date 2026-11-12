@@ -42,6 +42,15 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   History,
+  Copy,
+  Wallet,
+  Camera,
+  Upload,
+  Receipt,
+  MessageSquare,
+  Image as ImageIcon,
+  ExternalLink,
+  ClipboardCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -89,14 +98,18 @@ import {
   getSupplyVendorsAction,
   reviewSupplyItemPriceAction,
   triggerSupplyPriceReviewReminderAction,
+  sendSupplyOrderToTelegramAction,
+  createPettyCashTransactionAction,
 } from '@/actions/db';
+import { getUsers } from '@/actions/users';
 
 interface AdminSuppliesOrdersProps {
   currentUser?: any;
   shops?: any[];
+  jobs?: any[];
 }
 
-export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOrdersProps) {
+export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: AdminSuppliesOrdersProps) {
   const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'superadmin';
   const [supplyPermissions, setSupplyPermissions] = useState<SupplyPermissionsMap>(DEFAULT_SUPPLY_ROLE_PERMISSIONS);
 
@@ -195,6 +208,9 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
   const [customUnit, setCustomUnit] = useState('Bottle');
   const [customPrice, setCustomPrice] = useState<number>(0);
   const [customCategory, setCustomCategory] = useState<SupplyItemCategory>('chemical');
+  const [customNotes, setCustomNotes] = useState('');
+  const [customImageUrl, setCustomImageUrl] = useState('');
+  const [uploadingCustomImg, setUploadingCustomImg] = useState(false);
 
   // Admin Processing Edit State in View Modal
   const [editStatus, setEditStatus] = useState<SupplyOrderStatus>('pending');
@@ -204,6 +220,38 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
   const [editTrackingNumber, setEditTrackingNumber] = useState('');
   const [editEstDeliveryDate, setEditEstDeliveryDate] = useState('');
   const [savingAdminProcessing, setSavingAdminProcessing] = useState(false);
+
+  // 1. Receive & Verify Delivery Modal State
+  const [receivingOrder, setReceivingOrder] = useState<SupplyOrder | null>(null);
+  const [receiveDraftItems, setReceiveDraftItems] = useState<
+    Record<string, { receivedQuantity: number; actualUnitPrice: number; receiveNote: string }>
+  >({});
+  const [receiveDeliveryNoteNo, setReceiveDeliveryNoteNo] = useState('');
+  const [receiveNotes, setReceiveNotes] = useState('');
+  const [receiveReceiptUrls, setReceiveReceiptUrls] = useState<string[]>([]);
+  const [uploadingReceiveReceipt, setUploadingReceiveReceipt] = useState(false);
+  const [savingReceiveOrder, setSavingReceiveOrder] = useState(false);
+
+  // 2. Telegram PO Sending State
+  const [sendingTelegramOrderId, setSendingTelegramOrderId] = useState<string | null>(null);
+
+  // 3. Record to Petty Cash Modal State
+  const [pettyCashOrder, setPettyCashOrder] = useState<SupplyOrder | null>(null);
+  const [pcAmount, setPcAmount] = useState('');
+  const [pcHolderId, setPcHolderId] = useState('');
+  const [pcHolderName, setPcHolderName] = useState('');
+  const [pcCategory, setPcCategory] = useState('Laundry Chemicals & Supplies (น้ำยาซักรีดและอุปกรณ์สาขา)');
+  const [pcVendorName, setPcVendorName] = useState('');
+  const [pcInvoiceNo, setPcInvoiceNo] = useState('');
+  const [pcPaymentMethod, setPcPaymentMethod] = useState('Cash');
+  const [pcDescription, setPcDescription] = useState('');
+  const [pcReceiptUrls, setPcReceiptUrls] = useState<string[]>([]);
+  const [uploadingPcReceipt, setUploadingPcReceipt] = useState(false);
+  const [savingPettyCash, setSavingPettyCash] = useState(false);
+  const [staffHolders, setStaffHolders] = useState<any[]>([]);
+
+  // Enlarged Image Lightbox State
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
   // 1. Load Orders
   const loadOrders = async (silent = false) => {
@@ -305,6 +353,12 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
   useEffect(() => {
     loadOrders();
     loadCatalog();
+    getUsers()
+      .then((res: any) => {
+        if (Array.isArray(res)) setStaffHolders(res);
+        else if (res?.success && Array.isArray(res.data)) setStaffHolders(res.data);
+      })
+      .catch(() => {});
   }, [branchFilter]);
 
   useEffect(() => {
@@ -561,8 +615,10 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
           orderedQty += q;
           orderedCost += q * p;
           if (o.status === 'completed') {
-            receivedQty += q;
-            receivedCost += q * p;
+            const rq = it.receivedQuantity !== undefined ? Number(it.receivedQuantity) : q;
+            const rp = it.actualUnitPrice !== undefined ? Number(it.actualUnitPrice) : p;
+            receivedQty += rq;
+            receivedCost += rq * rp;
           }
         });
       });
@@ -604,6 +660,19 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
         if (qty <= min) lowStockCount++;
       });
 
+      // Laundry Jobs volume in period for this branch (to compute Chemical Cost per Job)
+      const branchJobs = (jobs || []).filter((j: any) => {
+        if (j.status === 'cancelled') return false;
+        const jbId = j.branchId || 'ONLINE';
+        if (jbId !== b.id) return false;
+        const jt = new Date(j.createdAt || j.scheduledAt || Date.now()).getTime();
+        return jt >= cutoffMs;
+      });
+      const laundryJobsCount = branchJobs.length;
+      const effectiveSupplySpend = usedCost > 0 ? usedCost : orderedCost;
+      const costPerLaundryJob =
+        laundryJobsCount > 0 ? Math.round((effectiveSupplySpend / laundryJobsCount) * 10) / 10 : 0;
+
       return {
         branchId: b.id,
         branchName: b.name,
@@ -617,6 +686,8 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
         currentStockQty,
         currentStockValue,
         lowStockCount,
+        laundryJobsCount,
+        costPerLaundryJob,
       };
     });
 
@@ -681,6 +752,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
         usedCost: acc.usedCost + r.usedCost,
         currentStockQty: acc.currentStockQty + r.currentStockQty,
         currentStockValue: acc.currentStockValue + r.currentStockValue,
+        laundryJobsCount: acc.laundryJobsCount + (r.laundryJobsCount || 0),
       }),
       {
         ordersCount: 0,
@@ -691,6 +763,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
         usedCost: 0,
         currentStockQty: 0,
         currentStockValue: 0,
+        laundryJobsCount: 0,
       }
     );
 
@@ -706,6 +779,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     allBranchesStock,
     catalog,
     shops,
+    jobs,
     reportPeriod,
     reportBranchFilter,
     reportCategoryFilter,
@@ -1111,9 +1185,238 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
     setSelectedItems((prev) => prev.filter((it) => it.id !== itemId));
   };
 
+  const readFileAsCompressedDataUrl = async (file: File): Promise<string> => {
+    const compressedDataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const result = String(ev.target?.result || '');
+        if (!file.type.startsWith('image/')) {
+          resolve(result);
+          return;
+        }
+        const img = new window.Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const maxDim = 1200;
+          let w = img.width;
+          let h = img.height;
+          if (w > maxDim || h > maxDim) {
+            if (w > h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL('image/jpeg', 0.82));
+          } else {
+            resolve(result);
+          }
+        };
+        img.onerror = () => resolve(result);
+        img.src = result;
+      };
+      reader.onerror = (err) => reject(err);
+      reader.readAsDataURL(file);
+    });
+
+    // Prefer uploading to Google Cloud Storage via /api/upload-local so DB Setting rows stay small & fast
+    try {
+      let uploadBlob: Blob = file;
+      let fileName = file.name || `supply-${Date.now()}.jpg`;
+      if (compressedDataUrl.startsWith('data:image/')) {
+        const resBlob = await fetch(compressedDataUrl);
+        uploadBlob = await resBlob.blob();
+        const base = fileName.replace(/\.[^.]+$/, '') || `supply-${Date.now()}`;
+        fileName = `${base}.jpg`;
+      }
+      const fd = new FormData();
+      fd.append('file', new File([uploadBlob], fileName, { type: uploadBlob.type || 'image/jpeg' }));
+      fd.append('entityType', 'system');
+      fd.append('entityId', `supply-${Date.now()}`);
+      fd.append('subType', 'supply_receipt');
+      const uploadRes = await fetch('/api/upload-local', { method: 'POST', body: fd });
+      if (uploadRes.ok) {
+        const uploadJson = await uploadRes.json();
+        if (uploadJson?.publicUrl) {
+          return uploadJson.publicUrl;
+        }
+      }
+    } catch (e) {
+      console.warn('[SupplyOrderUpload] Fallback to compressed DataURL:', e);
+    }
+
+    return compressedDataUrl;
+  };
+
+  // Helper to extract image files from ClipboardEvent (Ctrl+V)
+  const extractImageFilesFromClipboard = (
+    clipboardData: DataTransfer | null | undefined
+  ): File[] => {
+    if (!clipboardData) return [];
+    const files: File[] = [];
+    if (clipboardData.items && clipboardData.items.length > 0) {
+      for (let i = 0; i < clipboardData.items.length; i++) {
+        const item = clipboardData.items[i];
+        if (item.type && item.type.startsWith('image/')) {
+          const f = item.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+    }
+    if (files.length === 0 && clipboardData.files && clipboardData.files.length > 0) {
+      for (let i = 0; i < clipboardData.files.length; i++) {
+        const f = clipboardData.files[i];
+        if (f.type && f.type.startsWith('image/')) {
+          files.push(f);
+        }
+      }
+    }
+    return files;
+  };
+
+  // Attach or remove receipt photos directly inside Order Details Modal
+  const handleAppendReceiptsToOrderView = async (files: File[]) => {
+    if (!selectedOrderForView || files.length === 0) return;
+    try {
+      const newUrls: string[] = [];
+      for (const file of files) {
+        const dataUrl = await readFileAsCompressedDataUrl(file);
+        if (dataUrl) newUrls.push(dataUrl);
+      }
+      if (newUrls.length === 0) return;
+      const updatedReceipts = [...(selectedOrderForView.receiptImageUrls || []), ...newUrls];
+      const res = await updateSupplyOrderStatusAction(
+        selectedOrderForView.id,
+        selectedOrderForView.status,
+        { receiptImageUrls: updatedReceipts }
+      );
+      if (res.success && res.order) {
+        setSelectedOrderForView(res.order);
+        if (res.orders) setOrders(res.orders);
+        else loadOrders(true);
+        toast.success(
+          `Attached ${newUrls.length} photo(s) to Order #${selectedOrderForView.orderNumber} (แนบรูปใบเสร็จ/หลักฐานเรียบร้อย)`
+        );
+      }
+    } catch (err: any) {
+      console.error(err);
+      toast.error('Failed to attach photo');
+    }
+  };
+
+  const handleRemoveReceiptFromOrderView = async (removeIdx: number) => {
+    if (!selectedOrderForView) return;
+    const updatedReceipts = (selectedOrderForView.receiptImageUrls || []).filter(
+      (_, i) => i !== removeIdx
+    );
+    const res = await updateSupplyOrderStatusAction(
+      selectedOrderForView.id,
+      selectedOrderForView.status,
+      { receiptImageUrls: updatedReceipts }
+    );
+    if (res.success && res.order) {
+      setSelectedOrderForView(res.order);
+      if (res.orders) setOrders(res.orders);
+      else loadOrders(true);
+      toast.success('Removed attached photo (ลบรูปแนบแล้ว)');
+    }
+  };
+
+  // Global Ctrl+V Paste Image Listener for all active Supply Order modals
+  useEffect(() => {
+    const handleWindowPaste = async (e: ClipboardEvent) => {
+      const imageFiles = extractImageFilesFromClipboard(e.clipboardData);
+      if (imageFiles.length === 0) return;
+
+      // 1. If Receive & Verify Delivery Modal is open
+      if (receivingOrder) {
+        e.preventDefault();
+        const urls: string[] = [];
+        for (const file of imageFiles) {
+          try {
+            const u = await readFileAsCompressedDataUrl(file);
+            if (u) urls.push(u);
+          } catch (err) {
+            console.error(err);
+          }
+        }
+        if (urls.length > 0) {
+          setReceiveReceiptUrls((prev) => [...prev, ...urls]);
+          toast.success(
+            `Pasted ${urls.length} photo(s) via Ctrl+V into Delivery Receipt! (วางรูปใบส่งของด้วย Ctrl+V เรียบร้อย)`
+          );
+        }
+        return;
+      }
+
+      // 2. If Record to Petty Cash Modal is open
+      if (pettyCashOrder) {
+        e.preventDefault();
+        const urls: string[] = [];
+        for (const file of imageFiles) {
+          try {
+            const u = await readFileAsCompressedDataUrl(file);
+            if (u) urls.push(u);
+          } catch (err) {
+            console.error(err);
+          }
+        }
+        if (urls.length > 0) {
+          setPcReceiptUrls((prev) => [...prev, ...urls]);
+          toast.success(
+            `Pasted ${urls.length} receipt photo(s) via Ctrl+V into Petty Cash! (วางรูปใบเสร็จเงินสดย่อยด้วย Ctrl+V เรียบร้อย)`
+          );
+        }
+        return;
+      }
+
+      // 3. If Create Supply Order Modal is open (Custom Item Reference Photo)
+      if (isCreateOpen && canRequestOrder) {
+        e.preventDefault();
+        try {
+          const dataUrl = await readFileAsCompressedDataUrl(imageFiles[0]);
+          if (dataUrl) {
+            if (!isAddingCustom) setIsAddingCustom(true);
+            setCustomImageUrl(dataUrl);
+            toast.success(
+              'Pasted reference photo via Ctrl+V for Custom Item! (วางรูปตัวอย่างสินค้าด้วย Ctrl+V เรียบร้อย)'
+            );
+          }
+        } catch (err) {
+          console.error(err);
+        }
+        return;
+      }
+
+      // 4. If Order Details Modal is open
+      if (selectedOrderForView) {
+        e.preventDefault();
+        await handleAppendReceiptsToOrderView(imageFiles);
+        return;
+      }
+    };
+
+    window.addEventListener('paste', handleWindowPaste);
+    return () => window.removeEventListener('paste', handleWindowPaste);
+  }, [
+    receivingOrder,
+    pettyCashOrder,
+    isCreateOpen,
+    canRequestOrder,
+    isAddingCustom,
+    selectedOrderForView,
+  ]);
+
   const handleAddCustomItem = () => {
     if (!customName.trim()) {
-      toast.error('Please enter the custom item name');
+      toast.error('Please enter the custom item name (กรุณาระบุชื่อรายการที่ต้องการสั่ง)');
       return;
     }
     const newItem: SupplyOrderItem = {
@@ -1123,13 +1426,256 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
       quantity: Number(customQty) || 1,
       unit: customUnit.trim() || 'Unit',
       estimatedPrice: Number(customPrice) || 0,
+      notes: customNotes.trim() || undefined,
+      imageUrl: customImageUrl || undefined,
     };
     setSelectedItems((prev) => [...prev, newItem]);
     setCustomName('');
     setCustomQty(1);
     setCustomPrice(0);
+    setCustomNotes('');
+    setCustomImageUrl('');
     setIsAddingCustom(false);
-    toast.success('Custom item added to order');
+    toast.success('Custom item added to order (เพิ่มรายการนอก Catalog เข้าตะกร้าแล้ว)');
+  };
+
+  // Improvement #4: Repeat / Duplicate Past Order in 1 Click
+  const handleRepeatOrder = (order: SupplyOrder) => {
+    if (!canOpenOrderModal) {
+      toast.error('Your role does not have permission to create supply orders.');
+      return;
+    }
+    const clonedItems: SupplyOrderItem[] = (order.items || []).map((it, idx) => ({
+      id: `repeat_${Date.now()}_${idx}`,
+      catalogItemId: it.catalogItemId,
+      name: it.name,
+      nameTh: it.nameTh,
+      category: it.category || 'chemical',
+      quantity: Number(it.quantity) || 1,
+      unit: it.unit || 'Unit',
+      estimatedPrice: Number(it.actualUnitPrice ?? it.estimatedPrice) || 0,
+      notes: it.notes,
+      imageUrl: it.imageUrl,
+    }));
+    const targetBranch =
+      !isAdmin && !canProcessOrder && currentUser?.branchId
+        ? currentUser.branchId
+        : order.branchId;
+    setOrderBranchId(targetBranch);
+    setSelectedItems(clonedItems);
+    setOrderPriority(order.priority || 'normal');
+    setOrderNotes(`Repeat Order from #${order.orderNumber}${order.notes ? ` — ${order.notes}` : ''}`);
+    setIsAddingCustom(false);
+    setSelectedOrderForView(null);
+    setIsCreateOpen(true);
+    toast.success(
+      `Loaded ${clonedItems.length} items from ${order.orderNumber} into cart (ดึงรายการสั่งซ้ำเรียบร้อย)`
+    );
+  };
+
+  // Improvement #1: Open Receive & Verify Delivery Modal
+  const handleOpenReceiveModal = (order: SupplyOrder) => {
+    const drafts: Record<
+      string,
+      { receivedQuantity: number; actualUnitPrice: number; receiveNote: string }
+    > = {};
+    (order.items || []).forEach((it) => {
+      drafts[it.id] = {
+        receivedQuantity:
+          it.receivedQuantity !== undefined ? Number(it.receivedQuantity) : Number(it.quantity) || 0,
+        actualUnitPrice:
+          it.actualUnitPrice !== undefined
+            ? Number(it.actualUnitPrice)
+            : Number(it.estimatedPrice) || 0,
+        receiveNote: it.receiveNote || '',
+      };
+    });
+    setReceiveDraftItems(drafts);
+    setReceiveDeliveryNoteNo(order.deliveryNoteNumber || order.vendorPoNumber || '');
+    setReceiveNotes(order.receivedNotes || '');
+    setReceiveReceiptUrls(Array.isArray(order.receiptImageUrls) ? order.receiptImageUrls : []);
+    setReceivingOrder(order);
+  };
+
+  const handleConfirmReceiveDelivery = async () => {
+    if (!receivingOrder) return;
+    try {
+      setSavingReceiveOrder(true);
+      const receivedItemsPayload = (receivingOrder.items || []).map((it) => {
+        const d = receiveDraftItems[it.id];
+        return {
+          id: it.id,
+          receivedQuantity: d ? Math.max(0, Number(d.receivedQuantity) || 0) : Number(it.quantity) || 0,
+          actualUnitPrice:
+            d && d.actualUnitPrice !== undefined
+              ? Math.max(0, Number(d.actualUnitPrice) || 0)
+              : Number(it.estimatedPrice) || 0,
+          receiveNote: d?.receiveNote?.trim() || undefined,
+        };
+      });
+
+      const res = await updateSupplyOrderStatusAction(receivingOrder.id, 'completed', {
+        receivedItems: receivedItemsPayload,
+        deliveryNoteNumber: receiveDeliveryNoteNo.trim() || undefined,
+        receiptImageUrls: receiveReceiptUrls,
+        receivedNotes: receiveNotes.trim() || undefined,
+      });
+
+      if (res.success && res.order) {
+        const totalRecv = receivedItemsPayload.reduce((s, r) => s + r.receivedQuantity, 0);
+        toast.success(
+          `Verified & received ${totalRecv} units from ${receivingOrder.orderNumber} into ${receivingOrder.branchName} stock! (ตรวจรับของเข้าสต็อกสาขาเรียบร้อย)`
+        );
+        setReceivingOrder(null);
+        if (selectedOrderForView?.id === res.order.id) {
+          setSelectedOrderForView(res.order);
+        }
+        if (res.orders) setOrders(res.orders);
+        else loadOrders(true);
+        loadBranchStock(res.order.branchId);
+      } else {
+        toast.error(res.error || 'Failed to confirm delivery receipt');
+      }
+    } catch (e: any) {
+      toast.error('Error: ' + e.message);
+    } finally {
+      setSavingReceiveOrder(false);
+    }
+  };
+
+  // Improvement #2: Send PO to Telegram ("Purchase Document" Group) & Copy PO for Vendor LINE
+  const handleSendOrderToTelegram = async (order: SupplyOrder) => {
+    try {
+      setSendingTelegramOrderId(order.id);
+      const res = await sendSupplyOrderToTelegramAction(order.id);
+      if (res.success) {
+        toast.success(
+          `Sent PO ${order.orderNumber} to Telegram Group "${res.groupName || 'Purchase Document'}" (ส่งใบสั่งซื้อเข้ากลุ่ม Telegram เรียบร้อย)`
+        );
+        if (res.orders) setOrders(res.orders);
+        else loadOrders(true);
+        if (selectedOrderForView?.id === order.id && res.order) {
+          setSelectedOrderForView(res.order);
+        }
+      } else {
+        toast.error(res.error || 'Failed to send PO to Telegram');
+      }
+    } catch (e: any) {
+      toast.error('Error: ' + e.message);
+    } finally {
+      setSendingTelegramOrderId(null);
+    }
+  };
+
+  const handleCopyPoForVendorLine = (order: SupplyOrder) => {
+    const matchedVendor = vendors.find(
+      (v) =>
+        order.vendorName &&
+        v.name.toLowerCase().includes(order.vendorName.toLowerCase())
+    );
+    const lines = [
+      `📋 ใบสั่งซื้อวัสดุและน้ำยาซักรีด (Purchase Order)`,
+      `เลขที่ใบสั่งซื้อ (Order #): ${order.orderNumber}`,
+      `สาขาปลายทาง (Branch): ${order.branchName}`,
+      order.vendorName ? `ร้านค้า (Supplier): ${order.vendorName}` : null,
+      matchedVendor?.lineId ? `LINE ร้านค้า: ${matchedVendor.lineId}` : null,
+      order.neededByDate ? `ต้องการรับของภายใน: ${order.neededByDate}` : null,
+      `--------------------------------`,
+      ...(order.items || []).map(
+        (it, i) =>
+          `${i + 1}. ${it.name}${it.nameTh ? ` (${it.nameTh})` : ''} x ${it.quantity} ${it.unit}${
+            it.estimatedPrice ? ` (~฿${(it.estimatedPrice * it.quantity).toLocaleString()})` : ''
+          }`
+      ),
+      `--------------------------------`,
+      `รวมทั้งหมด: ${order.totalItemsCount} หน่วย (ประมาณการ ฿${(order.totalEstimatedCost || 0).toLocaleString()})`,
+      order.notes ? `หมายเหตุ: ${order.notes}` : null,
+    ].filter(Boolean);
+
+    navigator.clipboard.writeText(lines.join('\n'));
+    toast.success(
+      `Copied PO ${order.orderNumber} text! Ready to paste in Vendor LINE / Chat (คัดลอกข้อความใบสั่งซื้อสำหรับส่งร้านค้าแล้ว)`
+    );
+  };
+
+  // Improvement #3: 1-Click Record Supply Order to Petty Cash
+  const handleOpenPettyCashModal = (order: SupplyOrder) => {
+    const defaultAmt =
+      order.actualTotalCost !== undefined && order.actualTotalCost > 0
+        ? order.actualTotalCost
+        : order.totalEstimatedCost || 0;
+    setPcAmount(defaultAmt > 0 ? String(defaultAmt) : '');
+    const defaultHolderId = currentUser?.id || staffHolders[0]?.id || 'admin-1';
+    const defaultHolderName =
+      currentUser?.name ||
+      currentUser?.email?.split('@')[0] ||
+      staffHolders[0]?.name ||
+      'Branch Custodian';
+    setPcHolderId(defaultHolderId);
+    setPcHolderName(defaultHolderName);
+    setPcCategory('Laundry Chemicals & Supplies (น้ำยาซักรีดและอุปกรณ์สาขา)');
+
+    // Infer vendor name from order or catalog items
+    let inferredVendor = order.vendorName || '';
+    if (!inferredVendor && order.items?.length > 0) {
+      const firstCat = catalog.find((c) => c.id === order.items[0].catalogItemId);
+      if (firstCat?.vendor) inferredVendor = firstCat.vendor;
+    }
+    setPcVendorName(inferredVendor);
+    setPcInvoiceNo(order.deliveryNoteNumber || order.vendorPoNumber || order.orderNumber);
+    setPcPaymentMethod('Cash');
+    const itemsSummary = (order.items || [])
+      .map((it) => `${it.nameTh || it.name} x${it.receivedQuantity ?? it.quantity}`)
+      .join(', ');
+    setPcDescription(
+      `[${order.orderNumber}] ค่าซื้อน้ำยาและอุปกรณ์สาขา (${order.branchName}): ${itemsSummary}`
+    );
+    setPcReceiptUrls(Array.isArray(order.receiptImageUrls) ? order.receiptImageUrls : []);
+    setPettyCashOrder(order);
+  };
+
+  const handleConfirmRecordPettyCash = async () => {
+    if (!pettyCashOrder) return;
+    const amt = parseFloat(pcAmount);
+    if (isNaN(amt) || amt <= 0) {
+      toast.error('Please enter a valid expense amount > 0 (กรุณาระบุยอดเงินที่มากกว่า 0)');
+      return;
+    }
+    try {
+      setSavingPettyCash(true);
+      const res = await createPettyCashTransactionAction({
+        type: 'EXPENSE',
+        amount: amt,
+        holderId: pcHolderId || currentUser?.id || 'admin',
+        holderName: pcHolderName || currentUser?.name || 'Staff',
+        branchId: pettyCashOrder.branchId === 'ONLINE' ? 'HQ' : pettyCashOrder.branchId,
+        category: pcCategory,
+        description: pcDescription,
+        vendorName: pcVendorName || null,
+        invoiceNo: pcInvoiceNo || pettyCashOrder.orderNumber,
+        paymentMethod: pcPaymentMethod,
+        receiptUrls: pcReceiptUrls,
+      });
+
+      if (res.success && res.id) {
+        await updateSupplyOrderStatusAction(pettyCashOrder.id, pettyCashOrder.status, {
+          pettyCashTxId: res.id,
+          receiptImageUrls:
+            pcReceiptUrls.length > 0 ? pcReceiptUrls : pettyCashOrder.receiptImageUrls,
+        });
+        toast.success(
+          `Recorded ฿${amt.toLocaleString()} to Petty Cash for ${pettyCashOrder.orderNumber}! (บันทึกตัดจ่ายเงินสดย่อยเรียบร้อยแล้ว)`
+        );
+        setPettyCashOrder(null);
+        loadOrders(true);
+      } else {
+        toast.error(res.error || 'Failed to record to Petty Cash');
+      }
+    } catch (e: any) {
+      toast.error('Error: ' + e.message);
+    } finally {
+      setSavingPettyCash(false);
+    }
   };
 
   // Submit Order to Admin
@@ -1640,7 +2186,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
             >
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                  Pending Admin Review
+                  Pending Review (รอตรวจสอบ)
                 </span>
                 <span className="p-1.5 rounded-lg bg-amber-50 text-amber-600">
                   <Clock size={14} />
@@ -1650,7 +2196,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 <span className="text-2xl font-black text-amber-600">{stats.pending}</span>
                 <span className="text-xs text-amber-700 font-semibold">orders</span>
               </div>
-              <p className="text-[11px] text-slate-500 mt-1 font-medium">Awaiting admin processing</p>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Awaiting admin / CSO approval (รออนุมัติจัดซื้อ)</p>
             </div>
 
             {/* KPI 2: In Processing */}
@@ -1664,7 +2210,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
             >
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                  Vendor Processing
+                  Vendor Processing (กำลังสั่งร้านค้า)
                 </span>
                 <span className="p-1.5 rounded-lg bg-purple-50 text-purple-600">
                   <Package size={14} />
@@ -1674,7 +2220,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 <span className="text-2xl font-black text-purple-700">{stats.processing}</span>
                 <span className="text-xs text-purple-600 font-semibold">orders</span>
               </div>
-              <p className="text-[11px] text-slate-500 mt-1 font-medium">Ordered from chemical vendor</p>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">PO placed with supplier (ออกใบสั่งซื้อแล้ว)</p>
             </div>
 
             {/* KPI 3: In Transit */}
@@ -1688,7 +2234,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
             >
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                  Dispatched / On The Way
+                  In Transit (กำลังจัดส่ง)
                 </span>
                 <span className="p-1.5 rounded-lg bg-blue-50 text-blue-600">
                   <Truck size={14} />
@@ -1698,7 +2244,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 <span className="text-2xl font-black text-blue-600">{stats.dispatched}</span>
                 <span className="text-xs text-blue-600 font-semibold">shipments</span>
               </div>
-              <p className="text-[11px] text-slate-500 mt-1 font-medium">Out for delivery to branch</p>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Out for branch delivery (อยู่ระหว่างขนส่งเข้าสาขา)</p>
             </div>
 
             {/* KPI 4: Fulfilled / Completed */}
@@ -1712,7 +2258,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
             >
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                  Received & Completed
+                  Received & Verified (ตรวจรับเข้าสต็อกแล้ว)
                 </span>
                 <span className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600">
                   <CheckCircle2 size={14} />
@@ -1722,7 +2268,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 <span className="text-2xl font-black text-emerald-600">{stats.completed}</span>
                 <span className="text-xs text-emerald-700 font-semibold">fulfilled</span>
               </div>
-              <p className="text-[11px] text-slate-500 mt-1 font-medium">Successfully received at branch</p>
+              <p className="text-[11px] text-slate-500 mt-1 font-medium">Verified & added to branch stock (บวกเข้าสต็อกสาขาแล้ว)</p>
             </div>
           </div>
 
@@ -1738,7 +2284,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 <Input
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search by Order # (e.g. SUP-202611-0001), requester, branch, or item name..."
+                  placeholder="Search by Order # (e.g. SUP-202611-0001), requester, branch, or item name (ค้นหาเลขใบสั่งซื้อ/สาขา/ชื่อสินค้า)..."
                   className="pl-9 h-10 text-xs bg-slate-50 border-slate-200 rounded-xl focus:bg-white transition-colors"
                 />
                 {searchQuery && (
@@ -1759,8 +2305,8 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                     onChange={(e) => setBranchFilter(e.target.value)}
                     className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 focus:bg-white focus:outline-none"
                   >
-                    <option value="all">All Branches</option>
-                    <option value="ONLINE">Online Dispatch</option>
+                    <option value="all">All Branches (ทุกสาขา)</option>
+                    <option value="ONLINE">Online Dispatch (ส่วนกลาง)</option>
                     {shops.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
@@ -1784,10 +2330,10 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                   onChange={(e) => setPriorityFilter(e.target.value)}
                   className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 focus:bg-white focus:outline-none"
                 >
-                  <option value="all">All Priorities</option>
-                  <option value="urgent">Urgent</option>
-                  <option value="critical">Critical (Out of Stock)</option>
-                  <option value="normal">Normal</option>
+                  <option value="all">All Priorities (ทุกระดับความด่วน)</option>
+                  <option value="urgent">Urgent (ด่วน)</option>
+                  <option value="critical">Critical (ของหมดสต็อก)</option>
+                  <option value="normal">Normal (ปกติ)</option>
                 </select>
               </div>
             </div>
@@ -1798,14 +2344,14 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 <Filter size={11} /> Filter Status:
               </span>
               {[
-                { id: 'all', label: 'All Orders', count: stats.total },
-                { id: 'pending', label: 'Pending Review', count: stats.pending, color: 'text-amber-700' },
-                { id: 'processing', label: 'Processing', count: stats.processing, color: 'text-purple-700' },
-                { id: 'dispatched', label: 'In Transit', count: stats.dispatched, color: 'text-blue-700' },
-                { id: 'completed', label: 'Completed', count: stats.completed, color: 'text-emerald-700' },
+                { id: 'all', label: 'All Orders (ทั้งหมด)', count: stats.total },
+                { id: 'pending', label: 'Pending Review (รอตรวจ)', count: stats.pending, color: 'text-amber-700' },
+                { id: 'processing', label: 'Processing (กำลังสั่งซื้อ)', count: stats.processing, color: 'text-purple-700' },
+                { id: 'dispatched', label: 'In Transit (กำลังส่ง)', count: stats.dispatched, color: 'text-blue-700' },
+                { id: 'completed', label: 'Completed (รับของแล้ว)', count: stats.completed, color: 'text-emerald-700' },
                 {
                   id: 'cancelled',
-                  label: 'Cancelled',
+                  label: 'Cancelled (ยกเลิก)',
                   count: orders.filter((o) => o.status === 'cancelled').length,
                 },
               ].map((tab) => {
@@ -1839,7 +2385,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
             <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-2xs">
               <RefreshCw size={28} className="animate-spin mx-auto text-sky-600 mb-3" />
               <p className="text-sm font-bold text-slate-700">Loading chemical & supply orders...</p>
-              <p className="text-xs text-slate-400 mt-1">Retrieving branch purchase requests</p>
+              <p className="text-xs text-slate-400 mt-1">Retrieving branch purchase requests (กำลังโหลดรายการเบิกอุปกรณ์)</p>
             </div>
           ) : filteredOrders.length === 0 ? (
             <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center shadow-2xs space-y-3">
@@ -1847,7 +2393,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 <ShoppingBag size={28} />
               </div>
               <div>
-                <h3 className="text-base font-extrabold text-slate-800">No supply orders found</h3>
+                <h3 className="text-base font-extrabold text-slate-800">No supply orders found (ไม่พบรายการสั่งเบิก)</h3>
                 <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
                   {searchQuery || statusFilter !== 'all'
                     ? 'Try adjusting your search filters or status selection.'
@@ -1861,7 +2407,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                   className="h-9 px-4 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl gap-1.5"
                 >
                   <Plus size={15} />
-                  <span>Create First Supply Order</span>
+                  <span>Create First Supply Order (สร้างใบเบิกรายการแรก)</span>
                 </Button>
               )}
             </div>
@@ -1870,6 +2416,18 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
               <AnimatePresence>
                 {filteredOrders.map((order) => {
                   const isUrgent = order.priority === 'urgent' || order.priority === 'critical';
+                  const hasPartialReceive =
+                    order.status === 'completed' &&
+                    (order.items || []).some(
+                      (it) =>
+                        it.receivedQuantity !== undefined &&
+                        Number(it.receivedQuantity) < Number(it.quantity)
+                    );
+                  const displayCost =
+                    order.actualTotalCost !== undefined && order.actualTotalCost > 0
+                      ? order.actualTotalCost
+                      : order.totalEstimatedCost;
+
                   return (
                     <motion.div
                       key={order.id}
@@ -1890,6 +2448,27 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
 
                             {getStatusBadge(order.status)}
                             {getPriorityBadge(order.priority)}
+
+                            {hasPartialReceive && (
+                              <Badge className="bg-amber-100 text-amber-900 border-amber-300 text-[10px] font-black gap-1">
+                                <AlertTriangle size={11} />
+                                <span>Partial Delivery (ส่งไม่ครบบางรายการ)</span>
+                              </Badge>
+                            )}
+
+                            {order.pettyCashTxId && (
+                              <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300 text-[10px] font-black gap-1">
+                                <Wallet size={11} />
+                                <span>Recorded in Petty Cash (ตัดเงินสดย่อยแล้ว)</span>
+                              </Badge>
+                            )}
+
+                            {order.telegramSentAt && (
+                              <Badge className="bg-sky-100 text-sky-800 border-sky-300 text-[10px] font-bold gap-1">
+                                <Send size={10} />
+                                <span>Sent to Telegram</span>
+                              </Badge>
+                            )}
 
                             <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md">
                               <Building2 size={12} className="text-slate-400" />
@@ -1924,26 +2503,85 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                                 <span>Needed by: {order.neededByDate}</span>
                               </span>
                             )}
+                            {order.vendorName && (
+                              <span className="text-indigo-700 font-bold bg-indigo-50 px-2 py-0.5 rounded">
+                                Supplier: {order.vendorName}
+                              </span>
+                            )}
                             {order.vendorPoNumber && (
                               <span className="text-purple-700 font-bold bg-purple-50 px-2 py-0.5 rounded">
                                 PO #{order.vendorPoNumber}
+                              </span>
+                            )}
+                            {order.deliveryNoteNumber && (
+                              <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded">
+                                Invoice/DO #{order.deliveryNoteNumber}
                               </span>
                             )}
                           </div>
 
                           {/* Item Pills Summary */}
                           <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                            {order.items.map((it, idx) => (
-                              <span
-                                key={idx}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-50 border border-slate-200 text-slate-800"
-                              >
-                                <span className="text-sky-600 font-black">{it.quantity}x</span>
-                                <span className="truncate max-w-[200px]">{it.name}</span>
-                                <span className="text-[10px] text-slate-400">({it.unit})</span>
-                              </span>
-                            ))}
+                            {order.items.map((it, idx) => {
+                              const isShort =
+                                it.receivedQuantity !== undefined &&
+                                Number(it.receivedQuantity) < Number(it.quantity);
+                              return (
+                                <span
+                                  key={idx}
+                                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                                    isShort
+                                      ? 'bg-amber-50 border-amber-300 text-amber-900'
+                                      : 'bg-slate-50 border-slate-200 text-slate-800'
+                                  }`}
+                                >
+                                  {it.imageUrl && (
+                                    <img
+                                      src={it.imageUrl}
+                                      alt={it.name}
+                                      onClick={() => setPreviewImageUrl(it.imageUrl || null)}
+                                      className="w-5 h-5 rounded object-cover border border-slate-300 cursor-pointer hover:scale-110 transition-transform"
+                                      title="Click to enlarge item photo"
+                                    />
+                                  )}
+                                  <span className="text-sky-600 font-black">
+                                    {it.receivedQuantity !== undefined
+                                      ? `${it.receivedQuantity}/${it.quantity}x`
+                                      : `${it.quantity}x`}
+                                  </span>
+                                  <span className="truncate max-w-[200px]">{it.name}</span>
+                                  <span className="text-[10px] text-slate-400">({it.unit})</span>
+                                  {!it.catalogItemId && (
+                                    <span className="text-[9px] font-black uppercase px-1 py-0.2 rounded bg-amber-100 text-amber-800">
+                                      Custom
+                                    </span>
+                                  )}
+                                </span>
+                              );
+                            })}
                           </div>
+
+                          {/* Attached Delivery Receipts / Invoices Preview */}
+                          {Array.isArray(order.receiptImageUrls) && order.receiptImageUrls.length > 0 && (
+                            <div className="flex items-center gap-2 pt-1">
+                              <span className="text-[11px] font-bold text-emerald-700 flex items-center gap-1">
+                                <Receipt size={12} />
+                                <span>Delivery Receipts / Invoices ({order.receiptImageUrls.length}):</span>
+                              </span>
+                              <div className="flex items-center gap-1.5">
+                                {order.receiptImageUrls.map((url, rIdx) => (
+                                  <img
+                                    key={rIdx}
+                                    src={url}
+                                    alt={`Receipt ${rIdx + 1}`}
+                                    onClick={() => setPreviewImageUrl(url)}
+                                    className="w-8 h-8 rounded-lg object-cover border border-emerald-300 cursor-pointer hover:opacity-80 shadow-2xs"
+                                    title="Click to view delivery receipt / invoice"
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          )}
 
                           {order.notes && (
                             <p className="text-xs text-slate-500 italic bg-slate-50 p-2 rounded-lg border border-slate-100">
@@ -1969,9 +2607,11 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                               {order.totalItemsCount}{' '}
                               <span className="text-xs font-semibold text-slate-500">items</span>
                             </div>
-                            {order.totalEstimatedCost > 0 && (
+                            {displayCost > 0 && (
                               <div className="text-xs font-bold text-sky-700">
-                                Est. ฿{order.totalEstimatedCost.toLocaleString()}
+                                {order.actualTotalCost !== undefined && order.actualTotalCost > 0
+                                  ? `Actual ฿${order.actualTotalCost.toLocaleString()}`
+                                  : `Est. ฿${order.totalEstimatedCost.toLocaleString()}`}
                               </div>
                             )}
                           </div>
@@ -1983,10 +2623,10 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                                 size="sm"
                                 onClick={() => handleQuickStatusChange(order, 'approved')}
                                 className="h-8 px-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
-                                title="Approve Order"
+                                title="Approve Order (อนุมัติคำสั่งซื้อ)"
                               >
                                 <CheckCircle2 size={13} />
-                                <span>Approve</span>
+                                <span>Approve (อนุมัติ)</span>
                               </Button>
                             )}
 
@@ -1995,7 +2635,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                                 size="sm"
                                 onClick={() => handleQuickStatusChange(order, 'processing')}
                                 className="h-8 px-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
-                                title="Mark Processing with Vendor"
+                                title="Mark Processing with Vendor (กำลังสั่งร้านค้า)"
                               >
                                 <RefreshCw size={13} />
                                 <span>Mark Processing</span>
@@ -2007,23 +2647,81 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                                 size="sm"
                                 onClick={() => handleQuickStatusChange(order, 'dispatched')}
                                 className="h-8 px-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
-                                title="Mark Dispatched / In Transit"
+                                title="Mark Dispatched / In Transit (จัดส่งแล้ว)"
                               >
                                 <Truck size={13} />
                                 <span>Mark Dispatched</span>
                               </Button>
                             )}
 
-                            {order.status === 'dispatched' && (
+                            {(order.status === 'dispatched' ||
+                              (canProcessOrder &&
+                                (order.status === 'approved' || order.status === 'processing'))) && (
                               <Button
                                 size="sm"
-                                onClick={() => handleQuickStatusChange(order, 'completed')}
+                                onClick={() => handleOpenReceiveModal(order)}
                                 className="h-8 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1 cursor-pointer"
-                                title="Mark Received by Branch"
+                                title="Verify & Confirm Received at Branch (ตรวจรับของจริง & แนบบิล)"
                               >
                                 <Check size={13} />
-                                <span>Confirm Received</span>
+                                <span>Verify & Receive (ตรวจรับของ)</span>
                               </Button>
+                            )}
+
+                            {/* 1-Click Send PO to Telegram (Purchase Document) */}
+                            {canProcessOrder && order.status !== 'cancelled' && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleSendOrderToTelegram(order)}
+                                disabled={sendingTelegramOrderId === order.id}
+                                className="h-8 px-2.5 text-xs font-bold rounded-xl border-sky-200 bg-sky-50/70 text-sky-700 hover:bg-sky-100 gap-1 cursor-pointer"
+                                title="Send PO to Telegram Group (Purchase Document)"
+                              >
+                                <Send size={12} />
+                                <span>
+                                  {sendingTelegramOrderId === order.id ? 'Sending...' : 'Telegram PO'}
+                                </span>
+                              </Button>
+                            )}
+
+                            {/* 1-Click Copy PO Text for Vendor LINE */}
+                            {canProcessOrder && order.status !== 'cancelled' && (
+                              <button
+                                type="button"
+                                onClick={() => handleCopyPoForVendorLine(order)}
+                                className="h-8 px-2 flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl transition-colors cursor-pointer"
+                                title="Copy formatted PO text for Vendor LINE OA (คัดลอกข้อความใบสั่งซื้อส่ง LINE ร้านค้า)"
+                              >
+                                <MessageSquare size={12} />
+                                <span className="hidden sm:inline">Copy LINE PO</span>
+                              </button>
+                            )}
+
+                            {/* 1-Click Record to Petty Cash */}
+                            {!order.pettyCashTxId && order.status !== 'cancelled' && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenPettyCashModal(order)}
+                                className="h-8 px-2.5 flex items-center gap-1 text-[11px] font-bold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl transition-colors cursor-pointer"
+                                title="Record expense to Petty Cash (บันทึกตัดจ่ายเงินสดย่อย)"
+                              >
+                                <Wallet size={12} />
+                                <span>Petty Cash (เบิกเงินสดย่อย)</span>
+                              </button>
+                            )}
+
+                            {/* Repeat / Duplicate Order Button */}
+                            {canOpenOrderModal && (
+                              <button
+                                type="button"
+                                onClick={() => handleRepeatOrder(order)}
+                                className="h-8 px-2.5 flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl transition-colors cursor-pointer"
+                                title="Repeat / Reorder these items (สั่งซ้ำรายการชุดนี้)"
+                              >
+                                <Copy size={12} />
+                                <span>Repeat (สั่งซ้ำ)</span>
+                              </button>
                             )}
 
                             <Button
@@ -2033,7 +2731,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                               className="h-8 px-2.5 text-xs font-bold rounded-xl border-slate-200 text-slate-700 hover:bg-slate-50 gap-1 cursor-pointer"
                             >
                               <Eye size={13} />
-                              <span>View Details</span>
+                              <span>Details</span>
                             </Button>
 
                             <button
@@ -2601,6 +3299,9 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                       Used Cost (ต้นทุนใช้)
                     </th>
                     <th className="py-3 px-3 font-extrabold uppercase text-[10px] text-right">
+                      Cost / Laundry Job (ต้นทุนต่อบิลซัก)
+                    </th>
+                    <th className="py-3 px-3 font-extrabold uppercase text-[10px] text-right">
                       Current Stock (คงเหลือ)
                     </th>
                     <th className="py-3 px-4 font-extrabold uppercase text-[10px] text-center">
@@ -2632,6 +3333,30 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                       </td>
                       <td className="py-3 px-3 text-right font-black text-rose-700">
                         ฿{row.usedCost.toLocaleString()}
+                      </td>
+                      <td className="py-3 px-3 text-right">
+                        {row.laundryJobsCount > 0 ? (
+                          <div>
+                            <span
+                              className={`font-black ${
+                                row.costPerLaundryJob > 45
+                                  ? 'text-rose-600'
+                                  : row.costPerLaundryJob > 25
+                                  ? 'text-amber-600'
+                                  : 'text-emerald-700'
+                              }`}
+                            >
+                              ~฿{row.costPerLaundryJob.toLocaleString()}/job
+                            </span>
+                            <span className="block text-[10px] text-slate-400">
+                              ({row.laundryJobsCount.toLocaleString()} laundry jobs)
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-[11px] text-slate-400 font-medium">
+                            0 laundry jobs
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-3 text-right font-black text-sky-700">
                         {row.currentStockQty.toLocaleString()} units
@@ -2680,6 +3405,17 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                     </td>
                     <td className="py-3 px-3 text-right text-rose-300">
                       ฿{reportAnalytics.totals.usedCost.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-3 text-right text-amber-300">
+                      {reportAnalytics.totals.laundryJobsCount > 0
+                        ? `~฿${(
+                            Math.round(
+                              ((reportAnalytics.totals.usedCost || reportAnalytics.totals.orderedCost) /
+                                reportAnalytics.totals.laundryJobsCount) *
+                                10
+                            ) / 10
+                          ).toLocaleString()}/job (${reportAnalytics.totals.laundryJobsCount} jobs)`
+                        : '-'}
                     </td>
                     <td className="py-3 px-3 text-right text-sky-200">
                       {reportAnalytics.totals.currentStockQty.toLocaleString()} units
@@ -3288,7 +4024,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
               {canRequestOrder && isAddingCustom && (
                 <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-xl space-y-2.5 animate-fadeIn">
                   <div className="text-xs font-bold text-sky-900 flex items-center justify-between">
-                    <span>Request Custom / Out-of-Catalog Supply Item (Request Order)</span>
+                    <span>Request Custom / Out-of-Catalog Supply Item (ขอสั่งซื้อของนอกรายการ + แนบรูปตัวอย่าง)</span>
                     <span className="text-[10px] font-semibold text-sky-700 bg-sky-100 px-2 py-0.5 rounded">
                       Custom Request
                     </span>
@@ -3321,13 +4057,76 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                       />
                     </div>
                   </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                    <div>
+                      <Input
+                        type="number"
+                        min="0"
+                        value={customPrice || ''}
+                        onChange={(e) => setCustomPrice(Math.max(0, parseFloat(e.target.value) || 0))}
+                        placeholder="Est. Price/Unit (฿)"
+                        className="h-8 text-xs bg-white"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <Input
+                        value={customNotes}
+                        onChange={(e) => setCustomNotes(e.target.value)}
+                        placeholder="Brand / Spec / Reason (ยี่ห้อ/รุ่น/เหตุผลที่ต้องการ)..."
+                        className="h-8 text-xs bg-white"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <label
+                        title="Click to choose file or press Ctrl+V anywhere in this modal to paste image from clipboard"
+                        className="flex-1 h-8 px-2.5 rounded-lg border border-dashed border-sky-400 bg-white hover:bg-sky-50 text-sky-700 text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer truncate"
+                      >
+                        <Camera size={12} className="shrink-0" />
+                        <span className="truncate">
+                          {customImageUrl ? 'Change Photo (Ctrl+V)' : '+ Photo / Ctrl+V'}
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            try {
+                              const dataUrl = await readFileAsCompressedDataUrl(file);
+                              setCustomImageUrl(dataUrl);
+                            } catch (err) {
+                              console.error(err);
+                            }
+                          }}
+                        />
+                      </label>
+                      {customImageUrl && (
+                        <div className="relative shrink-0">
+                          <img
+                            src={customImageUrl}
+                            alt="Custom item preview"
+                            onClick={() => setPreviewImageUrl(customImageUrl)}
+                            className="w-8 h-8 rounded-lg object-cover border border-sky-300 cursor-pointer"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setCustomImageUrl('')}
+                            className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-rose-600 text-white text-[9px] flex items-center justify-center"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                   <div className="flex justify-end gap-2 pt-1">
                     <Button
                       size="sm"
                       onClick={handleAddCustomItem}
                       className="h-7 px-3 bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold rounded-lg"
                     >
-                      Add Request Item to Order
+                      Add Request Item to Order (เพิ่มลงรายการขอสั่ง)
                     </Button>
                   </div>
                 </div>
@@ -3473,13 +4272,27 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                       key={item.id}
                       className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-3 text-xs"
                     >
-                      <div className="min-w-0 flex-1">
-                        <div className="font-extrabold text-slate-800 truncate">{item.name}</div>
-                        <div className="text-[11px] text-slate-400 flex items-center gap-2">
-                          <span>Unit: {item.unit}</span>
-                          {item.estimatedPrice ? (
-                            <span>~฿{item.estimatedPrice * item.quantity}</span>
-                          ) : null}
+                      <div className="min-w-0 flex-1 flex items-center gap-2.5">
+                        {item.imageUrl && (
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImageUrl(item.imageUrl || null)}
+                            className="shrink-0 w-9 h-9 rounded-lg overflow-hidden border border-slate-300 cursor-pointer"
+                          >
+                            <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover" />
+                          </button>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="font-extrabold text-slate-800 truncate">{item.name}</div>
+                          <div className="text-[11px] text-slate-400 flex items-center gap-2 flex-wrap">
+                            <span>Unit: {item.unit}</span>
+                            {item.estimatedPrice ? (
+                              <span className="text-sky-700 font-bold">~฿{item.estimatedPrice * item.quantity}</span>
+                            ) : null}
+                            {item.notes ? (
+                              <span className="text-indigo-600 truncate">• {item.notes}</span>
+                            ) : null}
+                          </div>
                         </div>
                       </div>
 
@@ -3825,33 +4638,229 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                   </div>
                 </div>
 
+                {/* Quick Action Strip inside Order Detail Modal */}
+                <div className="flex flex-wrap items-center gap-2 p-2.5 bg-slate-50 rounded-xl border border-slate-200/80">
+                  {selectedOrderForView.status !== 'completed' && selectedOrderForView.status !== 'cancelled' && (
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        const target = selectedOrderForView;
+                        setSelectedOrderForView(null);
+                        handleOpenReceiveModal(target);
+                      }}
+                      className="h-8 px-3 text-xs font-extrabold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5 cursor-pointer"
+                    >
+                      <ClipboardCheck size={13} />
+                      <span>Verify & Receive Delivery (ตรวจรับของจริง)</span>
+                    </Button>
+                  )}
+
+                  {canProcessOrder && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={sendingTelegramOrderId === selectedOrderForView.id}
+                        onClick={() => handleSendOrderToTelegram(selectedOrderForView)}
+                        className="h-8 px-2.5 text-xs font-bold rounded-xl border-sky-200 bg-white text-sky-800 hover:bg-sky-50 gap-1 cursor-pointer"
+                      >
+                        <Send size={12} />
+                        <span>
+                          {sendingTelegramOrderId === selectedOrderForView.id
+                            ? 'Sending...'
+                            : selectedOrderForView.telegramSentAt
+                              ? 'Resend PO to Telegram'
+                              : 'Send PO to Telegram'}
+                        </span>
+                      </Button>
+
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleCopyPoForVendorLine(selectedOrderForView)}
+                        className="h-8 px-2.5 text-xs font-bold rounded-xl border-indigo-200 bg-white text-indigo-800 hover:bg-indigo-50 gap-1 cursor-pointer"
+                      >
+                        <Copy size={12} />
+                        <span>Copy LINE PO</span>
+                      </Button>
+
+                      {!selectedOrderForView.pettyCashTxId && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const target = selectedOrderForView;
+                            setSelectedOrderForView(null);
+                            handleOpenPettyCashModal(target);
+                          }}
+                          className="h-8 px-2.5 text-xs font-bold rounded-xl border-violet-200 bg-white text-violet-800 hover:bg-violet-50 gap-1 cursor-pointer"
+                        >
+                          <Wallet size={12} />
+                          <span>Record to Petty Cash (ตัดเงินสดย่อย)</span>
+                        </Button>
+                      )}
+                    </>
+                  )}
+
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleRepeatOrder(selectedOrderForView)}
+                    className="h-8 px-2.5 text-xs font-bold rounded-xl border-slate-200 bg-white text-slate-700 hover:bg-slate-100 gap-1 cursor-pointer ml-auto"
+                  >
+                    <RotateCcw size={12} />
+                    <span>Repeat Order (สั่งซ้ำ)</span>
+                  </Button>
+                </div>
+
                 {/* Items Breakdown Table */}
                 <div className="space-y-1.5">
-                  <div className="text-xs font-extrabold text-slate-700">Ordered Items:</div>
-                  <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
-                    {selectedOrderForView.items.map((it, idx) => (
-                      <div
-                        key={idx}
-                        className="p-2.5 flex items-center justify-between text-xs hover:bg-slate-50"
-                      >
-                        <div>
-                          <div className="font-bold text-slate-800">{it.name}</div>
-                          {it.nameTh && <div className="text-[10px] text-slate-400">{it.nameTh}</div>}
-                          {it.notes && <div className="text-[10px] text-indigo-600">Note: {it.notes}</div>}
-                        </div>
-                        <div className="text-right shrink-0">
-                          <span className="font-black text-sky-700 text-sm">
-                            {it.quantity} {it.unit}
-                          </span>
-                          {it.estimatedPrice ? (
-                            <div className="text-[10px] text-slate-400 font-medium">
-                              ~฿{it.estimatedPrice * it.quantity}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
+                  <div className="flex items-center justify-between text-xs font-extrabold text-slate-700">
+                    <span>Ordered Items ({selectedOrderForView.items.length} items):</span>
+                    {selectedOrderForView.actualTotalCost !== undefined && (
+                      <span className="text-emerald-700">
+                        Verified Total Cost: ฿{selectedOrderForView.actualTotalCost.toLocaleString()}
+                      </span>
+                    )}
                   </div>
+                  <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
+                    {selectedOrderForView.items.map((it, idx) => {
+                      const hasShortage =
+                        it.receivedQuantity !== undefined && it.receivedQuantity < it.quantity;
+                      return (
+                        <div
+                          key={idx}
+                          className="p-2.5 flex items-center justify-between gap-3 text-xs hover:bg-slate-50"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            {it.imageUrl && (
+                              <button
+                                type="button"
+                                onClick={() => setPreviewImageUrl(it.imageUrl || null)}
+                                className="shrink-0 w-10 h-10 rounded-lg overflow-hidden border border-slate-300 cursor-pointer"
+                              >
+                                <img src={it.imageUrl} alt={it.name} className="w-full h-full object-cover" />
+                              </button>
+                            )}
+                            <div className="min-w-0">
+                              <div className="font-bold text-slate-800">{it.name}</div>
+                              {it.nameTh && <div className="text-[10px] text-slate-400">{it.nameTh}</div>}
+                              {it.notes && <div className="text-[10px] text-indigo-600">Note: {it.notes}</div>}
+                              {it.receiveNote && (
+                                <div className="text-[10px] text-amber-700 font-semibold">
+                                  Receive Note: {it.receiveNote}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <span className="font-black text-sky-700 text-sm">
+                              {it.quantity} {it.unit}
+                            </span>
+                            {it.receivedQuantity !== undefined && (
+                              <div
+                                className={`text-[10px] font-extrabold ${
+                                  hasShortage ? 'text-amber-700' : 'text-emerald-700'
+                                }`}
+                              >
+                                Received: {it.receivedQuantity} {it.unit}
+                              </div>
+                            )}
+                            {(it.actualUnitPrice ?? it.estimatedPrice) ? (
+                              <div className="text-[10px] text-slate-400 font-medium">
+                                ~฿
+                                {(
+                                  (it.actualUnitPrice ?? it.estimatedPrice ?? 0) *
+                                  (it.receivedQuantity ?? it.quantity)
+                                ).toLocaleString()}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Delivery Verification & Attached Receipts (Always visible in Order Details for quick Upload / Ctrl+V) */}
+                <div className="p-3 bg-emerald-50/70 rounded-xl border border-emerald-200 text-xs space-y-2">
+                  <div className="font-extrabold text-emerald-900 flex flex-wrap items-center justify-between gap-2">
+                    <span className="flex items-center gap-1.5">
+                      <ClipboardCheck size={14} className="text-emerald-600" />
+                      <span>
+                        Delivery Verification & Attached Receipts (หลักฐานการตรวจรับและใบเสร็จ)
+                      </span>
+                    </span>
+                    <div className="flex items-center gap-2">
+                      {selectedOrderForView.receivedByName && (
+                        <span className="text-[10px] font-bold text-emerald-700">
+                          Verified by {selectedOrderForView.receivedByName}
+                        </span>
+                      )}
+                      <label className="px-2.5 py-1 rounded-lg border border-dashed border-emerald-500 bg-white hover:bg-emerald-50 text-emerald-800 text-[11px] font-bold flex items-center gap-1 cursor-pointer shadow-2xs">
+                        <Camera size={12} />
+                        <span>+ Attach Photo / Ctrl+V (แนบรูป/วางรูป)</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          onChange={async (e) => {
+                            const files = Array.from(e.target.files || []);
+                            await handleAppendReceiptsToOrderView(files);
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                  {selectedOrderForView.deliveryNoteNumber && (
+                    <div className="text-emerald-800">
+                      <span className="font-bold">Invoice / Delivery Note #:</span>{' '}
+                      {selectedOrderForView.deliveryNoteNumber}
+                    </div>
+                  )}
+                  {selectedOrderForView.receivedNotes && (
+                    <div className="text-emerald-800">
+                      <span className="font-bold">Receive Remarks:</span>{' '}
+                      {selectedOrderForView.receivedNotes}
+                    </div>
+                  )}
+                  {selectedOrderForView.receiptImageUrls &&
+                  selectedOrderForView.receiptImageUrls.length > 0 ? (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {selectedOrderForView.receiptImageUrls.map((url, idx) => (
+                        <div key={idx} className="relative group">
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImageUrl(url)}
+                            className="w-16 h-16 rounded-lg overflow-hidden border border-emerald-300 shadow-xs hover:ring-2 hover:ring-emerald-500 cursor-pointer block"
+                          >
+                            <img
+                              src={url}
+                              alt={`Receipt ${idx + 1}`}
+                              className="w-full h-full object-cover"
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveReceiptFromOrderView(idx)}
+                            className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-rose-600 text-white text-[10px] flex items-center justify-center shadow"
+                            title="Remove photo"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-emerald-700/80 italic">
+                      No receipt/delivery photos attached yet — click &quot;+ Attach Photo&quot; or press{' '}
+                      <kbd className="px-1.5 py-0.5 bg-white border border-emerald-300 rounded text-[10px] font-extrabold not-italic">
+                        Ctrl+V
+                      </kbd>{' '}
+                      to paste a screenshot/photo directly.
+                    </div>
+                  )}
                 </div>
 
                 {selectedOrderForView.notes && (
@@ -4391,6 +5400,524 @@ export function AdminSuppliesOrders({ currentUser, shops = [] }: AdminSuppliesOr
                 </Button>
               </DialogFooter>
             </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ======================================================== */}
+      {/* 9. DIALOG: RECEIVE & VERIFY DELIVERY MODAL               */}
+      {/* ======================================================== */}
+      <Dialog
+        open={Boolean(receivingOrder)}
+        onOpenChange={(open) => !open && setReceivingOrder(null)}
+      >
+        <DialogContent className="max-w-2xl p-0 overflow-hidden bg-white rounded-2xl border border-slate-200 shadow-2xl">
+          {receivingOrder && (
+            <>
+              <DialogHeader className="p-5 bg-gradient-to-r from-emerald-700 to-teal-800 text-white">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <span className="p-2 rounded-xl bg-white/15 text-emerald-100">
+                      <ClipboardCheck size={20} />
+                    </span>
+                    <div>
+                      <DialogTitle className="text-base sm:text-lg font-black text-white">
+                        Verify & Receive Delivery (ตรวจรับของจริงเข้าสต็อกสาขา)
+                      </DialogTitle>
+                      <p className="text-xs text-emerald-100 mt-0.5">
+                        Order #{receivingOrder.orderNumber} • {receivingOrder.branchName}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] uppercase font-bold text-emerald-200">Verified Cost</div>
+                    <div className="text-sm sm:text-base font-black text-white">
+                      ฿
+                      {(receivingOrder.items || [])
+                        .reduce((sum, it) => {
+                          const d = receiveDraftItems[it.id];
+                          const qty = d ? d.receivedQuantity : it.quantity;
+                          const price = d ? d.actualUnitPrice : (it.estimatedPrice || 0);
+                          return sum + qty * price;
+                        }, 0)
+                        .toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              </DialogHeader>
+
+              <div className="p-5 space-y-4 max-h-[72vh] overflow-y-auto custom-scrollbar text-xs">
+                <div className="p-3 bg-emerald-50/70 rounded-xl border border-emerald-200 text-emerald-900 text-[11px] flex items-start gap-2">
+                  <CheckCircle2 size={15} className="text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <strong>Verify actual quantities received & unit prices (ตรวจสอบจำนวนรับจริงและราคาต่อหน่วย):</strong>{' '}
+                    Upon confirmation, the branch stock for <strong>{receivingOrder.branchName}</strong> will be automatically incremented by the <strong>Received Qty</strong>.
+                  </div>
+                </div>
+
+                {/* Items Verification Table */}
+                <div className="space-y-2">
+                  <div className="font-extrabold text-slate-800 flex items-center justify-between">
+                    <span>Items to Verify ({(receivingOrder.items || []).length} รายการ)</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next: Record<
+                          string,
+                          { receivedQuantity: number; actualUnitPrice: number; receiveNote: string }
+                        > = { ...receiveDraftItems };
+                        (receivingOrder.items || []).forEach((it) => {
+                          next[it.id] = {
+                            receivedQuantity: Number(it.quantity) || 0,
+                            actualUnitPrice:
+                              next[it.id]?.actualUnitPrice ?? (Number(it.estimatedPrice) || 0),
+                            receiveNote: next[it.id]?.receiveNote || '',
+                          };
+                        });
+                        setReceiveDraftItems(next);
+                      }}
+                      className="text-[11px] font-bold text-emerald-700 hover:underline cursor-pointer"
+                    >
+                      Set All = Ordered Qty (รับครบทุกรายการ)
+                    </button>
+                  </div>
+
+                  <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 overflow-hidden">
+                    {(receivingOrder.items || []).map((item, idx) => {
+                      const draft = receiveDraftItems[item.id] || {
+                        receivedQuantity: Number(item.quantity) || 0,
+                        actualUnitPrice: Number(item.estimatedPrice) || 0,
+                        receiveNote: '',
+                      };
+                      const isShort = draft.receivedQuantity < item.quantity;
+                      return (
+                        <div key={item.id || idx} className="p-3 space-y-2 hover:bg-slate-50/80">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="font-extrabold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                                <span>{item.name}</span>
+                                <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                                  Ordered: {item.quantity} {item.unit}
+                                </span>
+                                {isShort && (
+                                  <span className="text-[10px] font-extrabold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
+                                    Shortage: -{item.quantity - draft.receivedQuantity} {item.unit} (ของขาด)
+                                  </span>
+                                )}
+                              </div>
+                              {item.nameTh && <div className="text-[11px] text-slate-500">{item.nameTh}</div>}
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              <div className="w-24">
+                                <label className="text-[10px] font-bold text-slate-500 block">
+                                  Received Qty ({item.unit})
+                                </label>
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  value={draft.receivedQuantity}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, parseInt(e.target.value) || 0);
+                                    setReceiveDraftItems((prev) => ({
+                                      ...prev,
+                                      [item.id]: { ...draft, receivedQuantity: val },
+                                    }));
+                                  }}
+                                  className="h-8 text-xs font-black bg-white"
+                                />
+                              </div>
+
+                              <div className="w-28">
+                                <label className="text-[10px] font-bold text-slate-500 block">
+                                  Actual Price/Unit (฿)
+                                </label>
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  value={draft.actualUnitPrice}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, parseFloat(e.target.value) || 0);
+                                    setReceiveDraftItems((prev) => ({
+                                      ...prev,
+                                      [item.id]: { ...draft, actualUnitPrice: val },
+                                    }));
+                                  }}
+                                  className="h-8 text-xs font-bold bg-white"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          <Input
+                            value={draft.receiveNote}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setReceiveDraftItems((prev) => ({
+                                ...prev,
+                                [item.id]: { ...draft, receiveNote: val },
+                              }));
+                            }}
+                            placeholder="Item remark (e.g. 1 gallon dented, backordered 2 boxes / หมายเหตุของขาดหรือชำรุด)..."
+                            className="h-7 text-[11px] bg-slate-50"
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Delivery Note & Receipt Photos */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700">
+                      Tax Invoice / Delivery Note No. (เลขที่ใบส่งของ/ใบเสร็จ)
+                    </label>
+                    <Input
+                      value={receiveDeliveryNoteNo}
+                      onChange={(e) => setReceiveDeliveryNoteNo(e.target.value)}
+                      placeholder="e.g. INV-2026-0942"
+                      className="h-9 text-xs"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700 flex items-center justify-between">
+                      <span>Attach Receipt / Delivery Photos (แนบรูปใบส่งของ/ของที่รับจริง)</span>
+                      <span className="text-[10px] font-extrabold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded">
+                        Ctrl+V Supported
+                      </span>
+                    </label>
+                    <label className="h-9 px-3 rounded-xl border border-dashed border-emerald-400 bg-emerald-50/50 hover:bg-emerald-100/60 text-emerald-800 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer">
+                      <Camera size={14} />
+                      <span>
+                        + Upload or Press Ctrl+V to Paste Photo ({receiveReceiptUrls.length})
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={async (e) => {
+                          const files = Array.from(e.target.files || []);
+                          for (const file of files) {
+                            try {
+                              const url = await readFileAsCompressedDataUrl(file);
+                              setReceiveReceiptUrls((prev) => [...prev, url]);
+                            } catch (err) {
+                              console.error(err);
+                            }
+                          }
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                {receiveReceiptUrls.length > 0 && (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {receiveReceiptUrls.map((url, idx) => (
+                      <div key={idx} className="relative group">
+                        <img
+                          src={url}
+                          alt={`Receipt ${idx + 1}`}
+                          onClick={() => setPreviewImageUrl(url)}
+                          className="w-16 h-16 rounded-lg object-cover border border-emerald-300 cursor-pointer"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setReceiveReceiptUrls((prev) => prev.filter((_, i) => i !== idx))
+                          }
+                          className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-rose-600 text-white text-[10px] flex items-center justify-center"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700">
+                    Overall Delivery Remarks (หมายเหตุการรับของเข้าสาขา)
+                  </label>
+                  <Input
+                    value={receiveNotes}
+                    onChange={(e) => setReceiveNotes(e.target.value)}
+                    placeholder="e.g. Received in good condition by branch staff..."
+                    className="h-9 text-xs"
+                  />
+                </div>
+              </div>
+
+              <DialogFooter className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setReceivingOrder(null)}
+                  className="h-9 text-xs font-bold rounded-xl"
+                >
+                  Cancel (ยกเลิก)
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleConfirmReceiveDelivery}
+                  disabled={savingReceiveOrder}
+                  className="h-9 px-5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-xl gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <ClipboardCheck size={14} />
+                  <span>
+                    {savingReceiveOrder
+                      ? 'Confirming & Adding Stock...'
+                      : 'Confirm Receipt & Add to Stock (ยืนยันรับของเข้าสต็อก)'}
+                  </span>
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ======================================================== */}
+      {/* 10. DIALOG: RECORD SUPPLY ORDER TO PETTY CASH MODAL      */}
+      {/* ======================================================== */}
+      <Dialog
+        open={Boolean(pettyCashOrder)}
+        onOpenChange={(open) => !open && setPettyCashOrder(null)}
+      >
+        <DialogContent className="max-w-lg p-0 overflow-hidden bg-white rounded-2xl border border-slate-200 shadow-2xl">
+          {pettyCashOrder && (
+            <>
+              <DialogHeader className="p-5 bg-gradient-to-r from-violet-800 to-indigo-900 text-white">
+                <div className="flex items-center gap-2.5">
+                  <span className="p-2 rounded-xl bg-white/15 text-violet-200">
+                    <Wallet size={20} />
+                  </span>
+                  <div>
+                    <DialogTitle className="text-base font-black text-white">
+                      Record Supply Expense to Petty Cash (ตัดจ่ายเงินสดย่อย)
+                    </DialogTitle>
+                    <p className="text-xs text-violet-200 mt-0.5">
+                      Order #{pettyCashOrder.orderNumber} • {pettyCashOrder.branchName}
+                    </p>
+                  </div>
+                </div>
+              </DialogHeader>
+
+              <div className="p-5 space-y-3.5 text-xs max-h-[72vh] overflow-y-auto custom-scrollbar">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700">
+                      Petty Cash Custodian (ผู้ถือเงินสดย่อย) *
+                    </label>
+                    <select
+                      value={pcHolderId}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPcHolderId(val);
+                        const found = staffHolders.find((u: any) => u.id === val);
+                        if (found) setPcHolderName(found.name);
+                      }}
+                      className="w-full h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 font-bold text-slate-800"
+                    >
+                      {staffHolders.map((u: any) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name} ({u.role})
+                        </option>
+                      ))}
+                      {staffHolders.length === 0 && currentUser && (
+                        <option value={currentUser.id}>{currentUser.name}</option>
+                      )}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700">
+                      Expense Amount (ยอดเงินที่จ่ายจริง ฿) *
+                    </label>
+                    <Input
+                      type="number"
+                      min="1"
+                      value={pcAmount}
+                      onChange={(e) => setPcAmount(e.target.value)}
+                      className="h-9 text-sm font-black text-violet-800"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700">
+                      Expense Category (หมวดหมู่ค่าใช้จ่าย)
+                    </label>
+                    <select
+                      value={pcCategory}
+                      onChange={(e) => setPcCategory(e.target.value)}
+                      className="w-full h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 font-bold text-slate-800"
+                    >
+                      <option value="Laundry Chemicals & Supplies (น้ำยาซักรีดและอุปกรณ์สาขา)">
+                        Laundry Chemicals & Supplies (น้ำยาซักรีดและอุปกรณ์สาขา)
+                      </option>
+                      <option value="Supplies & Packaging (น้ำยา/ถุงแพ็กผ้า/อุปกรณ์)">
+                        Supplies & Packaging (น้ำยา/ถุงแพ็กผ้า/อุปกรณ์)
+                      </option>
+                      <option value="Branch Maintenance (ซ่อมบำรุงร้าน/เครื่องจักร)">
+                        Branch Maintenance (ซ่อมบำรุงร้าน/เครื่องจักร)
+                      </option>
+                      <option value="Miscellaneous (เบ็ดเตล็ด)">Miscellaneous (เบ็ดเตล็ด)</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700">Payment Method (ช่องทางชำระ)</label>
+                    <select
+                      value={pcPaymentMethod}
+                      onChange={(e) => setPcPaymentMethod(e.target.value)}
+                      className="w-full h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 font-bold text-slate-800"
+                    >
+                      <option value="Cash">Cash (เงินสด)</option>
+                      <option value="PromptPay / Transfer">PromptPay / Transfer (โอนเงิน)</option>
+                      <option value="Company Card">Company Card (บัตรบริษัท)</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700">Vendor / Store Name (ร้านค้า/ซัพพลายเออร์)</label>
+                    <Input
+                      value={pcVendorName}
+                      onChange={(e) => setPcVendorName(e.target.value)}
+                      placeholder="e.g. Makro / Ecolab / Shopee"
+                      className="h-9 text-xs"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700">Invoice / Receipt No. (เลขที่ใบเสร็จ)</label>
+                    <Input
+                      value={pcInvoiceNo}
+                      onChange={(e) => setPcInvoiceNo(e.target.value)}
+                      placeholder="e.g. INV-2026-001"
+                      className="h-9 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700 flex items-center justify-between">
+                    <span>Attach Receipt Photo (แนบรูปใบเสร็จเบิกเงินสดย่อย)</span>
+                    <span className="text-[10px] font-extrabold text-violet-700 bg-violet-100 px-1.5 py-0.5 rounded">
+                      Ctrl+V Supported
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <label className="flex-1 h-9 px-3 rounded-xl border border-dashed border-violet-400 bg-violet-50/50 hover:bg-violet-100/60 text-violet-800 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer">
+                      <Receipt size={14} />
+                      <span>
+                        + Upload or Press Ctrl+V to Paste Receipt ({pcReceiptUrls.length})
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={async (e) => {
+                          const files = Array.from(e.target.files || []);
+                          for (const file of files) {
+                            try {
+                              const url = await readFileAsCompressedDataUrl(file);
+                              setPcReceiptUrls((prev) => [...prev, url]);
+                            } catch (err) {
+                              console.error(err);
+                            }
+                          }
+                        }}
+                      />
+                    </label>
+                  </div>
+                  {pcReceiptUrls.length > 0 && (
+                    <div className="flex flex-wrap gap-2 pt-1.5">
+                      {pcReceiptUrls.map((url, idx) => (
+                        <div key={idx} className="relative">
+                          <img
+                            src={url}
+                            alt={`Receipt ${idx + 1}`}
+                            onClick={() => setPreviewImageUrl(url)}
+                            className="w-14 h-14 rounded-lg object-cover border border-violet-300 cursor-pointer"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPcReceiptUrls((prev) => prev.filter((_, i) => i !== idx))
+                            }
+                            className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-600 text-white text-[10px] flex items-center justify-center"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <DialogFooter className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setPettyCashOrder(null)}
+                  className="h-9 text-xs font-bold rounded-xl"
+                >
+                  Cancel (ยกเลิก)
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleConfirmRecordPettyCash}
+                  disabled={savingPettyCash || (parseFloat(pcAmount) || 0) <= 0}
+                  className="h-9 px-5 bg-violet-700 hover:bg-violet-800 text-white text-xs font-extrabold rounded-xl gap-1.5 cursor-pointer"
+                >
+                  <Wallet size={14} />
+                  <span>
+                    {savingPettyCash
+                      ? 'Recording...'
+                      : `Record ฿${(parseFloat(pcAmount) || 0).toLocaleString()} to Petty Cash`}
+                  </span>
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ======================================================== */}
+      {/* 11. DIALOG: ENLARGED IMAGE PREVIEW LIGHTBOX              */}
+      {/* ======================================================== */}
+      <Dialog
+        open={Boolean(previewImageUrl)}
+        onOpenChange={(open) => !open && setPreviewImageUrl(null)}
+      >
+        <DialogContent className="max-w-xl p-3 bg-slate-950/95 border border-slate-800 rounded-2xl shadow-2xl">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Image Preview</DialogTitle>
+          </DialogHeader>
+          {previewImageUrl && (
+            <div className="space-y-2">
+              <div className="max-h-[75vh] overflow-auto flex items-center justify-center rounded-xl bg-black/50 p-2">
+                <img
+                  src={previewImageUrl}
+                  alt="Preview"
+                  className="max-h-[70vh] w-auto object-contain rounded-lg"
+                />
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setPreviewImageUrl(null)}
+                  className="h-8 text-xs font-bold bg-white/10 text-white border-white/20 hover:bg-white/20 rounded-xl"
+                >
+                  Close Preview
+                </Button>
+              </div>
+            </div>
           )}
         </DialogContent>
       </Dialog>
