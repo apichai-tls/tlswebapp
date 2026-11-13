@@ -86,7 +86,8 @@ if (process.env.NEXT_PHASE !== 'phase-production-build') {
   assertSessionSecretConfigured();
 }
 
-export const SESSION_TTL_MS = 18 * 60 * 60 * 1000; // 18 hours max session expiry
+export const SESSION_TTL_MS = 18 * 60 * 60 * 1000; // 18 hours default session expiry
+export const REMEMBER_ME_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days session expiry when Remember Me is enabled
 const USER_CACHE_TTL_MS = 120000;            // 120s cache for authoritative DB user lookup (invalidated on write)
 const BRANCH_CACHE_TTL_MS = 300000;          // 300s cache for branch locations
 
@@ -128,7 +129,7 @@ function pruneExpiredRevocations(now = Date.now()) {
     if (exp <= now) revokedTokensMap.delete(tokenHash);
   }
   for (const [uid, ts] of userRevokedBeforeMap.entries()) {
-    if (now - ts > SESSION_TTL_MS) userRevokedBeforeMap.delete(uid);
+    if (now - ts > REMEMBER_ME_SESSION_TTL_MS) userRevokedBeforeMap.delete(uid);
   }
 }
 
@@ -164,7 +165,7 @@ export async function syncRevocationsFromDb(force = false): Promise<void> {
         }
         if (parsed.users && typeof parsed.users === 'object') {
           for (const [uid, ts] of Object.entries(parsed.users)) {
-            if (typeof ts === 'number' && syncNow - ts <= SESSION_TTL_MS) {
+            if (typeof ts === 'number' && syncNow - ts <= REMEMBER_ME_SESSION_TTL_MS) {
               const existing = userRevokedBeforeMap.get(uid) || 0;
               if (ts > existing) userRevokedBeforeMap.set(uid, ts);
             }
@@ -199,7 +200,7 @@ async function persistRevocationsToDb(delta?: {
         const parsed = JSON.parse(existingRow.value) as Partial<RevocationState>;
         if (parsed.users && typeof parsed.users === 'object') {
           for (const [uid, ts] of Object.entries(parsed.users)) {
-            if (typeof ts === 'number' && Number.isFinite(ts) && now - ts <= SESSION_TTL_MS) {
+            if (typeof ts === 'number' && Number.isFinite(ts) && now - ts <= REMEMBER_ME_SESSION_TTL_MS) {
               mergedUsers[uid] = Math.max(mergedUsers[uid] || 0, ts);
             }
           }
@@ -218,7 +219,7 @@ async function persistRevocationsToDb(delta?: {
 
     if (delta?.users) {
       for (const [uid, ts] of Object.entries(delta.users)) {
-        if (typeof ts === 'number' && Number.isFinite(ts) && now - ts <= SESSION_TTL_MS) {
+        if (typeof ts === 'number' && Number.isFinite(ts) && now - ts <= REMEMBER_ME_SESSION_TTL_MS) {
           mergedUsers[uid] = Math.max(mergedUsers[uid] || 0, ts);
         }
       }
@@ -380,9 +381,11 @@ export function signStaffSessionToken(payload: {
   role: string;
   branchId?: string | null;
   area?: string | null;
+  rememberMe?: boolean;
 }): string {
   const now = Date.now();
   const secret = getSessionSecret();
+  const ttlMs = payload.rememberMe ? REMEMBER_ME_SESSION_TTL_MS : SESSION_TTL_MS;
   const data = Buffer.from(
     JSON.stringify({
       id: payload.id,
@@ -391,7 +394,7 @@ export function signStaffSessionToken(payload: {
       branchId: payload.branchId || null,
       area: payload.area || null,
       iat: now,
-      exp: now + SESSION_TTL_MS,
+      exp: now + ttlMs,
     })
   ).toString('base64url');
   const sig = crypto.createHmac('sha256', secret).update(data).digest('base64url');

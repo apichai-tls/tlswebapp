@@ -14,11 +14,13 @@ export interface User {
   permissions: string[];
   area?: string;
   branchId?: string | null;
+  sessionToken?: string;
+  rememberMe?: boolean;
 }
 
 interface AuthContextType {
   user: User | null;
-  login: (email: string, password?: string) => Promise<User>;
+  login: (email: string, password?: string, rememberMe?: boolean) => Promise<User>;
   logout: () => Promise<void> | void;
   isLoading: boolean;
 }
@@ -41,6 +43,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const clearAuthStorage = useCallback(() => {
     localStorage.removeItem('authUser');
     localStorage.removeItem('lastLoginDate');
+    localStorage.removeItem('authRememberMe');
+    localStorage.removeItem('authRememberExpiresAt');
     localStorage.removeItem('authBuildTime');
     localStorage.removeItem('lastActivityAt');
     localStorage.removeItem('rememberedPassword');
@@ -106,13 +110,21 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
     const savedUser = localStorage.getItem('authUser');
     const lastLoginDate = localStorage.getItem('lastLoginDate');
+    const isRememberMe = localStorage.getItem('authRememberMe') === 'true';
+    const rememberExpiresAt = Number(localStorage.getItem('authRememberExpiresAt') || '0');
     const savedBuildTime = localStorage.getItem('authBuildTime');
     const lastActivityStr = localStorage.getItem('lastActivityAt');
     const today = new Date().toDateString();
 
     if (savedUser) {
-      // Check 1: New day -> clear session
-      if (lastLoginDate !== today) {
+      // Check 1: Session expiration
+      // - If "Remember Me" is enabled, keep the user signed in across days/reopened tabs for up to 30 days.
+      // - Otherwise, expire on a new calendar day.
+      const isExpired = isRememberMe
+        ? rememberExpiresAt > 0 && Date.now() > rememberExpiresAt
+        : lastLoginDate !== today;
+
+      if (isExpired) {
         clearAuthStorage();
         fetch('/api/auth/login', { method: 'DELETE', keepalive: true, credentials: 'same-origin' }).catch(() => {});
         setUser(null);
@@ -122,29 +134,37 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       // Check 2: Build version mismatch on page load (New deployment detected)
       if (CURRENT_BUILD_TIME && savedBuildTime && savedBuildTime !== CURRENT_BUILD_TIME) {
-        setIsLoading(false);
-        forceLogoutWithReason('new_deploy');
-        return;
+        if (isRememberMe) {
+          // Keep remembered users signed in seamlessly across deployments
+          localStorage.setItem('authBuildTime', CURRENT_BUILD_TIME);
+        } else {
+          setIsLoading(false);
+          forceLogoutWithReason('new_deploy');
+          return;
+        }
       }
-      // If user had a legacy session before authBuildTime was introduced, stamp current build time or force re-login if production
+      // If user had a legacy session before authBuildTime was introduced, stamp current build time
       if (CURRENT_BUILD_TIME && !savedBuildTime) {
         localStorage.setItem('authBuildTime', CURRENT_BUILD_TIME);
       }
 
       // Check 3: Idle timeout already exceeded while tab was closed/inactive
-      const configuredMinsStr =
-        settingsStore.getSnapshot()?.sessionTimeoutMinutes ??
-        localStorage.getItem('tls_session_timeout_mins') ??
-        String(DEFAULT_TIMEOUT_MINUTES);
-      const timeoutMins = Number(configuredMinsStr);
-      const effectiveTimeoutMs = (!isNaN(timeoutMins) ? timeoutMins : DEFAULT_TIMEOUT_MINUTES) * 60 * 1000;
+      // (Skipped when Remember Me is enabled so users aren't logged out every 20 minutes)
+      if (!isRememberMe) {
+        const configuredMinsStr =
+          settingsStore.getSnapshot()?.sessionTimeoutMinutes ??
+          localStorage.getItem('tls_session_timeout_mins') ??
+          String(DEFAULT_TIMEOUT_MINUTES);
+        const timeoutMins = Number(configuredMinsStr);
+        const effectiveTimeoutMs = (!isNaN(timeoutMins) ? timeoutMins : DEFAULT_TIMEOUT_MINUTES) * 60 * 1000;
 
-      if (effectiveTimeoutMs > 0 && lastActivityStr) {
-        const lastActivity = Number(lastActivityStr);
-        if (!isNaN(lastActivity) && Date.now() - lastActivity >= effectiveTimeoutMs) {
-          setIsLoading(false);
-          forceLogoutWithReason('timeout');
-          return;
+        if (effectiveTimeoutMs > 0 && lastActivityStr) {
+          const lastActivity = Number(lastActivityStr);
+          if (!isNaN(lastActivity) && Date.now() - lastActivity >= effectiveTimeoutMs) {
+            setIsLoading(false);
+            forceLogoutWithReason('timeout');
+            return;
+          }
         }
       }
 
@@ -152,9 +172,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         const parsed = JSON.parse(savedUser);
         setUser(parsed);
         localStorage.setItem('lastActivityAt', String(Date.now()));
+        if (isRememberMe) {
+          localStorage.setItem('lastLoginDate', today);
+        }
         if (parsed.sessionToken) {
           import('@/actions/auth').then(({ syncSessionCookieAction }) => {
-            syncSessionCookieAction(parsed.sessionToken).catch(() => {});
+            syncSessionCookieAction(parsed.sessionToken, isRememberMe).catch(() => {});
           }).catch(() => {});
         }
         if (typeof document !== 'undefined') {
@@ -227,6 +250,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     };
 
     const checkIdleTimeout = () => {
+      if (localStorage.getItem('authRememberMe') === 'true') {
+        const expAt = Number(localStorage.getItem('authRememberExpiresAt') || '0');
+        if (expAt > 0 && Date.now() > expAt) {
+          forceLogoutWithReason('timeout');
+          return true;
+        }
+        return false;
+      }
       const timeoutMs = getTimeoutMs();
       if (timeoutMs <= 0) return false; // 0 = disabled
       const lastAct = Number(localStorage.getItem('lastActivityAt') || lastRecorded);
@@ -247,7 +278,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
         const savedBuildTime = localStorage.getItem('authBuildTime') || CURRENT_BUILD_TIME;
         if (savedBuildTime && serverBuildTime !== savedBuildTime) {
-          await forceLogoutWithReason('new_deploy');
+          if (localStorage.getItem('authRememberMe') === 'true') {
+            localStorage.setItem('authBuildTime', serverBuildTime);
+          } else {
+            await forceLogoutWithReason('new_deploy');
+          }
         } else if (!localStorage.getItem('authBuildTime')) {
           localStorage.setItem('authBuildTime', serverBuildTime);
         }
@@ -286,7 +321,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     };
   }, [user, forceLogoutWithReason]);
 
-  const login = async (email: string, password?: string) => {
+  const login = async (email: string, password?: string, rememberMe?: boolean) => {
+    const isRememberMe = Boolean(rememberMe);
     let response: { success: boolean; user?: any; error?: string } | null = null;
     const versionPromise = fetch('/api/version', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
@@ -296,17 +332,17 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const apiRes = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, rememberMe: isRememberMe }),
       });
       response = await apiRes.json();
     } catch {
-      response = await loginUser(email, password);
+      response = await loginUser(email, password, isRememberMe);
     }
 
     if (!response || !response.success || !response.user) {
       throw new Error(response?.error || "Invalid email or password");
     }
-    const userData = response.user;
+    const userData = { ...response.user, rememberMe: isRememberMe };
 
     // Resolve server buildTime fetched in parallel (non-blocking if slow)
     let buildTimeToSave = CURRENT_BUILD_TIME;
@@ -328,6 +364,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     localStorage.setItem('authUser', JSON.stringify(userData));
     localStorage.setItem('lastLoginDate', new Date().toDateString());
     localStorage.setItem('lastActivityAt', String(Date.now()));
+    if (isRememberMe) {
+      localStorage.setItem('authRememberMe', 'true');
+      localStorage.setItem('authRememberExpiresAt', String(Date.now() + 30 * 24 * 60 * 60 * 1000));
+    } else {
+      localStorage.removeItem('authRememberMe');
+      localStorage.removeItem('authRememberExpiresAt');
+    }
     if (buildTimeToSave) {
       localStorage.setItem('authBuildTime', buildTimeToSave);
     }

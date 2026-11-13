@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { email, password } = await req.json();
+    const { email, password, rememberMe } = await req.json();
 
     if (!email || !password || typeof email !== "string" || typeof password !== "string") {
       return NextResponse.json({ success: false, error: "Email and password are required" }, { status: 400 });
@@ -69,12 +69,14 @@ export async function POST(req: NextRequest) {
       permissionsArray = [];
     }
 
+    const isRememberMe = Boolean(rememberMe);
     const sessionToken = signStaffSessionToken({
       id: user.id,
       email: user.email,
       role: user.role,
       branchId: user.branchId || null,
       area: user.area || null,
+      rememberMe: isRememberMe,
     });
 
     invalidateServerAuthCache(user.id);
@@ -92,6 +94,7 @@ export async function POST(req: NextRequest) {
         area: user.area || undefined,
         branchId: user.branchId || null,
         sessionToken,
+        rememberMe: isRememberMe,
       },
     });
 
@@ -100,7 +103,7 @@ export async function POST(req: NextRequest) {
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       path: "/",
-      maxAge: 60 * 60 * 18,
+      maxAge: isRememberMe ? 60 * 60 * 24 * 30 : 60 * 60 * 18,
     });
 
     return res;

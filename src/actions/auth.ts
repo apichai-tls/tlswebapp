@@ -14,7 +14,7 @@ import {
 } from "@/lib/server-auth";
 import { checkRateLimit, resetRateLimit } from "@/lib/rate-limit";
 
-export async function loginUser(email: string, password?: string) {
+export async function loginUser(email: string, password?: string, rememberMe?: boolean) {
   try {
     if (!email || !password || typeof email !== "string" || typeof password !== "string") {
       return { success: false, error: "Email and password are required" };
@@ -77,12 +77,14 @@ export async function loginUser(email: string, password?: string) {
       permissionsArray = [];
     }
 
+    const isRememberMe = Boolean(rememberMe);
     const sessionToken = signStaffSessionToken({
       id: user.id,
       email: user.email,
       role: user.role,
       branchId: user.branchId || null,
       area: user.area || null,
+      rememberMe: isRememberMe,
     });
 
     try {
@@ -93,7 +95,7 @@ export async function loginUser(email: string, password?: string) {
         secure: process.env.NODE_ENV === "production",
         sameSite: "lax",
         path: "/",
-        maxAge: 60 * 60 * 18,
+        maxAge: isRememberMe ? 60 * 60 * 24 * 30 : 60 * 60 * 18,
       });
     } catch {
       // Ignore when invoked outside request cookie context
@@ -112,6 +114,7 @@ export async function loginUser(email: string, password?: string) {
         area: user.area || undefined,
         branchId: user.branchId || null,
         sessionToken,
+        rememberMe: isRememberMe,
       }
     };
   } catch (error: any) {
@@ -203,10 +206,11 @@ export async function logoutUserAction() {
   return { success: true };
 }
 
-export async function syncSessionCookieAction(token: string): Promise<{ success: boolean }> {
+export async function syncSessionCookieAction(token: string, rememberMe?: boolean): Promise<{ success: boolean }> {
   try {
     const verified = verifyStaffSessionToken(token);
     if (verified?.id && !isTokenRevoked(token, verified)) {
+      const remainingSecs = Math.max(60, Math.floor((verified.exp - Date.now()) / 1000));
       const { cookies } = await import("next/headers");
       const cookieStore = await cookies();
       cookieStore.set("tls_session", token, {
@@ -214,7 +218,7 @@ export async function syncSessionCookieAction(token: string): Promise<{ success:
         secure: process.env.NODE_ENV === "production",
         sameSite: "lax",
         path: "/",
-        maxAge: 60 * 60 * 18,
+        maxAge: rememberMe ? Math.max(remainingSecs, 60 * 60 * 24 * 30) : remainingSecs,
       });
       return { success: true };
     }
