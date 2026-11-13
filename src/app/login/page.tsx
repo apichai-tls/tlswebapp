@@ -18,11 +18,11 @@ function LoginForm() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
+    // Purge any legacy plaintext password from localStorage immediately
+    localStorage.removeItem("rememberedPassword");
     const savedEmail = localStorage.getItem("rememberedEmail");
-    const savedPassword = localStorage.getItem("rememberedPassword");
-    if (savedEmail && savedPassword) {
+    if (savedEmail) {
       setEmail(savedEmail);
-      setPassword(savedPassword);
       setRememberMe(true);
     }
   }, []);
@@ -43,26 +43,30 @@ function LoginForm() {
     }
 
     setIsSubmitting(true);
-    
-    // Simulate network delay
-    await new Promise(r => setTimeout(r, 1200));
 
     try {
       const user = await login(email, password);
-      
+
+      localStorage.removeItem("rememberedPassword");
       if (rememberMe) {
-        localStorage.setItem("rememberedEmail", email);
-        localStorage.setItem("rememberedPassword", password);
+        localStorage.setItem("rememberedEmail", email.trim());
       } else {
         localStorage.removeItem("rememberedEmail");
-        localStorage.removeItem("rememberedPassword");
       }
 
       toast.success(`Welcome back, ${user.role}!`);
-      
-      const redirectPath = searchParams.get("redirect");
-      if (redirectPath) {
-        window.location.href = redirectPath;
+
+      const rawRedirect = searchParams.get("redirect");
+      const safeRedirect =
+        rawRedirect &&
+        rawRedirect.startsWith("/") &&
+        !rawRedirect.startsWith("//") &&
+        !rawRedirect.startsWith("/\\")
+          ? rawRedirect
+          : null;
+
+      if (safeRedirect) {
+        window.location.href = safeRedirect;
       } else {
         // If it's a native platform and NOT a rider, default to /billing (BILL APK)
         import("@capacitor/core").then(({ Capacitor }) => {
@@ -137,6 +141,7 @@ function LoginForm() {
             placeholder="••••••••"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
             className="pl-10 h-12 bg-slate-50 border-transparent focus:bg-white focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition-all rounded-xl shadow-sm text-base"
           />
         </div>

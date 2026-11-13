@@ -1,9 +1,19 @@
+import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { recordInboundSocialMessageAction } from '@/actions/social-inbox';
+import {
+  loadRawSocialInboxStore,
+  recordInboundSocialMessageInternal,
+} from '@/lib/social-inbox-internal';
 import { formatDisplayPhone } from '@/lib/social-helpers';
 import { SocialMessageAttachment } from '@/types/social-inbox';
+import { checkRateLimit, getRequestClientIp } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
+
+function timingSafeCompare(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 /**
  * GET /api/webhooks/social
@@ -12,20 +22,44 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get('hub.mode');
-  const token = searchParams.get('hub.verify_token');
+  const token = (searchParams.get('hub.verify_token') || '').trim();
   const challenge = searchParams.get('hub.challenge');
 
-  if (mode === 'subscribe' && challenge) {
-    return new NextResponse(challenge, {
+  if (mode === 'subscribe' && challenge !== null) {
+    const store = await loadRawSocialInboxStore();
+    const configuredTokens = Array.from(
+      new Set(
+        [
+          process.env.SOCIAL_WEBHOOK_VERIFY_TOKEN,
+          process.env.META_WEBHOOK_VERIFY_TOKEN,
+          store.config?.whatsapp?.verifyToken,
+        ]
+          .map((t) => (t || '').trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (
+      configuredTokens.length === 0 ||
+      !token ||
+      !configuredTokens.some((expected) => timingSafeCompare(token, expected))
+    ) {
+      return NextResponse.json({ error: 'Invalid verify_token' }, { status: 403 });
+    }
+
+    const safeChallenge = String(challenge).replace(/[^\w.\-~]/g, '');
+    return new NextResponse(safeChallenge, {
       status: 200,
-      headers: { 'Content-Type': 'text/plain' },
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Content-Type-Options': 'nosniff',
+      },
     });
   }
 
   return NextResponse.json({
     ok: true,
-    service: 'That Laundry Shop — Omnichannel Live Social Webhook (WhatsApp, Messenger, Instagram, Telegram)',
-    verifyTokenReceived: Boolean(token),
+    service: 'That Laundry Shop — Omnichannel Live Social Webhook',
     timestamp: new Date().toISOString(),
   });
 }
@@ -40,7 +74,32 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
-    const payload = await req.json().catch(() => ({}));
+    const clientIp = getRequestClientIp(req);
+    const rate = checkRateLimit(`social-webhook:${clientIp}`, 120, 60 * 1000);
+    if (!rate.allowed) {
+      return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+    }
+
+    const rawBody = await req.text();
+    const payload = rawBody ? JSON.parse(rawBody) : {};
+
+    // Verify Meta X-Hub-Signature-256 when META_APP_SECRET is configured
+    const metaAppSecret = (process.env.META_APP_SECRET || '').trim();
+    if (
+      metaAppSecret &&
+      (payload?.object === 'whatsapp_business_account' ||
+        payload?.object === 'page' ||
+        payload?.object === 'instagram')
+    ) {
+      const sigHeader = (req.headers.get('x-hub-signature-256') || '').trim();
+      const expected = `sha256=${crypto.createHmac('sha256', metaAppSecret).update(rawBody).digest('hex')}`;
+      if (!timingSafeCompare(sigHeader, expected)) {
+        return NextResponse.json({ error: 'Invalid Meta webhook signature' }, { status: 401 });
+      }
+    }
+
+    // Verify gateway / webhook secret when configured on channel or env
+    const store = await loadRawSocialInboxStore();
 
     // 1. WhatsApp Business Cloud API Payload (`object === "whatsapp_business_account"`)
     if (payload?.object === 'whatsapp_business_account' && Array.isArray(payload?.entry)) {
@@ -76,7 +135,7 @@ export async function POST(req: NextRequest) {
                 : `📷 [WhatsApp ${msg?.type || 'media'} message]`;
 
             if (textBody || attachments.length > 0) {
-              await recordInboundSocialMessageAction({
+              await recordInboundSocialMessageInternal({
                 channel: 'whatsapp',
                 externalContactId: fromPhone,
                 contactName: profileName,
@@ -96,6 +155,19 @@ export async function POST(req: NextRequest) {
       (payload?.event === 'message' || payload?.event === 'messages.upsert' || payload?.data?.from) &&
       (payload?.payload?.from || payload?.data?.from || payload?.data?.key?.remoteJid)
     ) {
+      const expectedGwSecret = (process.env.WHATSAPP_WEBHOOK_SECRET || '').trim();
+      if (expectedGwSecret) {
+        const suppliedSecret = (
+          req.headers.get('x-webhook-secret') ||
+          req.headers.get('x-api-key') ||
+          req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ||
+          ''
+        ).trim();
+        if (!timingSafeCompare(suppliedSecret, expectedGwSecret)) {
+          return NextResponse.json({ error: 'Invalid WhatsApp gateway secret' }, { status: 401 });
+        }
+      }
+
       const rawFrom =
         payload?.payload?.from ||
         payload?.data?.from ||
@@ -120,7 +192,7 @@ export async function POST(req: NextRequest) {
           : [];
 
         if (fromPhone && (text || attachments.length > 0)) {
-          await recordInboundSocialMessageAction({
+          await recordInboundSocialMessageInternal({
             channel: 'whatsapp',
             externalContactId: fromPhone,
             contactName: senderName,
@@ -161,7 +233,7 @@ export async function POST(req: NextRequest) {
           }
 
           if (senderId && (text || attachments.length > 0)) {
-            await recordInboundSocialMessageAction({
+            await recordInboundSocialMessageInternal({
               channel,
               externalContactId: senderId,
               contactName: `${channel === 'instagram' ? 'IG' : 'FB'} User #${senderId.slice(-5)}`,
@@ -176,6 +248,14 @@ export async function POST(req: NextRequest) {
 
     // 4. Telegram Bot Webhook Payload (`message.chat.id`)
     if (payload?.message?.chat?.id) {
+      const expectedTgSecret = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+      if (expectedTgSecret) {
+        const tgHeader = (req.headers.get('x-telegram-bot-api-secret-token') || '').trim();
+        if (!timingSafeCompare(tgHeader, expectedTgSecret)) {
+          return NextResponse.json({ error: 'Invalid Telegram webhook secret' }, { status: 401 });
+        }
+      }
+
       const chat = payload.message.chat;
       const from = payload.message.from || {};
       const senderId = String(chat.id);
@@ -186,7 +266,7 @@ export async function POST(req: NextRequest) {
       const text = String(payload.message.text || payload.message.caption || '').trim();
 
       if (text) {
-        await recordInboundSocialMessageAction({
+        await recordInboundSocialMessageInternal({
           channel: 'telegram',
           externalContactId: senderId,
           contactName: name,
@@ -199,6 +279,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: 'ok' });
   } catch (err: any) {
     console.error('[Omnichannel Social Webhook Error]:', err);
-    return NextResponse.json({ status: 'error', message: err?.message }, { status: 200 });
+    return NextResponse.json({ status: 'error', message: 'Webhook error' }, { status: 500 });
   }
 }

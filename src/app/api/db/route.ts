@@ -8,6 +8,9 @@ import {
   sanitizeCustomerRecord,
   computeDeterministicEtag,
   seedJobsIntoRevisionCache,
+  EXCLUDED_DB_POLL_SETTING_KEYS,
+  isSafeUiPollSettingKey,
+  isRiderAllowedSettingKey,
 } from '@/lib/db-cache';
 import { ensurePgListenerStarted } from '@/lib/realtime-bus';
 import {
@@ -31,16 +34,15 @@ const CUSTOMERS_TTL_MS = 300000;      // 300s customer master data cache (invali
 const MASTER_DATA_TTL_MS = 300000;    // 300s services, price lists, shop locations, settings cache
 const RIDER_EARNINGS_TTL_MS = 180000; // 180s rider earnings aggregations cache
 
-const INTERNAL_SETTING_KEYS = new Set(['auth_session_revocations', 'rider_daily_reset_date']);
-
 export function filterPayloadForUser(payload: any, user: ServerAuthUser): any {
   const role = (user.role || '').toLowerCase();
+  const isRider = role === 'rider';
   const safeSettings: Record<string, string> = {};
   if (payload.settings && typeof payload.settings === 'object') {
     for (const [k, v] of Object.entries(payload.settings)) {
-      if (!INTERNAL_SETTING_KEYS.has(k) && !k.startsWith('rider_gps_at:')) {
-        safeSettings[k] = String(v);
-      }
+      if (!isSafeUiPollSettingKey(k)) continue;
+      if (isRider && !isRiderAllowedSettingKey(k)) continue;
+      safeSettings[k] = String(v);
     }
   }
 
@@ -150,7 +152,7 @@ export async function GET(request?: NextRequest) {
       );
     }
 
-    await ensureDailyRiderOfflineReset();
+    ensureDailyRiderOfflineReset().catch(() => {});
 
     const forceFresh = request ? new URL(request.url).searchParams.get('fresh') === 'true' : false;
     const ifNoneMatch = request?.headers.get('if-none-match');
@@ -250,7 +252,15 @@ export async function GET(request?: NextRequest) {
               prisma.serviceItem.findMany(),
               prisma.priceList.findMany(),
               prisma.shopLocation.findMany(),
-              prisma.setting.findMany(),
+              prisma.setting.findMany({
+                where: {
+                  key: { notIn: [...EXCLUDED_DB_POLL_SETTING_KEYS] },
+                  NOT: [
+                    { key: { startsWith: 'rider_gps_at:' } },
+                    { key: { startsWith: 'TLS_' } },
+                  ],
+                },
+              }),
             ]).then(([services, priceListsRaw, shopLocations, settingsRaw]) => {
               const res = { services, priceListsRaw, shopLocations, settingsRaw };
               dbCache.masterData = res;
@@ -370,7 +380,9 @@ export async function GET(request?: NextRequest) {
 
       const settings: Record<string, string> = {};
       settingsRaw.forEach((s: any) => {
-        settings[s.key] = s.value;
+        if (isSafeUiPollSettingKey(s.key)) {
+          settings[s.key] = s.value;
+        }
       });
 
       const formattedCustomers = customers.map((c: any) => sanitizeCustomerRecord(c));
@@ -381,12 +393,24 @@ export async function GET(request?: NextRequest) {
       }));
 
       const gpsMap = await getRiderGpsTimestampsMap();
+      const lifetimeMap = new Map<string, number>();
+      for (const e of lifetimeEarnings) {
+        lifetimeMap.set(e.riderId, e._sum?.amount || 0);
+      }
+      const monthMap = new Map<string, number>();
+      for (const e of monthEarnings) {
+        monthMap.set(e.riderId, e._sum?.amount || 0);
+      }
+      const countMap = new Map<string, number>();
+      for (const e of completedJobsCounts) {
+        countMap.set(e.riderId, e._count?.id || 0);
+      }
 
       const formattedRiders = riders.map((r: any) => {
-        const lifeSum = lifetimeEarnings.find((e: any) => e.riderId === r.id)?._sum?.amount || 0;
-        const monSum = monthEarnings.find((e: any) => e.riderId === r.id)?._sum?.amount || 0;
-        const jobCnt = completedJobsCounts.find((e: any) => e.riderId === r.id)?._count?.id || 0;
-        const gpsUpdatedAt = gpsMap.get(r.id) || settings[`rider_gps_at:${r.id}`] || null;
+        const lifeSum = lifetimeMap.get(r.id) || 0;
+        const monSum = monthMap.get(r.id) || 0;
+        const jobCnt = countMap.get(r.id) || 0;
+        const gpsUpdatedAt = gpsMap.get(r.id) || null;
 
         return {
           ...r,

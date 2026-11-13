@@ -23,13 +23,15 @@ import {
   getCustomerJobCountsAction,
   getCustomerWalletAdjustmentsAction
 } from "@/actions/db";
-import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
-import { ReportsWalletApprovals } from "@/components/reports-wallet-approvals";
-import { AdminRecurringOrders } from "@/components/admin-recurring-orders";
-import { AdminCrmVendors } from "@/components/admin-crm-vendors";
+import dynamic from "next/dynamic";
 import { getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, normalizePhone, matchCustomerSearch, formatBaht } from "@/lib/utils";
+
+const A5ReceiptDialog = dynamic(() => import("@/components/a5-receipt-dialog").then((m) => m.A5ReceiptDialog), { ssr: false });
+const ReportsWalletApprovals = dynamic(() => import("@/components/reports-wallet-approvals").then((m) => m.ReportsWalletApprovals), { ssr: false });
+const AdminRecurringOrders = dynamic(() => import("@/components/admin-recurring-orders").then((m) => m.AdminRecurringOrders), { ssr: false });
+const AdminCrmVendors = dynamic(() => import("@/components/admin-crm-vendors").then((m) => m.AdminCrmVendors), { ssr: false });
 
 function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 0.85): Promise<File> {
   return new Promise((resolve) => {

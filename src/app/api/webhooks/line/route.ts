@@ -3,14 +3,18 @@ import fs from "fs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
 import { uploadBufferToGcs } from "@/lib/gcs";
-import { invalidateDbCache } from "@/lib/db-cache";
+import { dbCache, primeCustomerCache } from "@/lib/db-cache";
 import {
   getLineUserProfile,
   verifyLineWebhookSignature,
   type LineContactRecord,
 } from "@/lib/line";
-import { getStoredLineOaSettings, invalidateLineContactsCacheAction } from "@/actions/line";
-import { recordInboundSocialMessageAction } from "@/actions/social-inbox";
+import {
+  getStoredLineOaSettings,
+  invalidateLineContactsCache,
+  TLS_CHANNEL_SECRET,
+} from "@/lib/line-internal";
+import { recordInboundSocialMessageInternal } from "@/lib/social-inbox-internal";
 import { SocialMessageAttachment } from "@/types/social-inbox";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +25,6 @@ export async function GET() {
     ok: true,
     service: "That Laundry Shop — LINE Official Account Live Webhook",
     configured: Boolean(settings.channelAccessToken),
-    autoSendDeliveryPhoto: settings.autoSendDeliveryPhoto,
     timestamp: new Date().toISOString(),
   });
 }
@@ -62,18 +65,59 @@ export async function POST(req: NextRequest) {
     const signature = req.headers.get("x-line-signature");
     const settings = await getStoredLineOaSettings();
 
-    if (
-      settings.channelSecret &&
-      !verifyLineWebhookSignature(rawBody, signature, settings.channelSecret)
-    ) {
-      // Log warning but still allow if user has multiple channels (ThatLaundryShop + NoName) hitting the same webhook
-      console.warn("[LINE Webhook] Signature mismatch — continuing for multi-channel support");
+    const candidateSecrets = Array.from(
+      new Set(
+        [
+          settings.channelSecret,
+          process.env.LINE_CHANNEL_SECRET,
+          process.env.NONAME_LINE_CHANNEL_SECRET,
+          TLS_CHANNEL_SECRET,
+        ]
+          .map((s) => (s || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (candidateSecrets.length === 0) {
+      return NextResponse.json(
+        { status: "error", message: "LINE channel secret is not configured" },
+        { status: 503 }
+      );
     }
 
+    if (!signature || !/^[A-Za-z0-9+/]{43}=$/.test(signature.trim())) {
+      return NextResponse.json(
+        { status: "error", message: "Invalid or missing x-line-signature" },
+        { status: 401 }
+      );
+    }
+
+    const signatureVerified = candidateSecrets.some((sec) =>
+      verifyLineWebhookSignature(rawBody, signature, sec)
+    );
+
     const payload = rawBody ? JSON.parse(rawBody) : { events: [] };
+
+    if (!signatureVerified) {
+      // Allow secondary LINE OA channel (e.g. NoName Laundry) if NONAME_LINE_CHANNEL_SECRET
+      // is not yet set in env, provided request comes from LineBotWebhook with valid destination
+      const hasExplicitSecondarySecret = Boolean((process.env.NONAME_LINE_CHANNEL_SECRET || "").trim());
+      const ua = req.headers.get("user-agent") || "";
+      const hasValidDestination =
+        typeof payload?.destination === "string" && /^U[0-9a-f]{32}$/i.test(payload.destination);
+
+      if (hasExplicitSecondarySecret || !ua.startsWith("LineBotWebhook/") || !hasValidDestination) {
+        return NextResponse.json(
+          { status: "error", message: "Invalid x-line-signature" },
+          { status: 401 }
+        );
+      }
+      console.warn("[LINE Webhook] Unmatched channel secret for secondary LINE OA destination:", payload.destination);
+    }
+
     const events: any[] = Array.isArray(payload?.events) ? payload.events : [];
 
-    // LINE Webhook "Verify" button sends an empty events array — always return 200 OK immediately
+    // LINE Webhook "Verify" button sends an empty events array — return 200 OK immediately
     if (events.length === 0) {
       return NextResponse.json({ status: "ok", verified: true });
     }
@@ -89,19 +133,74 @@ export async function POST(req: NextRequest) {
       } catch {}
     }
 
-    let didUpdateCustomer = false;
+    const eventUserIds = Array.from(
+      new Set(
+        events
+          .map((ev) => ev?.source?.userId)
+          .filter((uid): uid is string => typeof uid === "string" && /^U[0-9a-f]{32}$/i.test(uid))
+      )
+    );
 
-    const allCustomers = await prisma.customer.findMany({
-      select: {
-        id: true,
-        name: true,
-        nickName: true,
-        phone: true,
-        secondaryPhone: true,
-        lineId: true,
-        memberId: true,
-      },
-    });
+    // Fast indexed query only for the active LINE userId(s) instead of scanning all 3,400+ customers
+    const prelinkedCustomers =
+      eventUserIds.length > 0
+        ? await prisma.customer.findMany({
+            where: { lineId: { in: eventUserIds } },
+            select: {
+              id: true,
+              name: true,
+              nickName: true,
+              phone: true,
+              secondaryPhone: true,
+              lineId: true,
+              memberId: true,
+            },
+          })
+        : [];
+    type CandidateCustomer = {
+      id: string;
+      name: string;
+      nickName: string | null;
+      phone: string | null;
+      secondaryPhone: string | null;
+      lineId: string | null;
+      memberId: string | null;
+    };
+
+    const prelinkedByLineId = new Map<string, CandidateCustomer>(
+      prelinkedCustomers.filter((c) => c.lineId).map((c) => [c.lineId as string, c])
+    );
+
+    // Lazy-loaded pool only if an unlinked LINE user sends a message
+    let candidatePool: CandidateCustomer[] | null = null;
+
+    const loadCandidatePool = async () => {
+      if (candidatePool) return candidatePool;
+      if (Array.isArray(dbCache.customers) && dbCache.customers.length > 0) {
+        candidatePool = dbCache.customers.map((c: any) => ({
+          id: c.id,
+          name: c.name,
+          nickName: c.nickName ?? null,
+          phone: c.phone ?? null,
+          secondaryPhone: c.secondaryPhone ?? null,
+          lineId: c.lineId ?? null,
+          memberId: c.memberId ?? null,
+        }));
+        return candidatePool;
+      }
+      candidatePool = await prisma.customer.findMany({
+        select: {
+          id: true,
+          name: true,
+          nickName: true,
+          phone: true,
+          secondaryPhone: true,
+          lineId: true,
+          memberId: true,
+        },
+      });
+      return candidatePool;
+    };
 
     for (const event of events) {
       const userId: string | undefined = event?.source?.userId;
@@ -117,13 +216,11 @@ export async function POST(req: NextRequest) {
         : null;
       const displayName = profile?.displayName || "LINE User";
 
-      // 1. Check if this userId is already linked to a Customer
-      let matchedCustomer =
-        allCustomers.find((c) => c.lineId === userId) || null;
+      let matchedCustomer = prelinkedByLineId.get(userId) || null;
 
-      // 2. SILENT BACKGROUND MATCHING (Never sends any auto-reply or link to customer!):
       if (!matchedCustomer) {
-        // A) Check if their LINE Display Name matches a customer's saved `lineId` field in CRM (exact unique match)
+        const allCustomers = await loadCandidatePool();
+
         if (displayName) {
           const normDisplay = normalizeHandle(displayName);
           const lineIdMatches = allCustomers.filter(
@@ -137,7 +234,6 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // B) Check if message contains a phone number (e.g., when customer sends their phone/address in normal chat)
         if (!matchedCustomer && messageText) {
           const phoneInMsgMatch = messageText.match(/(?:0|\+?66)[0-9\-\s]{8,12}/);
           if (phoneInMsgMatch) {
@@ -155,7 +251,6 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // C) Check if their LINE Display Name uniquely matches a single customer's Name or Nickname in CRM
         if (!matchedCustomer && displayName) {
           const normDisplay = normalizeHandle(displayName);
           const nameMatches = allCustomers.filter(
@@ -169,16 +264,13 @@ export async function POST(req: NextRequest) {
         }
 
         if (matchedCustomer) {
-          await prisma.customer.update({
+          const updatedCust = await prisma.customer.update({
             where: { id: matchedCustomer.id },
-            data: {
-              lineId: userId,
-            },
+            data: { lineId: userId },
+            include: { addresses: { orderBy: { isPrimary: "desc" } } },
           });
-          didUpdateCustomer = true;
-          console.log(
-            `[LINE Silent Lookup] Silently linked LINE User "${displayName}" (${userId}) -> Customer ${matchedCustomer.name} (${matchedCustomer.id})`
-          );
+          primeCustomerCache(updatedCust);
+          prelinkedByLineId.set(userId, matchedCustomer);
         }
       }
 
@@ -226,7 +318,6 @@ export async function POST(req: NextRequest) {
       if (messageText || event.type === "follow" || msgType === "image" || msgType === "sticker") {
         const inboundAttachments: SocialMessageAttachment[] = [];
 
-        // If customer sent a photo on LINE OA, download binary from LINE Data API and save to /uploads/system/chat/
         if (msgType === "image" && event?.message?.id && settings.channelAccessToken) {
           try {
             const msgId = String(event.message.id).replace(/[^a-zA-Z0-9_-]/g, "");
@@ -244,7 +335,6 @@ export async function POST(req: NextRequest) {
               const contentType = imgRes.headers.get("content-type") || "image/jpeg";
               const filename = `line-${msgId}.jpg`;
 
-              // 1. Primary: Upload directly to Google Cloud Storage for permanent retention
               let imageUrl = await uploadBufferToGcs(rawBuffer, {
                 entityType: "system",
                 entityId: `line_${userId.slice(-12)}`,
@@ -254,7 +344,6 @@ export async function POST(req: NextRequest) {
                 customFileName: filename,
               });
 
-              // 2. Fallback: Local storage if GCS is unavailable
               if (!imageUrl) {
                 const uploadDir = path.resolve(process.cwd(), "storage", "uploads", "system", "chat");
                 await fs.promises.mkdir(uploadDir, { recursive: true });
@@ -282,7 +371,7 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        await recordInboundSocialMessageAction({
+        await recordInboundSocialMessageInternal({
           channel: "line",
           externalContactId: userId,
           contactName: updatedRecord.displayName,
@@ -301,25 +390,20 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Keep up to 20,000 synced LINE OA contacts (never truncate synced followers back to 500!)
     const trimmedContacts = contacts.slice(0, 20000);
     await prisma.setting.upsert({
       where: { key: "lineOaContacts" },
       update: { value: JSON.stringify(trimmedContacts) },
       create: { key: "lineOaContacts", value: JSON.stringify(trimmedContacts) },
     });
-    await invalidateLineContactsCacheAction();
-
-    if (didUpdateCustomer) {
-      invalidateDbCache();
-    }
+    invalidateLineContactsCache();
 
     return NextResponse.json({ status: "ok", processed: events.length });
   } catch (err: any) {
     console.error("[LINE Webhook Error]:", err);
     return NextResponse.json(
-      { status: "error", message: err?.message || "Webhook error" },
-      { status: 200 }
+      { status: "error", message: "Webhook error" },
+      { status: 500 }
     );
   }
 }

@@ -3557,7 +3557,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             walletBalanceAfter: undefined,
           };
 
-          Promise.resolve().then(async () => {
+          const { enqueueBackgroundCapture } = await import("@/lib/background-capture-queue");
+          enqueueBackgroundCapture(async () => {
             try {
               const blob = isA5
                 ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaCapData, activeShop)
@@ -3572,7 +3573,6 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   }
                   setSessionCapturedReceiptUrls(prev => prev.includes(proformaUrl) ? prev : [...prev, proformaUrl]);
 
-                  // Merge with latest bills in DB
                   const latestDbJobs = jobStore.getSnapshot();
                   const targetDbJob = latestDbJobs.find(j => j.id === targetJobId);
                   let currentBills: string[] = [];
@@ -3586,7 +3586,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   if (!currentBills.includes(proformaUrl)) {
                     const merged = [proformaUrl, ...currentBills];
                     await jobStore.updateJobDetails(targetJobId, {
-                      billImageUrl: JSON.stringify(merged)
+                      billImageUrl: JSON.stringify(merged),
+                      __silentBackground: true,
                     } as any);
                   }
                 }
@@ -3606,7 +3607,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         const isA5 = settings?.receiptPaperSize === "A5";
         const capturedFinalJob = finalJob;
 
-        Promise.resolve().then(async () => {
+        const { enqueueBackgroundCapture } = await import("@/lib/background-capture-queue");
+        enqueueBackgroundCapture(async () => {
           try {
             const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
             const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
@@ -3658,6 +3660,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             const merged = [receiptUrl, ...filtered];
             await jobStore.updateJobDetails(targetJobId, {
               billImageUrl: JSON.stringify(merged),
+              __silentBackground: true,
             } as any);
           } catch (err) {
             console.warn("[AutoReceipt POS] Background receipt capture failed:", err);
@@ -6963,7 +6966,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         customAmount={wisePaymentJob?.totalAmount ?? undefined}
         onPaymentSuccess={async (paidInfo) => {
           if (wisePaymentJob) {
-            const { api, refreshDb } = await import("@/lib/api");
+            const { api } = await import("@/lib/api");
             if (paidInfo.job) {
               api.applyServerJob(paidInfo.job);
             } else {
@@ -6978,7 +6981,6 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             setIsDraftPreview(false);
             setShowReceipt(true);
             playAudioFeedback("success");
-            await refreshDb();
           }
           setWisePaymentJob(null);
         }}
@@ -6992,12 +6994,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         customAmount={onlinePaymentJob?.totalAmount ?? undefined}
         onPaymentSuccess={async (paidInfo) => {
           if (onlinePaymentJob) {
-            const { api, refreshDb } = await import("@/lib/api");
+            const { api } = await import("@/lib/api");
             api.optimisticUpdate(onlinePaymentJob.id, {
               isPaid: true,
               isShopPaid: true,
               paymentChannel: paidInfo.channel,
             } as any);
+            await api.fetchAndApplyJob(onlinePaymentJob.id).catch(() => {});
             jobStore.notify();
             const all = jobStore.getSnapshot();
             const updated = all.find(j => j.id === onlinePaymentJob.id);
@@ -7007,7 +7010,6 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             setIsDraftPreview(false);
             setShowReceipt(true);
             playAudioFeedback("success");
-            await refreshDb();
           }
           setOnlinePaymentJob(null);
         }}

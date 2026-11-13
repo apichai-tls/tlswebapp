@@ -12,14 +12,32 @@ import {
   revokeSessionToken,
   revokeAllUserSessions
 } from "@/lib/server-auth";
+import { checkRateLimit, resetRateLimit } from "@/lib/rate-limit";
 
 export async function loginUser(email: string, password?: string) {
   try {
-    if (!email || !password) {
+    if (!email || !password || typeof email !== "string" || typeof password !== "string") {
       return { success: false, error: "Email and password are required" };
     }
 
     const targetEmail = email.toLowerCase().trim();
+
+    let clientIp = "unknown";
+    try {
+      const { headers } = await import("next/headers");
+      const h = await headers();
+      const xff = h.get("x-forwarded-for");
+      if (xff) clientIp = xff.split(",")[0].trim() || "unknown";
+    } catch {}
+
+    const ipLimit = checkRateLimit(`sa-login:ip:${clientIp}`, 20, 15 * 60 * 1000);
+    if (!ipLimit.allowed) {
+      return { success: false, error: "Too many login attempts. Please try again later." };
+    }
+    const acctLimit = checkRateLimit(`sa-login:acct:${targetEmail}:${clientIp}`, 10, 15 * 60 * 1000);
+    if (!acctLimit.allowed) {
+      return { success: false, error: "Too many failed login attempts for this account. Please try again later." };
+    }
 
     const user = await prisma.adminUser.findUnique({
       where: { email: targetEmail }
@@ -37,6 +55,8 @@ export async function loginUser(email: string, password?: string) {
     if (!isValid) {
       return { success: false, error: "Invalid email or password" };
     }
+
+    resetRateLimit(`sa-login:acct:${targetEmail}:${clientIp}`);
 
     // Lazy migration: Auto-hash plain text password on successful login
     if (shouldRehash) {

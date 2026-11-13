@@ -101,13 +101,13 @@ export async function GET(request: NextRequest) {
     if (!queryPromise && canServeFromWarmCache) {
       const warmJobs = (dbCache.payload.jobs || []).filter((j: any) => {
         const t = j?.updatedAt ? new Date(j.updatedAt).getTime() : 0;
-        return t >= sinceEpochMs;
+        return t >= sinceEpochMs && canUserAccessJob(user, j);
       });
       const warmCusts = !canAccessCustomerRecords(user)
         ? []
         : (dbCache.payload.customers || []).filter((c: any) => {
             const t = c?.updatedAt ? new Date(c.updatedAt).getTime() : 0;
-            return t >= sinceEpochMs;
+            return t >= sinceEpochMs && canAccessCustomerRecords(user, c.branchId);
           });
       const warmShifts = !canAccessShifts(user) ? [] : dbCache.payload.openShifts || [];
       queryPromise = Promise.resolve([warmJobs, warmCusts, warmShifts, null]);
@@ -270,7 +270,7 @@ export async function GET(request: NextRequest) {
 
     const hasMoreCustomers = !skipCustomers && customersRaw.length > custLimit;
     const pageCustomersRaw = (hasMoreCustomers ? customersRaw.slice(0, custLimit) : customersRaw).filter(
-      (c: any) => canAccessCustomerRecords(user, c.branchId) || (user.role || '').toLowerCase() !== 'rider'
+      (c: any) => canAccessCustomerRecords(user, c.branchId)
     );
 
     const jobs = pageJobsRaw.map((j: any) => primeJobCache(j));
@@ -332,7 +332,7 @@ export async function GET(request: NextRequest) {
   } catch (error: any) {
     console.error('[GET /api/jobs/delta] Error:', error);
     return NextResponse.json(
-      { error: 'Delta fetch failed', details: error?.message },
+      { error: 'Delta fetch failed' },
       { status: 500 }
     );
   }

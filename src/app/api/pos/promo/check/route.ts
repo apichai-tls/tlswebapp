@@ -3,12 +3,22 @@ import { prisma } from "@/lib/prisma";
 import { resolveRequestUser } from "@/lib/server-auth";
 import { verifyCustomerToken, verifyServiceApiKey } from "@/lib/external-api-auth";
 import { DEFAULT_PROMOTION_CAMPAIGNS, calculateInstantCampaignDiscount, type PromotionCampaign } from "@/lib/promotions";
+import { checkRateLimit, getRequestClientIp } from "@/lib/rate-limit";
 
 const PROMO_BASE = process.env.TLS_PROMO_API_BASE || "https://thatlaundryshop.com";
 const PROMO_KEY  = process.env.TLS_PROMO_API_KEY || "";
 
 export async function POST(req: NextRequest) {
   try {
+    const clientIp = getRequestClientIp(req);
+    const rate = checkRateLimit(`promo-check:${clientIp}`, 40, 60 * 1000);
+    if (!rate.allowed) {
+      return NextResponse.json(
+        { valid: false, error: "กรุณารอสักครู่ก่อนตรวจสอบโค้ดส่วนลดอีกครั้ง" },
+        { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } }
+      );
+    }
+
     const { user } = await resolveRequestUser(req);
     if (user && !user.isActive) {
       return NextResponse.json({ valid: false, error: "Forbidden: Account is deactivated" }, { status: 403 });

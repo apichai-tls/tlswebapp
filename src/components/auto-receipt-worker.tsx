@@ -12,6 +12,31 @@ import { checkJobOnlinePaymentStatusAction } from "@/actions/online-payment";
 import { checkWiseJobPaymentStatusAction, syncAllPendingWiseJobsAction } from "@/actions/wise";
 import { toast } from "sonner";
 import { claimAutoReceiptGenerationAction } from "@/actions/db";
+import { enqueueBackgroundCapture } from "@/lib/background-capture-queue";
+
+const WORKER_LEADER_KEY = "tls_auto_receipt_leader_v1";
+const WORKER_LEASE_MS = 18000;
+
+function tryClaimWorkerLeadership(tabId: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const now = Date.now();
+    const raw = window.localStorage.getItem(WORKER_LEADER_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.tabId && parsed.tabId !== tabId && typeof parsed.expiresAt === "number" && parsed.expiresAt > now) {
+        return false;
+      }
+    }
+    window.localStorage.setItem(
+      WORKER_LEADER_KEY,
+      JSON.stringify({ tabId, expiresAt: now + WORKER_LEASE_MS })
+    );
+    return true;
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Silent Background Worker:
@@ -33,14 +58,17 @@ export function AutoReceiptWorker() {
   const lastWiseBatchSyncRef = useRef<number>(0);
   const isWorkingRef = useRef(false);
   const instanceJitterMsRef = useRef<number>(Math.floor(Math.random() * 10000));
+  const tabIdRef = useRef<string>(`tab_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`);
 
   useEffect(() => {
     // Process queue of jobs that need receipts or proformas
     const processQueue = async () => {
       if (isWorkingRef.current || typeof document === "undefined") return;
+      if (document.visibilityState === "hidden") return;
 
       const currentUser = userRef.current;
-      if (!currentUser) return;
+      if (!currentUser || currentUser.role === "rider") return;
+      if (!tryClaimWorkerLeadership(tabIdRef.current)) return;
 
       const isBranchRestricted = Boolean(
         currentUser.role !== "admin" &&
@@ -85,10 +113,9 @@ export function AutoReceiptWorker() {
         checkJobOnlinePaymentStatusAction(unpaidBeamJob.id).then(async (res) => {
           if (res.success && res.isPaid) {
             console.log(`[AutoReceiptWorker] ✔ Detected online payment for Job #${unpaidBeamJob.id} via background poller`);
-            const { api, refreshDb } = await import("@/lib/api");
+            const { api } = await import("@/lib/api");
             await api.fetchAndApplyJob(unpaidBeamJob.id);
             jobStore.notify();
-            await refreshDb();
           }
         }).catch((err) => {
           console.warn(`[AutoReceiptWorker] Background check failed for Job #${unpaidBeamJob.id}:`, err);
@@ -104,7 +131,15 @@ export function AutoReceiptWorker() {
         const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
         if (now - jobUpdatedTime > 24 * 60 * 60 * 1000) return false;
         const lastCheck = lastBeamCheckMap.current.get(`wise_${job.id}`) || 0;
-        return (now - lastCheck) > 8000; // check every 8s per active Wise job
+        return (now - lastCheck) > 12000; // check every 12s per active Wise job
+      });
+
+      const hasAnyRecentUnpaidOrder = jobs.some((job) => {
+        if (!job.id || job.id === "DRAFT" || job.isPaid || job.isShopPaid) return false;
+        if (['cancel', 'return', 'completed'].includes(job.status)) return false;
+        if ((Number(job.totalAmount) || 0) <= 0) return false;
+        const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
+        return now - jobUpdatedTime <= 24 * 60 * 60 * 1000;
       });
 
       if (unpaidWiseJob) {
@@ -115,25 +150,24 @@ export function AutoReceiptWorker() {
         }).then(async (res) => {
           if (res.success && res.isPaid) {
             console.log(`[AutoReceiptWorker] ✔ Detected Wise payment for Job #${unpaidWiseJob.id} via background poller`);
-            const { api, refreshDb } = await import("@/lib/api");
+            const { api } = await import("@/lib/api");
             if (res.job) {
               api.applyServerJob(res.job);
             } else {
               await api.fetchAndApplyJob(unpaidWiseJob.id);
             }
             jobStore.notify();
-            await refreshDb();
             toast.success(`🎉 Wise Payment Synced: Order #${unpaidWiseJob.id} marked as PAID!`);
           }
         }).catch((err) => {
           console.warn(`[AutoReceiptWorker] Wise background check failed for Job #${unpaidWiseJob.id}:`, err);
         });
-      } else if (now - lastWiseBatchSyncRef.current > 15000) {
-        // Also run batch Wise sync every 15s to catch Wise transfers for any recent unpaid order
+      } else if (hasAnyRecentUnpaidOrder && now - lastWiseBatchSyncRef.current > 45000) {
+        // Run batch Wise sync at most every 45s when recent unpaid orders exist
         lastWiseBatchSyncRef.current = now;
         syncAllPendingWiseJobsAction().then(async (res) => {
           if (res.success && res.paidJobs && res.paidJobs.length > 0) {
-            const { api, refreshDb } = await import("@/lib/api");
+            const { api } = await import("@/lib/api");
             for (const pj of res.paidJobs) {
               if (pj.job) {
                 api.applyServerJob(pj.job);
@@ -143,7 +177,6 @@ export function AutoReceiptWorker() {
               toast.success(`🎉 Wise Payment Synced: ฿${pj.amount.toFixed(2)} from ${pj.senderName} (Order #${pj.jobId})`);
             }
             jobStore.notify();
-            await refreshDb();
           }
         }).catch(() => {});
       }
@@ -285,9 +318,18 @@ export function AutoReceiptWorker() {
           receiptData.isPaid = true;
           receiptData.autoCapture = true;
 
-          const blob = isA5
-            ? await generateA5ReceiptImage(receiptData, activeShop)
-            : await generateThermalReceiptImage(receiptData, activeShop);
+          const blob = await new Promise<Blob | null>((resolve) => {
+            enqueueBackgroundCapture(async () => {
+              try {
+                const b = isA5
+                  ? await generateA5ReceiptImage(receiptData, activeShop)
+                  : await generateThermalReceiptImage(receiptData, activeShop);
+                resolve(b);
+              } catch {
+                resolve(null);
+              }
+            });
+          });
 
           let attachedSuccessfully = false;
           if (blob) {
@@ -315,6 +357,7 @@ export function AutoReceiptWorker() {
                 billImageUrl: JSON.stringify(mergedBills),
                 isAutoReceiptWorker: true,
                 systemActorName,
+                __silentBackground: true,
               } as any);
 
               attachedSuccessfully = true;
@@ -473,9 +516,18 @@ export function AutoReceiptWorker() {
           proformaData.adminNotesJson = proformaAdminNotesJson;
           proformaData.walletBalanceAfter = undefined;
 
-          const blob = isA5
-            ? await generateA5ReceiptImage(proformaData, activeShop)
-            : await generateThermalReceiptImage(proformaData, activeShop);
+          const blob = await new Promise<Blob | null>((resolve) => {
+            enqueueBackgroundCapture(async () => {
+              try {
+                const b = isA5
+                  ? await generateA5ReceiptImage(proformaData, activeShop)
+                  : await generateThermalReceiptImage(proformaData, activeShop);
+                resolve(b);
+              } catch {
+                resolve(null);
+              }
+            });
+          });
 
           let attachedPfSuccessfully = false;
           if (blob) {
@@ -513,6 +565,7 @@ export function AutoReceiptWorker() {
                 billImageUrl: JSON.stringify(mergedBills),
                 isAutoReceiptWorker: true,
                 systemActorName: "System (Auto-Proforma)",
+                __silentBackground: true,
               } as any);
 
               attachedPfSuccessfully = true;

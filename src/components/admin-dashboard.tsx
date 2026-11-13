@@ -470,7 +470,9 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
 
       const jCats = new Set<string>();
       let parsedItems: any[] = [];
-      if (j.itemsJson) {
+      if (Array.isArray((j as any).items)) {
+        parsedItems = (j as any).items;
+      } else if (j.itemsJson) {
         try {
           const parsed = JSON.parse(j.itemsJson);
           if (Array.isArray(parsed)) parsedItems = parsed;

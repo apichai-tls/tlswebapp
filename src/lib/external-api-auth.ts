@@ -122,8 +122,13 @@ export function verifyServiceApiKey(req: Request): boolean {
   if (apiKey && configuredKey && apiKey.length === configuredKey.length) {
     return crypto.timingSafeEqual(Buffer.from(apiKey), Buffer.from(configuredKey))
   }
-  // Allow if in development environment when no key is explicitly passed
-  if (process.env.NODE_ENV === 'development' && !apiKey) return true
+  if (
+    process.env.NODE_ENV === 'development' &&
+    process.env.ENABLE_LOCAL_DEV_AUTH_BYPASS === 'true' &&
+    !apiKey
+  ) {
+    return true
+  }
   return false
 }
 

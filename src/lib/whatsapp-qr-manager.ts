@@ -575,12 +575,12 @@ export async function startWhatsAppQrConnection(
             const pushName = !fromMe && m.pushName ? String(m.pushName).trim() : '';
 
             const {
-              recordInboundSocialMessageAction,
-              recordOutboundSocialMessageFromSystemAction,
-            } = await import('@/actions/social-inbox');
+              recordInboundSocialMessageInternal,
+              recordOutboundSocialMessageFromSystemInternal,
+            } = await import('@/lib/social-inbox-internal');
 
             if (!fromMe) {
-              await recordInboundSocialMessageAction({
+              await recordInboundSocialMessageInternal({
                 channel: 'whatsapp',
                 externalContactId: phoneDigits,
                 contactName: pushName || displayPhone,
@@ -590,7 +590,7 @@ export async function startWhatsAppQrConnection(
               });
             } else {
               // Sent by Admin from WhatsApp phone app or WhatsApp Web! Sync into Omnichannel Hub too!
-              await recordOutboundSocialMessageFromSystemAction({
+              await recordOutboundSocialMessageFromSystemInternal({
                 channel: 'whatsapp',
                 externalContactId: phoneDigits,
                 contactPhone: displayPhone,

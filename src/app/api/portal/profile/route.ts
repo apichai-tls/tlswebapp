@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { sanitizeCustomerRecord, primeCustomerCache } from '@/lib/db-cache'
 import { resolvePortalCustomer, hashPassword, verifyPassword, checkPortalPublicAccess } from '@/lib/portal-auth'
 
 export const dynamic = 'force-dynamic'
@@ -58,7 +59,7 @@ export async function GET(req: Request) {
     })
   } catch (err: any) {
     console.error('Portal profile GET error:', err)
-    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -75,7 +76,6 @@ export async function PUT(req: Request) {
 
     const body = await req.json()
 
-    // Password change handling
     if (body.action === 'change_password') {
       const { currentPassword, newPassword } = body
       if (!newPassword || String(newPassword).length < 4) {
@@ -92,7 +92,10 @@ export async function PUT(req: Request) {
         return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
       }
 
-      if (existing.passwordHash && currentPassword) {
+      if (existing.passwordHash) {
+        if (!currentPassword) {
+          return NextResponse.json({ error: 'Current password is required' }, { status: 400 })
+        }
         const valid = verifyPassword(String(currentPassword), existing.passwordHash)
         if (!valid) {
           return NextResponse.json({ error: 'Current password is incorrect' }, { status: 401 })
@@ -112,7 +115,6 @@ export async function PUT(req: Request) {
       })
     }
 
-    // Standard profile update
     const {
       name,
       nickName,
@@ -152,19 +154,25 @@ export async function PUT(req: Request) {
       }
     })
 
+    primeCustomerCache(updated)
+
     return NextResponse.json({
       success: true,
       message: 'Profile updated successfully',
-      profile: updated
+      profile: sanitizeCustomerRecord(updated)
     })
   } catch (err: any) {
     console.error('Portal profile PUT error:', err)
-    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
 export async function POST(req: Request) {
   try {
+    const access = await checkPortalPublicAccess(req)
+    if (!access.allowed) {
+      return NextResponse.json({ error: 'Customer Portal is currently closed / Coming Soon', portalClosed: true }, { status: 503 })
+    }
     const session = resolvePortalCustomer(req)
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -179,7 +187,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Address ID is required' }, { status: 400 })
       }
       await prisma.customerAddress.deleteMany({
-        where: { id: addressId, customerId: session.customerId }
+        where: { id: String(addressId), customerId: session.customerId }
       })
       const addresses = await prisma.customerAddress.findMany({
         where: { customerId: session.customerId },
@@ -193,29 +201,34 @@ export async function POST(req: Request) {
       if (!addressId) {
         return NextResponse.json({ error: 'Address ID is required' }, { status: 400 })
       }
+      const ownedAddr = await prisma.customerAddress.findFirst({
+        where: { id: String(addressId), customerId: session.customerId }
+      })
+      if (!ownedAddr) {
+        return NextResponse.json({ error: 'Address not found' }, { status: 404 })
+      }
       await prisma.customerAddress.updateMany({
         where: { customerId: session.customerId },
         data: { isPrimary: false }
       })
       const primaryAddr = await prisma.customerAddress.update({
-        where: { id: addressId },
+        where: { id: ownedAddr.id },
         data: { isPrimary: true }
       })
-      await prisma.customer.update({
+      const updatedCust = await prisma.customer.update({
         where: { id: session.customerId },
         data: {
           defaultAddress: [primaryAddr.placeName, primaryAddr.address].filter(Boolean).join(', '),
           roomNo: primaryAddr.roomNumber || null
+        },
+        include: {
+          addresses: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }] }
         }
       })
-      const addresses = await prisma.customerAddress.findMany({
-        where: { customerId: session.customerId },
-        orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }]
-      })
-      return NextResponse.json({ success: true, addresses })
+      primeCustomerCache(updatedCust)
+      return NextResponse.json({ success: true, addresses: updatedCust.addresses })
     }
 
-    // Add a new address
     const {
       label = 'Home / Condo',
       placeName,
@@ -261,12 +274,21 @@ export async function POST(req: Request) {
     })
 
     if (makePrimary) {
-      await prisma.customer.update({
+      const updatedCust = await prisma.customer.update({
         where: { id: session.customerId },
         data: {
           defaultAddress: [created.placeName, created.address].filter(Boolean).join(', '),
           roomNo: created.roomNumber || null
+        },
+        include: {
+          addresses: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }] }
         }
+      })
+      primeCustomerCache(updatedCust)
+      return NextResponse.json({
+        success: true,
+        message: 'Address saved',
+        addresses: updatedCust.addresses
       })
     }
 
@@ -282,6 +304,6 @@ export async function POST(req: Request) {
     })
   } catch (err: any) {
     console.error('Portal profile POST address error:', err)
-    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

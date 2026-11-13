@@ -557,6 +557,10 @@ export async function resolveRequestUser(request?: Request | null): Promise<{
   const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
   const sessionToken = bearerToken || cookies['tls_session'] || url.searchParams.get('token');
 
+  const allowExplicitDevBypass =
+    process.env.NODE_ENV === 'development' &&
+    process.env.ENABLE_LOCAL_DEV_AUTH_BYPASS === 'true';
+
   if (sessionToken) {
     await syncRevocationsFromDb();
     const verified = verifyStaffSessionToken(sessionToken);
@@ -566,8 +570,7 @@ export async function resolveRequestUser(request?: Request | null): Promise<{
         return { user: dbUser, explicitCredentialsProvided: true };
       }
     }
-    // In local development, fallback if valid user id provided
-    if (process.env.NODE_ENV !== 'production') {
+    if (allowExplicitDevBypass) {
       const devUserId = url.searchParams.get('userId') || cookies['tls_dev_user'];
       if (devUserId) {
         const dbUser = await lookupAuthoritativeUser(devUserId);
@@ -580,8 +583,7 @@ export async function resolveRequestUser(request?: Request | null): Promise<{
     return { user: null, explicitCredentialsProvided: true };
   }
 
-  // Development fallback: if in local dev and request has devUserId or userId from authenticated client
-  if (process.env.NODE_ENV !== 'production') {
+  if (allowExplicitDevBypass) {
     const devUserId = url.searchParams.get('userId') || cookies['tls_dev_user'];
     if (devUserId) {
       const dbUser = await lookupAuthoritativeUser(devUserId);
@@ -681,6 +683,10 @@ export async function resolveServerActionUser(): Promise<{
     const sessionCookie = cookieStore.get('tls_session')?.value;
     const sessionToken = bearerToken || sessionCookie;
 
+    const allowExplicitDevBypass =
+      process.env.NODE_ENV === 'development' &&
+      process.env.ENABLE_LOCAL_DEV_AUTH_BYPASS === 'true';
+
     if (sessionToken) {
       await syncRevocationsFromDb();
       const verified = verifyStaffSessionToken(sessionToken);
@@ -688,7 +694,7 @@ export async function resolveServerActionUser(): Promise<{
         const dbUser = await lookupAuthoritativeUser(verified.id);
         return { user: dbUser, explicitCredentialsProvided: true };
       }
-      if (process.env.NODE_ENV !== 'production') {
+      if (allowExplicitDevBypass) {
         const devUser = await prisma.adminUser.findFirst({
           where: { role: { in: ['admin', 'superadmin'] }, isActive: true }
         });
@@ -700,7 +706,7 @@ export async function resolveServerActionUser(): Promise<{
       return { user: null, explicitCredentialsProvided: true };
     }
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (allowExplicitDevBypass) {
       const devUser = await prisma.adminUser.findFirst({
         where: { role: { in: ['admin', 'superadmin'] }, isActive: true }
       });

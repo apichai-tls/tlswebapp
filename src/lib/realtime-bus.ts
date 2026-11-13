@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Client } from 'pg';
 import { prisma } from '@/lib/prisma';
-import { dbCache, invalidateDbCache, primeJobCache, getOrFetchJobById } from '@/lib/db-cache';
+import { dbCache, invalidateDbCache, primeJobCache, primeCustomerCache, getOrFetchJobById } from '@/lib/db-cache';
 
 export interface RealtimeOrderEvent {
   eventId: string;
@@ -339,13 +339,18 @@ export async function publishOrderEvent(params: {
   changedFields?: string[];
   actorId?: string | null;
   actorName?: string | null;
+  customer?: any;
 }) {
   try {
     const rawJob = params.job;
     if (rawJob && rawJob.id) {
       primeJobCache(rawJob);
     } else if (params.type === 'customer.updated') {
-      invalidateDbCache('customers');
+      if (params.customer && params.customer.id) {
+        primeCustomerCache(params.customer);
+      } else {
+        invalidateDbCache('customers');
+      }
     } else {
       invalidateDbCache('jobs');
     }

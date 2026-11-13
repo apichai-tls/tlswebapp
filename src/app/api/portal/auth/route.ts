@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { primeCustomerCache } from '@/lib/db-cache'
+import { checkRateLimit, getRequestClientIp } from '@/lib/rate-limit'
 import {
   generatePortalToken,
   hashPassword,
@@ -10,6 +12,7 @@ import {
   generateOtpChallenge,
   verifyOtpChallenge,
   checkPortalPublicAccess,
+  computeOrderTrackingStep,
   type OtpPurpose
 } from '@/lib/portal-auth'
 
@@ -67,9 +70,11 @@ async function dispatchOtpMessage(params: {
 }) {
   const { to, channel, otpCode, refCode } = params
   const providerRoute = getProviderRouteLabel(channel, to)
-  console.log(
-    `[Portal OTP] Channel: ${channel.toUpperCase()} (${providerRoute}) | To: ${to} | OTP: ${otpCode} (Ref: ${refCode})`
-  )
+  if (process.env.NODE_ENV === 'development') {
+    console.log(
+      `[Portal OTP Dev] Channel: ${channel.toUpperCase()} (${providerRoute}) | Ref: ${refCode}`
+    )
+  }
 
   // 1. Optional direct Resend Email API support if RESEND_API_KEY is configured
   if (channel === 'email' && process.env.RESEND_API_KEY) {
@@ -309,8 +314,28 @@ export async function POST(req: Request) {
       )
     }
 
+    const clientIp = getRequestClientIp(req)
+    const ipLimit = checkRateLimit(`portal_auth_ip:${clientIp}`, 25, 5 * 60 * 1000)
+    if (!ipLimit.allowed) {
+      return NextResponse.json(
+        { error: 'Too many authentication attempts. Please wait a few minutes and try again.' },
+        { status: 429 }
+      )
+    }
+
     const body = await req.json()
     const { action = 'login', identifier, password, brand, otpToken, otpCode } = body
+
+    if (identifier && String(identifier).trim()) {
+      const idKey = String(identifier).trim().toLowerCase()
+      const idLimit = checkRateLimit(`portal_auth_id:${idKey}`, 10, 5 * 60 * 1000)
+      if (!idLimit.allowed) {
+        return NextResponse.json(
+          { error: 'Too many requests for this account. Please try again in a few minutes.' },
+          { status: 429 }
+        )
+      }
+    }
 
     // 1. Check account existence & auto-send OTP if first-time setup or new registration
     if (action === 'check_account') {
@@ -339,7 +364,6 @@ export async function POST(req: Request) {
           otpToken: challenge.otpToken,
           refCode: challenge.refCode,
           expiresInSeconds: challenge.expiresInSeconds,
-          demoOtpCode: challenge.otpCode,
           deliveryChannel: defaultChannel,
           deliveredTo: cleanId,
           providerRoute: dispatchInfo.providerRoute,
@@ -373,7 +397,6 @@ export async function POST(req: Request) {
           otpToken: challenge.otpToken,
           refCode: challenge.refCode,
           expiresInSeconds: challenge.expiresInSeconds,
-          demoOtpCode: challenge.otpCode,
           deliveryChannel: defaultChannel,
           deliveredTo: defaultChannel === 'email' ? customerMaskedEmail || cleanId : cleanId,
           providerRoute: dispatchInfo.providerRoute
@@ -476,7 +499,6 @@ export async function POST(req: Request) {
         otpToken: challenge.otpToken,
         refCode: challenge.refCode,
         expiresInSeconds: challenge.expiresInSeconds,
-        demoOtpCode: challenge.otpCode,
         deliveryChannel: requestedChannel,
         deliveredTo: displayDestination,
         providerRoute: dispatchInfo.providerRoute,
@@ -485,7 +507,7 @@ export async function POST(req: Request) {
       })
     }
 
-    // 3. Quick Track by Bill Number / Order ID + Phone Number
+    // 3. Quick Track by Bill Number / Order ID + Phone Number (Read-only order progress — does NOT issue an account session cookie)
     if (action === 'quick_track') {
       const billOrOrderNo = String(body.billNo || '').trim()
       const phoneInput = String(identifier || body.phone || '').trim()
@@ -507,10 +529,25 @@ export async function POST(req: Request) {
             { id: billOrOrderNo }
           ]
         },
-        include: {
+        select: {
+          id: true,
+          billNo: true,
+          proformaNumber: true,
+          status: true,
+          subStatus: true,
+          totalAmount: true,
+          isPaid: true,
+          isShopPaid: true,
+          customerName: true,
+          customerPhone: true,
+          pickupProofImageUrl: true,
+          deliveryProofImageUrl: true,
+          scheduledAt: true,
+          completedAt: true,
           customer: {
-            include: {
-              addresses: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }] }
+            select: {
+              name: true,
+              phone: true
             }
           }
         }
@@ -540,42 +577,25 @@ export async function POST(req: Request) {
         )
       }
 
-      let customer = job.customer
-      if (!customer && job.customerId) {
-        customer = await prisma.customer.findUnique({
-          where: { id: job.customerId },
-          include: { addresses: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }] } }
-        })
-      }
-
-      if (!customer) {
-        return NextResponse.json(
-          { error: 'Customer profile not linked to this order' },
-          { status: 404 }
-        )
-      }
-
-      const token = generatePortalToken({
-        customerId: customer.id,
-        brand: customer.brand || 'that_laundry_shop',
-        phone: customer.phone,
-        email: customer.email
+      const tracking = computeOrderTrackingStep(job)
+      return NextResponse.json({
+        success: true,
+        readOnlyTracking: true,
+        message: 'Order status retrieved. Sign in with OTP or password to access full account & wallet.',
+        matchedOrderId: job.id,
+        orderSummary: {
+          id: job.id,
+          billNo: job.billNo,
+          proformaNumber: job.proformaNumber,
+          maskedCustomerName: maskName(job.customer?.name || job.customerName || 'Customer'),
+          status: job.status,
+          isPaid: Boolean(job.isPaid || job.isShopPaid),
+          totalAmount: job.totalAmount || 0,
+          scheduledAt: job.scheduledAt,
+          completedAt: job.completedAt,
+          tracking
+        }
       })
-
-      const res = buildAuthResponse(customer, token, 'Order verified')
-      const resJson = await res.json()
-      const finalRes = NextResponse.json({
-        ...resJson,
-        matchedOrderId: job.id
-      })
-      finalRes.cookies.set('tls_customer_token', token, {
-        httpOnly: true,
-        sameSite: 'lax',
-        path: '/',
-        maxAge: 30 * 24 * 60 * 60,
-        secure: process.env.NODE_ENV === 'production'
-      })
-      return finalRes
     }
 
     // 4. First-time password setup for existing POS customers (Requires OTP verification)
@@ -620,6 +640,8 @@ export async function POST(req: Request) {
           addresses: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }] }
         }
       })
+
+      primeCustomerCache(updated)
 
       const token = generatePortalToken({
         customerId: updated.id,
@@ -673,6 +695,8 @@ export async function POST(req: Request) {
           addresses: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }] }
         }
       })
+
+      primeCustomerCache(updated)
 
       const token = generatePortalToken({
         customerId: updated.id,
@@ -769,6 +793,8 @@ export async function POST(req: Request) {
           addresses: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }] }
         }
       })
+
+      primeCustomerCache(created)
 
       const token = generatePortalToken({
         customerId: created.id,

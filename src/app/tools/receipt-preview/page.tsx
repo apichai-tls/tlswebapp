@@ -1,5 +1,8 @@
 import React from "react";
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
+import { resolveServerActionUser, canUserAccessJob } from "@/lib/server-auth";
+import { sanitizeCustomerRecord } from "@/lib/db-cache";
 import ReceiptPreviewClient from "./ReceiptPreviewClient";
 
 export const dynamic = "force-dynamic";
@@ -9,6 +12,11 @@ export default async function ReceiptPreviewPage({
 }: {
   searchParams: Promise<{ jobId?: string; auto?: string; data?: string; isDraft?: string }>;
 }) {
+  const { user } = await resolveServerActionUser();
+  if (!user || user.role === "rider") {
+    redirect("/login");
+  }
+
   const { jobId = "2026005033", auto = "false", data, isDraft } = await searchParams;
 
   let job: any = null;
@@ -28,30 +36,35 @@ export default async function ReceiptPreviewPage({
   }
 
   if (!job) {
-    job = await prisma.job.findUnique({
+    const found = await prisma.job.findUnique({
       where: { id: jobId },
       include: {
         customer: true,
         branch: true,
       },
     });
-    if (job) {
-      customer = job.customer;
-      branch = job.branch;
+    if (found && canUserAccessJob(user, found)) {
+      job = found;
+      customer = found.customer;
+      branch = found.branch;
     }
   }
 
   if (!job) {
     return (
       <div className="p-8 text-rose-500 font-bold bg-slate-900 min-h-screen">
-        Job #{jobId} not found in database.
+        Job #{jobId} not found or access denied.
       </div>
     );
   }
 
-  // Serialize to plain JSON so it cleanly crosses the Server-to-Client boundary
+  const safeCustomer = customer ? sanitizeCustomerRecord(customer) : null;
+  if (job.customer) {
+    job = { ...job, customer: safeCustomer };
+  }
+
   const serializedJob = JSON.parse(JSON.stringify(job));
-  const serializedCustomer = customer ? JSON.parse(JSON.stringify(customer)) : null;
+  const serializedCustomer = safeCustomer ? JSON.parse(JSON.stringify(safeCustomer)) : null;
   const serializedBranch = branch ? JSON.parse(JSON.stringify(branch)) : null;
 
   return (

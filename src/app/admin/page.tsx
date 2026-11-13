@@ -25,12 +25,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, getJobPaymentBreakdown, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId, getJobPackingCounts, getJobProcessingBranchId, formatReceiptCustomerPhone, getCashSuggestions } from "@/lib/utils";
+import dynamic from "next/dynamic";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
-import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
-import { WisePaymentDialog } from "@/components/wise-payment-dialog";
 import { checkWiseJobPaymentStatusAction } from "@/actions/wise";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
 import { AutoRecurringWorker } from "@/components/auto-recurring-worker";
+import { enqueueBackgroundCapture } from "@/lib/background-capture-queue";
 import {
   isItemMatchingCategory,
   getCategoryLabel,
@@ -42,43 +42,55 @@ import {
   type InstantRuleConfig,
 } from "@/lib/promotions";
 
-
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PhoneInput } from "@/components/ui/phone-input";
 import { LocationInput } from "@/components/location-input";
 import { AdminDashboard } from "@/components/admin-dashboard";
-import { AdminAllJobs } from "@/components/admin-all-jobs";
-import { AdminRiders } from "@/components/admin-riders";
 import { DateTimePicker } from "@/components/ui/datetime-picker";
 import { AdminLiveMap } from "@/components/map-loader";
-import { AdminPOS } from "@/components/admin-pos";
-import { AdminServiceMenu } from "@/components/admin-service-menu";
-import { AdminCRM } from "@/components/admin-crm";
-import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
-import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
-import { AdminCustomerVouchersDialog } from "@/components/admin-customer-vouchers-dialog";
-import { AdminSettings } from "@/components/admin-settings";
-import { AdminUsers } from "@/components/admin-users";
-import { AdminDispatch } from "@/components/admin-dispatch";
-import { AdminVerify } from "@/components/admin-verify";
-import { AdminLogs } from "@/components/admin-logs";
-import { AdminReports } from "@/components/admin-reports";
-import { AdminPettyCash } from "@/components/admin-petty-cash";
-import { AdminBuildingReport } from "@/components/admin-building-report";
-import { AdminMarketing } from "@/components/admin-marketing";
-import { AdminTopSpenders } from "@/components/admin-top-spenders";
-import { AdminTasks, prefetchTasksData } from "@/components/admin-tasks";
-import { AdminSuppliesOrders } from "@/components/admin-supplies-orders";
-import { AdminSocialInbox } from "@/components/admin-social-inbox";
 import { FitScreenToggle } from "@/components/fit-screen-toggle";
 import { NotificationBell } from "@/components/notification-bell";
 import { RiderCancelAlertModal } from "@/components/rider-cancel-alert-modal";
-import { TopUpDialog } from "@/components/top-up-dialog";
-import { RefundCorrectDialog } from "@/components/refund-correct-dialog";
-import { SplitPaymentDialog, type SplitPaymentLine } from "@/components/split-payment-dialog";
-import AdminFeeCalculator, { type CalculatorOrderPayload } from "@/components/admin-fee-calculator";
-import AdminPoiManager from "@/components/admin-poi-manager";
+import type { SplitPaymentLine } from "@/components/split-payment-dialog";
+import type { CalculatorOrderPayload } from "@/components/admin-fee-calculator";
+
+const TabLoadingFallback = () => (
+  <div className="flex items-center justify-center py-24 text-slate-400 text-sm font-medium gap-2">
+    <span className="h-4 w-4 rounded-full border-2 border-slate-300 border-t-blue-600 animate-spin" />
+    <span>กำลังโหลดข้อมูล...</span>
+  </div>
+);
+
+const AdminAllJobs = dynamic(() => import("@/components/admin-all-jobs").then((m) => m.AdminAllJobs), { ssr: false, loading: TabLoadingFallback });
+const AdminRiders = dynamic(() => import("@/components/admin-riders").then((m) => m.AdminRiders), { ssr: false, loading: TabLoadingFallback });
+const AdminPOS = dynamic(() => import("@/components/admin-pos").then((m) => m.AdminPOS), { ssr: false, loading: TabLoadingFallback });
+const AdminServiceMenu = dynamic(() => import("@/components/admin-service-menu").then((m) => m.AdminServiceMenu), { ssr: false, loading: TabLoadingFallback });
+const AdminCRM = dynamic(() => import("@/components/admin-crm").then((m) => m.AdminCRM), { ssr: false, loading: TabLoadingFallback });
+const AdminSettings = dynamic(() => import("@/components/admin-settings").then((m) => m.AdminSettings), { ssr: false, loading: TabLoadingFallback });
+const AdminUsers = dynamic(() => import("@/components/admin-users").then((m) => m.AdminUsers), { ssr: false, loading: TabLoadingFallback });
+const AdminDispatch = dynamic(() => import("@/components/admin-dispatch").then((m) => m.AdminDispatch), { ssr: false, loading: TabLoadingFallback });
+const AdminVerify = dynamic(() => import("@/components/admin-verify").then((m) => m.AdminVerify), { ssr: false, loading: TabLoadingFallback });
+const AdminLogs = dynamic(() => import("@/components/admin-logs").then((m) => m.AdminLogs), { ssr: false, loading: TabLoadingFallback });
+const AdminReports = dynamic(() => import("@/components/admin-reports").then((m) => m.AdminReports), { ssr: false, loading: TabLoadingFallback });
+const AdminPettyCash = dynamic(() => import("@/components/admin-petty-cash").then((m) => m.AdminPettyCash), { ssr: false, loading: TabLoadingFallback });
+const AdminBuildingReport = dynamic(() => import("@/components/admin-building-report").then((m) => m.AdminBuildingReport), { ssr: false, loading: TabLoadingFallback });
+const AdminMarketing = dynamic(() => import("@/components/admin-marketing").then((m) => m.AdminMarketing), { ssr: false, loading: TabLoadingFallback });
+const AdminTopSpenders = dynamic(() => import("@/components/admin-top-spenders").then((m) => m.AdminTopSpenders), { ssr: false, loading: TabLoadingFallback });
+const AdminTasks = dynamic(() => import("@/components/admin-tasks").then((m) => m.AdminTasks), { ssr: false, loading: TabLoadingFallback });
+const AdminSuppliesOrders = dynamic(() => import("@/components/admin-supplies-orders").then((m) => m.AdminSuppliesOrders), { ssr: false, loading: TabLoadingFallback });
+const AdminSocialInbox = dynamic(() => import("@/components/admin-social-inbox").then((m) => m.AdminSocialInbox), { ssr: false, loading: TabLoadingFallback });
+const AdminFeeCalculator = dynamic(() => import("@/components/admin-fee-calculator"), { ssr: false, loading: TabLoadingFallback });
+const AdminPoiManager = dynamic(() => import("@/components/admin-poi-manager"), { ssr: false, loading: TabLoadingFallback });
+
+const AdminCustomerDialog = dynamic(() => import("@/components/admin-customer-dialog").then((m) => m.AdminCustomerDialog), { ssr: false });
+const AdminCustomerProfileModal = dynamic(() => import("@/components/admin-customer-profile-modal").then((m) => m.AdminCustomerProfileModal), { ssr: false });
+const AdminCustomerVouchersDialog = dynamic(() => import("@/components/admin-customer-vouchers-dialog").then((m) => m.AdminCustomerVouchersDialog), { ssr: false });
+const TopUpDialog = dynamic(() => import("@/components/top-up-dialog").then((m) => m.TopUpDialog), { ssr: false });
+const RefundCorrectDialog = dynamic(() => import("@/components/refund-correct-dialog").then((m) => m.RefundCorrectDialog), { ssr: false });
+const SplitPaymentDialog = dynamic(() => import("@/components/split-payment-dialog").then((m) => m.SplitPaymentDialog), { ssr: false });
+const WisePaymentDialog = dynamic(() => import("@/components/wise-payment-dialog").then((m) => m.WisePaymentDialog), { ssr: false });
+const OnlinePaymentDialog = dynamic(() => import("@/components/online-payment-dialog").then((m) => m.OnlinePaymentDialog), { ssr: false });
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
 import { addJobLogAction, unlockPaidJobAction, getCustomerCouponsAction, getCustomerJobsAction, splitJobDeliveryAction, getPromotionCampaignsAction } from "@/actions/db";
@@ -235,8 +247,9 @@ const rowVariant = {
   animate: { opacity: 1, x: 0, transition: { duration: 0.3, ease: [0, 0, 0.2, 1] as const } },
 };
 
-import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
-import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
+import { formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
+const ThermalReceiptDialog = dynamic(() => import("@/components/thermal-receipt-dialog").then((m) => m.ThermalReceiptDialog), { ssr: false });
+const A5ReceiptDialog = dynamic(() => import("@/components/a5-receipt-dialog").then((m) => m.A5ReceiptDialog), { ssr: false });
 export default function AdminPage() {
   return (
     <ProtectedRoute allowedRole="non-rider">
@@ -316,21 +329,6 @@ function AdminPageContent() {
     walletApprovalStore.refreshPendingMap().catch(() => {});
   }, []);
 
-  // Pre-warm tasks data in background after login/hydration to ensure 0ms instant tab opening
-  useEffect(() => {
-    if (user) {
-      const timer = setTimeout(() => {
-        prefetchTasksData({
-          id: user.id,
-          role: user.role,
-          isDepartmentHead: user.isDepartmentHead,
-          department: user.department,
-        }).catch(() => {});
-      }, 1500);
-      return () => clearTimeout(timer);
-    }
-  }, [user?.id, user?.role, user?.department, user?.isDepartmentHead]);
-
   // Restore tab from URL hash/query param, or auto-navigate to first accessible tab for this user
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search);
@@ -373,34 +371,14 @@ function AdminPageContent() {
     if (firstTab) setActiveTab(firstTab);
   }, [user]);
 
-  // Real-time SSE handles live order updates in <1s.
-  // Only poll /api/db when viewing Live Rider GPS Map (15s), and run a lightweight delta + version check every 30s.
+  // Real-time SSE handles live order updates in <1s; AuthProvider already polls /api/version.
+  // Only run a lightweight delta check when SSE is disconnected or on periodic fallback.
   useEffect(() => {
-    let tickCount = 0;
-    const intervalMs = activeTab === "map" ? 15000 : 30000;
+    const intervalMs = activeTab === "map" ? 20000 : 45000;
 
     const interval = setInterval(() => {
       if (document.visibilityState === "hidden") return;
-      tickCount++;
-
-      // Check server build version every ~60s
-      if (tickCount % 2 === 0) {
-        fetch('/api/version', { cache: 'no-store' })
-          .then(res => res.ok ? res.json() : null)
-          .then(data => {
-            if (data?.buildTime && clientBuildTime && data.buildTime !== clientBuildTime) {
-              setIsVersionOutdated(true);
-              if (!dialogOpenRef.current && !isSubmittingRef.current) {
-                Promise.resolve(logout()).finally(() => { window.location.replace('/login?reason=new_deploy'); });
-              }
-            }
-          })
-          .catch(() => {});
-      }
-
-      if (activeTab === "map") {
-        refreshDb();
-      } else if (tickCount % 2 === 0 || realtimeStore.getSnapshot().connectionStatus !== "connected") {
+      if (activeTab === "map" || realtimeStore.getSnapshot().connectionStatus !== "connected") {
         api.reconcileDelta().catch(() => {});
       }
     }, intervalMs);
@@ -1194,21 +1172,30 @@ function AdminPageContent() {
 
 
 
-  const pendingCount = jobs.filter((j) => j.status === "pending").length;
-  const completedCount = jobs.filter((j) => j.status === "completed").length;
+  const pendingCount = useMemo(
+    () => jobs.reduce((acc, j) => (j.status === "pending" ? acc + 1 : acc), 0),
+    [jobs]
+  );
+  const completedCount = useMemo(
+    () => jobs.reduce((acc, j) => (j.status === "completed" ? acc + 1 : acc), 0),
+    [jobs]
+  );
 
-  // Map markers from active jobs (non-completed)
-  const mapMarkers: MapMarker[] = jobs
-    .filter((j) => j.status !== "completed")
-    .map((j) => ({
-      id: j.id,
-      label: j.id,
-      pickup: j.pickupCoords,
-      dropoff: j.dropoffCoords,
-      pickupLabel: j.pickupLocation,
-      dropoffLabel: j.dropoffLocation,
-      status: j.status,
-    }));
+  // Map markers from active jobs (computed ONLY when map tab is open to avoid keystroke re-allocations)
+  const mapMarkers: MapMarker[] = useMemo(() => {
+    if (activeTab !== "map") return [];
+    return jobs
+      .filter((j) => j.status !== "completed")
+      .map((j) => ({
+        id: j.id,
+        label: j.id,
+        pickup: j.pickupCoords,
+        dropoff: j.dropoffCoords,
+        pickupLabel: j.pickupLocation,
+        dropoffLabel: j.dropoffLocation,
+        status: j.status,
+      }));
+  }, [jobs, activeTab]);
 
 
   const isPaidJob = editingJobId ? (() => {
@@ -1512,8 +1499,8 @@ function AdminPageContent() {
   );
 
   const globalShiftStats = useMemo(
-    () => computeLiveShiftStats(globalTargetShift, jobs),
-    [globalTargetShift, jobs]
+    () => (isGlobalCloseShiftOpen ? computeLiveShiftStats(globalTargetShift, jobs) : computeLiveShiftStats(null, [])),
+    [isGlobalCloseShiftOpen, globalTargetShift, jobs]
   );
 
   useEffect(() => {
@@ -4956,8 +4943,8 @@ function AdminPageContent() {
               walletBalanceAfter: undefined,
             };
             const baseBillsForCapture = [...safeBillUrls];
-            // Defer until after modal closes & unmounts so it never contends with UI teardown
-            setTimeout(async () => {
+            // Enqueue in idle serialized capture queue so Save never freezes older CPUs
+            enqueueBackgroundCapture(async () => {
               const proformaFilename = `proforma-${finalProformaNum}-rev${finalRevision}.png`;
               try {
                 const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
@@ -4998,8 +4985,6 @@ function AdminPageContent() {
                       return arr;
                     };
 
-                    // Always compute next bills from target job's latest store snapshot (or baseBillsForCapture)
-                    // so we NEVER mix with another job's billImageUrls state!
                     const currentTargetJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId);
                     let targetCurrentBills = baseBillsForCapture;
                     try {
@@ -5012,12 +4997,11 @@ function AdminPageContent() {
                       .filter(u => isBillUrlBelongingToJob(u, targetEditingJobId) && !u.includes(`proforma-${cleanBase}-rev${finalRevision}.png`));
                     const nextTargetBills = sortBills(Array.from(new Set([capturedUrl, ...filteredTargetBills])));
 
-                    const updatedProformaJob = await jobStore.updateJobDetails(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any);
+                    const updatedProformaJob = await jobStore.updateJobDetails(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills), __silentBackground: true } as any);
                     if ((updatedProformaJob as any)?.updatedAt && originalJobRef.current && editingJobIdRef.current === targetEditingJobId) {
                       (originalJobRef.current as any).updatedAt = (updatedProformaJob as any).updatedAt;
                     }
 
-                    // ONLY update React state if the dialog is still editing this exact same job!
                     if (editingJobIdRef.current === targetEditingJobId) {
                       setBillImageUrls(prev => {
                         const filtered = prev.filter(u => isBillUrlBelongingToJob(u, targetEditingJobId) && !u.includes(`proforma-${cleanBase}-rev${finalRevision}.png`));
@@ -5028,7 +5012,7 @@ function AdminPageContent() {
               } catch (e) {
                 console.warn("[AutoProforma] Background proforma capture failed:", e);
               }
-            }, 150);
+            });
           }
         }
 
@@ -5037,7 +5021,7 @@ function AdminPageContent() {
         if (isPayment && isShopPaidNow && hasActualItems) {
           const receiptFilename = `receipt-${targetEditingJobId}.png`;
           const baseBillsForRec = [...safeBillUrls];
-          setTimeout(async () => {
+          enqueueBackgroundCapture(async () => {
             try {
               const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
               const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
@@ -5091,7 +5075,7 @@ function AdminPageContent() {
               const filteredTargetBills = targetCurrentBills
                 .filter(u => isBillUrlBelongingToJob(u, targetEditingJobId) && !u.includes(receiptFilename) && !u.includes("/receipt-"));
               const nextTargetBills = Array.from(new Set([recUrl, ...filteredTargetBills]));
-              const updatedRecJob = await jobStore.updateJobDetails(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any);
+              const updatedRecJob = await jobStore.updateJobDetails(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills), __silentBackground: true } as any);
               if ((updatedRecJob as any)?.updatedAt && originalJobRef.current && editingJobIdRef.current === targetEditingJobId) {
                 (originalJobRef.current as any).updatedAt = (updatedRecJob as any).updatedAt;
               }
@@ -5102,7 +5086,7 @@ function AdminPageContent() {
             } catch (e) {
               console.warn("[AutoReceipt] Background existing-job receipt capture failed:", e);
             }
-          }, 150);
+          });
         }
 
         // 4. Close dialog ONLY AFTER DB save succeeds!
@@ -5304,7 +5288,7 @@ function AdminPageContent() {
             walletBalanceAfter: undefined,
           };
           const capturedSavedJobId = savedJobId;
-          setTimeout(async () => {
+          enqueueBackgroundCapture(async () => {
             const proformaFilename = `proforma-${autoProformaNum}-rev0.png`;
             try {
               const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
@@ -5335,7 +5319,7 @@ function AdminPageContent() {
                 const nextTargetBills = targetCurrentBills.includes(capturedUrl)
                   ? targetCurrentBills
                   : [capturedUrl, ...targetCurrentBills];
-                jobStore.updateJobDetails(capturedSavedJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any).catch(() => {});
+                jobStore.updateJobDetails(capturedSavedJobId, { billImageUrl: JSON.stringify(nextTargetBills), __silentBackground: true } as any).catch(() => {});
 
                 if (editingJobIdRef.current === capturedSavedJobId) {
                   setBillImageUrls(prev => prev.includes(capturedUrl) ? prev : [capturedUrl, ...prev]);
@@ -5344,7 +5328,7 @@ function AdminPageContent() {
             } catch (e) {
               console.warn("[AutoProforma] Background new-job proforma capture failed:", e);
             }
-          }, 150);
+          });
         }
 
         // Update local customer state if wallet was pre-deducted
@@ -5391,7 +5375,7 @@ function AdminPageContent() {
           const capturedNewJobId = savedJobId;
           const receiptFilename = `receipt-${capturedNewJobId}.png`;
           const baseNewBills = [...safeNewBillUrls];
-          setTimeout(async () => {
+          enqueueBackgroundCapture(async () => {
             try {
               const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
               const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
@@ -5445,7 +5429,7 @@ function AdminPageContent() {
               const filteredTargetBills = targetCurrentBills
                 .filter(u => !u.includes(receiptFilename) && !u.includes("/receipt-"));
               const nextTargetBills = Array.from(new Set([recUrl, ...filteredTargetBills]));
-              await jobStore.updateJobDetails(capturedNewJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any);
+              await jobStore.updateJobDetails(capturedNewJobId, { billImageUrl: JSON.stringify(nextTargetBills), __silentBackground: true } as any);
 
               if (editingJobIdRef.current === capturedNewJobId) {
                 setBillImageUrls(prev => prev.includes(recUrl) ? prev : [...prev, recUrl]);
@@ -5453,7 +5437,7 @@ function AdminPageContent() {
             } catch (e) {
               console.warn("[AutoReceipt] Background new-job receipt capture failed:", e);
             }
-          }, 150);
+          });
         }
 
         // Sync pasted LINE Profile ID or WhatsApp ID onto the selected customer's CRM record as well
@@ -12704,151 +12688,156 @@ function AdminPageContent() {
           )}
         </main>
         
-        <AdminCustomerDialog
-          open={customerDialogOpen}
-          onOpenChange={setCustomerDialogOpen}
-          customer={selectedProfileCustomer}
-          initialAddress={dialogOpen && !selectedProfileCustomer ? stripRoomSuffix(pickupLoc || deliveryLoc || "") : undefined}
-          initialCoords={dialogOpen && !selectedProfileCustomer ? (pickupCoords || deliveryCoords) : undefined}
-          initialRoomNo={dialogOpen && !selectedProfileCustomer ? (pickupRoom || deliveryRoom) : undefined}
-          initialBranchId=""
-          initialIsVip={dialogOpen && !selectedProfileCustomer ? Boolean(selectedVIPLabel) : undefined}
-          onTopUpCustomer={(c) => {
-            setTopUpCustomer(c);
-            setShowTopUpDialog(true);
-          }}
+        {customerDialogOpen && (
+          <AdminCustomerDialog
+            open={customerDialogOpen}
+            onOpenChange={setCustomerDialogOpen}
+            customer={selectedProfileCustomer}
+            initialAddress={dialogOpen && !selectedProfileCustomer ? stripRoomSuffix(pickupLoc || deliveryLoc || "") : undefined}
+            initialCoords={dialogOpen && !selectedProfileCustomer ? (pickupCoords || deliveryCoords) : undefined}
+            initialRoomNo={dialogOpen && !selectedProfileCustomer ? (pickupRoom || deliveryRoom) : undefined}
+            initialBranchId=""
+            initialIsVip={dialogOpen && !selectedProfileCustomer ? Boolean(selectedVIPLabel) : undefined}
+            onTopUpCustomer={(c) => {
+              setTopUpCustomer(c);
+              setShowTopUpDialog(true);
+            }}
+            onSaved={(c) => {
+              setServiceWeight(2);
+              setOtherClothingName("");
+              setOtherClothingPrice(0);
+              setClothingItems({
+                polo: { selected: false, quantity: 1 },
+                tshirt: { selected: false, quantity: 1 },
+                pants: { selected: false, quantity: 1 },
+                dress: { selected: false, quantity: 1 },
+                bedsheet: { selected: false, quantity: 1 },
+                other: { selected: false, quantity: 1 },
+              });
+              const resolvedSavedPhones = resolveCustomerPhones({ customer: c });
+              setCustomerName(c.name);
+              setCustomerPhone(resolvedSavedPhones.primaryPhone || c.phone);
+              setSelectedProfileCustomer(c);
+              setAppliedPromo(null);
+              setPromoCodeInput("");
+              setPromoError(null);
+              
+              const cleanCustAddr = c.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-" ? stripRoomSuffix(c.defaultAddress) : "";
+              const validCustCoords = isRealCustomerCoords(c.defaultCoords, c.defaultAddress) ? c.defaultCoords : null;
+              const custRoomVal = (c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim();
+              const existingDialogAddr = stripRoomSuffix(pickupLoc || deliveryLoc || "").trim().toLowerCase();
+              const cleanIncomingAddr = cleanCustAddr.trim().toLowerCase();
+              const existingDialogCoords = pickupCoords || deliveryCoords;
+              const isSameCoords = Boolean(
+                existingDialogCoords &&
+                validCustCoords &&
+                Math.abs(existingDialogCoords.lat - validCustCoords.lat) < 0.0008 &&
+                Math.abs(existingDialogCoords.lng - validCustCoords.lng) < 0.0008
+              );
+              const isSameAddrText = Boolean(
+                existingDialogAddr &&
+                cleanIncomingAddr &&
+                (existingDialogAddr === cleanIncomingAddr ||
+                  existingDialogAddr.includes(cleanIncomingAddr) ||
+                  cleanIncomingAddr.includes(existingDialogAddr))
+              );
+              const isVipTierChanged = Boolean(c.isVIP) !== Boolean(selectedVIPLabel);
+              const shouldKeepLockedRoute = Boolean(
+                editingFeeLock !== null &&
+                !isVipTierChanged &&
+                (!cleanIncomingAddr || !existingDialogAddr || isSameAddrText || isSameCoords)
+              );
 
-          onSaved={(c) => {
-            setServiceWeight(2);
-            setOtherClothingName("");
-            setOtherClothingPrice(0);
-            setClothingItems({
-              polo: { selected: false, quantity: 1 },
-              tshirt: { selected: false, quantity: 1 },
-              pants: { selected: false, quantity: 1 },
-              dress: { selected: false, quantity: 1 },
-              bedsheet: { selected: false, quantity: 1 },
-              other: { selected: false, quantity: 1 },
-            });
-            const resolvedSavedPhones = resolveCustomerPhones({ customer: c });
-            setCustomerName(c.name);
-            setCustomerPhone(resolvedSavedPhones.primaryPhone || c.phone);
-            setSelectedProfileCustomer(c);
-            setAppliedPromo(null);
-            setPromoCodeInput("");
-            setPromoError(null);
-            
-            const cleanCustAddr = c.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-" ? stripRoomSuffix(c.defaultAddress) : "";
-            const validCustCoords = isRealCustomerCoords(c.defaultCoords, c.defaultAddress) ? c.defaultCoords : null;
-            const custRoomVal = (c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim();
-            const existingDialogAddr = stripRoomSuffix(pickupLoc || deliveryLoc || "").trim().toLowerCase();
-            const cleanIncomingAddr = cleanCustAddr.trim().toLowerCase();
-            const existingDialogCoords = pickupCoords || deliveryCoords;
-            const isSameCoords = Boolean(
-              existingDialogCoords &&
-              validCustCoords &&
-              Math.abs(existingDialogCoords.lat - validCustCoords.lat) < 0.0008 &&
-              Math.abs(existingDialogCoords.lng - validCustCoords.lng) < 0.0008
-            );
-            const isSameAddrText = Boolean(
-              existingDialogAddr &&
-              cleanIncomingAddr &&
-              (existingDialogAddr === cleanIncomingAddr ||
-                existingDialogAddr.includes(cleanIncomingAddr) ||
-                cleanIncomingAddr.includes(existingDialogAddr))
-            );
-            const isVipTierChanged = Boolean(c.isVIP) !== Boolean(selectedVIPLabel);
-            const shouldKeepLockedRoute = Boolean(
-              editingFeeLock !== null &&
-              !isVipTierChanged &&
-              (!cleanIncomingAddr || !existingDialogAddr || isSameAddrText || isSameCoords)
-            );
-
-            if (shouldKeepLockedRoute) {
-              if (!existingDialogAddr && cleanCustAddr) {
+              if (shouldKeepLockedRoute) {
+                if (!existingDialogAddr && cleanCustAddr) {
+                  setPickupLoc(cleanCustAddr);
+                  setPickupCoords(validCustCoords);
+                  setDeliveryLoc(cleanCustAddr);
+                  setDeliveryCoords(validCustCoords);
+                  updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
+                }
+                setPickupRoom(custRoomVal);
+                setDeliveryRoom(custRoomVal);
+                setIsFreeDelivery(false);
+              } else {
                 setPickupLoc(cleanCustAddr);
+                setPickupRoom(custRoomVal);
                 setPickupCoords(validCustCoords);
+                
                 setDeliveryLoc(cleanCustAddr);
+                setDeliveryRoom(custRoomVal);
                 setDeliveryCoords(validCustCoords);
+                
+                setIsDeliveryDirty(false);
+                setIsFreeDelivery(false);
                 updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
+                setEditingFeeLock(null);
               }
-              setPickupRoom(custRoomVal);
-              setDeliveryRoom(custRoomVal);
-              setIsFreeDelivery(false);
-            } else {
-              setPickupLoc(cleanCustAddr);
-              setPickupRoom(custRoomVal);
-              setPickupCoords(validCustCoords);
               
-              setDeliveryLoc(cleanCustAddr);
-              setDeliveryRoom(custRoomVal);
-              setDeliveryCoords(validCustCoords);
+              if (c.isVIP) {
+                setSelectedVIPLabel("VIP");
+              } else {
+                setSelectedVIPLabel("");
+              }
+              if (c.isMember) {
+                setSelectedMemberLabel("Member");
+                setSelectedMemberId(c.memberId || "");
+                setPaymentChannel("Deduct Member");
+              } else {
+                setSelectedMemberLabel("");
+                setSelectedMemberId(c.memberId || "");
+                setPaymentChannel(prev => prev === "Deduct Member" ? "" : prev);
+              }
+              const resolvedSavedPl = (!c.isMember && !c.isVIP && !c.isCorporate && c.priceListId === "PL-MP56NWKW") ? "regular" : (c.priceListId || null);
+              setCustomerPriceListId(resolvedSavedPl);
+              handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, resolvedSavedPl);
               
-              setIsDeliveryDirty(false);
-              setIsFreeDelivery(false);
-              updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
-              setEditingFeeLock(null);
-            }
-            
-            if (c.isVIP) {
-              setSelectedVIPLabel("VIP");
-            } else {
-              setSelectedVIPLabel("");
-            }
-            if (c.isMember) {
-              setSelectedMemberLabel("Member");
-              setSelectedMemberId(c.memberId || "");
-              setPaymentChannel("Deduct Member");
-            } else {
-              setSelectedMemberLabel("");
-              setSelectedMemberId(c.memberId || "");
-              setPaymentChannel(prev => prev === "Deduct Member" ? "" : prev);
-            }
-            const resolvedSavedPl = (!c.isMember && !c.isVIP && !c.isCorporate && c.priceListId === "PL-MP56NWKW") ? "regular" : (c.priceListId || null);
-            setCustomerPriceListId(resolvedSavedPl);
-            handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, resolvedSavedPl);
-            
-            setCustomerSearchQuery("");
-            setShowCustomerDropdown(false);
-            
-            if (c.remark && c.remark.trim() !== "") {
-              handleAddAdminLog(`CRM Remark: ${c.remark}`, true);
-            }
-          }}
-        />
+              setCustomerSearchQuery("");
+              setShowCustomerDropdown(false);
+              
+              if (c.remark && c.remark.trim() !== "") {
+                handleAddAdminLog(`CRM Remark: ${c.remark}`, true);
+              }
+            }}
+          />
+        )}
       </motion.div>
     </AnimatePresence>
     
-      <AdminCustomerProfileModal
-        open={profileOpen}
-        onOpenChange={setProfileOpen}
-        customer={selectedProfileCustomer}
-        onEditCustomer={() => {
-          setProfileOpen(false);
-          setCustomerDialogOpen(true);
-        }}
-        onViewJob={stableHandleEditFullJob}
-      />
+      {profileOpen && (
+        <AdminCustomerProfileModal
+          open={profileOpen}
+          onOpenChange={setProfileOpen}
+          customer={selectedProfileCustomer}
+          onEditCustomer={() => {
+            setProfileOpen(false);
+            setCustomerDialogOpen(true);
+          }}
+          onViewJob={stableHandleEditFullJob}
+        />
+      )}
 
-      <AdminCustomerVouchersDialog
-        open={customerVouchersModalOpen}
-        onOpenChange={setCustomerVouchersModalOpen}
-        customer={selectedProfileCustomer}
-        coupons={dialogAvailableCoupons}
-        appliedPromoCode={appliedPromo?.code || null}
-        cartItems={dialogCart}
-        currentLanguage={currentLanguage}
-        onApplyCoupon={(code) => handleApplyPromo(code)}
-        onRemoveCoupon={() => {
-          setAppliedPromo(null);
-          setPromoCodeInput("");
-          setPromoError(null);
-          setUserDismissedPromo(true);
-        }}
-        isLoading={promoLoading}
-      />
+      {customerVouchersModalOpen && (
+        <AdminCustomerVouchersDialog
+          open={customerVouchersModalOpen}
+          onOpenChange={setCustomerVouchersModalOpen}
+          customer={selectedProfileCustomer}
+          coupons={dialogAvailableCoupons}
+          appliedPromoCode={appliedPromo?.code || null}
+          cartItems={dialogCart}
+          currentLanguage={currentLanguage}
+          onApplyCoupon={(code) => handleApplyPromo(code)}
+          onRemoveCoupon={() => {
+            setAppliedPromo(null);
+            setPromoCodeInput("");
+            setPromoError(null);
+            setUserDismissedPromo(true);
+          }}
+          isLoading={promoLoading}
+        />
+      )}
 
-      {receiptPaperSize === "A5" ? (
+      {showReceipt && receiptPaperSize === "A5" ? (
         dialogReceiptData && (
           <A5ReceiptDialog
             open={showReceipt}
@@ -12892,7 +12881,7 @@ function AdminPageContent() {
           />
         )
       ) : (
-        dialogReceiptData && (
+        showReceipt && dialogReceiptData && (
           <ThermalReceiptDialog
             open={showReceipt}
             onOpenChange={setShowReceipt}
@@ -12937,132 +12926,140 @@ function AdminPageContent() {
         )
       )}
       {/* Top Up Dialog — standalone member wallet top-up */}
-      <TopUpDialog
-        open={showTopUpDialog}
-        preselectedCustomer={topUpCustomer}
-        onClose={() => {
-          setShowTopUpDialog(false);
-          setTopUpCustomer(null);
-        }}
-        onSuccess={(receiptNo) => {
-          console.log("[TopUp] Created receipt:", receiptNo);
-        }}
-      />
+      {showTopUpDialog && (
+        <TopUpDialog
+          open={showTopUpDialog}
+          preselectedCustomer={topUpCustomer}
+          onClose={() => {
+            setShowTopUpDialog(false);
+            setTopUpCustomer(null);
+          }}
+          onSuccess={(receiptNo) => {
+            console.log("[TopUp] Created receipt:", receiptNo);
+          }}
+        />
+      )}
 
       {/* Refund & Correct Dialog */}
-      <RefundCorrectDialog
-        open={!!refundJob}
-        job={refundJob}
-        onClose={() => setRefundJob(null)}
-        onSuccess={async (result) => {
-          console.log("[Refund] Processed refund:", result);
-          setRefundJob(null);
-          setDialogOpen(false);
-          resetDialogForm();
-          await refreshDb();
+      {refundJob && (
+        <RefundCorrectDialog
+          open={!!refundJob}
+          job={refundJob}
+          onClose={() => setRefundJob(null)}
+          onSuccess={async (result) => {
+            const origRefundJobId = refundJob.id;
+            setRefundJob(null);
+            setDialogOpen(false);
+            resetDialogForm();
+            api.fetchAndApplyJob(origRefundJobId).catch(() => {});
 
-          if (result?.duplicatedJobId) {
-            setTimeout(async () => {
-              try {
-                const allJobs = [...jobs, ...jobStore.getSnapshot()];
-                let dupJob = allJobs.find(j => j.id === result.duplicatedJobId);
-                if (!dupJob) {
-                  const fetchedJobs = await api.getJobs();
-                  dupJob = fetchedJobs.find((j: Job) => j.id === result.duplicatedJobId);
+            if (result?.duplicatedJobId) {
+              setTimeout(async () => {
+                try {
+                  let dupJob = await api.fetchAndApplyJob(result.duplicatedJobId);
+                  if (!dupJob) {
+                    const allJobs = [...jobs, ...jobStore.getSnapshot()];
+                    dupJob = allJobs.find(j => j.id === result.duplicatedJobId) || null;
+                  }
+                  if (dupJob) {
+                    handleEditFullJob(dupJob);
+                    toast.info(`📝 เปิด Job สำเนา #${dupJob.id} เรียบร้อย — ปลด lock รายการและราคาแล้ว สามารถแก้ไขและชำระเงินใหม่ได้ทันที`);
+                  }
+                } catch (err) {
+                  console.error("Auto-open duplicate job error:", err);
                 }
-                if (dupJob) {
-                  handleEditFullJob(dupJob);
-                  toast.info(`📝 เปิด Job สำเนา #${dupJob.id} เรียบร้อย — ปลด lock รายการและราคาแล้ว สามารถแก้ไขและชำระเงินใหม่ได้ทันที`);
-                }
-              } catch (err) {
-                console.error("Auto-open duplicate job error:", err);
-              }
-            }, 400);
-          }
-        }}
-      />
+              }, 250);
+            }
+          }}
+        />
+      )}
 
       {/* Split Payment Dialog */}
-      <SplitPaymentDialog
-        open={showSplitPaymentDialog}
-        onOpenChange={(isOpen) => {
-          setShowSplitPaymentDialog(isOpen);
-          if (!isOpen && splitPayments.length < 2 && paymentChannel === "Split Payment") {
-            setPaymentChannel("");
-          }
-        }}
-        totalAmount={dialogTotal}
-        customer={selectedProfileCustomer}
-        activePaymentChannels={activePaymentChannels}
-        initialSplits={splitPayments}
-        onConfirm={(splits) => {
-          setSplitPayments(splits);
-          setPaymentChannel("Split Payment");
-        }}
-        currentLanguage={currentLanguage}
-      />
+      {showSplitPaymentDialog && (
+        <SplitPaymentDialog
+          open={showSplitPaymentDialog}
+          onOpenChange={(isOpen) => {
+            setShowSplitPaymentDialog(isOpen);
+            if (!isOpen && splitPayments.length < 2 && paymentChannel === "Split Payment") {
+              setPaymentChannel("");
+            }
+          }}
+          totalAmount={dialogTotal}
+          customer={selectedProfileCustomer}
+          activePaymentChannels={activePaymentChannels}
+          initialSplits={splitPayments}
+          onConfirm={(splits) => {
+            setSplitPayments(splits);
+            setPaymentChannel("Split Payment");
+          }}
+          currentLanguage={currentLanguage}
+        />
+      )}
 
       {/* Wise International Payment Dialog */}
-      <WisePaymentDialog
-        isOpen={!!wisePaymentJob}
-        onClose={() => setWisePaymentJob(null)}
-        job={wisePaymentJob}
-        customAmount={wisePaymentJob?.totalAmount ?? undefined}
-        onPaymentSuccess={async (paidInfo) => {
-          if (wisePaymentJob) {
-            setPaymentMethod("paid");
-            setPaymentChannel("Wise");
-            if (paidInfo.job) {
-              const { job: applied } = api.applyServerJob(paidInfo.job);
-              if (originalJobRef.current && originalJobRef.current.id === wisePaymentJob.id) {
-                originalJobRef.current = JSON.parse(JSON.stringify(applied));
+      {wisePaymentJob && (
+        <WisePaymentDialog
+          isOpen={!!wisePaymentJob}
+          onClose={() => setWisePaymentJob(null)}
+          job={wisePaymentJob}
+          customAmount={wisePaymentJob?.totalAmount ?? undefined}
+          onPaymentSuccess={async (paidInfo) => {
+            if (wisePaymentJob) {
+              setPaymentMethod("paid");
+              setPaymentChannel("Wise");
+              if (paidInfo.job) {
+                const { job: applied } = api.applyServerJob(paidInfo.job);
+                if (originalJobRef.current && originalJobRef.current.id === wisePaymentJob.id) {
+                  originalJobRef.current = JSON.parse(JSON.stringify(applied));
+                }
+              } else {
+                const fetched = await api.fetchAndApplyJob(wisePaymentJob.id);
+                if (fetched && originalJobRef.current && originalJobRef.current.id === wisePaymentJob.id) {
+                  originalJobRef.current = JSON.parse(JSON.stringify(fetched));
+                }
               }
-            } else {
-              const fetched = await api.fetchAndApplyJob(wisePaymentJob.id);
-              if (fetched && originalJobRef.current && originalJobRef.current.id === wisePaymentJob.id) {
-                originalJobRef.current = JSON.parse(JSON.stringify(fetched));
+              jobStore.notify();
+              const current = jobStore.getSnapshot().find(j => j.id === wisePaymentJob.id) || jobs.find(j => j.id === wisePaymentJob.id) || activeJob;
+              if (current) {
+                setEditingJobId(current.id);
+                setIsDraftPreview(false);
+                setIsPaymentEvent(true);
+                setShowReceipt(true);
               }
             }
-            jobStore.notify();
-            await refreshDb();
-            const current = jobStore.getSnapshot().find(j => j.id === wisePaymentJob.id) || jobs.find(j => j.id === wisePaymentJob.id) || activeJob;
-            if (current) {
-              setEditingJobId(current.id);
-              setIsDraftPreview(false);
-              setIsPaymentEvent(true);
-              setShowReceipt(true);
-            }
-          }
-          setWisePaymentJob(null);
-        }}
-      />
+            setWisePaymentJob(null);
+          }}
+        />
+      )}
 
       {/* Beam Online Payment Dialog */}
-      <OnlinePaymentDialog
-        isOpen={!!onlinePaymentJob}
-        onClose={() => setOnlinePaymentJob(null)}
-        job={onlinePaymentJob}
-        customAmount={onlinePaymentJob?.totalAmount ?? undefined}
-        onPaymentSuccess={async (paidInfo) => {
-          if (onlinePaymentJob) {
-            api.optimisticUpdate(onlinePaymentJob.id, {
-              isPaid: true,
-              isShopPaid: true,
-              paymentChannel: paidInfo.channel,
-            } as any);
-            jobStore.notify();
-            await refreshDb();
-            const current = jobs.find(j => j.id === onlinePaymentJob.id) || activeJob;
-            if (current) {
-              setEditingJobId(current.id);
-              setIsDraftPreview(false);
-              setIsPaymentEvent(true);
-              setShowReceipt(true);
+      {onlinePaymentJob && (
+        <OnlinePaymentDialog
+          isOpen={!!onlinePaymentJob}
+          onClose={() => setOnlinePaymentJob(null)}
+          job={onlinePaymentJob}
+          customAmount={onlinePaymentJob?.totalAmount ?? undefined}
+          onPaymentSuccess={async (paidInfo) => {
+            if (onlinePaymentJob) {
+              api.optimisticUpdate(onlinePaymentJob.id, {
+                isPaid: true,
+                isShopPaid: true,
+                paymentChannel: paidInfo.channel,
+              } as any);
+              await api.fetchAndApplyJob(onlinePaymentJob.id).catch(() => {});
+              jobStore.notify();
+              const current = jobStore.getSnapshot().find(j => j.id === onlinePaymentJob.id) || jobs.find(j => j.id === onlinePaymentJob.id) || activeJob;
+              if (current) {
+                setEditingJobId(current.id);
+                setIsDraftPreview(false);
+                setIsPaymentEvent(true);
+                setShowReceipt(true);
+              }
             }
-          }
-          setOnlinePaymentJob(null);
-        }}
-      />
+            setOnlinePaymentJob(null);
+          }}
+        />
+      )}
 
       {/* Fallback Open / Close Cashier Shift Modals when activeTab !== "jobs" (e.g. Kanban / Dashboard) */}
       <Dialog open={isGlobalOpenShiftOpen} onOpenChange={setIsGlobalOpenShiftOpen}>

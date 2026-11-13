@@ -417,11 +417,18 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
     typeof window !== 'undefined' &&
     (!!window.navigator.webdriver || !!(window as any).__playwright_test__);
 
-  if (isInitial && !isDbLoaded && !isTestEnv) {
+  const currentUid = getClientAuthUser()?.id || 'anon';
+  const cacheUrl = `/api/db-cache?uid=${encodeURIComponent(currentUid)}`;
+
+  if (isInitial && !isDbLoaded && !isTestEnv && currentUid !== 'anon') {
     try {
       const cache = await caches.open('tls-cache');
-      const cachedRes = await cache.match('/api/db-cache');
+      const cachedRes = await cache.match(cacheUrl);
       if (cachedRes) {
+        const cachedEtag = cachedRes.headers.get('ETag');
+        if (cachedEtag && !lastEtag) {
+          lastEtag = cachedEtag;
+        }
         const cached = await cachedRes.json();
         const parsed = hydrateDbPayloadInPlace(cached);
         memoryDb = parseMockDb(parsed);
@@ -446,14 +453,20 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
     if (res.ok) {
       const etag = res.headers.get('ETag');
       if (etag) lastEtag = etag;
+      const resClone = !isTestEnv && currentUid !== 'anon' ? res.clone() : null;
       const data = await res.json();
 
-      if (isInitial && !isTestEnv) {
-        setTimeout(() => {
-          caches.open('tls-cache')
-            .then((cache) => cache.put('/api/db-cache', new Response(JSON.stringify(data))))
+      if (resClone) {
+        const scheduleIdle =
+          typeof (window as any).requestIdleCallback === 'function'
+            ? (cb: () => void) => (window as any).requestIdleCallback(cb, { timeout: 2000 })
+            : (cb: () => void) => setTimeout(cb, 400);
+        scheduleIdle(() => {
+          caches
+            .open('tls-cache')
+            .then((cache) => cache.put(cacheUrl, resClone))
             .catch(() => {});
-        }, 200);
+        });
       }
 
       const parsed = hydrateDbPayloadInPlace(data);
@@ -1691,30 +1704,19 @@ export const api = {
     }
 
     const invokeUpdateJobWithFallback = async (jobId: string, payload: Record<string, any>) => {
-      let actionRes: any = null;
       try {
-        actionRes = await withActionTimeout(
+        const actionRes = await withActionTimeout(
           dbActions.updateJobAction(jobId, { ...payload, __returnErrorObject: true }),
           25000
         );
-        if (!actionRes || !actionRes.__actionError) {
-          return actionRes;
-        }
-        if (actionRes.isConflict) {
-          return actionRes;
-        }
+        // Server Action reached the server and returned either the saved job or a structured validation/conflict error.
+        // Do NOT re-send a duplicate PATCH request when the server already rejected the mutation intentionally.
+        return actionRes;
       } catch (actionErr: any) {
         if (typeof window === 'undefined') {
           throw actionErr;
         }
-        actionRes = {
-          __actionError: true,
-          error: actionErr?.message || 'Save failed',
-          isConflict: Boolean(actionErr?.isConflict),
-        };
-      }
-
-      if (typeof window !== 'undefined') {
+        // Only fall back to REST PATCH when the Server Action transport itself threw (network blip / deployment skew).
         try {
           const resp = await authFetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
             method: 'PATCH',
@@ -1724,9 +1726,13 @@ export const api = {
           const data = await resp.json().catch(() => null);
           if (data) return data;
         } catch {}
-      }
 
-      return actionRes;
+        return {
+          __actionError: true,
+          error: actionErr?.message || 'Save failed',
+          isConflict: Boolean(actionErr?.isConflict),
+        };
+      }
     };
 
     const isEarlySilentMediaUpdate = Boolean(
@@ -2400,6 +2406,13 @@ export const api = {
     if (res && typeof res.value === "string") {
       db.settings = { ...db.settings, [key]: res.value };
     }
+    return db.settings;
+  },
+
+  async updateSettingsBatch(entries: Record<string, string>): Promise<Record<string, string>> {
+    const db = initDb();
+    db.settings = { ...db.settings, ...entries };
+    await dbActions.updateSettingsBatchAction(entries);
     return db.settings;
   },
 

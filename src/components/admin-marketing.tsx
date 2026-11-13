@@ -40,12 +40,14 @@ import {
   Ticket
 } from "lucide-react";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
+import dynamic from "next/dynamic";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
-import { AdminMarketingCalendar } from "@/components/admin-marketing-calendar";
-import { AdminMarketingLinks } from "@/components/admin-marketing-links";
-import { AdminMarketingCoupons } from "@/components/admin-marketing-coupons";
-import { AdminPromotionReport } from "@/components/admin-promotion-report";
 import { getWalletTransactionsAction } from "@/actions/db";
+
+const AdminMarketingCalendar = dynamic(() => import("@/components/admin-marketing-calendar").then((m) => m.AdminMarketingCalendar), { ssr: false });
+const AdminMarketingLinks = dynamic(() => import("@/components/admin-marketing-links").then((m) => m.AdminMarketingLinks), { ssr: false });
+const AdminMarketingCoupons = dynamic(() => import("@/components/admin-marketing-coupons").then((m) => m.AdminMarketingCoupons), { ssr: false });
+const AdminPromotionReport = dynamic(() => import("@/components/admin-promotion-report").then((m) => m.AdminPromotionReport), { ssr: false });
 
 interface AdminMarketingProps {
   onViewJob?: (job: any) => void;

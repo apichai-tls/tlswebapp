@@ -52,8 +52,7 @@ export async function searchLocation(query: string, forceGoogle = false): Promis
       return results; // Return only local results
     }
 
-    const apiKey = settings.googleMapsApiKey || "";
-    const res = await authFetch(`/api/places?query=${encodeURIComponent(query)}&key=${encodeURIComponent(apiKey)}`);
+    const res = await authFetch(`/api/places?query=${encodeURIComponent(query)}`);
     const data = await res.json();
     
     if (data.error) {
@@ -85,15 +84,14 @@ export async function getRoute(pickup: LatLng, dropoff: LatLng): Promise<RouteRe
 
   try {
     const settings = settingsStore.getSnapshot();
-    const apiKey = settings.googleMapsApiKey || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "";
     
-    // 1. Use Google Directions API if enabled
-    if (settings.enableGoogleApi === "true" && apiKey && apiKey !== "YOUR_API_KEY_HERE") {
+    // 1. Use Google Directions API if enabled (server resolves API key securely)
+    if (settings.enableGoogleApi === "true") {
       try {
         const origin = `${pickup.lat},${pickup.lng}`;
         const destination = `${dropoff.lat},${dropoff.lng}`;
         
-        const res = await authFetch(`/api/directions?origin=${origin}&destination=${destination}&key=${encodeURIComponent(apiKey)}`);
+        const res = await authFetch(`/api/directions?origin=${origin}&destination=${destination}`);
         if (res.ok) {
           const data = await res.json();
           
@@ -179,19 +177,18 @@ export async function getClosestShopByRoute(targetCoords: LatLng, shops: ShopLoc
     const candidateShops = shops;
 
     const settings = settingsStore.getSnapshot();
-    const apiKey = settings.googleMapsApiKey || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "";
     let minDistance = Infinity;
     let closestShopId = "";
 
-    // 1. Try Google Distance Matrix API
+    // 1. Try Google Distance Matrix API (server resolves API key securely)
     let distanceMatrixSuccess = false;
-    if (settings.enableGoogleApi === "true" && apiKey && apiKey !== "YOUR_API_KEY_HERE") {
+    if (settings.enableGoogleApi === "true") {
       // Calculate from Shops -> Customer to match the Delivery routing direction
       const origins = candidateShops.map(s => `${s.coords.lat},${s.coords.lng}`).join("|");
       const destinations = `${targetCoords.lat},${targetCoords.lng}`;
 
       try {
-        const res = await authFetch(`/api/distancematrix?origins=${origins}&destinations=${destinations}&key=${encodeURIComponent(apiKey)}`);
+        const res = await authFetch(`/api/distancematrix?origins=${origins}&destinations=${destinations}`);
         const data = await res.json();
 
         if (!data.error && data.distancesKm) {
@@ -212,12 +209,12 @@ export async function getClosestShopByRoute(targetCoords: LatLng, shops: ShopLoc
     }
 
     // 1.5. Try Individual Google Directions API Fallback (using two_wheeler mode)
-    if (!distanceMatrixSuccess && settings.enableGoogleApi === "true" && apiKey && apiKey !== "YOUR_API_KEY_HERE") {
+    if (!distanceMatrixSuccess && settings.enableGoogleApi === "true") {
       const promises = candidateShops.map(async (shop) => {
         try {
           const origin = `${shop.coords.lat},${shop.coords.lng}`;
           const destination = `${targetCoords.lat},${targetCoords.lng}`;
-          const res = await authFetch(`/api/directions?origin=${origin}&destination=${destination}&key=${encodeURIComponent(apiKey)}`);
+          const res = await authFetch(`/api/directions?origin=${origin}&destination=${destination}`);
           const data = await res.json();
           if (data && !data.error && typeof data.distanceKm === "number") {
             return { id: shop.id, dist: data.distanceKm };

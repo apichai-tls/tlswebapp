@@ -101,7 +101,7 @@ export function AdminSettings() {
   const [wiseBankDetails, setWiseBankDetails] = useState("");
   const [wiseInstructions, setWiseInstructions] = useState("");
   const [isUploadingWiseQr, setIsUploadingWiseQr] = useState(false);
-  const [wiseApiToken, setWiseApiToken] = useState("d1778921-ab96-4bd3-9841-b87c973510c8");
+  const [wiseApiToken, setWiseApiToken] = useState("");
   const [wiseProfileId, setWiseProfileId] = useState("47558107");
   const [wiseConnectedName, setWiseConnectedName] = useState("THAT LAUNDRY SHOP CO., LTD");
   const [wiseBalances, setWiseBalances] = useState<WiseBalanceItem[]>([]);
@@ -112,10 +112,8 @@ export function AdminSettings() {
 
   // LINE Official Account (LINE OA) Integration State
   const [enableLineOa, setEnableLineOa] = useState(true);
-  const [lineChannelAccessToken, setLineChannelAccessToken] = useState(
-    "m37vbSx77LMvPDo1W96a25iygwrnEqsBdtzOeXM5qQoYBugNMtab0l1Xhvv7BinKNuTSFGz0dlPTZM7dWZxiYxhxASsfd0pmGvCHp0GAjTn0867M7DMdZWnM1ry+K//X7dbvrR2jEG3ec4MG4UCMAwdB04t89/1O/w1cDnyilFU="
-  );
-  const [lineChannelSecret, setLineChannelSecret] = useState("b6eb43581993184cac88721953b211dd");
+  const [lineChannelAccessToken, setLineChannelAccessToken] = useState("");
+  const [lineChannelSecret, setLineChannelSecret] = useState("");
   const [lineBasicId, setLineBasicId] = useState("@thatlaundryshop");
   const [lineBotName, setLineBotName] = useState("ThatLaundryShop");
   const [lineAutoSendDeliveryPhoto, setLineAutoSendDeliveryPhoto] = useState(true);
@@ -127,8 +125,6 @@ export function AdminSettings() {
     setEnableCustomerPortal(nextVal);
     try {
       await settingsStore.updateSetting("enableCustomerPortal", nextVal ? "true" : "false");
-      const { refreshDb } = await import("@/lib/api");
-      await refreshDb();
       toast.success(
         nextVal
           ? "เปิดใช้งาน Customer Portal (/portal) สำหรับลูกค้าทั่วไปเรียบร้อยแล้ว"
@@ -153,8 +149,6 @@ export function AdminSettings() {
       if (typeof window !== "undefined") {
         localStorage.setItem("tls_session_timeout_mins", cleanVal);
       }
-      const { refreshDb } = await import("@/lib/api");
-      await refreshDb();
       toast.success(
         cleanVal === "0"
           ? "ปิดระบบตัด Session อัตโนมัติเรียบร้อยแล้ว"
@@ -168,8 +162,6 @@ export function AdminSettings() {
   const handleSaveVatSetting = async (key: string, value: string) => {
     try {
       await settingsStore.updateSetting(key, value);
-      const { refreshDb } = await import("@/lib/api");
-      await refreshDb();
       toast.success("VAT setting updated successfully");
     } catch (err) {
       toast.error("Failed to save setting: " + (err instanceof Error ? err.message : "Unknown error"));
@@ -189,8 +181,6 @@ export function AdminSettings() {
   const handleSavePaymentChannels = async (newChannels: PaymentChannelItem[]) => {
     try {
       await settingsStore.updateSetting("paymentChannels", JSON.stringify(newChannels));
-      const { refreshDb } = await import("@/lib/api");
-      await refreshDb();
       toast.success("บันทึกช่องทางการชำระเงินเรียบร้อยแล้ว");
     } catch (err) {
       toast.error("บันทึกล้มเหลว: " + (err instanceof Error ? err.message : "Unknown error"));
@@ -297,13 +287,8 @@ export function AdminSettings() {
       setWiseBankDetails(systemSettings.wiseBankDetails || "");
       setWiseInstructions(systemSettings.wiseInstructions || "");
 
-      // LINE OA settings
+      // LINE OA settings (secrets stay on server; inputs only send replacement values)
       setEnableLineOa(systemSettings.enableLineOa !== "false");
-      setLineChannelAccessToken(
-        systemSettings.lineChannelAccessToken ||
-          "m37vbSx77LMvPDo1W96a25iygwrnEqsBdtzOeXM5qQoYBugNMtab0l1Xhvv7BinKNuTSFGz0dlPTZM7dWZxiYxhxASsfd0pmGvCHp0GAjTn0867M7DMdZWnM1ry+K//X7dbvrR2jEG3ec4MG4UCMAwdB04t89/1O/w1cDnyilFU="
-      );
-      setLineChannelSecret(systemSettings.lineChannelSecret || "b6eb43581993184cac88721953b211dd");
       setLineBasicId(systemSettings.lineBasicId || "@thatlaundryshop");
       setLineBotName(systemSettings.lineBotName || "ThatLaundryShop");
       setLineAutoSendDeliveryPhoto(systemSettings.lineAutoSendDeliveryPhoto !== "false");
@@ -444,9 +429,18 @@ export function AdminSettings() {
       setIsVerifyingKey(false);
     }
 
-    settingsStore.updateSetting("googleMapsApiKey", googleApiKey);
-    settingsStore.updateSetting("enableGoogleApi", enableGoogleApi ? "true" : "false");
-    toast.success("API Settings saved successfully");
+    try {
+      const apiUpdates: Record<string, string> = {
+        enableGoogleApi: enableGoogleApi ? "true" : "false",
+      };
+      if (googleApiKey.trim() && !googleApiKey.includes("••••")) {
+        apiUpdates.googleMapsApiKey = googleApiKey.trim();
+      }
+      await settingsStore.updateSettingsBatch(apiUpdates);
+      toast.success("API Settings saved successfully");
+    } catch (err) {
+      toast.error("Failed to save API settings: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
   };
 
   const handleSaveCommissionSettings = async () => {
@@ -457,8 +451,6 @@ export function AdminSettings() {
     }
     try {
       await settingsStore.updateSetting("riderCommissionPerKm", commissionRateInput);
-      const { refreshDb } = await import("@/lib/api");
-      await refreshDb();
       toast.success("Rider Commission Rate updated successfully");
     } catch (err) {
       toast.error("Failed to save setting: " + (err instanceof Error ? err.message : "Unknown error"));
@@ -467,17 +459,16 @@ export function AdminSettings() {
 
   const handleSavePromptPaySettings = async () => {
     try {
-      await settingsStore.updateSetting("enablePromptPay", enablePromptPay ? "true" : "false");
-      await settingsStore.updateSetting("promptpayId_global", ppSettings["global_id"] || "");
-      await settingsStore.updateSetting("promptpayName_global", ppSettings["global_name"] || "");
-      
+      const batchUpdates: Record<string, string> = {
+        enablePromptPay: enablePromptPay ? "true" : "false",
+        promptpayId_global: ppSettings["global_id"] || "",
+        promptpayName_global: ppSettings["global_name"] || "",
+      };
       for (const shop of shopLocations) {
-        await settingsStore.updateSetting(`promptpayId_${shop.id}`, ppSettings[`id_${shop.id}`] || "");
-        await settingsStore.updateSetting(`promptpayName_${shop.id}`, ppSettings[`name_${shop.id}`] || "");
+        batchUpdates[`promptpayId_${shop.id}`] = ppSettings[`id_${shop.id}`] || "";
+        batchUpdates[`promptpayName_${shop.id}`] = ppSettings[`name_${shop.id}`] || "";
       }
-      
-      const { refreshDb } = await import("@/lib/api");
-      await refreshDb();
+      await settingsStore.updateSettingsBatch(batchUpdates);
       toast.success("PromptPay settings saved successfully");
     } catch (err) {
       toast.error("Failed to save PromptPay settings: " + (err instanceof Error ? err.message : "Unknown error"));
@@ -552,7 +543,11 @@ export function AdminSettings() {
 
   useEffect(() => {
     if (activeSettingsTab === "all" || activeSettingsTab === "payments") {
-      loadWiseLiveData();
+      const delayMs = activeSettingsTab === "payments" ? 0 : 500;
+      const timer = setTimeout(() => {
+        loadWiseLiveData();
+      }, delayMs);
+      return () => clearTimeout(timer);
     }
   }, [activeSettingsTab, loadWiseLiveData]);
 
@@ -590,18 +585,19 @@ export function AdminSettings() {
 
   useEffect(() => {
     if (lineContacts.length > 0) return;
-    if (activeSettingsTab === "all" || activeSettingsTab === "payments" || activeSettingsTab === "system") {
+    if (activeSettingsTab === "all" || activeSettingsTab === "payments") {
       let cancelled = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
       const poll = async () => {
         const stillSyncing = await loadLineContacts();
         if (!cancelled && stillSyncing) {
-          timer = setTimeout(poll, 3000);
+          timer = setTimeout(poll, 3500);
         }
       };
-      poll();
+      const initTimer = setTimeout(poll, activeSettingsTab === "payments" ? 0 : 700);
       return () => {
         cancelled = true;
+        clearTimeout(initTimer);
         if (timer) clearTimeout(timer);
       };
     }
@@ -644,8 +640,8 @@ export function AdminSettings() {
             setLineBasicId(res.botInfo.premiumId || res.botInfo.basicId || lineBasicId);
           }
         }
-        const { refreshDb } = await import("@/lib/api");
-        await refreshDb();
+        setLineChannelAccessToken("");
+        setLineChannelSecret("");
         await loadLineContacts();
         toast.success(
           res.botInfo
@@ -664,15 +660,19 @@ export function AdminSettings() {
 
   const handleSaveWiseSettings = async () => {
     try {
-      await settingsStore.updateSetting("enableWise", enableWise ? "true" : "false");
-      await settingsStore.updateSetting("wiseTag", wiseTag.trim());
-      await settingsStore.updateSetting("wiseEmail", wiseEmail.trim());
-      await settingsStore.updateSetting("wiseAccountName", wiseAccountName.trim());
-      await settingsStore.updateSetting("wiseQrUrl", wiseQrUrl.trim());
-      await settingsStore.updateSetting("wiseBankDetails", wiseBankDetails.trim());
-      await settingsStore.updateSetting("wiseInstructions", wiseInstructions.trim());
-      const { refreshDb } = await import("@/lib/api");
-      await refreshDb();
+      await settingsStore.updateSettingsBatch({
+        enableWise: enableWise ? "true" : "false",
+        wiseTag: wiseTag.trim(),
+        wiseEmail: wiseEmail.trim(),
+        wiseAccountName: wiseAccountName.trim(),
+        wiseQrUrl: wiseQrUrl.trim(),
+        wiseBankDetails: wiseBankDetails.trim(),
+        wiseInstructions: wiseInstructions.trim(),
+      });
+      if (wiseApiToken.trim() && !wiseApiToken.includes("••••")) {
+        await saveWiseApiCredentialsAction(wiseApiToken.trim(), wiseProfileId.trim());
+        setWiseApiToken("");
+      }
       toast.success("บันทึกการตั้งค่า Wise (TransferWise) สำเร็จแล้ว");
     } catch (err: any) {
       toast.error("Failed to save Wise settings: " + (err instanceof Error ? err.message : "Unknown error"));
@@ -826,8 +826,6 @@ export function AdminSettings() {
   const handleUpdateReceiptSetting = async (key: string, value: string) => {
     try {
       await settingsStore.updateSetting(key, value);
-      const { refreshDb } = await import("@/lib/api");
-      await refreshDb();
       toast.success("POS Receipt settings updated");
     } catch (err) {
       toast.error("Failed to update receipt settings: " + (err instanceof Error ? err.message : "Unknown error"));
@@ -1885,7 +1883,7 @@ export function AdminSettings() {
                         type={showWiseToken ? "text" : "password"}
                         value={wiseApiToken}
                         onChange={(e) => setWiseApiToken(e.target.value)}
-                        placeholder="d1778921-ab96-4bd3-..."
+                        placeholder="Configured on server (enter new Wise token only to replace)"
                         className="font-mono text-xs h-10 pr-10 rounded-xl"
                       />
                       <button
@@ -1924,12 +1922,12 @@ export function AdminSettings() {
                       </h3>
                       <Badge
                         className={
-                          lineChannelAccessToken
+                          (enableLineOa || lineChannelAccessToken || lineBotName)
                             ? "bg-emerald-100 text-emerald-800 border-emerald-300 font-bold text-[10px]"
                             : "bg-amber-100 text-amber-800 border-amber-300 font-bold text-[10px]"
                         }
                       >
-                        {lineChannelAccessToken
+                        {(enableLineOa || lineChannelAccessToken || lineBotName)
                           ? `Connected${lineBotName ? `: ${lineBotName}` : " ✓"}`
                           : "Awaiting Channel Access Token"}
                       </Badge>
@@ -2019,7 +2017,7 @@ export function AdminSettings() {
                       type={showLineToken ? "text" : "password"}
                       value={lineChannelAccessToken}
                       onChange={(e) => setLineChannelAccessToken(e.target.value)}
-                      placeholder="Paste your long-lived LINE Channel Access Token here..."
+                      placeholder="Configured on server (paste new token only to replace)"
                       className="font-mono text-xs h-11 pr-10 rounded-xl border-slate-200"
                     />
                     <button
@@ -2080,7 +2078,7 @@ export function AdminSettings() {
                     type={showLineToken ? "text" : "password"}
                     value={lineChannelSecret}
                     onChange={(e) => setLineChannelSecret(e.target.value)}
-                    placeholder="Optional Channel Secret for signature verification"
+                    placeholder="Configured on server (paste new secret only to replace)"
                     className="font-mono text-xs h-10 rounded-xl border-slate-200"
                   />
                 </div>

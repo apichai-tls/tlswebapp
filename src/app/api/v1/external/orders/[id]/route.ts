@@ -1,19 +1,10 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { verifyCustomerToken, verifyServiceApiKey } from '@/lib/external-api-auth'
+import { resolvePortalCustomer } from '@/lib/portal-auth'
+import { resolveRequestUser, canUserAccessJob } from '@/lib/server-auth'
 
 export const dynamic = 'force-dynamic'
-
-function resolveCustomerId(req: Request): string | null {
-  const authHeader = req.headers.get('authorization')
-  if (authHeader) {
-    const verified = verifyCustomerToken(authHeader)
-    if (verified?.customerId) return verified.customerId
-  }
-  const directId = req.headers.get('x-customer-id')
-  if (directId && verifyServiceApiKey(req)) return directId
-  return null
-}
 
 export async function GET(
   req: Request,
@@ -21,7 +12,23 @@ export async function GET(
 ) {
   try {
     const { id } = await context.params
-    const customerId = resolveCustomerId(req)
+
+    const hasServiceKey = verifyServiceApiKey(req)
+    const authHeader = req.headers.get('authorization')
+    const extCustomer = authHeader ? verifyCustomerToken(authHeader) : null
+    const portalCustomer = !extCustomer ? resolvePortalCustomer(req) : null
+    const authenticatedCustomerId =
+      extCustomer?.customerId ||
+      portalCustomer?.customerId ||
+      (hasServiceKey ? req.headers.get('x-customer-id') : null) ||
+      null
+
+    const staffAuth = !hasServiceKey && !authenticatedCustomerId ? await resolveRequestUser(req) : null
+    const staffUser = staffAuth?.user || null
+
+    if (!hasServiceKey && !authenticatedCustomerId && !staffUser) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
+    }
 
     const job = await prisma.job.findUnique({
       where: { id }
@@ -31,8 +38,15 @@ export async function GET(
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
     }
 
-    // If customerId is provided, ensure customer owns this job
-    if (customerId && job.customerId && job.customerId !== customerId) {
+    if (staffUser) {
+      if (!canUserAccessJob(staffUser, job)) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+    } else if (!hasServiceKey) {
+      if (!job.customerId || job.customerId !== authenticatedCustomerId) {
+        return NextResponse.json({ error: 'Unauthorized to view this order' }, { status: 403 })
+      }
+    } else if (authenticatedCustomerId && job.customerId && job.customerId !== authenticatedCustomerId) {
       return NextResponse.json({ error: 'Unauthorized to view this order' }, { status: 403 })
     }
 
@@ -79,6 +93,6 @@ export async function GET(
     })
   } catch (err: any) {
     console.error('Order detail GET error:', err)
-    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

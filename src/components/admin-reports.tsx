@@ -47,15 +47,17 @@ import {
 } from "lucide-react";
 import { getTopUpTransactionsAction } from "@/actions/db";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
+import dynamic from "next/dynamic";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
-import { ReportsSalesSummary } from "@/components/reports-sales-summary";
-import { ReportsSalesByItem } from "@/components/reports-sales-by-item";
-import { ReportsSalesByCategory } from "@/components/reports-sales-by-category";
-import { ReportsSalesByEmployee } from "@/components/reports-sales-by-employee";
-import { ReportsSalesByPaymentType } from "@/components/reports-sales-by-payment-type";
-import { ReportsReceipts } from "@/components/reports-receipts";
-import { ReportsTaxes } from "@/components/reports-taxes";
-import { AdminPettyCash } from "@/components/admin-petty-cash";
+
+const ReportsSalesSummary = dynamic(() => import("@/components/reports-sales-summary").then((m) => m.ReportsSalesSummary), { ssr: false });
+const ReportsSalesByItem = dynamic(() => import("@/components/reports-sales-by-item").then((m) => m.ReportsSalesByItem), { ssr: false });
+const ReportsSalesByCategory = dynamic(() => import("@/components/reports-sales-by-category").then((m) => m.ReportsSalesByCategory), { ssr: false });
+const ReportsSalesByEmployee = dynamic(() => import("@/components/reports-sales-by-employee").then((m) => m.ReportsSalesByEmployee), { ssr: false });
+const ReportsSalesByPaymentType = dynamic(() => import("@/components/reports-sales-by-payment-type").then((m) => m.ReportsSalesByPaymentType), { ssr: false });
+const ReportsReceipts = dynamic(() => import("@/components/reports-receipts").then((m) => m.ReportsReceipts), { ssr: false });
+const ReportsTaxes = dynamic(() => import("@/components/reports-taxes").then((m) => m.ReportsTaxes), { ssr: false });
+const AdminPettyCash = dynamic(() => import("@/components/admin-petty-cash").then((m) => m.AdminPettyCash), { ssr: false });
 
 function normalizeReportChannelName(name?: string | null): string {
   if (!name || !name.trim()) return "Unspecified";

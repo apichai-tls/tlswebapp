@@ -3,16 +3,33 @@ import { prisma } from "@/lib/prisma";
 import { verifyPassword, hashPassword } from "@/lib/crypto";
 import { signStaffSessionToken, invalidateServerAuthCache, revokeSessionToken, resolveRequestUser } from "@/lib/server-auth";
 import { setRiderOfflineOnLogout } from "@/lib/rider-presence";
+import { checkRateLimit, resetRateLimit, getRequestClientIp } from "@/lib/rate-limit";
 
 export async function POST(req: NextRequest) {
   try {
+    const clientIp = getRequestClientIp(req);
+    const ipLimit = checkRateLimit(`staff-login:ip:${clientIp}`, 20, 15 * 60 * 1000);
+    if (!ipLimit.allowed) {
+      return NextResponse.json(
+        { success: false, error: "Too many login attempts. Please wait a few minutes and try again." },
+        { status: 429, headers: { "Retry-After": String(ipLimit.retryAfterSeconds) } }
+      );
+    }
+
     const { email, password } = await req.json();
 
-    if (!email || !password) {
+    if (!email || !password || typeof email !== "string" || typeof password !== "string") {
       return NextResponse.json({ success: false, error: "Email and password are required" }, { status: 400 });
     }
 
     const targetEmail = email.toLowerCase().trim();
+    const accountLimit = checkRateLimit(`staff-login:acct:${targetEmail}:${clientIp}`, 10, 15 * 60 * 1000);
+    if (!accountLimit.allowed) {
+      return NextResponse.json(
+        { success: false, error: "Too many failed login attempts for this account. Please try again later." },
+        { status: 429, headers: { "Retry-After": String(accountLimit.retryAfterSeconds) } }
+      );
+    }
 
     const user = await prisma.adminUser.findUnique({
       where: { email: targetEmail },
@@ -30,6 +47,8 @@ export async function POST(req: NextRequest) {
     if (!isValid) {
       return NextResponse.json({ success: false, error: "Invalid email or password" }, { status: 401 });
     }
+
+    resetRateLimit(`staff-login:acct:${targetEmail}:${clientIp}`);
 
     // Lazy migration: Auto-hash plain text password on successful API login
     if (shouldRehash) {
@@ -87,7 +106,7 @@ export async function POST(req: NextRequest) {
     return res;
   } catch (error: any) {
     console.error("API login error:", error);
-    return NextResponse.json({ success: false, error: error.message || "Internal server error" }, { status: 500 });
+    return NextResponse.json({ success: false, error: "Internal server error" }, { status: 500 });
   }
 }
 
@@ -99,14 +118,15 @@ export async function DELETE(req: NextRequest) {
     const token = bearerToken || cookieToken;
 
     const { user } = await resolveRequestUser(req);
-    const fallbackUserId = req.nextUrl.searchParams.get("userId") || null;
-    const effectiveUserId = user?.id || fallbackUserId;
+    const verifiedUserId = user?.id || null;
 
-    await revokeSessionToken(token, effectiveUserId);
+    if (token || verifiedUserId) {
+      await revokeSessionToken(token, verifiedUserId);
+    }
 
-    // Automatically mark Rider as offline in DB upon logout or idle session timeout
-    if (effectiveUserId) {
-      await setRiderOfflineOnLogout(effectiveUserId);
+    // Only mark Rider as offline when authenticated via a verified session token
+    if (verifiedUserId) {
+      await setRiderOfflineOnLogout(verifiedUserId);
     }
 
     const res = NextResponse.json({ success: true });

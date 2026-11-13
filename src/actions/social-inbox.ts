@@ -1,8 +1,6 @@
 'use server';
 
-import fs from 'fs';
 import crypto from 'crypto';
-import path from 'path';
 import { prisma } from '@/lib/prisma';
 import { uploadBufferToGcs } from '@/lib/gcs';
 import { assertServerActionAuthorized } from '@/lib/server-auth';
@@ -30,7 +28,19 @@ import {
   LineMessageObject,
   LineContactRecord,
 } from '@/lib/line';
-import { getStoredLineOaSettings } from '@/actions/line';
+import { getStoredLineOaSettings } from '@/lib/line-internal';
+import {
+  SOCIAL_CONVERSATIONS_KEY,
+  SOCIAL_MESSAGES_KEY,
+  SOCIAL_CONFIG_KEY,
+  getDefaultSocialChannelConfig as getDefaultChannelConfig,
+  maskSocialChannelConfigSecrets,
+  isSafeExternalHttpUrl,
+  resolvePublicHttpsMediaUrl as resolvePublicHttpsImageUrl,
+  loadRawSocialInboxStore as loadRawInboxStore,
+  saveRawSocialInboxStore as saveInboxStore,
+  recordInboundSocialMessageInternal,
+} from '@/lib/social-inbox-internal';
 import {
   getWhatsAppQrStatus,
   getWhatsAppQrStatusAsync,
@@ -42,9 +52,6 @@ import {
 
 import { PrismaClient } from '@prisma/client';
 
-const SOCIAL_CONVERSATIONS_KEY = 'TLS_SOCIAL_CONVERSATIONS_V1';
-const SOCIAL_MESSAGES_KEY = 'TLS_SOCIAL_MESSAGES_V1';
-const SOCIAL_CONFIG_KEY = 'TLS_SOCIAL_CHANNEL_CONFIG_V1';
 const FOLLOWER_ONLY_FALLBACK_TS = '2026-01-01T00:00:00.000Z';
 
 let _roLiveLinePrisma: PrismaClient | null = null;
@@ -234,192 +241,6 @@ function normalizeAndSortConversations(
   });
 
   return { conversations: normalizedConvs, messages: filteredMessages, didClean };
-}
-
-/**
- * Resolves any local `/uploads/...` or GCS image path into a public HTTPS URL
- * so external APIs (LINE OA, WhatsApp Cloud/Gateway API, Messenger, Instagram, Telegram)
- * can fetch and deliver staff-uploaded or clipboard-pasted images directly to customers' apps.
- */
-async function resolvePublicHttpsImageUrl(url: string): Promise<string | null> {
-  const trimmed = (url || '').trim();
-  if (!trimmed) return null;
-
-  if (trimmed.startsWith('/uploads/')) {
-    try {
-      const relWithoutLeadingSlash = trimmed.replace(/^\/+/, '');
-      const candidatePaths = [
-        path.resolve(process.cwd(), 'storage', relWithoutLeadingSlash),
-        path.resolve(process.cwd(), 'public', relWithoutLeadingSlash),
-      ];
-      const existingFile = candidatePaths.find((p) => fs.existsSync(p));
-      if (existingFile) {
-        const buf = await fs.promises.readFile(existingFile);
-        const fd = new FormData();
-        fd.append('key', '6d207e02198a847aa98d0a2a901485a5');
-        fd.append('action', 'upload');
-        fd.append('source', buf.toString('base64'));
-        fd.append('format', 'json');
-        const upRes = await fetch('https://freeimage.host/api/1/upload', {
-          method: 'POST',
-          body: fd,
-        });
-        if (upRes.ok) {
-          const upData = await upRes.json();
-          if (upData?.image?.url && String(upData.image.url).startsWith('https://')) {
-            return String(upData.image.url);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[Social Inbox Photo Relay] Fallback to URL:', err);
-    }
-  }
-
-  if (trimmed.startsWith('https://storage.googleapis.com/')) {
-    try {
-      const { generateDownloadUrl, bucketName } = await import('@/lib/gcs');
-      const prefix = `https://storage.googleapis.com/${bucketName}/`;
-      if (trimmed.startsWith(prefix)) {
-        const gcsKey = trimmed.slice(prefix.length);
-        const signed = await generateDownloadUrl(gcsKey, 60 * 24 * 7);
-        if (signed && signed.startsWith('https://')) {
-          return signed;
-        }
-      }
-    } catch {}
-    return trimmed;
-  }
-
-  if (trimmed.startsWith('https://')) return trimmed;
-  if (trimmed.startsWith('http://')) return trimmed.replace(/^http:\/\//i, 'https://');
-  if (trimmed.startsWith('/')) {
-    const base = (
-      process.env.NEXT_PUBLIC_APP_URL || 'https://www.thatlaundryshop.com'
-    ).replace(/\/+$/, '');
-    return `${base}${trimmed}`;
-  }
-  return null;
-}
-
-function getDefaultChannelConfig(): SocialChannelConfig {
-  return {
-    whatsapp: {
-      enabled: true,
-      mode: 'web_bridge',
-      launchTarget: 'companion_popup',
-      businessPhoneNumber: '+66 80 000 0000',
-      defaultCountryCode: '66',
-      autoOpenWaWebOnSend: true,
-      phoneNumberId: '',
-      accessToken: '',
-      verifyToken: 'tls_whatsapp_verify_2026',
-      gatewayUrl: '',
-      gatewayApiKey: '',
-      gatewayInstanceId: 'default',
-    },
-    line: {
-      enabled: true,
-      basicId: '@thatlaundryshop',
-      botName: 'ThatLaundryShop',
-      secondaryBasicId: '@050ehvzb',
-      secondaryBotName: 'NoName Laundry',
-      autoSyncFollowers: true,
-    },
-    facebook: {
-      enabled: true,
-      pageName: 'That Laundry Shop Bangkok',
-      pageId: '',
-      pageAccessToken: '',
-    },
-    instagram: {
-      enabled: true,
-      accountHandle: '@thatlaundryshop',
-      igBusinessId: '',
-      accessToken: '',
-    },
-    telegram: {
-      enabled: true,
-      botUsername: '@ThatLaundryShopBot',
-      botToken: '',
-    },
-  };
-}
-
-async function loadRawInboxStore(): Promise<{
-  conversations: SocialConversation[];
-  messages: SocialMessage[];
-  config: SocialChannelConfig;
-}> {
-  const rows = await prisma.setting.findMany({
-    where: {
-      key: {
-        in: [SOCIAL_CONVERSATIONS_KEY, SOCIAL_MESSAGES_KEY, SOCIAL_CONFIG_KEY],
-      },
-    },
-  });
-
-  const map = new Map(rows.map((r) => [r.key, r.value]));
-
-  let conversations: SocialConversation[] = [];
-  let messages: SocialMessage[] = [];
-  let config: SocialChannelConfig = getDefaultChannelConfig();
-
-  const rawConvs = map.get(SOCIAL_CONVERSATIONS_KEY);
-  if (rawConvs) {
-    try {
-      const parsed = JSON.parse(rawConvs);
-      if (Array.isArray(parsed)) conversations = parsed;
-    } catch {}
-  }
-
-  const rawMsgs = map.get(SOCIAL_MESSAGES_KEY);
-  if (rawMsgs) {
-    try {
-      const parsed = JSON.parse(rawMsgs);
-      if (Array.isArray(parsed)) messages = parsed;
-    } catch {}
-  }
-
-  const rawCfg = map.get(SOCIAL_CONFIG_KEY);
-  if (rawCfg) {
-    try {
-      const parsed = JSON.parse(rawCfg);
-      if (parsed && typeof parsed === 'object') {
-        config = {
-          whatsapp: { ...config.whatsapp, ...(parsed.whatsapp || {}) },
-          line: { ...config.line, ...(parsed.line || {}) },
-          facebook: { ...config.facebook, ...(parsed.facebook || {}) },
-          instagram: { ...config.instagram, ...(parsed.instagram || {}) },
-          telegram: { ...config.telegram, ...(parsed.telegram || {}) },
-        };
-      }
-    } catch {}
-  }
-
-  return { conversations, messages, config };
-}
-
-async function saveInboxStore(
-  conversations: SocialConversation[],
-  messages: SocialMessage[]
-): Promise<void> {
-  // Keep latest 1000 conversations and 5000 messages to keep settings payload fast
-  const trimmedConvs = conversations.slice(0, 1000);
-  const trimmedMsgs = messages.slice(-5000);
-
-  await Promise.all([
-    prisma.setting.upsert({
-      where: { key: SOCIAL_CONVERSATIONS_KEY },
-      update: { value: JSON.stringify(trimmedConvs) },
-      create: { key: SOCIAL_CONVERSATIONS_KEY, value: JSON.stringify(trimmedConvs) },
-    }),
-    prisma.setting.upsert({
-      where: { key: SOCIAL_MESSAGES_KEY },
-      update: { value: JSON.stringify(trimmedMsgs) },
-      create: { key: SOCIAL_MESSAGES_KEY, value: JSON.stringify(trimmedMsgs) },
-    }),
-  ]);
 }
 
 /**
@@ -1114,7 +935,7 @@ export async function getSocialInboxDataAction() {
       success: true,
       conversations,
       messages,
-      config,
+      config: maskSocialChannelConfigSecrets(config),
     };
   } catch (err: any) {
     console.error('[getSocialInboxDataAction] Error:', err);
@@ -1701,7 +1522,8 @@ export async function sendSocialMessageAction(input: {
       else if (
         status !== 'delivered' &&
         config.whatsapp.mode === 'gateway_api' &&
-        config.whatsapp.gatewayUrl?.trim()
+        config.whatsapp.gatewayUrl?.trim() &&
+        isSafeExternalHttpUrl(config.whatsapp.gatewayUrl)
       ) {
         deliveryMethod = 'whatsapp_gateway_api';
         try {
@@ -1919,7 +1741,7 @@ export async function sendSocialMessageAction(input: {
 }
 
 /**
- * Record an incoming message from a webhook (LINE OA, WhatsApp Cloud API, Messenger, Instagram) or customer simulation
+ * Record an incoming message from customer test simulation in Social Inbox UI (staff-only)
  */
 export async function recordInboundSocialMessageAction(input: {
   channel: SocialChannel;
@@ -1932,185 +1754,11 @@ export async function recordInboundSocialMessageAction(input: {
   customerId?: string | null;
 }) {
   try {
-    const { conversations, messages } = await loadRawInboxStore();
-    const nowIso = new Date().toISOString();
-
-    let convIdx = conversations.findIndex(
-      (c) =>
-        c.channel === input.channel &&
-        (c.externalContactId === input.externalContactId ||
-          (input.customerId && c.customerId === input.customerId))
-    );
-
-    let conv: SocialConversation;
-    if (convIdx >= 0) {
-      conv = {
-        ...conversations[convIdx],
-        contactName: input.contactName || conversations[convIdx].contactName,
-        contactAvatar: input.contactAvatar || conversations[convIdx].contactAvatar,
-        customerId: input.customerId || conversations[convIdx].customerId,
-        lastMessageText: input.text,
-        lastMessageAt: nowIso,
-        lastMessageDirection: 'inbound',
-        unreadCount: (conversations[convIdx].unreadCount || 0) + 1,
-        status: 'open',
-        updatedAt: nowIso,
-      };
-      conversations.splice(convIdx, 1);
-    } else {
-      conv = {
-        id: `conv_${input.channel}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        channel: input.channel,
-        externalContactId: input.externalContactId,
-        contactName: input.contactName || input.externalContactId,
-        contactPhone: input.contactPhone || '',
-        contactAvatar: input.contactAvatar,
-        contactHandle: input.externalContactId,
-        customerId: input.customerId || null,
-        status: 'open',
-        unreadCount: 1,
-        lastMessageText: input.text,
-        lastMessageAt: nowIso,
-        lastMessageDirection: 'inbound',
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
-    }
-
-    const inboundMsg: SocialMessage = {
-      id: `msg_in_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      conversationId: conv.id,
-      channel: input.channel,
-      direction: 'inbound',
-      text: input.text,
-      attachments: input.attachments,
-      senderName: conv.contactName,
-      status: 'delivered',
-      createdAt: nowIso,
-    };
-
-    messages.push(inboundMsg);
-    conversations.unshift(conv);
-
-    await saveInboxStore(conversations, messages);
-
-    return {
-      success: true,
-      conversation: conv,
-      message: inboundMsg,
-      conversations,
-      messages,
-    };
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    return await recordInboundSocialMessageInternal(input);
   } catch (err: any) {
     console.error('[recordInboundSocialMessageAction] Error:', err);
-    return { success: false, error: err?.message || 'Failed to record inbound message' };
-  }
-}
-
-/**
- * Record an outbound message sent by system automation or external LINE OA notification (e.g., Delivery Proof via LINE)
- * so that all system-to-customer LINE messages & photos appear inside the Omnichannel Social Inbox thread.
- */
-export async function recordOutboundSocialMessageFromSystemAction(input: {
-  channel: SocialChannel;
-  externalContactId: string;
-  contactName?: string;
-  contactPhone?: string;
-  contactAvatar?: string;
-  customerId?: string | null;
-  text: string;
-  imageUrls?: string[];
-  senderName?: string;
-  messageId?: string;
-}) {
-  try {
-    const { conversations, messages } = await loadRawInboxStore();
-    const nowIso = new Date().toISOString();
-
-    let convIdx = conversations.findIndex(
-      (c) =>
-        c.channel === input.channel &&
-        (c.externalContactId === input.externalContactId ||
-          (input.customerId && c.customerId === input.customerId))
-    );
-
-    let conv: SocialConversation;
-    if (convIdx >= 0) {
-      conv = {
-        ...conversations[convIdx],
-        externalContactId: input.externalContactId || conversations[convIdx].externalContactId,
-        contactName: input.contactName || conversations[convIdx].contactName,
-        contactPhone: input.contactPhone || conversations[convIdx].contactPhone,
-        contactAvatar: input.contactAvatar || conversations[convIdx].contactAvatar,
-        customerId: input.customerId || conversations[convIdx].customerId,
-        lastMessageText: input.text,
-        lastMessageAt: nowIso,
-        lastMessageDirection: 'outbound',
-        unreadCount: 0,
-        status: 'open',
-        updatedAt: nowIso,
-      };
-      conversations.splice(convIdx, 1);
-    } else {
-      const convId =
-        input.channel === 'line'
-          ? `conv_line_${input.externalContactId.slice(-10)}`
-          : `conv_${input.channel}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      conv = {
-        id: convId,
-        channel: input.channel,
-        externalContactId: input.externalContactId,
-        contactName: input.contactName || input.externalContactId,
-        contactPhone: input.contactPhone || '',
-        contactAvatar: input.contactAvatar,
-        contactHandle: input.channel === 'line' ? '@thatlaundryshop' : input.externalContactId,
-        customerId: input.customerId || null,
-        status: 'open',
-        unreadCount: 0,
-        lastMessageText: input.text,
-        lastMessageAt: nowIso,
-        lastMessageDirection: 'outbound',
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
-    }
-
-    const attachments: SocialMessageAttachment[] = (input.imageUrls || []).map((url, idx) => ({
-      id: `att_sys_${Date.now()}_${idx}`,
-      type: 'image',
-      url,
-      name: `photo_${idx + 1}.jpg`,
-    }));
-
-    const msgId =
-      input.messageId || `msg_sys_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const existingMsgIdx = messages.findIndex((m) => m.id === msgId);
-
-    const outboundMsg: SocialMessage = {
-      id: msgId,
-      conversationId: conv.id,
-      channel: input.channel,
-      direction: 'outbound',
-      text: input.text,
-      attachments: attachments.length > 0 ? attachments : undefined,
-      senderName: input.senderName || 'LINE OA Bot',
-      status: 'delivered',
-      deliveryMethod: input.channel === 'line' ? 'line_api' : 'social_api',
-      createdAt: nowIso,
-    };
-
-    if (existingMsgIdx >= 0) {
-      messages[existingMsgIdx] = outboundMsg;
-    } else {
-      messages.push(outboundMsg);
-    }
-    conversations.unshift(conv);
-
-    await saveInboxStore(conversations, messages);
-    return { success: true, conversation: conv, message: outboundMsg };
-  } catch (err: any) {
-    console.warn('[recordOutboundSocialMessageFromSystemAction] Non-fatal error:', err);
-    return { success: false, error: err?.message };
+    return { success: false, error: err?.message || 'Unauthorized' };
   }
 }
 
@@ -2238,17 +1886,51 @@ export async function deleteSocialConversationAction(conversationId: string) {
  */
 export async function saveSocialChannelConfigAction(newConfig: SocialChannelConfig) {
   try {
-    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+
+    if (newConfig?.whatsapp?.gatewayUrl && !isSafeExternalHttpUrl(newConfig.whatsapp.gatewayUrl)) {
+      return {
+        success: false,
+        error: 'Invalid gateway URL: private, loopback, or internal network addresses are not permitted.',
+      };
+    }
+
+    const { config: existingConfig } = await loadRawInboxStore();
+    const resolveSecret = (incoming?: string | null, current?: string | null): string => {
+      const s = (incoming ?? '').trim();
+      if (!s || s.includes('••••')) return current || '';
+      return s;
+    };
+
+    const mergedConfig: SocialChannelConfig = {
+      ...newConfig,
+      whatsapp: {
+        ...newConfig.whatsapp,
+        accessToken: resolveSecret(newConfig.whatsapp?.accessToken, existingConfig.whatsapp?.accessToken),
+        gatewayApiKey: resolveSecret(newConfig.whatsapp?.gatewayApiKey, existingConfig.whatsapp?.gatewayApiKey),
+      },
+      facebook: {
+        ...newConfig.facebook,
+        pageAccessToken: resolveSecret(newConfig.facebook?.pageAccessToken, existingConfig.facebook?.pageAccessToken),
+      },
+      instagram: {
+        ...newConfig.instagram,
+        accessToken: resolveSecret(newConfig.instagram?.accessToken, existingConfig.instagram?.accessToken),
+      },
+      telegram: {
+        ...newConfig.telegram,
+        botToken: resolveSecret(newConfig.telegram?.botToken, existingConfig.telegram?.botToken),
+      },
+    };
 
     await prisma.setting.upsert({
       where: { key: SOCIAL_CONFIG_KEY },
-      update: { value: JSON.stringify(newConfig) },
-      create: { key: SOCIAL_CONFIG_KEY, value: JSON.stringify(newConfig) },
+      update: { value: JSON.stringify(mergedConfig) },
+      create: { key: SOCIAL_CONFIG_KEY, value: JSON.stringify(mergedConfig) },
     });
 
-    // Ensure Telegram webhook is cleared so getUpdates 3.5s live polling works without HTTP 409 Conflict
-    const botToken = newConfig?.telegram?.botToken?.trim();
-    if (newConfig?.telegram?.enabled && botToken) {
+    const botToken = mergedConfig?.telegram?.botToken?.trim();
+    if (mergedConfig?.telegram?.enabled && botToken) {
       fetch(`https://api.telegram.org/bot${botToken}/deleteWebhook`, {
         method: 'POST',
       }).catch(() => {});
@@ -2256,7 +1938,7 @@ export async function saveSocialChannelConfigAction(newConfig: SocialChannelConf
 
     return {
       success: true,
-      config: newConfig,
+      config: maskSocialChannelConfigSecrets(mergedConfig),
     };
   } catch (err: any) {
     console.error('[saveSocialChannelConfigAction] Error:', err);
@@ -2630,6 +2312,7 @@ export async function checkChannelsLiveStatusAction(): Promise<{
   success: boolean;
   statuses: Record<SocialChannel, SocialChannelLiveStatus>;
 }> {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   const nowIso = new Date().toISOString();
   const { config } = await loadRawInboxStore();
   const lineSettings = await getStoredLineOaSettings('that_laundry_shop');

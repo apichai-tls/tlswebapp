@@ -681,8 +681,44 @@ export async function serveSecureLocalUpload(
       return NextResponse.json({ error: authCheck.error }, { status: authCheck.status });
     }
   } else if (portalCustomer) {
-    if (entityKind === 'rider' || entityKind === 'task') {
+    if (entityKind === 'rider' || entityKind === 'task' || entityKind === 'other') {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    if (entityKind === 'job') {
+      const normalizedJobRef = normalizeJobIdRef(pathEntityId);
+      const ownedJob = await prisma.job.findFirst({
+        where: {
+          customerId: portalCustomer.customerId,
+          OR: [
+            ...(pathEntityId ? [{ id: pathEntityId }] : []),
+            ...(normalizedJobRef && normalizedJobRef !== pathEntityId ? [{ id: normalizedJobRef }] : []),
+            { proofImageUrl: { contains: fileBaseName } },
+            { pickupProofImageUrl: { contains: fileBaseName } },
+            { deliveryProofImageUrl: { contains: fileBaseName } },
+            { bagImageUrl: { contains: fileBaseName } },
+            { billImageUrl: { contains: fileBaseName } },
+          ],
+        },
+        select: { id: true },
+      });
+      if (!ownedJob) {
+        return NextResponse.json({ error: 'Forbidden: Media does not belong to your account' }, { status: 403 });
+      }
+    } else if (entityKind === 'customer') {
+      if (pathEntityId && pathEntityId === portalCustomer.customerId) {
+        // Direct match
+      } else {
+        const ownedWalletSlip = await prisma.walletTransaction.findFirst({
+          where: {
+            customerId: portalCustomer.customerId,
+            slipImageUrl: { contains: fileBaseName },
+          },
+          select: { id: true },
+        });
+        if (!ownedWalletSlip) {
+          return NextResponse.json({ error: 'Forbidden: Media does not belong to your account' }, { status: 403 });
+        }
+      }
     }
   }
 

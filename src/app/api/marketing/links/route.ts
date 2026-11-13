@@ -139,17 +139,11 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const { searchParams } = new URL(req.url);
-    const forceReset = searchParams.get("reset") === "true";
+    const setting = await prisma.setting.findUnique({
+      where: { key: SETTING_KEY },
+    });
 
-    let setting = null;
-    if (!forceReset) {
-      setting = await prisma.setting.findUnique({
-        where: { key: SETTING_KEY },
-      });
-    }
-
-    if (forceReset || !setting || !setting.value) {
+    if (!setting || !setting.value) {
       const defaultLinks = getDefaultLinks();
       await prisma.setting.upsert({
         where: { key: SETTING_KEY },

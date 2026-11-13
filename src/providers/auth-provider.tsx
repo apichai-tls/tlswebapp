@@ -43,6 +43,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     localStorage.removeItem('lastLoginDate');
     localStorage.removeItem('authBuildTime');
     localStorage.removeItem('lastActivityAt');
+    localStorage.removeItem('rememberedPassword');
     try {
       for (let i = localStorage.length - 1; i >= 0; i--) {
         const k = localStorage.key(i);
@@ -287,6 +288,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const login = async (email: string, password?: string) => {
     let response: { success: boolean; user?: any; error?: string } | null = null;
+    const versionPromise = fetch('/api/version', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+
     try {
       const apiRes = await fetch('/api/auth/login', {
         method: 'POST',
@@ -303,20 +308,23 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
     const userData = response.user;
 
-    // Fetch latest server buildTime on login so authBuildTime is always accurate
+    // Resolve server buildTime fetched in parallel (non-blocking if slow)
     let buildTimeToSave = CURRENT_BUILD_TIME;
-    try {
-      const verRes = await fetch('/api/version', { cache: 'no-store' });
-      if (verRes.ok) {
-        const verData = await verRes.json();
-        if (verData?.buildTime) buildTimeToSave = verData.buildTime;
-      }
-    } catch {
-      // Fallback to CURRENT_BUILD_TIME
+    const verData = await Promise.race([
+      versionPromise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+    ]);
+    if (verData?.buildTime) {
+      buildTimeToSave = verData.buildTime;
+    } else {
+      versionPromise.then((d) => {
+        if (d?.buildTime) localStorage.setItem('authBuildTime', d.buildTime);
+      });
     }
 
     isLoggingOutRef.current = false;
     setUser(userData);
+    localStorage.removeItem('rememberedPassword');
     localStorage.setItem('authUser', JSON.stringify(userData));
     localStorage.setItem('lastLoginDate', new Date().toDateString());
     localStorage.setItem('lastActivityAt', String(Date.now()));

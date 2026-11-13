@@ -30,7 +30,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "origins and destinations are required" }, { status: 400 });
   }
 
-  let apiKey = providedKey && providedKey !== "YOUR_API_KEY_HERE" ? providedKey : "";
+  const isAdmin = user?.role === "admin" || user?.role === "superadmin";
+  let apiKey = isAdmin && providedKey && providedKey !== "YOUR_API_KEY_HERE" ? providedKey : "";
 
   if (!apiKey) {
     try {

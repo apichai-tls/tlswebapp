@@ -147,8 +147,14 @@ export function formatJobRecord(j: any) {
       ? j.laundryTypes.split(',')
       : [];
 
+  const {
+    itemsJson: _itemsJson,
+    legsJson: _legsJson,
+    ...rest
+  } = j;
+
   return {
-    ...j,
+    ...rest,
     laundryTypes,
     items,
     legs,
@@ -329,6 +335,231 @@ export async function getOrFetchJobById(jobId: string, minRevision?: number): Pr
 
   dbCache.inFlightJobFetches.set(inflightKey, fetchPromise);
   return fetchPromise;
+}
+
+export const EXCLUDED_DB_POLL_SETTING_KEYS = [
+  'auth_session_revocations',
+  'rider_daily_reset_date',
+  'whatsapp_baileys_auth_backup',
+  'lineOaContacts',
+  'TLS_SOCIAL_MESSAGES_V1',
+  'TLS_SOCIAL_CONVERSATIONS_V1',
+  'TLS_SOCIAL_CHANNEL_CONFIG_V1',
+  'TLS_SOCIAL_CONFIG_V1',
+  'TLS_SUPPLY_CATALOG_V1',
+  'TLS_SUPPLY_ORDERS_V1',
+  'TLS_SUPPLY_CATEGORIES_V1',
+  'TLS_SUPPLY_PERMISSIONS_V1',
+  'TLS_SUPPLY_BRANCH_STOCK_V1',
+  'TLS_SUPPLY_STOCK_MOVEMENTS_V1',
+  'marketing_tracking_links',
+  'marketing_click_events',
+  'marketing_conversions',
+  'recurring_orders_schedules',
+  'coupon_templates',
+  'promotion_campaigns',
+  'pettyCashCategories',
+  'pettyCashHolderLimits',
+  'pettyCashVehiclePlates',
+  'wiseApiToken',
+  'lineChannelAccessToken',
+  'lineChannelSecret',
+  'googleMapsApiKey',
+] as const;
+
+const EXCLUDED_DB_POLL_SETTING_SET = new Set<string>(EXCLUDED_DB_POLL_SETTING_KEYS);
+
+const SAFE_UI_SETTING_EXACT_KEYS = new Set<string>([
+  'enableGoogleApi',
+  'riderCommissionPerKm',
+  'enablePromptPay',
+  'promptpayId_global',
+  'promptpayName_global',
+  'receiptPaperSize',
+  'language',
+  'vatType',
+  'vatRate',
+  'sessionTimeoutMinutes',
+  'enableCustomerPortal',
+  'enableWise',
+  'wiseTag',
+  'wiseEmail',
+  'wiseAccountName',
+  'wiseQrUrl',
+  'wiseBankDetails',
+  'wiseInstructions',
+  'wiseProfileId',
+  'wiseConnectedName',
+  'enableLineOa',
+  'lineBasicId',
+  'lineBotName',
+  'lineAutoSendDeliveryPhoto',
+  'autoSendDeliveryPhoto',
+  'cashDrawerAutoOpenOnPay',
+  'cashDrawerAutoOpenOnPrint',
+  'cashDrawerShowManualButton',
+  'posAutoApplyVoucher',
+  'paymentChannels',
+  'expressRate1',
+  'expressRate2',
+  'expressRate3',
+  'shopOpenTime',
+  'shopCloseTime',
+]);
+
+const RIDER_ALLOWED_SETTING_KEYS = new Set<string>([
+  'enableGoogleApi',
+  'riderCommissionPerKm',
+  'language',
+  'sessionTimeoutMinutes',
+  'shopOpenTime',
+  'shopCloseTime',
+]);
+
+export function isSafeUiPollSettingKey(key: string): boolean {
+  if (!key || EXCLUDED_DB_POLL_SETTING_SET.has(key)) return false;
+  if (key.startsWith('rider_gps_at:')) return false;
+  if (key.startsWith('TLS_')) return false;
+  if (SAFE_UI_SETTING_EXACT_KEYS.has(key)) return true;
+  if (key.startsWith('promptpayId_') || key.startsWith('promptpayName_')) return true;
+  return false;
+}
+
+export function isRiderAllowedSettingKey(key: string): boolean {
+  return RIDER_ALLOWED_SETTING_KEYS.has(key);
+}
+
+function recomputeWarmPayloadEtag() {
+  if (!dbCache.payload) return;
+  const maxJobUpdated = (dbCache.payload.jobs || []).reduce((max: number, item: any) => {
+    const t = item?.updatedAt ? new Date(item.updatedAt).getTime() : 0;
+    return t > max ? t : max;
+  }, 0);
+  const maxCustUpdated = (dbCache.payload.customers || []).reduce((max: number, c: any) => {
+    const t = c?.updatedAt ? new Date(c.updatedAt).getTime() : 0;
+    return t > max ? t : max;
+  }, 0);
+  dbCache.etag = computeDeterministicEtag({
+    jobsCount: dbCache.payload.jobs?.length || 0,
+    maxJobUpdated,
+    customersCount: dbCache.payload.customers?.length || 0,
+    maxCustomerUpdated: maxCustUpdated,
+    openShiftsCount: dbCache.payload.openShifts?.length || 0,
+  }) + `-v${dbCache.version}`;
+}
+
+/**
+ * Patch in-memory customer caches in O(1)/O(N) memory instead of forcing a full
+ * 3,461-customer + addresses SQL reload on every customer/wallet save.
+ */
+export function primeCustomerCache(rawCustomer: any) {
+  if (!rawCustomer || !rawCustomer.id) return null;
+  const sanitized = sanitizeCustomerRecord(rawCustomer);
+  dbCache.version++;
+
+  if (Array.isArray(dbCache.customers)) {
+    const idx = dbCache.customers.findIndex((c: any) => c.id === rawCustomer.id);
+    if (idx >= 0) {
+      const mergedRaw = {
+        ...dbCache.customers[idx],
+        ...rawCustomer,
+        addresses: rawCustomer.addresses ?? dbCache.customers[idx].addresses ?? [],
+      };
+      const nextRaw = [...dbCache.customers];
+      nextRaw[idx] = mergedRaw;
+      dbCache.customers = nextRaw;
+    } else {
+      dbCache.customers = [
+        { ...rawCustomer, addresses: rawCustomer.addresses ?? [] },
+        ...dbCache.customers,
+      ];
+    }
+  }
+
+  if (dbCache.payload && Array.isArray(dbCache.payload.customers)) {
+    const idx = dbCache.payload.customers.findIndex((c: any) => c.id === sanitized.id);
+    if (idx >= 0) {
+      const existing = dbCache.payload.customers[idx];
+      const mergedSanitized = sanitizeCustomerRecord({
+        ...existing,
+        ...sanitized,
+        addresses: sanitized.addresses ?? existing.addresses ?? [],
+      });
+      const nextCustomers = [...dbCache.payload.customers];
+      nextCustomers[idx] = mergedSanitized;
+      dbCache.payload = { ...dbCache.payload, customers: nextCustomers };
+    } else {
+      dbCache.payload = {
+        ...dbCache.payload,
+        customers: [
+          { ...sanitized, addresses: sanitized.addresses ?? [] },
+          ...dbCache.payload.customers,
+        ],
+      };
+    }
+    recomputeWarmPayloadEtag();
+  } else {
+    dbCache.etag = null;
+  }
+
+  return sanitized;
+}
+
+export function removeCustomerFromCache(customerId: string) {
+  if (!customerId) return;
+  dbCache.version++;
+  if (Array.isArray(dbCache.customers)) {
+    dbCache.customers = dbCache.customers.filter((c: any) => c.id !== customerId);
+  }
+  if (dbCache.payload && Array.isArray(dbCache.payload.customers)) {
+    dbCache.payload = {
+      ...dbCache.payload,
+      customers: dbCache.payload.customers.filter((c: any) => c.id !== customerId),
+    };
+    recomputeWarmPayloadEtag();
+  } else {
+    dbCache.etag = null;
+  }
+}
+
+export function patchSettingsInCache(entries: Record<string, string>) {
+  if (!entries || typeof entries !== 'object') return;
+  dbCache.version++;
+
+  if (dbCache.masterData && Array.isArray(dbCache.masterData.settingsRaw)) {
+    const map = new Map<string, any>(
+      dbCache.masterData.settingsRaw.map((s: any) => [s.key, s])
+    );
+    for (const [k, v] of Object.entries(entries)) {
+      if (isSafeUiPollSettingKey(k)) {
+        map.set(k, { key: k, value: String(v) });
+      } else {
+        map.delete(k);
+      }
+    }
+    dbCache.masterData = {
+      ...dbCache.masterData,
+      settingsRaw: Array.from(map.values()),
+    };
+  }
+
+  if (dbCache.payload && dbCache.payload.settings) {
+    const nextSettings = { ...dbCache.payload.settings };
+    let changedUiSetting = false;
+    for (const [k, v] of Object.entries(entries)) {
+      if (isSafeUiPollSettingKey(k)) {
+        nextSettings[k] = String(v);
+        changedUiSetting = true;
+      } else if (k in nextSettings) {
+        delete nextSettings[k];
+        changedUiSetting = true;
+      }
+    }
+    if (changedUiSetting) {
+      dbCache.payload = { ...dbCache.payload, settings: nextSettings };
+      recomputeWarmPayloadEtag();
+    }
+  }
 }
 
 export type CacheInvalidateScope = 'jobs' | 'customers' | 'master' | 'riders' | 'all';

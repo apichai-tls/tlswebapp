@@ -1,15 +1,33 @@
 'use server';
 
+import { after } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { listFilesForJob } from '@/lib/gcs';
 import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone, findDuplicateCustomerByPhone, computeMembershipExpiryDate } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
 import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel, isItemMatchingInstantCampaign } from '@/lib/promotions';
-import { invalidateDbCache, sanitizeCustomerRecord } from '@/lib/db-cache';
+import { invalidateDbCache, sanitizeCustomerRecord, primeCustomerCache, removeCustomerFromCache, patchSettingsInCache, primeJobCache } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
-import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, canAccessCustomerRecords, canAccessCustomerOrLinkedJob, isAdminOrSuperadmin } from '@/lib/server-auth';
+import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, canAccessCustomerRecords, canAccessCustomerOrLinkedJob, canAccessFinancialData, isAdminOrSuperadmin } from '@/lib/server-auth';
 import { ensureDailyRiderOfflineReset, recordRiderGpsTimestamp } from '@/lib/rider-presence'; import { resolveBeamSettlementDate, isBeamPaymentChannel } from '@/lib/beam';
+
+function schedulePostCommitTask(task: () => Promise<void>) {
+  try {
+    after(() => {
+      task().catch((err) => {
+        console.warn('[schedulePostCommitTask] Background task warning:', err?.message || err);
+      });
+    });
+  } catch {
+    // Fallback when invoked outside a Next.js Server Action / Route Handler request scope
+    Promise.resolve()
+      .then(task)
+      .catch((err) => {
+        console.warn('[schedulePostCommitTask] Fallback task warning:', err?.message || err);
+      });
+  }
+}
 
 // CUSTOMERS
 function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string; baseStartingNum: number } {
@@ -252,8 +270,17 @@ export async function addCustomerAction(data: any): Promise<{ success: boolean; 
       console.error("Failed to write ActivityLog on customer create:", err.message);
     }
 
-    invalidateDbCache('customers');
-    return { success: true, customer: sanitizeCustomerRecord(c) };
+    const sanitizedCreated = primeCustomerCache(c) || sanitizeCustomerRecord(c);
+    await publishOrderEvent({
+      type: 'customer.updated',
+      customerId: c.id,
+      customer: c,
+      updatedAt: c.updatedAt || new Date(),
+      action: 'customer_create',
+      actorId: data.actorId,
+      actorName: data.actorName,
+    });
+    return { success: true, customer: sanitizedCreated };
   } catch (err: any) {
     console.error("[addCustomerAction Error]:", err);
     if (err?.code === 'P2002') {
@@ -553,6 +580,9 @@ export async function updateCustomerAction(
       updates.actorId = authUser.id;
       updates.actorName = authUser.name || authUser.email;
     }
+    // Never permit direct passwordHash injection through generic customer updates
+    delete updates.passwordHash;
+    delete updates.forcePasswordReset;
 
     if (updates.creditBalanceDelta !== undefined) {
       const delta = Number(updates.creditBalanceDelta);
@@ -1034,132 +1064,157 @@ export async function updateCustomerAction(
         throw dbErr;
       }
 
-      // 7. Side-effects after commit: Sync room number to active in-flight jobs if roomNo/secondaryAddress actually changed
       const cleanNewRoom = (data.roomNo || (data.secondaryAddress ? data.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim();
-      if (cleanNewRoom && (changes.roomNo !== undefined || changes.secondaryAddress !== undefined)) {
-        try {
-          const activeJobs = await prisma.job.findMany({
-            where: {
-              customerId: id,
-              status: { in: ['tba', 'pending', 'pickup', 'billing', 'delivery'] },
-            },
-            select: {
-              id: true,
-              pickupLocation: true,
-              dropoffLocation: true,
-            },
-          });
-
-          if (activeJobs.length > 0) {
-            const shops = await prisma.shopLocation.findMany({
-              select: { name: true, address: true },
-            });
-
-            for (const aj of activeJobs) {
-              let jobNeedsUpdate = false;
-              const jobDataUpdate: { pickupLocation?: string; dropoffLocation?: string } = {};
-
-              const isShopDropoff = shops.some(s => s.address === aj.dropoffLocation || s.name === aj.dropoffLocation) || (aj.dropoffLocation && aj.dropoffLocation.includes("POS Counter"));
-              if (!isShopDropoff && aj.dropoffLocation && !/\b(room|ห้อง|#)\s*\w+/i.test(aj.dropoffLocation) && !/\(Room\s*.*?\)/i.test(aj.dropoffLocation)) {
-                jobDataUpdate.dropoffLocation = `${aj.dropoffLocation} (Room ${cleanNewRoom})`;
-                jobNeedsUpdate = true;
-              }
-
-              const isShopPickup = shops.some(s => s.address === aj.pickupLocation || s.name === aj.pickupLocation) || (aj.pickupLocation && aj.pickupLocation.includes("POS Counter"));
-              if (!isShopPickup && aj.pickupLocation && !/\b(room|ห้อง|#)\s*\w+/i.test(aj.pickupLocation) && !/\(Room\s*.*?\)/i.test(aj.pickupLocation)) {
-                jobDataUpdate.pickupLocation = `${aj.pickupLocation} (Room ${cleanNewRoom})`;
-                jobNeedsUpdate = true;
-              }
-
-              if (jobNeedsUpdate) {
-                const syncedJob = await prisma.job.update({
-                  where: { id: aj.id },
-                  data: jobDataUpdate,
-                });
-                await publishOrderEvent({
-                  type: 'job.updated',
-                  job: syncedJob,
-                  action: 'customer_room_sync',
-                  changedFields: Object.keys(jobDataUpdate),
-                  actorId: updates.actorId,
-                  actorName: updates.actorName,
-                });
-                console.log(`[Customer Room Update] Synced Room ${cleanNewRoom} to active Job ${aj.id}:`, jobDataUpdate);
-              }
-            }
-          }
-        } catch (jobSyncErr) {
-          console.error("[Customer Room Update] Failed to sync room to active jobs:", jobSyncErr);
-        }
-      }
-
-      // 8. CRM Remark Sync Logic: only append note to active jobs when remark actually changed
-      if (changes.remark !== undefined) {
-        const activeJobs = await prisma.job.findMany({
-          where: {
-            customerId: id,
-            status: { in: ['pending', 'accepted', 'pickup', 'active', 'delivery', 'picked_up'] },
-          },
-        });
-
-        for (const job of activeJobs) {
-          let notes: any[] = [];
-          let payments: any[] = [];
-          let isStructured = false;
-
-          if (job.adminNotesJson) {
-            try {
-              const parsed = JSON.parse(job.adminNotesJson);
-              if (parsed && typeof parsed === 'object') {
-                if (Array.isArray(parsed.notes) || Array.isArray(parsed.payments)) {
-                  isStructured = true;
-                  notes = Array.isArray(parsed.notes) ? [...parsed.notes] : [];
-                  payments = Array.isArray(parsed.payments) ? [...parsed.payments] : [];
-                } else if (Array.isArray(parsed)) {
-                  notes = [...parsed];
-                }
-              }
-            } catch {
-              notes = [];
-            }
-          }
-
-          notes.push({
-            userId: 'system',
-            userName: 'System (CRM)',
-            text: `CRM Remark: ${updates.remark ? updates.remark : '(Cleared)'}`,
-            timestamp: new Date().toISOString(),
-          });
-
-          const updatedJson = (isStructured || payments.length > 0)
-            ? JSON.stringify({ payments, notes })
-            : JSON.stringify(notes);
-
-          const syncedJob = await prisma.job.update({
-            where: { id: job.id },
-            data: { adminNotesJson: updatedJson },
-          });
-          await publishOrderEvent({
-            type: 'job.updated',
-            job: syncedJob,
-            action: 'customer_remark_sync',
-            changedFields: ['adminNotesJson'],
-            actorId: updates.actorId,
-            actorName: updates.actorName,
-          });
-        }
-      }
-
-      invalidateDbCache('customers');
+      const sanitizedUpdated = primeCustomerCache(updatedCustomer) || sanitizeCustomerRecord(updatedCustomer);
       await publishOrderEvent({
         type: 'customer.updated',
         customerId: id,
+        customer: updatedCustomer,
         updatedAt: updatedCustomer.updatedAt || new Date(),
         action: 'customer_update',
         actorId: updates.actorId,
         actorName: updates.actorName,
       });
-      return { success: true, customer: sanitizeCustomerRecord(updatedCustomer) };
+
+      // Run active-job room & CRM remark propagation asynchronously after returning saved customer
+      if (
+        (cleanNewRoom && (changes.roomNo !== undefined || changes.secondaryAddress !== undefined)) ||
+        changes.remark !== undefined
+      ) {
+        const actorIdCopy = updates.actorId;
+        const actorNameCopy = updates.actorName;
+        const remarkCopy = updates.remark;
+        const hasRoomChange = Boolean(cleanNewRoom && (changes.roomNo !== undefined || changes.secondaryAddress !== undefined));
+        const hasRemarkChange = changes.remark !== undefined;
+
+        schedulePostCommitTask(async () => {
+          if (hasRoomChange) {
+            try {
+              const [activeJobs, shops] = await Promise.all([
+                prisma.job.findMany({
+                  where: {
+                    customerId: id,
+                    status: { in: ['tba', 'pending', 'pickup', 'billing', 'delivery'] },
+                  },
+                  select: { id: true, pickupLocation: true, dropoffLocation: true },
+                }),
+                prisma.shopLocation.findMany({ select: { name: true, address: true } }),
+              ]);
+
+              await Promise.all(
+                activeJobs.map(async (aj) => {
+                  const jobDataUpdate: { pickupLocation?: string; dropoffLocation?: string } = {};
+                  const isShopDropoff =
+                    shops.some((s) => s.address === aj.dropoffLocation || s.name === aj.dropoffLocation) ||
+                    Boolean(aj.dropoffLocation && aj.dropoffLocation.includes('POS Counter'));
+                  if (
+                    !isShopDropoff &&
+                    aj.dropoffLocation &&
+                    !/\b(room|ห้อง|#)\s*\w+/i.test(aj.dropoffLocation) &&
+                    !/\(Room\s*.*?\)/i.test(aj.dropoffLocation)
+                  ) {
+                    jobDataUpdate.dropoffLocation = `${aj.dropoffLocation} (Room ${cleanNewRoom})`;
+                  }
+
+                  const isShopPickup =
+                    shops.some((s) => s.address === aj.pickupLocation || s.name === aj.pickupLocation) ||
+                    Boolean(aj.pickupLocation && aj.pickupLocation.includes('POS Counter'));
+                  if (
+                    !isShopPickup &&
+                    aj.pickupLocation &&
+                    !/\b(room|ห้อง|#)\s*\w+/i.test(aj.pickupLocation) &&
+                    !/\(Room\s*.*?\)/i.test(aj.pickupLocation)
+                  ) {
+                    jobDataUpdate.pickupLocation = `${aj.pickupLocation} (Room ${cleanNewRoom})`;
+                  }
+
+                  if (Object.keys(jobDataUpdate).length > 0) {
+                    const syncedJob = await prisma.job.update({
+                      where: { id: aj.id },
+                      data: jobDataUpdate,
+                    });
+                    await publishOrderEvent({
+                      type: 'job.updated',
+                      job: syncedJob,
+                      action: 'customer_room_sync',
+                      changedFields: Object.keys(jobDataUpdate),
+                      actorId: actorIdCopy,
+                      actorName: actorNameCopy,
+                    });
+                  }
+                })
+              );
+            } catch (jobSyncErr) {
+              console.error('[Customer Room Update] Failed to sync room to active jobs:', jobSyncErr);
+            }
+          }
+
+          if (hasRemarkChange) {
+            try {
+              const activeJobs = await prisma.job.findMany({
+                where: {
+                  customerId: id,
+                  status: { in: ['pending', 'accepted', 'pickup', 'active', 'delivery', 'picked_up'] },
+                },
+              });
+
+              await Promise.all(
+                activeJobs.map(async (job) => {
+                  let notes: any[] = [];
+                  let payments: any[] = [];
+                  let isStructured = false;
+
+                  if (job.adminNotesJson) {
+                    try {
+                      const parsed = JSON.parse(job.adminNotesJson);
+                      if (parsed && typeof parsed === 'object') {
+                        if (Array.isArray(parsed.notes) || Array.isArray(parsed.payments)) {
+                          isStructured = true;
+                          notes = Array.isArray(parsed.notes) ? [...parsed.notes] : [];
+                          payments = Array.isArray(parsed.payments) ? [...parsed.payments] : [];
+                        } else if (Array.isArray(parsed)) {
+                          notes = [...parsed];
+                        }
+                      }
+                    } catch {
+                      notes = [];
+                    }
+                  }
+
+                  notes.push({
+                    userId: 'system',
+                    userName: 'System (CRM)',
+                    text: `CRM Remark: ${remarkCopy ? remarkCopy : '(Cleared)'}`,
+                    timestamp: new Date().toISOString(),
+                  });
+
+                  const updatedJson =
+                    isStructured || payments.length > 0
+                      ? JSON.stringify({ payments, notes })
+                      : JSON.stringify(notes);
+
+                  const syncedJob = await prisma.job.update({
+                    where: { id: job.id },
+                    data: { adminNotesJson: updatedJson },
+                  });
+                  await publishOrderEvent({
+                    type: 'job.updated',
+                    job: syncedJob,
+                    action: 'customer_remark_sync',
+                    changedFields: ['adminNotesJson'],
+                    actorId: actorIdCopy,
+                    actorName: actorNameCopy,
+                  });
+                })
+              );
+            } catch (remErr) {
+              console.error('[Customer Remark Update] Failed to sync remark to active jobs:', remErr);
+            }
+          }
+        });
+      }
+
+      return { success: true, customer: sanitizedUpdated };
     });
   } catch (err: any) {
     console.error("[updateCustomerAction Error]:", err);
@@ -1209,7 +1264,7 @@ export async function deleteCustomerAction(id: string, actorId?: string, actorNa
   } catch (err: any) {
     console.error("Failed to write ActivityLog on customer delete:", err.message);
   }
-  invalidateDbCache('customers');
+  removeCustomerFromCache(id);
   return deleted;
 }
 
@@ -1625,7 +1680,11 @@ export async function addCustomerAddressAction(customerId: string, addressData: 
     return addr;
   });
 
-  invalidateDbCache('customers');
+  const freshCustAfterCreate = await prisma.customer.findUnique({
+    where: { id: customerId },
+    include: { addresses: { orderBy: { isPrimary: 'desc' } } },
+  });
+  if (freshCustAfterCreate) primeCustomerCache(freshCustAfterCreate);
   return created;
 }
 
@@ -1654,7 +1713,11 @@ export async function deleteCustomerAddressAction(addressId: string, customerId:
   await prisma.customerAddress.delete({
     where: { id: addressId }
   });
-  invalidateDbCache('customers');
+  const freshCustAfterDelete = await prisma.customer.findUnique({
+    where: { id: address.customerId },
+    include: { addresses: { orderBy: { isPrimary: 'desc' } } },
+  });
+  if (freshCustAfterDelete) primeCustomerCache(freshCustAfterDelete);
   return { success: true };
 }
 
@@ -1706,7 +1769,11 @@ export async function setPrimaryCustomerAddressAction(customerId: string, addres
     });
     return addr;
   });
-  invalidateDbCache('customers');
+  const freshCustAfterPrimary = await prisma.customer.findUnique({
+    where: { id: customerId },
+    include: { addresses: { orderBy: { isPrimary: 'desc' } } },
+  });
+  if (freshCustAfterPrimary) primeCustomerCache(freshCustAfterPrimary);
   return updated;
 }
 
@@ -3697,131 +3764,132 @@ async function updateJobActionInternal(id: string, updates: any) {
     existingJob?.pickupRiderId || existingJob?.deliveryRiderId ||
     updatedJob.isShopPaid || existingJob?.isShopPaid
   );
-  if (hasCommissionChange && hasAnyRiderOrPayment) {
-    try {
-      await syncRiderCommissionsForJob(id, updatedJob, true);
-    } catch (commErr: any) {
-      console.warn(`[updateJobAction] syncRiderCommissionsForJob failed for ${id}:`, commErr?.message || commErr);
-      followUpWarnings.push("syncRiderCommissions");
-    }
-  }
+  // Prime local cache immediately in 0ms
+  primeJobCache(updatedJob);
 
-  try {
-  // If job is cancelled, restore any CustomerVoucher that was marked USED
-  if (updates.status === 'cancel') {
-    try {
-      const promoMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
-      const pCode = promoMatch ? promoMatch[1].trim().toUpperCase() : null;
-      await prisma.customerVoucher.updateMany({
-        where: {
-          OR: [
-            { usedJobId: id, status: "USED" },
-            ...(pCode ? [{ code: { equals: pCode, mode: "insensitive" as const }, status: "USED", OR: [{ usedJobId: id }, { usedJobId: null }] }] : []),
-          ],
-        },
-        data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
-      });
-      console.log(`[CustomerVoucher] Restored voucher to ACTIVE on cancel for job ${id}`);
+  // Offload non-blocking commission ledger & voucher sync to post-response background execution
+  if ((hasCommissionChange && hasAnyRiderOrPayment) || updates.status === 'cancel' || updates.remark !== undefined) {
+    const jobSnapshot = updatedJob;
+    const existingSnapshot = existingJob;
+    const updatesSnapshot = { ...updates };
+    const effectiveChangesSnapshot = { ...effectiveChanges };
 
-      // VOID unspent reward vouchers that were issued because of this cancelled job
-      const voidedRewardVouchers = await prisma.customerVoucher.updateMany({
-        where: {
-          sourceJobId: id,
-          status: "ACTIVE",
-        },
-        data: {
-          status: "VOID",
-        },
-      });
-      if (voidedRewardVouchers.count > 0) {
-        console.log(`[CustomerVoucher] Voided ${voidedRewardVouchers.count} unused reward voucher(s) issued from cancelled job ${id}`);
-        await prisma.activityLog.create({
-          data: {
-            entityId: existingJob?.customerId || id,
-            entityType: "customer",
-            action: "COUPON_VOID_ON_CANCEL",
-            details: JSON.stringify({
-              sourceJobId: id,
-              voidedCount: voidedRewardVouchers.count,
-              reason: `Job ${id} was cancelled`,
-            }),
-            userId: updates.actorId || null,
-            userName: updates.actorName || null,
-          },
-        });
-      }
-    } catch (err) {
-      console.warn("[CustomerVoucher] Void/restore on cancel failed:", err);
-    }
-  } else if (updates.remark !== undefined) {
-    // If job is NOT cancelled and remark was updated, sync CustomerVoucher status (restore removed voucher or redeem new voucher)
-    try {
-      const oldMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
-      const oldCode = oldMatch ? oldMatch[1].trim().toUpperCase() : null;
-      const newMatch = updatedJob.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((?:ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\)|\s*\(-\u0E3F?([\d.]+)\))?/i);
-      const newCode = newMatch ? newMatch[1].trim().toUpperCase() : null;
-      const parsedPromoDiscount = newMatch ? parseFloat(newMatch[2] || newMatch[3] || "0") : 0;
-
-      if (oldCode && oldCode !== newCode) {
-        await prisma.customerVoucher.updateMany({
-          where: {
-            OR: [
-              { usedJobId: id, status: "USED" },
-              { code: { equals: oldCode, mode: "insensitive" }, usedJobId: id, status: "USED" },
-            ],
-          },
-          data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
-        });
-        console.log(`[CustomerVoucher] Restored removed voucher ${oldCode} to ACTIVE on job update ${id}`);
+    schedulePostCommitTask(async () => {
+      if (hasCommissionChange && hasAnyRiderOrPayment) {
+        try {
+          await syncRiderCommissionsForJob(id, jobSnapshot, true);
+        } catch (commErr: any) {
+          console.warn(`[updateJobAction] syncRiderCommissionsForJob failed for ${id}:`, commErr?.message || commErr);
+        }
       }
 
-      const justBecameShopPaidForPromo = updatedJob.isShopPaid === true && existingJob?.isShopPaid !== true;
-      if (newCode && (newCode !== oldCode || effectiveChanges.remark !== undefined || justBecameShopPaidForPromo)) {
-        const localCoupon = await prisma.customerVoucher.findFirst({
-          where: { code: { equals: newCode, mode: "insensitive" } },
-        });
-        const wasPaidLocked = Boolean(existingJob && ((existingJob.source === 'pos' || existingJob.type === 'in_store') ? (existingJob.isPaid || existingJob.isShopPaid) : existingJob.isShopPaid) && updates.isShopPaid !== false && !(updates.isShopPaid === true && !existingJob.isShopPaid));
-        if (localCoupon && (!wasPaidLocked || newCode === oldCode) && localCoupon.sourceJobId !== id && (localCoupon.status === "ACTIVE" || (localCoupon.status === "USED" && localCoupon.usedJobId === id))) {
-          const usedDiscount = parsedPromoDiscount > 0 ? parsedPromoDiscount : localCoupon.discountValue;
-          const wasActive = localCoupon.status === "ACTIVE";
-          const claimRes = await prisma.customerVoucher.updateMany({
+      if (updatesSnapshot.status === 'cancel') {
+        try {
+          const promoMatch = existingSnapshot?.remark?.match(/Promo:\s*([^\s(|]+)/i);
+          const pCode = promoMatch ? promoMatch[1].trim().toUpperCase() : null;
+          await prisma.customerVoucher.updateMany({
             where: {
-              id: localCoupon.id,
-              OR: [{ status: "ACTIVE" }, { status: "USED", usedJobId: id }],
+              OR: [
+                { usedJobId: id, status: "USED" },
+                ...(pCode ? [{ code: { equals: pCode, mode: "insensitive" as const }, status: "USED", OR: [{ usedJobId: id }, { usedJobId: null }] }] : []),
+              ],
+            },
+            data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
+          });
+
+          const voidedRewardVouchers = await prisma.customerVoucher.updateMany({
+            where: {
+              sourceJobId: id,
+              status: "ACTIVE",
             },
             data: {
-              status: "USED",
-              usedAt: localCoupon.usedAt || new Date(),
-              usedJobId: id,
-              discountAmountUsed: usedDiscount,
+              status: "VOID",
             },
           });
-          if (wasActive && claimRes.count > 0) {
+          if (voidedRewardVouchers.count > 0) {
             await prisma.activityLog.create({
               data: {
-                entityId: localCoupon.customerId,
+                entityId: existingSnapshot?.customerId || id,
                 entityType: "customer",
-                action: "COUPON_USED",
+                action: "COUPON_VOID_ON_CANCEL",
                 details: JSON.stringify({
-                  couponId: localCoupon.id,
-                  code: localCoupon.code,
-                  usedJobId: id,
-                  discountAmountUsed: usedDiscount,
+                  sourceJobId: id,
+                  voidedCount: voidedRewardVouchers.count,
+                  reason: `Job ${id} was cancelled`,
                 }),
-                userId: updates.actorId || null,
-                userName: updates.actorName || null,
+                userId: updatesSnapshot.actorId || null,
+                userName: updatesSnapshot.actorName || null,
               },
             });
           }
+        } catch (err) {
+          console.warn("[CustomerVoucher] Void/restore on cancel failed:", err);
+        }
+      } else if (updatesSnapshot.remark !== undefined) {
+        try {
+          const oldMatch = existingSnapshot?.remark?.match(/Promo:\s*([^\s(|]+)/i);
+          const oldCode = oldMatch ? oldMatch[1].trim().toUpperCase() : null;
+          const newMatch = jobSnapshot.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((?:ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\)|\s*\(-\u0E3F?([\d.]+)\))?/i);
+          const newCode = newMatch ? newMatch[1].trim().toUpperCase() : null;
+          const parsedPromoDiscount = newMatch ? parseFloat(newMatch[2] || newMatch[3] || "0") : 0;
+
+          if (oldCode && oldCode !== newCode) {
+            await prisma.customerVoucher.updateMany({
+              where: {
+                OR: [
+                  { usedJobId: id, status: "USED" },
+                  { code: { equals: oldCode, mode: "insensitive" }, usedJobId: id, status: "USED" },
+                ],
+              },
+              data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
+            });
+          }
+
+          const justBecameShopPaidForPromo = jobSnapshot.isShopPaid === true && existingSnapshot?.isShopPaid !== true;
+          if (newCode && (newCode !== oldCode || effectiveChangesSnapshot.remark !== undefined || justBecameShopPaidForPromo)) {
+            const localCoupon = await prisma.customerVoucher.findFirst({
+              where: { code: { equals: newCode, mode: "insensitive" } },
+            });
+            const wasPaidLocked = Boolean(existingSnapshot && ((existingSnapshot.source === 'pos' || existingSnapshot.type === 'in_store') ? (existingSnapshot.isPaid || existingSnapshot.isShopPaid) : existingSnapshot.isShopPaid) && updatesSnapshot.isShopPaid !== false && !(updatesSnapshot.isShopPaid === true && !existingSnapshot.isShopPaid));
+            if (localCoupon && (!wasPaidLocked || newCode === oldCode) && localCoupon.sourceJobId !== id && (localCoupon.status === "ACTIVE" || (localCoupon.status === "USED" && localCoupon.usedJobId === id))) {
+              const usedDiscount = parsedPromoDiscount > 0 ? parsedPromoDiscount : localCoupon.discountValue;
+              const wasActive = localCoupon.status === "ACTIVE";
+              const claimRes = await prisma.customerVoucher.updateMany({
+                where: {
+                  id: localCoupon.id,
+                  OR: [{ status: "ACTIVE" }, { status: "USED", usedJobId: id }],
+                },
+                data: {
+                  status: "USED",
+                  usedAt: localCoupon.usedAt || new Date(),
+                  usedJobId: id,
+                  discountAmountUsed: usedDiscount,
+                },
+              });
+              if (wasActive && claimRes.count > 0) {
+                await prisma.activityLog.create({
+                  data: {
+                    entityId: localCoupon.customerId,
+                    entityType: "customer",
+                    action: "COUPON_USED",
+                    details: JSON.stringify({
+                      couponId: localCoupon.id,
+                      code: localCoupon.code,
+                      usedJobId: id,
+                      discountAmountUsed: usedDiscount,
+                    }),
+                    userId: updatesSnapshot.actorId || null,
+                    userName: updatesSnapshot.actorName || null,
+                  },
+                });
+              }
+            }
+          }
+        } catch (err) {
+          console.warn("[updateJobAction] Promo voucher sync failed:", err);
         }
       }
-    } catch (err) {
-      console.warn("[updateJobAction] Promo voucher sync failed:", err);
-    }
-  }
-  } catch (vErr: any) {
-    console.warn("[updateJobAction] Promo voucher sync failed:", vErr?.message || vErr);
-    followUpWarnings.push("voucherSync");
+    });
   }
 
   let issuedCoupons: any[] = [];
@@ -3882,13 +3950,11 @@ async function updateJobActionInternal(id: string, updates: any) {
     updatedJob.deliveryProofImageUrl &&
     updatedJob.deliveryProofImageUrl !== existingJob?.deliveryProofImageUrl
   ) {
-    import("@/actions/line")
-      .then(({ tryAutoSendLineDeliveryProofOnUpload }) =>
+    schedulePostCommitTask(() =>
+      import("@/lib/line-internal").then(({ tryAutoSendLineDeliveryProofOnUpload }) =>
         tryAutoSendLineDeliveryProofOnUpload(updatedJob.id)
       )
-      .catch((err) => {
-        console.warn("[updateJobAction] LINE auto-send trigger error:", err);
-      });
+    );
   }
 
   return { ...updatedJob, issuedCoupons, followUpWarnings };
@@ -4717,8 +4783,50 @@ function mergeIdKeyedJsonArray(
   }
 }
 
+const BLOCKED_CLIENT_SETTING_KEYS = new Set([
+  'auth_session_revocations',
+  'rider_daily_reset_date',
+  'whatsapp_baileys_auth_backup',
+]);
+
+function isAdminOnlySettingKey(key: string): boolean {
+  if (!key) return true;
+  if (
+    key === 'googleMapsApiKey' ||
+    key === 'enableGoogleApi' ||
+    key === 'enableCustomerPortal' ||
+    key === 'sessionTimeoutMinutes' ||
+    key === 'riderCommissionPerKm' ||
+    key === 'vatType' ||
+    key === 'vatRate' ||
+    key === 'paymentChannels' ||
+    key === 'TLS_SOCIAL_CHANNEL_CONFIG_V1' ||
+    key === 'TLS_SOCIAL_CONFIG_V1' ||
+    key === 'TLS_SUPPLY_PERMISSIONS_V1' ||
+    key.startsWith('wise') ||
+    key.startsWith('line') ||
+    key.startsWith('promptpay')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export async function updateSettingAction(key: string, value: string, options?: { baseValue?: string }) {
-  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  if (BLOCKED_CLIENT_SETTING_KEYS.has(key) || key.startsWith('rider_gps_at:')) {
+    throw new Error('Forbidden: Protected internal system setting cannot be modified directly');
+  }
+  if (isAdminOnlySettingKey(key) && !isAdminOrSuperadmin(authUser)) {
+    throw new Error('Forbidden: Administrator privileges required to modify this setting');
+  }
+
+  // Ignore masked placeholder values so admins never overwrite stored secrets with mask characters
+  if ((key === 'googleMapsApiKey' || key === 'wiseApiToken' || key === 'lineChannelAccessToken' || key === 'lineChannelSecret') && /^•+$/.test(value.trim())) {
+    const existing = await prisma.setting.findUnique({ where: { key } });
+    return existing || { key, value: '' };
+  }
+
   const result = await withSettingUpdateLock(key, async () => {
     return prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`setting:${key}`}))`;
@@ -4737,45 +4845,89 @@ export async function updateSettingAction(key: string, value: string, options?: 
     });
   });
 
-  invalidateDbCache('master');
+  patchSettingsInCache({ [key]: result.value });
 
   if (key === 'riderCommissionPerKm') {
     const rate = parseFloat(value);
     if (!isNaN(rate)) {
-      try {
-        await prisma.$executeRaw`
-          UPDATE "Job"
-          SET "pickupCommission" = FLOOR("pickupDistance") * ${rate}
-          WHERE "pickupDistance" > 0
-            AND ("remark" IS NULL OR ("remark" NOT LIKE '%Rewash%' AND "remark" NOT LIKE '%No Rider Comm%'))
-            AND (
-              ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
-              OR "customerId" IN (SELECT "id" FROM "Customer" WHERE "isCorporate" = true AND ("corporateCommissionType" = 'default' OR "corporateCommissionType" IS NULL))
-            )
-            AND ("customerId" IS NULL OR "customerId" NOT IN (SELECT "id" FROM "Customer" WHERE "isVIP" = true OR ("isCorporate" = true AND "corporateCommissionType" IS NOT NULL AND "corporateCommissionType" != 'default')))
-            AND "status" NOT IN ('billing', 'completed', 'cancel')
-        `;
-        await prisma.$executeRaw`
-          UPDATE "Job"
-          SET "deliveryCommission" = FLOOR("deliveryDistance") * ${rate}
-          WHERE "deliveryDistance" > 0
-            AND ("remark" IS NULL OR ("remark" NOT LIKE '%Rewash%' AND "remark" NOT LIKE '%No Rider Comm%'))
-            AND (
-              ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
-              OR "customerId" IN (SELECT "id" FROM "Customer" WHERE "isCorporate" = true AND ("corporateCommissionType" = 'default' OR "corporateCommissionType" IS NULL))
-            )
-            AND ("customerId" IS NULL OR "customerId" NOT IN (SELECT "id" FROM "Customer" WHERE "isVIP" = true OR ("isCorporate" = true AND "corporateCommissionType" IS NOT NULL AND "corporateCommissionType" != 'default')))
-            AND "status" NOT IN ('completed', 'cancel')
-        `;
-        invalidateDbCache('jobs');
-        console.log(`[Setting Update] Updated active job commissions to use new rate: ฿${rate}`);
-      } catch (err: any) {
-        console.error("Failed to update active job commissions on setting change:", err.message);
-      }
+      schedulePostCommitTask(async () => {
+        try {
+          await prisma.$executeRaw`
+            UPDATE "Job"
+            SET "pickupCommission" = FLOOR("pickupDistance") * ${rate}
+            WHERE "pickupDistance" > 0
+              AND ("remark" IS NULL OR ("remark" NOT LIKE '%Rewash%' AND "remark" NOT LIKE '%No Rider Comm%'))
+              AND (
+                ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
+                OR "customerId" IN (SELECT "id" FROM "Customer" WHERE "isCorporate" = true AND ("corporateCommissionType" = 'default' OR "corporateCommissionType" IS NULL))
+              )
+              AND ("customerId" IS NULL OR "customerId" NOT IN (SELECT "id" FROM "Customer" WHERE "isVIP" = true OR ("isCorporate" = true AND "corporateCommissionType" IS NOT NULL AND "corporateCommissionType" != 'default')))
+              AND "status" NOT IN ('billing', 'completed', 'cancel')
+          `;
+          await prisma.$executeRaw`
+            UPDATE "Job"
+            SET "deliveryCommission" = FLOOR("deliveryDistance") * ${rate}
+            WHERE "deliveryDistance" > 0
+              AND ("remark" IS NULL OR ("remark" NOT LIKE '%Rewash%' AND "remark" NOT LIKE '%No Rider Comm%'))
+              AND (
+                ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
+                OR "customerId" IN (SELECT "id" FROM "Customer" WHERE "isCorporate" = true AND ("corporateCommissionType" = 'default' OR "corporateCommissionType" IS NULL))
+              )
+              AND ("customerId" IS NULL OR "customerId" NOT IN (SELECT "id" FROM "Customer" WHERE "isVIP" = true OR ("isCorporate" = true AND "corporateCommissionType" IS NOT NULL AND "corporateCommissionType" != 'default')))
+              AND "status" NOT IN ('completed', 'cancel')
+          `;
+          invalidateDbCache('jobs');
+        } catch (err: any) {
+          console.error("Failed to update active job commissions on setting change:", err.message);
+        }
+      });
     }
   }
 
   return result;
+}
+
+export async function updateSettingsBatchAction(entries: Record<string, string>) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  const cleanEntries: Array<[string, string]> = [];
+
+  for (const [key, rawVal] of Object.entries(entries || {})) {
+    if (!key) continue;
+    if (BLOCKED_CLIENT_SETTING_KEYS.has(key) || key.startsWith('rider_gps_at:')) {
+      throw new Error(`Forbidden: Protected internal system setting (${key})`);
+    }
+    if (isAdminOnlySettingKey(key) && !isAdminOrSuperadmin(authUser)) {
+      throw new Error(`Forbidden: Administrator privileges required to modify ${key}`);
+    }
+    const val = String(rawVal ?? '');
+    if (
+      (key === 'googleMapsApiKey' ||
+        key === 'wiseApiToken' ||
+        key === 'lineChannelAccessToken' ||
+        key === 'lineChannelSecret') &&
+      /^•+$/.test(val.trim())
+    ) {
+      continue;
+    }
+    cleanEntries.push([key, val]);
+  }
+
+  if (cleanEntries.length === 0) {
+    return { success: true };
+  }
+
+  await prisma.$transaction(
+    cleanEntries.map(([key, value]) =>
+      prisma.setting.upsert({
+        where: { key },
+        update: { value },
+        create: { key, value },
+      })
+    )
+  );
+
+  patchSettingsInCache(Object.fromEntries(cleanEntries));
+  return { success: true };
 }
 
 export async function addJobLogAction(id: string, logEntry: any, actorId?: string, actorName?: string) {
@@ -5793,10 +5945,10 @@ export async function processTopUpAction(data: {
       }),
     ]);
 
-    invalidateDbCache('customers');
+    const sanitizedTopUpCust = primeCustomerCache(updatedCustomer) || sanitizeCustomerRecord(updatedCustomer);
     return {
       success: true,
-      updatedCustomer: sanitizeCustomerRecord(updatedCustomer),
+      updatedCustomer: sanitizedTopUpCust,
       transaction,
       balanceBefore: balBefore,
       balanceAfter: balAfter,
@@ -6280,12 +6432,27 @@ export async function getPendingWalletMapAction() {
   };
 }
 
+function assertCanApproveWallet(authUser: { role?: string; permissions?: string[] }) {
+  const role = (authUser.role || '').toLowerCase();
+  const perms = authUser.permissions || [];
+  const allowed =
+    role === 'admin' ||
+    role === 'superadmin' ||
+    role === 'accounting' ||
+    perms.includes('approve-wallet') ||
+    perms.includes('accounting');
+  if (!allowed) {
+    throw new Error('403 Forbidden: Only Admin or Accounting staff with wallet approval permission may approve or reject wallet transactions');
+  }
+}
+
 export async function approveWalletTransactionAction(data: {
   id: string;
   approvedById: string;
   approvedByName: string;
 }) {
   const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  assertCanApproveWallet(authUser);
   data.approvedById = authUser.id;
   data.approvedByName = authUser.name || authUser.email;
   const tx = await prisma.walletTransaction.findUnique({ where: { id: data.id } });
@@ -6337,6 +6504,7 @@ export async function rejectWalletTransactionAction(data: {
   deductFromWallet?: boolean;
 }) {
   const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  assertCanApproveWallet(authUser);
   data.approvedById = authUser.id;
   data.approvedByName = authUser.name || authUser.email;
   const originalTx = await prisma.walletTransaction.findUnique({ where: { id: data.id } });
@@ -6580,6 +6748,7 @@ export async function bulkApproveWalletAction(data: {
   approvedByName: string;
 }) {
   const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  assertCanApproveWallet(authUser);
   data.approvedById = authUser.id;
   data.approvedByName = authUser.name || authUser.email;
   const targetTxs = await prisma.walletTransaction.findMany({
@@ -7462,7 +7631,13 @@ export async function unlockPaidJobAction(data: {
       };
     }, { maxWait: 15000, timeout: 30000 }));
 
-    invalidateDbCache('customers');
+    if (unlockRes.walletRefundAmount && unlockRes.updatedJob?.customerId) {
+      const refreshedCust = await prisma.customer.findUnique({
+        where: { id: unlockRes.updatedJob.customerId },
+        include: { addresses: { orderBy: { isPrimary: 'desc' } } },
+      });
+      if (refreshedCust) primeCustomerCache(refreshedCust);
+    }
     if (unlockRes.updatedJob) {
       await publishOrderEvent({
         type: 'job.updated',
@@ -7759,7 +7934,13 @@ export async function recordJobPaymentAction(data: {
       }
     }
 
-    invalidateDbCache('customers');
+    if (result.newBalance !== undefined && result.updatedJob?.customerId) {
+      primeCustomerCache({
+        id: result.updatedJob.customerId,
+        creditBalance: result.newBalance,
+        updatedAt: new Date(),
+      });
+    }
     if (result.updatedJob) {
       await publishOrderEvent({
         type: 'job.updated',
@@ -8035,7 +8216,13 @@ export async function voidJobPaymentAction(data: {
       };
     }));
 
-    invalidateDbCache('customers');
+    if (voidRes.newBalance !== undefined && voidRes.updatedJob?.customerId) {
+      primeCustomerCache({
+        id: voidRes.updatedJob.customerId,
+        creditBalance: voidRes.newBalance,
+        updatedAt: new Date(),
+      });
+    }
     if (voidRes.updatedJob) {
       await publishOrderEvent({
         type: 'job.updated',
@@ -9552,6 +9739,10 @@ async function ensurePettyCashTableExists() {
         CONSTRAINT "PettyCashReplenishmentReport_pkey" PRIMARY KEY ("id")
       );
     `);
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "PettyCashTransaction_holder_date_idx" ON "PettyCashTransaction" ("holderId", "transactionDate" ASC, "createdAt" ASC);`);
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "PettyCashTransaction_date_desc_idx" ON "PettyCashTransaction" ("transactionDate" DESC, "createdAt" DESC);`);
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "PettyCashTransaction_txNumber_idx" ON "PettyCashTransaction" ("txNumber");`);
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "PettyCashReplenishmentReport_submittedAt_idx" ON "PettyCashReplenishmentReport" ("submittedAt" DESC);`);
     pettyCashTableReady = true;
   } catch (e) {
     console.warn("[ensurePettyCashTableExists]", e);
@@ -9590,13 +9781,19 @@ async function recalculateHolderPettyCashBalances(holderId: string) {
   }
 }
 
+let pettyCashSeqVerified = false;
+
 async function ensureSequentialPettyCashTxNumbers(): Promise<void> {
+  if (pettyCashSeqVerified) return;
   const allRows: any[] = await prisma.$queryRaw`
     SELECT "id", "txNumber", "type", "relatedTxId", "transactionDate", "createdAt"
     FROM "PettyCashTransaction"
     ORDER BY "transactionDate" ASC, "createdAt" ASC, "id" ASC
   `;
-  if (!allRows || allRows.length === 0) return;
+  if (!allRows || allRows.length === 0) {
+    pettyCashSeqVerified = true;
+    return;
+  }
 
   // Check if any row still uses the old random 4-digit number (>= 1000 when total rows < 900) or is missing txNumber
   const needsRenumber = allRows.some((r) => {
@@ -9608,7 +9805,10 @@ async function ensureSequentialPettyCashTxNumbers(): Promise<void> {
     return num >= 1000 && allRows.length < 900;
   });
 
-  if (!needsRenumber) return;
+  if (!needsRenumber) {
+    pettyCashSeqVerified = true;
+    return;
+  }
 
   const pcCounters: Record<string, number> = {};
   const trCounters: Record<string, number> = {};
@@ -9648,6 +9848,7 @@ async function ensureSequentialPettyCashTxNumbers(): Promise<void> {
       `;
     }
   }
+  pettyCashSeqVerified = true;
 }
 
 async function getNextPettyCashSeq(txDate: Date, isTransfer: boolean): Promise<{ ym: string; seqStr: string }> {
@@ -10374,19 +10575,18 @@ export async function submitPettyCashReplenishmentReportAction(data: {
       return { success: false, error: "ยอดขอเบิกชดเชยต้องมากกว่า 0 บาท" };
     }
 
-    // Prevent duplicate submission of expense bills already attached to another active report
-    for (const txId of txIds) {
-      const existingTxRows: any[] = await prisma.$queryRaw`
-        SELECT "id", "replenishmentReportId" FROM "PettyCashTransaction"
-        WHERE "id" = ${txId}
-        LIMIT 1
-      `;
-      if (existingTxRows[0]?.replenishmentReportId) {
-        return {
-          success: false,
-          error: "มีบางรายการใช้จ่ายถูกส่งในใบสรุป Report อื่นไปแล้ว กรุณารีเฟรชหน้าแล้วเลือกใหม่",
-        };
-      }
+    // Prevent duplicate submission of expense bills already attached to another active report (single batch query)
+    const alreadyAttachedRows: any[] = await prisma.$queryRaw`
+      SELECT "id", "replenishmentReportId" FROM "PettyCashTransaction"
+      WHERE "id" = ANY(${txIds}::text[])
+        AND "replenishmentReportId" IS NOT NULL
+      LIMIT 1
+    `;
+    if (alreadyAttachedRows.length > 0) {
+      return {
+        success: false,
+        error: "มีบางรายการใช้จ่ายถูกส่งในใบสรุป Report อื่นไปแล้ว กรุณารีเฟรชหน้าแล้วเลือกใหม่",
+      };
     }
 
     const now = new Date();
@@ -10433,13 +10633,11 @@ export async function submitPettyCashReplenishmentReportAction(data: {
       )
     `;
 
-    for (const txId of txIds) {
-      await prisma.$executeRaw`
-        UPDATE "PettyCashTransaction"
-        SET "replenishmentReportId" = ${id}, "updatedAt" = ${now}
-        WHERE "id" = ${txId}
-      `;
-    }
+    await prisma.$executeRaw`
+      UPDATE "PettyCashTransaction"
+      SET "replenishmentReportId" = ${id}, "updatedAt" = ${now}
+      WHERE "id" = ANY(${txIds}::text[])
+    `;
 
     await prisma.activityLog.create({
       data: {
@@ -10672,6 +10870,7 @@ const RECURRING_ORDERS_SETTING_KEY = "recurring_orders_schedules";
 
 export async function getRecurringSchedulesAction() {
   try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
     const setting = await prisma.setting.findUnique({
       where: { key: RECURRING_ORDERS_SETTING_KEY },
     });

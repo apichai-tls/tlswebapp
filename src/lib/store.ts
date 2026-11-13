@@ -999,6 +999,10 @@ export const settingsStore = {
   async updateSetting(key: string, value: string) {
     await api.updateSetting(key, value);
     emitSettingsChange();
+  },
+  async updateSettingsBatch(entries: Record<string, string>) {
+    await api.updateSettingsBatch(entries);
+    emitSettingsChange();
   }
 };
 

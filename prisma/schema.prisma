@@ -398,6 +398,10 @@ model Task {
   archivedByName  String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+
+  @@index([isArchived, updatedAt])
+  @@index([assignedToId, status])
+  @@index([status, dueDate])
 }
 
 model Notification {
@@ -410,6 +414,9 @@ model Notification {
   isRead    Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([userId, isRead, createdAt])
+  @@index([userId, taskId, type])
 }
 
 

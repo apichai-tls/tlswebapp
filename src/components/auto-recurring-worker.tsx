@@ -25,9 +25,24 @@ export function AutoRecurringWorker() {
 
     const performAutomationCheck = async () => {
       if (isCheckingRef.current) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
 
       const nowBkk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
       const todayStr = `${nowBkk.getFullYear()}-${String(nowBkk.getMonth() + 1).padStart(2, '0')}-${String(nowBkk.getDate()).padStart(2, '0')}`;
+
+      try {
+        const rawLast = window.localStorage.getItem("tls_recurring_last_check_v1");
+        if (rawLast) {
+          const parsed = JSON.parse(rawLast);
+          if (parsed?.date === todayStr && typeof parsed?.ts === "number" && Date.now() - parsed.ts < 25 * 60 * 1000) {
+            return;
+          }
+        }
+        window.localStorage.setItem(
+          "tls_recurring_last_check_v1",
+          JSON.stringify({ date: todayStr, ts: Date.now() })
+        );
+      } catch {}
 
       // Only run once per hour per client session unless day changed
       isCheckingRef.current = true;

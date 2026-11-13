@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Logo } from "@/components/logo";
 import { LayoutDashboard, Smartphone } from "lucide-react";
 
@@ -20,20 +21,20 @@ export default function Home() {
 
       {/* Nav Cards */}
       <div className="flex flex-col gap-4 sm:flex-row mt-4">
-        <a
+        <Link
           href="/admin"
           className="inline-flex shrink-0 items-center justify-center rounded-lg w-60 gap-2 bg-white text-slate-900 border border-slate-200 hover:bg-slate-50 shadow-sm text-base font-semibold h-14 cursor-pointer transition-all select-none"
         >
           <LayoutDashboard size={20} />
           Admin Dashboard
-        </a>
-        <a
+        </Link>
+        <Link
           href="/rider"
           className="inline-flex shrink-0 items-center justify-center rounded-lg w-60 gap-2 bg-blue-600 text-white hover:bg-blue-700 shadow-md text-base font-semibold h-14 cursor-pointer transition-all select-none"
         >
           <Smartphone size={20} />
           Rider App
-        </a>
+        </Link>
       </div>
     </main>
   );

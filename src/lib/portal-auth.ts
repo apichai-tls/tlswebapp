@@ -226,8 +226,19 @@ export function generateOtpChallenge(identifier: string, purpose: OtpPurpose): {
   }
 }
 
+const otpAttemptsMap = new Map<string, { attempts: number; consumed: boolean; expiresAt: number }>()
+
+function pruneOtpAttemptsMap(nowMs: number) {
+  if (otpAttemptsMap.size < 500) return
+  for (const [k, v] of otpAttemptsMap.entries()) {
+    if (v.expiresAt <= nowMs) {
+      otpAttemptsMap.delete(k)
+    }
+  }
+}
+
 /**
- * Verifies a 6-digit OTP code against the signed challenge token
+ * Verifies a 6-digit OTP code against the signed challenge token (max 5 attempts, single-use)
  */
 export function verifyOtpChallenge(params: {
   otpToken: string
@@ -275,10 +286,28 @@ export function verifyOtpChallenge(params: {
       return { valid: false, error: 'OTP purpose mismatch' }
     }
 
+    const nowMs = Date.now()
+    pruneOtpAttemptsMap(nowMs)
+    const challengeKey = `${identifierKey}:${payload.purpose}:${payload.refCode}:${payload.iat}`
+    const state = otpAttemptsMap.get(challengeKey) || {
+      attempts: 0,
+      consumed: false,
+      expiresAt: payload.exp * 1000 + 60_000
+    }
+
+    if (state.consumed) {
+      return { valid: false, error: 'This OTP code has already been used. Please request a new code.' }
+    }
+    if (state.attempts >= 5) {
+      return { valid: false, error: 'Too many incorrect OTP attempts. Please request a new OTP code.' }
+    }
+
     const cleanCode = String(otpCode).replace(/\D/g, '').trim()
     const expectedHash = computeOtpHash(identifierKey, payload.purpose, payload.refCode, cleanCode)
 
     if (expectedHash.length !== String(payload.codeHash).length) {
+      state.attempts += 1
+      otpAttemptsMap.set(challengeKey, state)
       return { valid: false, error: 'Invalid OTP code' }
     }
     const isMatch = crypto.timingSafeEqual(
@@ -287,9 +316,13 @@ export function verifyOtpChallenge(params: {
     )
 
     if (!isMatch) {
+      state.attempts += 1
+      otpAttemptsMap.set(challengeKey, state)
       return { valid: false, error: 'Incorrect 6-digit OTP code. Please try again.' }
     }
 
+    state.consumed = true
+    otpAttemptsMap.set(challengeKey, state)
     return { valid: true }
   } catch {
     return { valid: false, error: 'Could not verify OTP. Please request a new code.' }
@@ -462,13 +495,8 @@ export async function checkPortalPublicAccess(req: Request): Promise<{
     const staffSessionCookie = cookies.find(c => c.startsWith('tls_session='))
     if (staffSessionCookie) {
       const tokenVal = decodeURIComponent(staffSessionCookie.slice('tls_session='.length).trim())
-      if (verifyStaffSessionToken(tokenVal)) {
-        hasStaffPreview = true
-      }
-    }
-    if (!hasStaffPreview) {
-      const previewCookie = cookies.find(c => c.startsWith('tls_portal_preview='))
-      if (previewCookie && previewCookie.slice('tls_portal_preview='.length).trim() === '1') {
+      const verifiedStaff = verifyStaffSessionToken(tokenVal)
+      if (verifiedStaff && verifiedStaff.role !== 'rider') {
         hasStaffPreview = true
       }
     }
