@@ -631,7 +631,8 @@ export function ThermalReceiptDialog({
                 ? jobStore.getSnapshot().find(j => j.id === rawTargetId || j.id === normalizedTargetId)
                 : null);
             const effectiveJobId = targetJob?.id || normalizedTargetId;
-            if (effectiveJobId && effectiveJobId !== "DRAFT") {
+            const isTopUpReceipt = Boolean(effectiveJobId && /^TU-/i.test(effectiveJobId) && !targetJob);
+            if (effectiveJobId && effectiveJobId !== "DRAFT" && !isTopUpReceipt) {
               let existingBills: string[] = [];
               try {
                 if (targetJob?.billImageUrl) {

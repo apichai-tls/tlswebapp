@@ -3,7 +3,7 @@
 import { after } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { listFilesForJob } from '@/lib/gcs';
-import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone, findDuplicateCustomerByPhone, computeMembershipExpiryDate } from '@/lib/utils';
+import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, TOPUP_SEQ_KEY, generateTopUpReceiptNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone, findDuplicateCustomerByPhone, computeMembershipExpiryDate } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
 import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel, isItemMatchingInstantCampaign } from '@/lib/promotions';
@@ -5727,9 +5727,46 @@ function shouldPreserveExisting(newValue: any, existingValue: any): boolean {
   return false;
 }
 
+async function allocateNextTopUpReceiptNumber(tx: any, now: Date): Promise<{ receiptNumber: string; nextSeq: number }> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${TOPUP_SEQ_KEY}))`;
+  const [seqSetting, latestTx, latestWalletTx] = await Promise.all([
+    tx.setting.findUnique({ where: { key: TOPUP_SEQ_KEY } }),
+    tx.transaction.findFirst({
+      where: { id: { startsWith: 'TU-' } },
+      select: { id: true },
+      orderBy: { id: 'desc' },
+    }),
+    tx.walletTransaction.findFirst({
+      where: { type: 'TOPUP', referenceId: { startsWith: 'TU-' } },
+      select: { referenceId: true },
+      orderBy: { referenceId: 'desc' },
+    }),
+  ]);
+
+  const parseTuSeq = (val?: string | null) => {
+    const m = String(val || '').match(/-(\d+)$/);
+    return m ? parseInt(m[1], 10) || 0 : 0;
+  };
+
+  const settingSeq = parseInt(seqSetting?.value || '0', 10) || 0;
+  const maxExistingSeq = Math.max(settingSeq, parseTuSeq(latestTx?.id), parseTuSeq(latestWalletTx?.referenceId));
+  const nextSeq = maxExistingSeq + 1;
+
+  await tx.setting.upsert({
+    where: { key: TOPUP_SEQ_KEY },
+    update: { value: String(nextSeq) },
+    create: { key: TOPUP_SEQ_KEY, value: String(nextSeq) },
+  });
+
+  return {
+    receiptNumber: generateTopUpReceiptNumber(nextSeq, now),
+    nextSeq,
+  };
+}
+
 // ATOMIC TOP-UP ACTION: Atomically increments wallet balance and records Transaction & ActivityLog
 export async function processTopUpAction(data: {
-  receiptNumber: string;
+  receiptNumber?: string;
   customerId: string;
   paidAmount: number;
   bonusAmount?: number;
@@ -5750,10 +5787,8 @@ export async function processTopUpAction(data: {
     data.actorId = authUser.id;
     data.actorName = authUser.name || authUser.email;
   }
-  const cleanReceiptNumber = String(data.receiptNumber || '').trim();
-  if (!cleanReceiptNumber) {
-    throw new Error("Receipt number is required for wallet top-up");
-  }
+  const requestedReceiptNumber = String(data.receiptNumber || '').trim();
+  const useAutoReceipt = !requestedReceiptNumber || requestedReceiptNumber.toUpperCase() === 'AUTO';
   const paidAmt = Number(data.paidAmount);
   const bonusAmt = data.bonusAmount !== undefined ? Number(data.bonusAmount) : 0;
   const totalCred = Number(data.totalCredit);
@@ -5761,7 +5796,8 @@ export async function processTopUpAction(data: {
     throw new Error("Invalid top-up amount");
   }
 
-  return await prisma.$transaction(async (tx) => {
+  let allocatedNextSeq: number | null = null;
+  const result = await prisma.$transaction(async (tx) => {
     // 1. Acquire row-level FOR UPDATE lock on the customer row first to serialize concurrent wallet mutations
     await lockCustomerRowForWallet(tx, data.customerId);
 
@@ -5785,32 +5821,7 @@ export async function processTopUpAction(data: {
 
     const balBefore = Number(currentCust.creditBalance || 0);
 
-    // Idempotency Check 1: Check if receiptNumber already exists in Transaction or WalletTransaction
-    const [existingTx, existingReceiptWalletTx] = await Promise.all([
-      tx.transaction.findUnique({
-        where: { id: cleanReceiptNumber }
-      }),
-      tx.walletTransaction.findFirst({
-        where: {
-          customerId: data.customerId,
-          type: 'TOPUP',
-          referenceId: cleanReceiptNumber,
-        }
-      }),
-    ]);
-    if (existingTx || existingReceiptWalletTx) {
-      console.warn(`[TopUp] Duplicate top-up ignored for receipt: ${cleanReceiptNumber}`);
-      return {
-        success: true,
-        duplicate: true,
-        updatedCustomer: currentCust,
-        transaction: existingTx,
-        balanceBefore: balBefore,
-        balanceAfter: balBefore,
-      };
-    }
-
-    // Idempotency Check 2: Check structured paymentLinkId / idempotencyKey reference
+    // Idempotency Check 1: Check structured paymentLinkId / idempotencyKey reference BEFORE allocating sequence
     const dedupRef = (data.paymentLinkId || data.idempotencyKey || '').trim();
     if (dedupRef) {
       const existingPaymentLink = await tx.walletTransaction.findFirst({
@@ -5829,6 +5840,7 @@ export async function processTopUpAction(data: {
         return {
           success: true,
           duplicate: true,
+          receiptNumber: existingPaymentLink.referenceId || requestedReceiptNumber,
           updatedCustomer: currentCust,
           transaction: null,
           balanceBefore: balBefore,
@@ -5837,8 +5849,44 @@ export async function processTopUpAction(data: {
       }
     }
 
-    const balAfter = Math.round((balBefore + totalCred) * 100) / 100; const { effectiveDate: topUpSettledDate, actualDate: topUpActualDate, isRolledOver: isTopUpBeamRolled } = resolveBeamSettlementDate(new Date(), data.paymentChannel);
     const now = new Date();
+    let cleanReceiptNumber = requestedReceiptNumber;
+    if (useAutoReceipt) {
+      const allocated = await allocateNextTopUpReceiptNumber(tx, now);
+      cleanReceiptNumber = allocated.receiptNumber;
+      allocatedNextSeq = allocated.nextSeq;
+    } else {
+      // Idempotency Check 2: Check if explicit receiptNumber already exists in Transaction or WalletTransaction
+      const [existingTx, existingReceiptWalletTx] = await Promise.all([
+        tx.transaction.findUnique({
+          where: { id: cleanReceiptNumber }
+        }),
+        tx.walletTransaction.findFirst({
+          where: {
+            customerId: data.customerId,
+            type: 'TOPUP',
+            referenceId: cleanReceiptNumber,
+          }
+        }),
+      ]);
+      if (existingTx && existingTx.memberId !== data.customerId) {
+        throw new Error(`Receipt number ${cleanReceiptNumber} is already used by another customer`);
+      }
+      if (existingTx || existingReceiptWalletTx) {
+        console.warn(`[TopUp] Duplicate top-up ignored for receipt: ${cleanReceiptNumber}`);
+        return {
+          success: true,
+          duplicate: true,
+          receiptNumber: cleanReceiptNumber,
+          updatedCustomer: currentCust,
+          transaction: existingTx,
+          balanceBefore: balBefore,
+          balanceAfter: balBefore,
+        };
+      }
+    }
+
+    const balAfter = Math.round((balBefore + totalCred) * 100) / 100; const { effectiveDate: topUpSettledDate, actualDate: topUpActualDate, isRolledOver: isTopUpBeamRolled } = resolveBeamSettlementDate(now, data.paymentChannel);
     const expiry = calculateWalletExpiryDate(now);
 
     const updateData: any = {
@@ -5948,12 +5996,18 @@ export async function processTopUpAction(data: {
     const sanitizedTopUpCust = primeCustomerCache(updatedCustomer) || sanitizeCustomerRecord(updatedCustomer);
     return {
       success: true,
+      receiptNumber: cleanReceiptNumber,
       updatedCustomer: sanitizedTopUpCust,
       transaction,
       balanceBefore: balBefore,
       balanceAfter: balAfter,
     };
   }, { maxWait: 15000, timeout: 30000 });
+
+  if (allocatedNextSeq !== null) {
+    patchSettingsInCache({ [TOPUP_SEQ_KEY]: String(allocatedNextSeq) });
+  }
+  return result;
 }
 
 // TOP-UP TRANSACTIONS

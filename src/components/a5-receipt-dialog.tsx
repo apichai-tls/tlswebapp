@@ -193,7 +193,8 @@ export function A5ReceiptDialog({
             ? jobStore.getSnapshot().find((j: any) => j.id === rawTargetId || j.id === normalizedTargetId)
             : null;
         const effectiveJobId = targetJob?.id || normalizedTargetId;
-        if (effectiveJobId && effectiveJobId !== "DRAFT") {
+        const isTopUpReceipt = Boolean(effectiveJobId && /^TU-/i.test(effectiveJobId) && !targetJob);
+        if (effectiveJobId && effectiveJobId !== "DRAFT" && !isTopUpReceipt) {
           let existingBills: string[] = [];
           try {
             if (targetJob?.billImageUrl) {
@@ -399,7 +400,7 @@ export function A5ReceiptDialog({
       }
 
       if (uploadResult.success && uploadResult.publicUrl) {
-        if (targetId && targetId !== "DRAFT") {
+        if (targetId && targetId !== "DRAFT" && !/^TU-/i.test(targetId)) {
           const currentJob = jobStore.getSnapshot().find((j: any) => j.id === targetId);
           let existingBills: string[] = [];
           try {
