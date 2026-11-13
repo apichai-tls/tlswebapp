@@ -170,16 +170,27 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       try {
         const parsed = JSON.parse(savedUser);
+        // If this is a legacy session from before HMAC sessionToken was introduced, require a clean re-login
+        if (!parsed || !parsed.sessionToken) {
+          clearAuthStorage();
+          setUser(null);
+          setIsLoading(false);
+          if (typeof window !== 'undefined') {
+            const currentPath = window.location.pathname;
+            if (!currentPath.startsWith('/login') && !currentPath.startsWith('/portal')) {
+              window.location.replace('/login');
+            }
+          }
+          return;
+        }
         setUser(parsed);
         localStorage.setItem('lastActivityAt', String(Date.now()));
         if (isRememberMe) {
           localStorage.setItem('lastLoginDate', today);
         }
-        if (parsed.sessionToken) {
-          import('@/actions/auth').then(({ syncSessionCookieAction }) => {
-            syncSessionCookieAction(parsed.sessionToken, isRememberMe).catch(() => {});
-          }).catch(() => {});
-        }
+        import('@/actions/auth').then(({ syncSessionCookieAction }) => {
+          syncSessionCookieAction(parsed.sessionToken, isRememberMe).catch(() => {});
+        }).catch(() => {});
         if (typeof document !== 'undefined') {
           document.cookie = 'tls_user_id=; path=/; max-age=0; SameSite=Lax';
         }

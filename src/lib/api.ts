@@ -444,6 +444,17 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
     const headers = getClientAuthHeaders();
     if (lastEtag) headers['If-None-Match'] = lastEtag;
     const res = await fetch('/api/db', { headers });
+    if (res.status === 401) {
+      try {
+        localStorage.removeItem('authUser');
+        localStorage.removeItem('authRememberMe');
+        localStorage.removeItem('authRememberExpiresAt');
+      } catch {}
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login') && !window.location.pathname.startsWith('/portal')) {
+        window.location.replace('/login');
+      }
+      return;
+    }
     if (res.status === 304) {
       isDbLoaded = true;
       lastServerSyncMs = Math.max(lastServerSyncMs, Date.now());
@@ -1009,6 +1020,18 @@ export const api = {
           const res = await fetch(`/api/jobs/delta?${qs.toString()}`, {
           headers: getClientAuthHeaders(),
         });
+          if (res.status === 401) {
+            try {
+              localStorage.removeItem('authUser');
+              localStorage.removeItem('authRememberMe');
+              localStorage.removeItem('authRememberExpiresAt');
+            } catch {}
+            if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login') && !window.location.pathname.startsWith('/portal')) {
+              window.location.replace('/login');
+            }
+            completedCleanly = false;
+            break;
+          }
           if (!res.ok) {
             completedCleanly = false;
             break;
