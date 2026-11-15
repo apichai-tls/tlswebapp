@@ -78,7 +78,6 @@ import {
   BranchSupplyStockEntry,
   BranchSupplyMovement,
   SupplyVendor,
-  DEFAULT_SUPPLY_VENDORS,
   getSupplyItemPriceReviewStatus,
 } from '@/types/supply-order';
 import {
@@ -138,7 +137,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
   const [loadingCatalog, setLoadingCatalog] = useState(false);
 
   // Vendors & Branch Stock state
-  const [vendors, setVendors] = useState<SupplyVendor[]>(DEFAULT_SUPPLY_VENDORS);
+  const [vendors, setVendors] = useState<SupplyVendor[]>([]);
   const [branchStock, setBranchStock] = useState<BranchSupplyStockEntry[]>([]);
   const [allBranchesStock, setAllBranchesStock] = useState<BranchSupplyStockEntry[]>([]);
   const [stockMovements, setStockMovements] = useState<BranchSupplyMovement[]>([]);

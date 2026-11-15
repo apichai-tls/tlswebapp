@@ -41,7 +41,6 @@ import {
   SupplyOrder,
   SUPPLY_CATEGORY_LABELS,
   SupplyItemCategory,
-  DEFAULT_SUPPLY_VENDORS,
 } from '@/types/supply-order';
 import {
   getSupplyVendorsAction,
@@ -56,7 +55,7 @@ interface AdminCrmVendorsProps {
 }
 
 export function AdminCrmVendors({ currentUser }: AdminCrmVendorsProps) {
-  const [vendors, setVendors] = useState<SupplyVendor[]>(DEFAULT_SUPPLY_VENDORS);
+  const [vendors, setVendors] = useState<SupplyVendor[]>([]);
   const [catalog, setCatalog] = useState<CatalogSupplyItem[]>([]);
   const [supplyOrders, setSupplyOrders] = useState<SupplyOrder[]>([]);
   const [loading, setLoading] = useState(true);

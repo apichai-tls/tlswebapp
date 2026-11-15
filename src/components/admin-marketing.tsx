@@ -42,7 +42,8 @@ import {
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import dynamic from "next/dynamic";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
-import { getWalletTransactionsAction } from "@/actions/db";
+import { getWalletTransactionsAction, getPromotionCampaignsAction } from "@/actions/db";
+import { DEFAULT_PROMOTION_CAMPAIGNS, type PromotionCampaign } from "@/lib/promotions";
 
 const AdminMarketingCalendar = dynamic(() => import("@/components/admin-marketing-calendar").then((m) => m.AdminMarketingCalendar), { ssr: false });
 const AdminMarketingLinks = dynamic(() => import("@/components/admin-marketing-links").then((m) => m.AdminMarketingLinks), { ssr: false });
@@ -84,6 +85,9 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
   const [walletTransactions, setWalletTransactions] = useState<any[]>([]);
   const [isLoadingWalletTxs, setIsLoadingWalletTxs] = useState(false);
 
+  // Promotion Campaigns State (for syncing live campaign period)
+  const [promotionCampaigns, setPromotionCampaigns] = useState<PromotionCampaign[]>(DEFAULT_PROMOTION_CAMPAIGNS);
+
   // Top-Up Campaign specific filters
   const [topupPaymentFilter, setTopupPaymentFilter] = useState<string>("all");
   const [topupApprovalFilter, setTopupApprovalFilter] = useState<string>("all");
@@ -105,8 +109,40 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
   useEffect(() => {
     if (subTab === "promo") {
       fetchWalletTransactions();
+      getPromotionCampaignsAction()
+        .then((res) => {
+          if (res?.success && Array.isArray(res.campaigns)) {
+            setPromotionCampaigns(res.campaigns);
+          }
+        })
+        .catch(() => {});
     }
   }, [subTab]);
+
+  const wif120Period = useMemo(() => {
+    const camp =
+      promotionCampaigns.find(
+        (c) => c.id === "promo_wif120_nov26" || c.instantRule?.promoCode === "WIF120"
+      ) || DEFAULT_PROMOTION_CAMPAIGNS[0];
+    const startIso = (camp?.startDate || "2026-11-11").slice(0, 10);
+    const endIso = (camp?.endDate || "2026-11-12").slice(0, 10);
+    const formatSlash = (iso: string) => {
+      const [y, m, d] = iso.split("-");
+      return y && m && d ? `${d}/${m}/${y}` : iso;
+    };
+    const thaiMonths = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+    const [, sm, sd] = startIso.split("-");
+    const [, em, ed] = endIso.split("-");
+    const sMonth = thaiMonths[Number(sm) - 1] || sm;
+    const eMonth = thaiMonths[Number(em) - 1] || em;
+    const shortLabel = sm === em ? `${sd}-${ed} ${sMonth}` : `${sd} ${sMonth}-${ed} ${eMonth}`;
+    return {
+      startIso,
+      endIso,
+      displayRange: `${formatSlash(startIso)} - ${formatSlash(endIso)}`,
+      shortLabel,
+    };
+  }, [promotionCampaigns]);
 
   // Fetch historical jobs when date range expands beyond 30 days
   useEffect(() => {
@@ -1013,19 +1049,19 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                 <>
                   <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
                     <CalendarDays size={13} className="text-rose-500" />
-                    <span>ระยะเวลาแคมเปญ: <strong className="text-slate-800 dark:text-slate-200">01/11/2026 - 11/11/2026</strong></span>
+                    <span>ระยะเวลาแคมเปญ: <strong className="text-slate-800 dark:text-slate-200">{wif120Period.displayRange}</strong></span>
                   </div>
                   <button
                     onClick={() => {
                       setDateRange("custom");
-                      setCustomStartDate("2026-11-01");
-                      setCustomEndDate("2026-11-11");
+                      setCustomStartDate(wif120Period.startIso);
+                      setCustomEndDate(wif120Period.endIso);
                     }}
                     className="text-[11px] font-bold text-rose-600 dark:text-rose-400 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/60 dark:hover:bg-rose-900/60 border border-rose-200/80 dark:border-rose-800 rounded-xl px-3 py-1.5 transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
-                    title="กรองเฉพาะช่วงวันที่ 01/11 - 11/11/2026"
+                    title={`กรองเฉพาะช่วงวันที่ ${wif120Period.displayRange}`}
                   >
                     <Sparkles size={12} />
-                    <span>ล็อคช่วงแคมเปญ (01-11 พ.ย.)</span>
+                    <span>ล็อคช่วงแคมเปญ ({wif120Period.shortLabel})</span>
                   </button>
                   <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
                     <Tag size={13} className="text-indigo-500" />

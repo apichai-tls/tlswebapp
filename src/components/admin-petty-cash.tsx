@@ -1555,7 +1555,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     }
   };
 
-  // Unclaimed (not yet attached to a replenishment report) expense transactions for a holder
+  // Unclaimed & APPROVED (not yet attached to a replenishment report) expense transactions for a holder
   const getUnclaimedExpenseTxsForHolder = useCallback(
     (targetHolderId: string): PettyCashTx[] => {
       if (!targetHolderId) return [];
@@ -1564,8 +1564,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
           t.holderId === targetHolderId &&
           t.direction === "DEBIT" &&
           t.type !== "TRANSFER_OUT" &&
-          t.status !== "REJECTED" &&
-          t.status !== "VOID" &&
+          t.status === "APPROVED" &&
           !t.replenishmentReportId
       );
     },
@@ -2009,18 +2008,18 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
 
         return `
           <tr>
-            <td style="text-align:center;">${idx + 1}</td>
-            <td><strong>${escapeHtml(h.holderName)}</strong></td>
-            <td>${escapeHtml(h.department || h.roleLabel)}<br/><span style="color:#64748b;font-size:9.5px;">${escapeHtml(branchName)}</span></td>
-            <td style="text-align:right;font-family:monospace;">฿${fmtMoney(limit)}</td>
-            <td style="text-align:right;font-family:monospace;color:#475569;">฿${fmtMoney(h.openingBalance)}</td>
-            <td style="text-align:right;font-family:monospace;color:#059669;">${h.companyTopup > 0 ? `+฿${fmtMoney(h.companyTopup)}` : "-"}</td>
-            <td style="text-align:right;font-family:monospace;color:#0284c7;">${h.transferIn > 0 ? `+฿${fmtMoney(h.transferIn)}` : "-"}</td>
-            <td style="text-align:right;font-family:monospace;font-weight:700;color:#059669;">+฿${fmtMoney(h.totalTopup)}</td>
-            <td style="text-align:right;font-family:monospace;color:#6366f1;">${h.transferOut > 0 ? `-฿${fmtMoney(h.transferOut)}` : "-"}</td>
-            <td style="text-align:right;font-family:monospace;font-weight:700;color:#e11d48;">-฿${fmtMoney(h.totalExpense)}</td>
-            <td style="text-align:right;font-family:monospace;font-weight:700;color:${h.currentBalance < 0 ? "#e11d48" : "#0f172a"};">฿${fmtMoney(h.currentBalance)}</td>
-            <td style="text-align:right;font-family:monospace;font-weight:700;color:${shortfall > 0 ? "#d97706" : "#059669"};">฿${fmtMoney(shortfall)}</td>
+            <td style="text-align:center;color:#64748b;">${idx + 1}</td>
+            <td><strong style="color:#0f172a;">${escapeHtml(h.holderName)}</strong></td>
+            <td><span style="font-weight:600;color:#334155;">${escapeHtml(h.department || h.roleLabel)}</span><br/><span style="color:#64748b;font-size:9.5px;">${escapeHtml(branchName)}</span></td>
+            <td class="num">฿${fmtMoney(limit)}</td>
+            <td class="num" style="color:#475569;">฿${fmtMoney(h.openingBalance)}</td>
+            <td class="num" style="color:#059669;">${h.companyTopup > 0 ? `+฿${fmtMoney(h.companyTopup)}` : "–"}</td>
+            <td class="num" style="color:#0284c7;">${h.transferIn > 0 ? `+฿${fmtMoney(h.transferIn)}` : "–"}</td>
+            <td class="num" style="font-weight:700;color:#059669;">+฿${fmtMoney(h.totalTopup)}</td>
+            <td class="num" style="color:#6366f1;">${h.transferOut > 0 ? `-฿${fmtMoney(h.transferOut)}` : "–"}</td>
+            <td class="num" style="font-weight:700;color:#e11d48;">-฿${fmtMoney(h.totalExpense)}</td>
+            <td class="num" style="font-weight:700;color:${h.currentBalance < 0 ? "#e11d48" : "#0f172a"};">฿${fmtMoney(h.currentBalance)}</td>
+            <td class="num" style="font-weight:700;color:${shortfall > 0 ? "#d97706" : "#059669"};">฿${fmtMoney(shortfall)}</td>
           </tr>
         `;
       })
@@ -2036,16 +2035,16 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                   : "0.0";
               return `
                 <tr>
-                  <td style="text-align:center;">${idx + 1}</td>
-                  <td><strong>${escapeHtml(c.category)}</strong></td>
-                  <td style="text-align:center;font-family:monospace;">${c.count} รายการ</td>
-                  <td style="text-align:right;font-family:monospace;font-weight:700;color:#e11d48;">-฿${fmtMoney(c.amount)}</td>
-                  <td style="text-align:right;font-family:monospace;">${pct}%</td>
+                  <td style="text-align:center;color:#64748b;">${idx + 1}</td>
+                  <td><strong style="color:#0f172a;">${escapeHtml(c.category)}</strong></td>
+                  <td class="num" style="text-align:center;">${c.count} ${c.count === 1 ? "bill" : "bills"}</td>
+                  <td class="num" style="font-weight:700;color:#e11d48;">-฿${fmtMoney(c.amount)}</td>
+                  <td class="num">${pct}%</td>
                 </tr>
               `;
             })
             .join("")
-        : `<tr><td colspan="5" style="text-align:center;color:#94a3b8;">ไม่มีรายการเบิกจ่ายในช่วงเวลานี้</td></tr>`;
+        : `<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:12px;">No expense transactions recorded in this period.</td></tr>`;
 
     const rowsHtml =
       filteredTransactions.length > 0
@@ -2060,60 +2059,106 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                   : isCredit
                     ? "#059669"
                     : "#e11d48";
-              const vendorInvoice = [t.vendorName, t.invoiceNo].filter(Boolean).join(" / ") || "-";
+              const vendorInvoice = [t.vendorName, t.invoiceNo].filter(Boolean).join(" / ") || "–";
+              const statusStyle =
+                t.status === "APPROVED"
+                  ? "background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;"
+                  : t.status === "PENDING"
+                    ? "background:#fffbeb;color:#b45309;border:1px solid #fde68a;"
+                    : "background:#fff1f2;color:#be123c;border:1px solid #fecdd3;";
               return `
                 <tr>
-                  <td style="text-align:center;">${idx + 1}</td>
-                  <td style="white-space:nowrap;font-family:monospace;">${escapeHtml(t.txNumber || t.id.slice(0, 8))}</td>
-                  <td style="white-space:nowrap;">${escapeHtml(format(new Date(t.transactionDate), "dd/MM/yyyy HH:mm"))}</td>
-                  <td><strong>${escapeHtml(t.holderName)}</strong><br/><span style="color:#64748b;font-size:10px;">${escapeHtml(branchName)}</span></td>
-                  <td>${escapeHtml(t.type)}</td>
+                  <td style="text-align:center;color:#64748b;">${idx + 1}</td>
+                  <td class="num" style="white-space:nowrap;font-weight:600;color:#334155;">${escapeHtml(t.txNumber || t.id.slice(0, 8))}</td>
+                  <td class="num" style="white-space:nowrap;color:#475569;">${escapeHtml(format(new Date(t.transactionDate), "dd/MM/yyyy HH:mm"))}</td>
+                  <td><strong style="color:#0f172a;">${escapeHtml(t.holderName)}</strong><br/><span style="color:#64748b;font-size:9.5px;">${escapeHtml(branchName)}</span></td>
+                  <td><span style="font-weight:600;color:#334155;">${escapeHtml(t.type)}</span></td>
                   <td>${escapeHtml(t.category)}</td>
                   <td>${escapeHtml(t.description)}</td>
-                  <td>${escapeHtml(vendorInvoice)}</td>
-                  <td style="text-align:center;">${escapeHtml(t.paymentMethod || "-")}</td>
-                  <td style="text-align:right;font-family:monospace;font-weight:700;color:${amtColor};">${signedAmt}</td>
-                  <td style="text-align:right;font-family:monospace;">฿${fmtMoney(t.balanceAfter)}</td>
-                  <td style="text-align:center;">${escapeHtml(t.status)}</td>
+                  <td style="color:#475569;">${escapeHtml(vendorInvoice)}</td>
+                  <td style="text-align:center;">${escapeHtml(t.paymentMethod || "–")}</td>
+                  <td class="num" style="font-weight:700;color:${amtColor};">${signedAmt}</td>
+                  <td class="num" style="color:#334155;">฿${fmtMoney(t.balanceAfter)}</td>
+                  <td style="text-align:center;"><span class="status-pill" style="${statusStyle}">${escapeHtml(t.status)}</span></td>
                 </tr>
               `;
             })
             .join("")
-        : `<tr><td colspan="12" style="text-align:center;color:#94a3b8;padding:12px;">ไม่มีรายการเดินบัญชีในช่วงเวลานี้</td></tr>`;
+        : `<tr><td colspan="12" style="text-align:center;color:#94a3b8;padding:16px;">No ledger transactions found in this period.</td></tr>`;
 
     const htmlContent = `<!DOCTYPE html>
-<html lang="th">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>${escapeHtml(fileTitle)}</title>
-  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     @page { size: A4 landscape; margin: 10mm; }
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     body {
-      font-family: 'Sarabun', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: 'Inter', 'Noto Sans Thai', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       color: #0f172a;
       margin: 0;
       padding: 0;
       font-size: 10.5px;
+      line-height: 1.45;
+      background: #ffffff;
+    }
+    .num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
     .header {
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
-      border-bottom: 2px solid #1e293b;
-      padding-bottom: 8px;
-      margin-bottom: 10px;
+      align-items: flex-end;
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 10px;
+      margin-bottom: 12px;
     }
-    .title { font-size: 17px; font-weight: 700; margin: 0; }
-    .subtitle { font-size: 11px; color: #475569; margin-top: 3px; }
+    .brand-tag {
+      display: inline-block;
+      font-size: 8.5px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #4f46e5;
+      background: #eef2ff;
+      padding: 2px 7px;
+      border-radius: 4px;
+      margin-bottom: 4px;
+    }
+    .title {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #0f172a;
+      margin: 0;
+    }
+    .subtitle {
+      font-size: 10.5px;
+      color: #475569;
+      margin-top: 3px;
+    }
+    .meta-box {
+      text-align: right;
+      font-size: 10px;
+      color: #475569;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 6px 10px;
+      line-height: 1.5;
+    }
     .section-title {
-      font-size: 12px;
+      font-size: 11.5px;
       font-weight: 700;
-      color: #1e293b;
-      margin: 12px 0 6px 0;
+      color: #0f172a;
+      margin: 14px 0 6px 0;
       padding-left: 8px;
       border-left: 3px solid #4f46e5;
+      letter-spacing: -0.01em;
     }
     .kpi-grid {
       display: grid;
@@ -2122,123 +2167,157 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       margin-bottom: 12px;
     }
     .kpi-card {
-      border: 1px solid #cbd5e1;
+      border: 1px solid #e2e8f0;
+      border-top: 3px solid #cbd5e1;
       border-radius: 8px;
-      padding: 7px 10px;
-      background: #f8fafc;
+      padding: 8px 10px;
+      background: #ffffff;
     }
-    .kpi-label { font-size: 9.5px; color: #64748b; font-weight: 700; text-transform: uppercase; }
-    .kpi-val { font-size: 13.5px; font-weight: 700; margin-top: 2px; font-family: monospace; }
-    .kpi-sub { font-size: 9.5px; color: #64748b; margin-top: 2px; }
+    .kpi-label {
+      font-size: 8.5px;
+      color: #64748b;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .kpi-val {
+      font-size: 14.5px;
+      font-weight: 800;
+      margin-top: 3px;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+    .kpi-sub {
+      font-size: 9px;
+      color: #64748b;
+      margin-top: 2px;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
       font-size: 10px;
       margin-bottom: 10px;
+      border: 1px solid #e2e8f0;
     }
     th, td {
-      border: 1px solid #cbd5e1;
-      padding: 4.5px 6px;
-      vertical-align: top;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 6px 7px;
+      vertical-align: middle;
       text-align: left;
     }
     th {
-      background: #f1f5f9;
+      background: #f8fafc;
+      font-size: 9px;
       font-weight: 700;
-      color: #1e293b;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: #475569;
       white-space: nowrap;
+      border-bottom: 1.5px solid #cbd5e1;
     }
-    tr:nth-child(even) td { background: #fafafa; }
+    tbody tr:nth-child(even) td { background: #fafbfc; }
     tfoot td {
       background: #f1f5f9 !important;
       font-weight: 700;
-      border-top: 2px solid #64748b;
+      border-top: 1.5px solid #94a3b8;
+      color: #0f172a;
+    }
+    .status-pill {
+      display: inline-block;
+      padding: 1.5px 6px;
+      border-radius: 999px;
+      font-size: 8.5px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
     }
     .sig-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 24px;
-      margin-top: 22px;
+      gap: 28px;
+      margin-top: 24px;
       page-break-inside: avoid;
     }
     .sig-box {
       text-align: center;
       padding-top: 28px;
-      font-size: 10.5px;
-      color: #334155;
+      font-size: 10px;
+      color: #475569;
     }
     .sig-line {
-      border-top: 1px dashed #64748b;
-      width: 75%;
+      border-top: 1px solid #94a3b8;
+      width: 72%;
       margin: 0 auto 4px auto;
-      padding-top: 4px;
+      padding-top: 5px;
+      color: #0f172a;
     }
   </style>
 </head>
 <body>
   <div class="header">
     <div>
-      <h1 class="title">รายงานสรุปเงินสดย่อย: ยอดเติมเข้า - ยอดใช้ไป & ยอดเบิกชดเชย (Petty Cash Report)</h1>
+      <div class="brand-tag">That Laundry Shop • Finance &amp; Operations</div>
+      <h1 class="title">Petty Cash Summary &amp; Replenishment Report</h1>
       <div class="subtitle">
-        <strong>ช่วงเวลาข้อมูล:</strong> ${escapeHtml(periodLabel)} &nbsp;|&nbsp;
-        <strong>จำนวนรายการเดินบัญชี:</strong> ${filteredTransactions.length} รายการ
+        <strong>Period:</strong> ${escapeHtml(periodLabel)} &nbsp;•&nbsp;
+        <strong>Transactions:</strong> ${filteredTransactions.length} ${filteredTransactions.length === 1 ? "record" : "records"}
       </div>
     </div>
-    <div style="text-align:right;font-size:10.5px;color:#475569;">
-      <div><strong>วันที่พิมพ์:</strong> ${escapeHtml(nowStr)}</div>
-      <div><strong>ผู้พิมพ์รายงาน:</strong> ${escapeHtml(currentUser?.name || currentUser?.email || "-")}</div>
+    <div class="meta-box">
+      <div><strong>Printed:</strong> ${escapeHtml(nowStr)}</div>
+      <div><strong>Prepared By:</strong> ${escapeHtml(currentUser?.name || currentUser?.email || "–")}</div>
     </div>
   </div>
 
   <div class="kpi-grid">
-    <div class="kpi-card">
-      <div class="kpi-label">คงเหลือรวมปัจจุบัน (Total Balance)</div>
-      <div class="kpi-val">฿${fmtMoney(holderFilter === "ALL" ? dashboardDetails.totalWalletBalanceAll : kpiStats.netBalance)}</div>
-      <div class="kpi-sub">วงเงินรวม: ฿${fmtMoney(dashboardDetails.totalLimitAll)}</div>
+    <div class="kpi-card" style="border-top-color:#0f172a;">
+      <div class="kpi-label">Total Balance</div>
+      <div class="kpi-val" style="color:#0f172a;">฿${fmtMoney(holderFilter === "ALL" ? dashboardDetails.totalWalletBalanceAll : kpiStats.netBalance)}</div>
+      <div class="kpi-sub">Total Quota: ฿${fmtMoney(dashboardDetails.totalLimitAll)}</div>
     </div>
-    <div class="kpi-card">
-      <div class="kpi-label">เติมเงินจากบริษัท (+Company Top-up)</div>
+    <div class="kpi-card" style="border-top-color:#059669;">
+      <div class="kpi-label">Company Top-up</div>
       <div class="kpi-val" style="color:#059669;">+฿${fmtMoney(kpiStats.companyTopupTotal)}</div>
-      <div class="kpi-sub">เติมเข้าบัญชี ${dashboardDetails.topupTxCount} รายการ</div>
+      <div class="kpi-sub">${dashboardDetails.topupTxCount} top-up ${dashboardDetails.topupTxCount === 1 ? "entry" : "entries"}</div>
     </div>
-    <div class="kpi-card">
-      <div class="kpi-label">โอนเติมให้สาขา (Store Transfers)</div>
+    <div class="kpi-card" style="border-top-color:#0284c7;">
+      <div class="kpi-label">Store Transfers</div>
       <div class="kpi-val" style="color:#0284c7;">฿${fmtMoney(kpiStats.transferredToStoreTotal)}</div>
-      <div class="kpi-sub">โอนวงเงิน ${dashboardDetails.transferTxCount} รายการ</div>
+      <div class="kpi-sub">${dashboardDetails.transferTxCount} ${dashboardDetails.transferTxCount === 1 ? "transfer" : "transfers"}</div>
     </div>
-    <div class="kpi-card">
-      <div class="kpi-label">ใช้จ่ายจริงรวม (-Total Expenses)</div>
+    <div class="kpi-card" style="border-top-color:#e11d48;">
+      <div class="kpi-label">Total Expenses</div>
       <div class="kpi-val" style="color:#e11d48;">-฿${fmtMoney(kpiStats.realExpenseTotal)}</div>
-      <div class="kpi-sub">อนุมัติแล้ว: ฿${fmtMoney(dashboardDetails.approvedExpenseTotal)} (${dashboardDetails.expenseTxCount} บิล)</div>
+      <div class="kpi-sub">Approved: ฿${fmtMoney(dashboardDetails.approvedExpenseTotal)} (${dashboardDetails.expenseTxCount} bills)</div>
     </div>
-    <div class="kpi-card">
-      <div class="kpi-label">คงเหลือ บัญชี / หน้าร้าน</div>
-      <div class="kpi-val" style="color:#4f46e5;font-size:12px;">บัญชี ฿${fmtMoney(kpiStats.accountingPoolBalance)}</div>
-      <div class="kpi-sub">หน้าร้าน: ฿${fmtMoney(kpiStats.storePoolBalance)}</div>
+    <div class="kpi-card" style="border-top-color:#4f46e5;">
+      <div class="kpi-label">Pool Breakdown</div>
+      <div class="kpi-val" style="color:#4f46e5;font-size:12.5px;">Acct: ฿${fmtMoney(kpiStats.accountingPoolBalance)}</div>
+      <div class="kpi-sub">Stores: ฿${fmtMoney(kpiStats.storePoolBalance)}</div>
     </div>
-    <div class="kpi-card">
-      <div class="kpi-label">ต้องเบิกชดเชยเพิ่ม (To Replenish)</div>
+    <div class="kpi-card" style="border-top-color:#d97706;">
+      <div class="kpi-label">To Replenish</div>
       <div class="kpi-val" style="color:#d97706;">฿${fmtMoney(dashboardDetails.totalShortfallAll)}</div>
-      <div class="kpi-sub">รอตรวจบิล: ${kpiStats.pendingCount} รายการ (฿${fmtMoney(kpiStats.pendingAmount)})</div>
+      <div class="kpi-sub">Pending Audit: ${kpiStats.pendingCount} (฿${fmtMoney(kpiStats.pendingAmount)})</div>
     </div>
   </div>
 
-  <div class="section-title">1. ตารางสรุปยอดเติมเงิน - ยอดใช้ไป และยอดต้องเบิกชดเชย แยกตามผู้ถือเงินสดย่อย (Custodian Replenishment & Usage Summary)</div>
+  <div class="section-title">1. Custodian Replenishment &amp; Usage Summary</div>
   <table>
     <thead>
       <tr>
-        <th style="text-align:center;width:26px;">#</th>
-        <th>ผู้ถือเงินสดย่อย (Custodian)</th>
-        <th>แผนก / สาขา</th>
-        <th style="text-align:right;">วงเงินตั้งต้น (Quota)</th>
-        <th style="text-align:right;">ยอดยกมาต้นงวด</th>
-        <th style="text-align:right;">เติมจากบริษัท (+)</th>
-        <th style="text-align:right;">รับโอนจากบัญชี (+)</th>
-        <th style="text-align:right;">รวมเติมเข้าในงวด (+)</th>
-        <th style="text-align:right;">โอนให้สาขา (-)</th>
-        <th style="text-align:right;">ใช้จ่ายจริงในงวด (-)</th>
-        <th style="text-align:right;">คงเหลือปัจจุบัน</th>
-        <th style="text-align:right;">ต้องเติมเพิ่ม (Shortfall)</th>
+        <th style="text-align:center;width:28px;">#</th>
+        <th>Custodian</th>
+        <th>Dept / Branch</th>
+        <th style="text-align:right;">Quota</th>
+        <th style="text-align:right;">Opening</th>
+        <th style="text-align:right;">Company (+)</th>
+        <th style="text-align:right;">Transfer In (+)</th>
+        <th style="text-align:right;">Total In (+)</th>
+        <th style="text-align:right;">Transfer Out (-)</th>
+        <th style="text-align:right;">Expenses (-)</th>
+        <th style="text-align:right;">Current Bal.</th>
+        <th style="text-align:right;">Shortfall</th>
       </tr>
     </thead>
     <tbody>
@@ -2246,29 +2325,29 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     </tbody>
     <tfoot>
       <tr>
-        <td colspan="3" style="text-align:right;">รวมทั้งหมด (${dashboardDetails.visibleHolderSummaries.length} กระเป๋า)</td>
-        <td style="text-align:right;font-family:monospace;">฿${fmtMoney(sumLimit)}</td>
-        <td style="text-align:right;font-family:monospace;">฿${fmtMoney(sumOpening)}</td>
-        <td style="text-align:right;font-family:monospace;color:#059669;">+฿${fmtMoney(sumCompanyTopup)}</td>
-        <td style="text-align:right;font-family:monospace;color:#0284c7;">+฿${fmtMoney(sumTransferIn)}</td>
-        <td style="text-align:right;font-family:monospace;color:#059669;">+฿${fmtMoney(sumTotalTopup)}</td>
-        <td style="text-align:right;font-family:monospace;color:#6366f1;">-฿${fmtMoney(sumTransferOut)}</td>
-        <td style="text-align:right;font-family:monospace;color:#e11d48;">-฿${fmtMoney(sumExpense)}</td>
-        <td style="text-align:right;font-family:monospace;">฿${fmtMoney(sumCurrentBal)}</td>
-        <td style="text-align:right;font-family:monospace;color:#d97706;">฿${fmtMoney(sumShortfall)}</td>
+        <td colspan="3" style="text-align:right;">Total (${dashboardDetails.visibleHolderSummaries.length} Wallets)</td>
+        <td class="num">฿${fmtMoney(sumLimit)}</td>
+        <td class="num">฿${fmtMoney(sumOpening)}</td>
+        <td class="num" style="color:#059669;">+฿${fmtMoney(sumCompanyTopup)}</td>
+        <td class="num" style="color:#0284c7;">+฿${fmtMoney(sumTransferIn)}</td>
+        <td class="num" style="color:#059669;">+฿${fmtMoney(sumTotalTopup)}</td>
+        <td class="num" style="color:#6366f1;">-฿${fmtMoney(sumTransferOut)}</td>
+        <td class="num" style="color:#e11d48;">-฿${fmtMoney(sumExpense)}</td>
+        <td class="num">฿${fmtMoney(sumCurrentBal)}</td>
+        <td class="num" style="color:#d97706;">฿${fmtMoney(sumShortfall)}</td>
       </tr>
     </tfoot>
   </table>
 
-  <div class="section-title">2. สรุปค่าใช้จ่ายแยกตามหมวดหมู่ (Expense Breakdown by Category)</div>
+  <div class="section-title">2. Expense Breakdown by Category</div>
   <table style="width:65%;">
     <thead>
       <tr>
         <th style="text-align:center;width:28px;">#</th>
-        <th>หมวดหมู่ค่าใช้จ่าย (Category)</th>
-        <th style="text-align:center;width:110px;">จำนวนบิล</th>
-        <th style="text-align:right;width:150px;">ยอดใช้จ่ายจริง (THB)</th>
-        <th style="text-align:right;width:90px;">สัดส่วน (%)</th>
+        <th>Category</th>
+        <th style="text-align:center;width:100px;">Bills</th>
+        <th style="text-align:right;width:150px;">Total Expense (THB)</th>
+        <th style="text-align:right;width:85px;">Share (%)</th>
       </tr>
     </thead>
     <tbody>
@@ -2276,30 +2355,30 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     </tbody>
     <tfoot>
       <tr>
-        <td colspan="2" style="text-align:right;">รวมค่าใช้จ่ายจริงทั้งหมด</td>
-        <td style="text-align:center;font-family:monospace;">${dashboardDetails.expenseTxCount} รายการ</td>
-        <td style="text-align:right;font-family:monospace;color:#e11d48;">-฿${fmtMoney(kpiStats.realExpenseTotal)}</td>
-        <td style="text-align:right;font-family:monospace;">100.0%</td>
+        <td colspan="2" style="text-align:right;">Total Expenses</td>
+        <td class="num" style="text-align:center;">${dashboardDetails.expenseTxCount} ${dashboardDetails.expenseTxCount === 1 ? "bill" : "bills"}</td>
+        <td class="num" style="color:#e11d48;">-฿${fmtMoney(kpiStats.realExpenseTotal)}</td>
+        <td class="num">100.0%</td>
       </tr>
     </tfoot>
   </table>
 
-  <div class="section-title">3. รายการเดินบัญชีเงินสดย่อยละเอียด (Detailed Transaction Ledger)</div>
+  <div class="section-title">3. Detailed Transaction Ledger</div>
   <table>
     <thead>
       <tr>
         <th style="text-align:center;width:28px;">#</th>
-        <th>เลขที่รายการ</th>
-        <th>วัน-เวลา</th>
-        <th>ผู้ถือเงินสดย่อย / สาขา</th>
-        <th>ประเภท</th>
-        <th>หมวดหมู่</th>
-        <th>รายละเอียด</th>
-        <th>ร้านค้า / เลขที่บิล</th>
-        <th style="text-align:center;">ช่องทาง</th>
-        <th style="text-align:right;">จำนวนเงิน</th>
-        <th style="text-align:right;">คงเหลือหลังทำรายการ</th>
-        <th style="text-align:center;">สถานะ</th>
+        <th>Ref No.</th>
+        <th>Date &amp; Time</th>
+        <th>Custodian / Branch</th>
+        <th>Type</th>
+        <th>Category</th>
+        <th>Description</th>
+        <th>Vendor / Invoice</th>
+        <th style="text-align:center;">Method</th>
+        <th style="text-align:right;">Amount</th>
+        <th style="text-align:right;">Balance After</th>
+        <th style="text-align:center;">Status</th>
       </tr>
     </thead>
     <tbody>
@@ -2309,16 +2388,16 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
 
   <div class="sig-grid">
     <div class="sig-box">
-      <div class="sig-line"><strong>ผู้สรุป / ผู้ขอเบิกชดเชย (Prepared By)</strong></div>
-      <div>วันที่ ____/____/________</div>
+      <div class="sig-line"><strong>Prepared By</strong></div>
+      <div>Date: ____ / ____ / ________</div>
     </div>
     <div class="sig-box">
-      <div class="sig-line"><strong>ผู้ตรวจสอบฝ่ายบัญชี (Verified By Accounting)</strong></div>
-      <div>วันที่ ____/____/________</div>
+      <div class="sig-line"><strong>Verified By (Accounting)</strong></div>
+      <div>Date: ____ / ____ / ________</div>
     </div>
     <div class="sig-box">
-      <div class="sig-line"><strong>ผู้อนุมัติจ่ายชดเชย (Approved By)</strong></div>
-      <div>วันที่ ____/____/________</div>
+      <div class="sig-line"><strong>Approved By</strong></div>
+      <div>Date: ____ / ____ / ________</div>
     </div>
   </div>
 
@@ -2346,32 +2425,32 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
   return (
     <div className="space-y-4 pb-12 font-sans text-slate-900">
       {/* ── 1. MODERN MINIMALIST HEADER & DATE / ACTION BAR ───────────────────── */}
-      <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-        <div className="flex items-center gap-3.5">
+      <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center shrink-0 shadow-xs">
             <Wallet size={20} />
           </div>
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-lg font-extrabold text-slate-900 tracking-tight">
+              <h1 className="text-lg font-extrabold text-slate-900 tracking-tight whitespace-nowrap">
                 Petty Cash
               </h1>
-              <span className="text-xs font-medium text-slate-400">
+              <span className="text-xs font-medium text-slate-400 whitespace-nowrap">
                 ระบบบริหารเงินสดย่อย
               </span>
-              <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70 text-[10.5px] font-semibold">
+              <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70 text-[10.5px] font-semibold whitespace-nowrap">
                 {holderSummaries.length} Wallets
               </span>
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-xs text-slate-500 mt-0.5 truncate">
               Custodian wallets, instant expense tracking & replenishment
             </p>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap xl:flex-nowrap items-center gap-1.5 shrink-0">
           {/* Compact Date Filter Segment */}
-          <div className="flex flex-wrap items-center gap-1 bg-slate-100/80 border border-slate-200/70 rounded-xl p-1">
+          <div className="flex flex-wrap sm:flex-nowrap items-center gap-1 bg-slate-100/80 border border-slate-200/70 rounded-xl p-1">
             {(() => {
               const todayStr = format(new Date(), "yyyy-MM-dd");
               const now = new Date();
@@ -2397,7 +2476,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                       key={p.label}
                       type="button"
                       onClick={p.onClick}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer ${
+                      className={`px-2 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap transition-all cursor-pointer ${
                         p.active
                           ? "bg-white text-slate-900 shadow-2xs"
                           : "text-slate-500 hover:text-slate-800"
@@ -2415,7 +2494,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 type="date"
                 value={dateFrom}
                 onChange={(e) => setDateFrom(e.target.value)}
-                className="h-7 w-[116px] text-[11px] font-mono rounded-lg border-transparent bg-white/80 hover:bg-white px-2"
+                className="h-7 w-[108px] text-[11px] font-mono rounded-lg border-transparent bg-white/80 hover:bg-white px-1.5"
                 title="From Date"
               />
               <span className="text-slate-400 text-xs">–</span>
@@ -2423,7 +2502,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 type="date"
                 value={dateTo}
                 onChange={(e) => setDateTo(e.target.value)}
-                className="h-7 w-[116px] text-[11px] font-mono rounded-lg border-transparent bg-white/80 hover:bg-white px-2"
+                className="h-7 w-[108px] text-[11px] font-mono rounded-lg border-transparent bg-white/80 hover:bg-white px-1.5"
                 title="To Date"
               />
             </div>
@@ -2435,7 +2514,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
             size="sm"
             onClick={loadData}
             disabled={isLoading}
-            className="h-9 w-9 p-0 border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-xl cursor-pointer"
+            className="h-9 w-8 p-0 border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-xl cursor-pointer shrink-0"
             title="Refresh"
           >
             <RefreshCw size={14} className={isLoading ? "animate-spin text-indigo-600" : ""} />
@@ -2452,23 +2531,23 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                   setNewCategoryInput("");
                   setCatModalOpen(true);
                 }}
-                className="h-9 px-3 text-xs font-semibold border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl gap-1.5 cursor-pointer"
+                className="h-9 px-2.5 text-[11.5px] font-semibold border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl gap-1 cursor-pointer whitespace-nowrap shrink-0"
               >
-                <Settings2 size={14} className="text-slate-400" />
+                <Settings2 size={13.5} className="text-slate-400" />
                 <span>Categories</span>
               </Button>
 
-              <div className="relative" ref={exportMenuRef}>
+              <div className="relative shrink-0" ref={exportMenuRef}>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   onClick={() => setExportMenuOpen((prev) => !prev)}
-                  className="h-9 px-3 text-xs font-semibold border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl gap-1.5 cursor-pointer"
+                  className="h-9 px-2.5 text-[11.5px] font-semibold border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl gap-1 cursor-pointer whitespace-nowrap"
                 >
-                  <Download size={14} className="text-slate-500" />
+                  <Download size={13.5} className="text-slate-500" />
                   <span>Export</span>
-                  <ChevronDown size={13} className={`text-slate-400 transition-transform ${exportMenuOpen ? "rotate-180" : ""}`} />
+                  <ChevronDown size={12.5} className={`text-slate-400 transition-transform ${exportMenuOpen ? "rotate-180" : ""}`} />
                 </Button>
 
                 {exportMenuOpen && (
@@ -2503,9 +2582,9 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                     branchId: currentUser?.branchId || holderSummaries[0]?.branchId || "HQ",
                   })
                 }
-                className="h-9 px-3.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl gap-1.5 shadow-2xs cursor-pointer"
+                className="h-9 px-2.5 text-[11.5px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl gap-1 shadow-2xs cursor-pointer whitespace-nowrap shrink-0"
               >
-                <Plus size={14} />
+                <Plus size={13.5} />
                 <span>Top-up (เติมเงิน)</span>
               </Button>
             </>
@@ -2515,20 +2594,20 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
             type="button"
             size="sm"
             onClick={() => handleOpenSubmitReportModal()}
-            className="h-9 px-3.5 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-1.5 shadow-2xs cursor-pointer"
+            className="h-9 px-2.5 text-[11.5px] font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-1 shadow-2xs cursor-pointer whitespace-nowrap shrink-0"
             title="สรุป Report การใช้จ่ายของรอบนี้เพื่อขอเบิกชดเชยเงินสดย่อย"
           >
-            <Files size={14} />
-            <span>Submit Replenishment Report (สรุปเบิกเงินสดย่อย)</span>
+            <Files size={13.5} />
+            <span>Submit Report (สรุปเบิกเงินสดย่อย)</span>
           </Button>
 
           <Button
             type="button"
             size="sm"
             onClick={() => handleOpenCreateModal("EXPENSE", undefined, "EXPENSE_DOC")}
-            className="h-9 px-3.5 text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white rounded-xl gap-1.5 shadow-2xs cursor-pointer"
+            className="h-9 px-2.5 text-[11.5px] font-bold bg-slate-900 hover:bg-slate-800 text-white rounded-xl gap-1 shadow-2xs cursor-pointer whitespace-nowrap shrink-0"
           >
-            <ArrowUpRight size={14} />
+            <ArrowUpRight size={13.5} />
             <span>Record Expense (เบิกจ่าย)</span>
           </Button>
         </div>
@@ -2712,6 +2791,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
           {(canApproveOrTopUp
             ? [
                 { id: "ledger", label: "Transactions (รายการเดินบัญชี)", count: filteredTransactions.length, badgeColor: "" },
+                { id: "wallets", label: "Custodian Wallets (กระเป๋ารายบุคคล)", count: holderSummaries.length, badgeColor: "" },
                 {
                   id: "claims",
                   label: "Replenishment Claims (สรุปเบิกเงินสดย่อย)",
@@ -2720,7 +2800,6 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                     ? "bg-amber-600 text-white"
                     : "",
                 },
-                { id: "wallets", label: "Custodian Wallets (กระเป๋ารายบุคคล)", count: holderSummaries.length, badgeColor: "" },
                 { id: "report", label: "Summary & Analytics (ตารางสรุปยอด)", count: null, badgeColor: "" },
               ]
             : [
@@ -3678,7 +3757,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
 
       {/* ── CREATE / EDIT TRANSACTION MODAL ───────────────────────── */}
       <Dialog open={txModalOpen} onOpenChange={setTxModalOpen}>
-        <DialogContent className={`${txMode === "TOPUP" && !editingTx ? "sm:max-w-lg" : "sm:max-w-xl"} bg-white rounded-2xl max-h-[92vh] overflow-y-auto overflow-x-hidden`}>
+        <DialogContent className={`${txMode === "TOPUP" && !editingTx ? "sm:max-w-lg" : "w-[95vw] sm:max-w-3xl"} bg-white rounded-2xl max-h-[92vh] overflow-y-auto overflow-x-hidden p-5 sm:p-6`}>
           {txMode === "TOPUP" && !editingTx ? (
             (() => {
               const recipientSummary = holderSummaries.find((h) => h.holderId === formHolderId);
@@ -4067,26 +4146,26 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
             })()
           ) : (
             <>
-          <DialogHeader>
-            <DialogTitle className="text-base font-black text-slate-900 flex items-center gap-2">
+          <DialogHeader className="pb-3 border-b border-slate-100">
+            <DialogTitle className="text-base sm:text-lg font-black text-slate-900 flex items-center gap-2.5">
               {txMode === "TOPUP" ? (
                 <>
-                  <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center">
-                    <ArrowDownLeft size={16} />
+                  <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <ArrowDownLeft size={18} />
                   </div>
                   <span>{editingTx ? "Edit Company Top-up (แก้ไขรายการรับเงินบริษัท)" : "Company Top-up (รับเงินโอนจากบริษัท)"}</span>
                 </>
               ) : txMode === "TRANSFER" ? (
                 <>
-                  <div className="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center">
-                    <ArrowLeftRight size={16} />
+                  <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <ArrowLeftRight size={18} />
                   </div>
                   <span>{editingTx ? "Edit Transfer (แก้ไขรายการโอนวงเงินสดย่อย)" : "Transfer Petty Cash (โอนวงเงินสดย่อย)"}</span>
                 </>
               ) : (
                 <>
-                  <div className="w-7 h-7 rounded-lg bg-rose-600 text-white flex items-center justify-center">
-                    <ArrowUpRight size={16} />
+                  <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <ArrowUpRight size={18} />
                   </div>
                   <span>
                     {editingTx
@@ -4096,7 +4175,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 </>
               )}
             </DialogTitle>
-            <DialogDescription className="text-xs text-slate-500">
+            <DialogDescription className="text-xs text-slate-500 pl-11.5">
               {txMode === "TOPUP"
                 ? "Record petty cash received from the company into the selected custodian's wallet (บันทึกยอดโอนจากบริษัทเข้ากระเป๋าผู้ถือเงินสดย่อย)"
                 : txMode === "TRANSFER"
@@ -4105,119 +4184,72 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
             </DialogDescription>
           </DialogHeader>
 
-
-
-          <div className="space-y-3.5 py-1 text-xs">
-            {/* Row 1: Holder / Recipient & Branch */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label className="text-[11px] font-bold text-slate-700 flex items-center justify-between">
-                  <span>
-                    {txMode === "TRANSFER"
-                      ? "From Holder (ผู้โอนต้นทาง)"
-                      : txMode === "TOPUP"
-                        ? "Recipient (ผู้รับเงินโอนจากบริษัท)"
-                        : "Petty Cash Holder (ผู้ถือเงินสดย่อย)"}{" "}
-                    <span className="text-rose-500">*</span>
-                  </span>
-                  <span className="text-[10px] font-mono font-bold text-emerald-700">
-                    Bal (คงเหลือ): ฿{(
-                      txMode === "TOPUP"
-                        ? (holderSummaries.find((h) => h.holderId === formHolderId)?.currentBalance ?? 0)
-                        : currentUserBalance
-                    ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                </Label>
-                {txMode === "TOPUP" && canApproveOrTopUp ? (
-                  <select
-                    value={formHolderId}
-                    onChange={(e) => {
-                      const id = e.target.value;
-                      setFormHolderId(id);
-                      const found = holderOptions.find((h) => h.id === id);
-                      if (found) {
-                        setFormHolderName(found.name);
-                        setFormBranchId(found.branchId || "HQ");
-                      }
-                    }}
-                    className="h-9 w-full rounded-xl border border-emerald-300 bg-emerald-50/40 px-2.5 text-xs font-bold text-slate-900 outline-none focus:border-emerald-600"
-                  >
-                    {holderOptions.map((h) => (
-                      <option key={h.id} value={h.id}>
-                        {h.name} ({h.roleLabel}) — {getBranchDisplayName(h.branchId)}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <div className="h-9 w-full rounded-xl border border-slate-200 bg-slate-100/90 px-3 text-xs font-bold text-slate-700 flex items-center justify-between select-none cursor-not-allowed">
+          <div className="space-y-4 py-2 text-xs">
+            {/* Section 1: Holder, Branch & Payment Summary */}
+            <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-200/80 space-y-3.5">
+              {/* Row 1: Holder / Recipient & Branch */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                <div className="space-y-1.5">
+                  <Label className="text-[11px] font-bold text-slate-700 flex items-center justify-between gap-2">
                     <span className="truncate">
-                      {formHolderName || currentUser?.name || currentUser?.email || "Current User"}
-                      {currentUser?.role && (!editingTx || editingTx.holderId === currentUser?.id)
-                        ? ` (${String(currentUser.role).toUpperCase()})`
-                        : ""}
+                      {txMode === "TRANSFER"
+                        ? "From Holder (ผู้โอนต้นทาง)"
+                        : txMode === "TOPUP"
+                          ? "Recipient (ผู้รับเงินโอนจากบริษัท)"
+                          : "Petty Cash Holder (ผู้ถือเงินสดย่อย)"}{" "}
+                      <span className="text-rose-500">*</span>
                     </span>
-                    <Badge className="bg-slate-200/80 text-slate-600 border-slate-300 text-[9px] font-bold px-1.5 py-0 shrink-0">
-                      Fixed User
-                    </Badge>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-[11px] font-bold text-slate-700">
-                  {txMode === "TRANSFER" ? "Source Branch (สาขาต้นทาง)" : "Branch (สาขา)"}
-                </Label>
-                <select
-                  value={formBranchId}
-                  onChange={(e) => setFormBranchId(e.target.value)}
-                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 outline-none focus:border-indigo-500"
-                >
-                  <option value="HQ">Head Quarter (สำนักงานใหญ่)</option>
-                  {shops.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* Row 1.5 (Only in TRANSFER mode): Target Store/Branch Recipient & Target Branch */}
-            {txMode === "TRANSFER" && !editingTx && (
-              <div className="p-3 rounded-xl bg-indigo-50/70 border border-indigo-200/90 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label className="text-[11px] font-bold text-indigo-950">
-                    Transfer To (ผู้รับโอนปลายทาง) <span className="text-rose-500">*</span>
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200/80 text-[10.5px] font-mono font-bold text-emerald-700 whitespace-nowrap shrink-0">
+                      คงเหลือ: ฿{(
+                        txMode === "TOPUP"
+                          ? (holderSummaries.find((h) => h.holderId === formHolderId)?.currentBalance ?? 0)
+                          : currentUserBalance
+                      ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
                   </Label>
-                  <select
-                    value={formTargetHolderId}
-                    onChange={(e) => {
-                      const id = e.target.value;
-                      setFormTargetHolderId(id);
-                      const found = transferRecipientOptions.find((h) => h.id === id);
-                      if (found) {
-                        setFormTargetHolderName(found.name);
-                        setFormTargetBranchId(found.branchId || "HQ");
-                      }
-                    }}
-                    className="h-9 w-full rounded-xl border border-indigo-300 bg-white px-2.5 text-xs font-bold text-slate-900 outline-none focus:border-indigo-600"
-                  >
-                    <option value="">-- Select Recipient (เลือกผู้รับโอน) --</option>
-                    {transferRecipientOptions.map((h) => (
-                      <option key={h.id} value={h.id}>
-                        {h.isAccounting ? "💼 " : "🏪 "}
-                        {h.name} ({h.roleLabel})
-                      </option>
-                    ))}
-                  </select>
+                  {txMode === "TOPUP" && canApproveOrTopUp ? (
+                    <select
+                      value={formHolderId}
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        setFormHolderId(id);
+                        const found = holderOptions.find((h) => h.id === id);
+                        if (found) {
+                          setFormHolderName(found.name);
+                          setFormBranchId(found.branchId || "HQ");
+                        }
+                      }}
+                      className="h-10 w-full rounded-xl border border-emerald-300 bg-white px-3 text-xs font-bold text-slate-900 outline-none focus:border-emerald-600 shadow-2xs"
+                    >
+                      {holderOptions.map((h) => (
+                        <option key={h.id} value={h.id}>
+                          {h.name} ({h.roleLabel}) — {getBranchDisplayName(h.branchId)}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="h-10 w-full rounded-xl border border-slate-200 bg-white/90 px-3 text-xs font-bold text-slate-700 flex items-center justify-between gap-2 select-none cursor-not-allowed">
+                      <span className="truncate">
+                        {formHolderName || currentUser?.name || currentUser?.email || "Current User"}
+                        {currentUser?.role && (!editingTx || editingTx.holderId === currentUser?.id)
+                          ? ` (${String(currentUser.role).toUpperCase()})`
+                          : ""}
+                      </span>
+                      <Badge className="bg-slate-100 text-slate-600 border-slate-200 text-[10px] font-bold px-2 py-0.5 shrink-0">
+                        Fixed User
+                      </Badge>
+                    </div>
+                  )}
                 </div>
 
-                <div className="space-y-1">
-                  <Label className="text-[11px] font-bold text-indigo-950">Recipient Branch (สาขาผู้รับ)</Label>
+                <div className="space-y-1.5">
+                  <Label className="text-[11px] font-bold text-slate-700 flex items-center h-[21px]">
+                    {txMode === "TRANSFER" ? "Source Branch (สาขาต้นทาง)" : "Branch (สาขา)"}
+                  </Label>
                   <select
-                    value={formTargetBranchId}
-                    onChange={(e) => setFormTargetBranchId(e.target.value)}
-                    className="h-9 w-full rounded-xl border border-indigo-300 bg-white px-2.5 text-xs font-medium text-slate-800 outline-none focus:border-indigo-600"
+                    value={formBranchId}
+                    onChange={(e) => setFormBranchId(e.target.value)}
+                    className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 shadow-2xs"
                   >
                     <option value="HQ">Head Quarter (สำนักงานใหญ่)</option>
                     {shops.map((s) => (
@@ -4228,46 +4260,110 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                   </select>
                 </div>
               </div>
-            )}
 
-            {/* Row 2: Amount & Date & Payment Method */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="space-y-1">
-                <Label className="text-[11px] font-bold text-slate-700">
-                  Amount ฿ (จำนวนเงิน) <span className="text-rose-500">*</span>
-                </Label>
-                <Input
-                  type="number"
-                  step="any"
-                  min="0"
-                  value={formAmount}
-                  onChange={(e) => setFormAmount(e.target.value)}
-                  placeholder="0.00"
-                  className="h-9 rounded-xl font-mono font-black text-sm border-slate-300"
-                />
-              </div>
+              {/* Row 1.5 (Only in TRANSFER mode): Target Store/Branch Recipient & Target Branch */}
+              {txMode === "TRANSFER" && !editingTx && (
+                <div className="p-3.5 rounded-xl bg-indigo-50/80 border border-indigo-200/90 grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] font-bold text-indigo-950">
+                      Transfer To (ผู้รับโอนปลายทาง) <span className="text-rose-500">*</span>
+                    </Label>
+                    <select
+                      value={formTargetHolderId}
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        setFormTargetHolderId(id);
+                        const found = transferRecipientOptions.find((h) => h.id === id);
+                        if (found) {
+                          setFormTargetHolderName(found.name);
+                          setFormTargetBranchId(found.branchId || "HQ");
+                        }
+                      }}
+                      className="h-10 w-full rounded-xl border border-indigo-300 bg-white px-3 text-xs font-bold text-slate-900 outline-none focus:border-indigo-600"
+                    >
+                      <option value="">-- Select Recipient (เลือกผู้รับโอน) --</option>
+                      {transferRecipientOptions.map((h) => (
+                        <option key={h.id} value={h.id}>
+                          {h.isAccounting ? "💼 " : "🏪 "}
+                          {h.name} ({h.roleLabel})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-              <div className="space-y-1">
-                <Label className="text-[11px] font-bold text-slate-700">Payment Method (ช่องทางจ่าย)</Label>
-                <select
-                  value={formPaymentMethod}
-                  onChange={(e) => setFormPaymentMethod(e.target.value)}
-                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-bold text-slate-800 outline-none focus:border-indigo-500"
-                >
-                  <option value="Cash">Cash (เงินสด)</option>
-                  <option value="Transfer">Bank Transfer (โอนเงิน)</option>
-                  <option value="QR">QR PromptPay (สแกน QR)</option>
-                </select>
-              </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] font-bold text-indigo-950">Recipient Branch (สาขาผู้รับ)</Label>
+                    <select
+                      value={formTargetBranchId}
+                      onChange={(e) => setFormTargetBranchId(e.target.value)}
+                      className="h-10 w-full rounded-xl border border-indigo-300 bg-white px-3 text-xs font-medium text-slate-800 outline-none focus:border-indigo-600"
+                    >
+                      <option value="HQ">Head Quarter (สำนักงานใหญ่)</option>
+                      {shops.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
 
-              <div className="space-y-1">
-                <Label className="text-[11px] font-bold text-slate-700">Date (วันที่)</Label>
-                <Input
-                  type="date"
-                  value={formDate ? formDate.slice(0, 10) : format(new Date(), "yyyy-MM-dd")}
-                  onChange={(e) => { const d = e.target.value; const timePart = formDate && formDate.includes("T") ? formDate.slice(11, 16) : format(new Date(), "HH:mm"); setFormDate(d ? `${d}T${timePart}` : format(new Date(), "yyyy-MM-dd'T'HH:mm")); }}
-                  className="h-9 rounded-xl text-xs border-slate-200"
-                />
+              {/* Row 2: Amount, Payment Method (1-click pills), Date */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-3.5">
+                <div className="md:col-span-4 space-y-1.5">
+                  <Label className="text-[11px] font-bold text-slate-700">
+                    Amount (จำนวนเงิน) <span className="text-rose-500">*</span>
+                  </Label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400 pointer-events-none">
+                      ฿
+                    </span>
+                    <Input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={formAmount}
+                      onChange={(e) => setFormAmount(e.target.value)}
+                      placeholder="0.00"
+                      className="h-10 pl-7 rounded-xl font-mono font-black text-base bg-white border-slate-300 focus:border-indigo-500 shadow-2xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="md:col-span-5 space-y-1.5">
+                  <Label className="text-[11px] font-bold text-slate-700">Payment Method (ช่องทางจ่าย)</Label>
+                  <div className="h-10 grid grid-cols-3 gap-1 p-1 rounded-xl bg-white border border-slate-200 shadow-2xs">
+                    {[
+                      { value: "Cash", label: "เงินสด" },
+                      { value: "Transfer", label: "โอนเงิน" },
+                      { value: "QR", label: "QR สแกน" },
+                    ].map((pm) => (
+                      <button
+                        key={pm.value}
+                        type="button"
+                        onClick={() => setFormPaymentMethod(pm.value)}
+                        className={`rounded-lg text-[11px] font-bold transition-all cursor-pointer whitespace-nowrap ${
+                          formPaymentMethod === pm.value
+                            ? "bg-slate-900 text-white shadow-xs"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        {pm.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="md:col-span-3 space-y-1.5">
+                  <Label className="text-[11px] font-bold text-slate-700">Date (วันที่)</Label>
+                  <Input
+                    type="date"
+                    value={formDate ? formDate.slice(0, 10) : format(new Date(), "yyyy-MM-dd")}
+                    onChange={(e) => { const d = e.target.value; const timePart = formDate && formDate.includes("T") ? formDate.slice(11, 16) : format(new Date(), "HH:mm"); setFormDate(d ? `${d}T${timePart}` : format(new Date(), "yyyy-MM-dd'T'HH:mm")); }}
+                    className="h-10 rounded-xl text-xs font-mono bg-white border-slate-200 shadow-2xs"
+                  />
+                </div>
               </div>
             </div>
 
@@ -4384,56 +4480,60 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
               </div>
             )}
 
-            {/* Row 4: Description */}
-            <div className="space-y-1">
-              <Label className="text-[11px] font-bold text-slate-700">
-                Description (รายละเอียดรายการ) {txMode !== "TRANSFER" && <span className="text-rose-500">*</span>}
-              </Label>
-              <Input
-                value={formDescription}
-                onChange={(e) => setFormDescription(e.target.value)}
-                placeholder={
-                  txMode === "TOPUP"
-                    ? "e.g. Weekly petty cash top-up from company (รับโอนวงเงินสดย่อยประจำสัปดาห์)..."
-                    : txMode === "TRANSFER"
-                      ? "e.g. Petty cash allocation to store (โอนวงเงินสดย่อยให้หน้าร้าน)..."
-                      : EXPENSE_DOC_TYPE_CONFIG[expenseDocType].descriptionPlaceholder
-                }
-                className="h-9 rounded-xl text-xs"
-              />
-            </div>
-
-            {/* Row 5: Invoice No. (for Expenses) */}
-            {txMode === "EXPENSE" && (
-              <div className="space-y-1">
+            {/* Row 4 & 5: Description & Invoice No. side-by-side */}
+            <div className={`grid grid-cols-1 ${txMode === "EXPENSE" ? "md:grid-cols-12" : ""} gap-3.5`}>
+              <div className={`${txMode === "EXPENSE" ? "md:col-span-7" : ""} space-y-1.5`}>
                 <Label className="text-[11px] font-bold text-slate-700">
-                  {EXPENSE_DOC_TYPE_CONFIG[expenseDocType].invoiceLabel}
+                  Description (รายละเอียดรายการ) {txMode !== "TRANSFER" && <span className="text-rose-500">*</span>}
                 </Label>
                 <Input
-                  value={formInvoiceNo}
-                  onChange={(e) => setFormInvoiceNo(e.target.value)}
-                  placeholder={EXPENSE_DOC_TYPE_CONFIG[expenseDocType].invoicePlaceholder}
-                  className="h-8 rounded-xl text-xs font-mono"
+                  value={formDescription}
+                  onChange={(e) => setFormDescription(e.target.value)}
+                  placeholder={
+                    txMode === "TOPUP"
+                      ? "e.g. Weekly petty cash top-up from company (รับโอนวงเงินสดย่อยประจำสัปดาห์)..."
+                      : txMode === "TRANSFER"
+                        ? "e.g. Petty cash allocation to store (โอนวงเงินสดย่อยให้หน้าร้าน)..."
+                        : EXPENSE_DOC_TYPE_CONFIG[expenseDocType].descriptionPlaceholder
+                  }
+                  className="h-10 rounded-xl text-xs"
                 />
               </div>
-            )}
+
+              {txMode === "EXPENSE" && (
+                <div className="md:col-span-5 space-y-1.5">
+                  <Label className="text-[11px] font-bold text-slate-700 truncate block">
+                    {EXPENSE_DOC_TYPE_CONFIG[expenseDocType].invoiceLabel}
+                  </Label>
+                  <Input
+                    value={formInvoiceNo}
+                    onChange={(e) => setFormInvoiceNo(e.target.value)}
+                    placeholder={EXPENSE_DOC_TYPE_CONFIG[expenseDocType].invoicePlaceholder}
+                    className="h-10 rounded-xl text-xs font-mono"
+                  />
+                </div>
+              )}
+            </div>
 
             {/* Row 6: Upload Documents / Receipts & Transfer Slips (Click or Hover box to target Ctrl+V) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 pt-1">
               {/* Box 1: Receipt / Invoice Documents */}
               <div
                 onClick={() => setPasteTarget("receipts")}
                 onMouseEnter={() => setPasteTarget("receipts")}
-                className={`p-3 rounded-xl border transition-all space-y-2 cursor-pointer ${
+                className={`p-3.5 rounded-2xl border transition-all space-y-2.5 cursor-pointer ${
                   pasteTarget === "receipts"
-                    ? "bg-amber-50/40 border-amber-400 ring-1 ring-amber-400/30"
-                    : "bg-slate-50 border-slate-200/90 hover:border-slate-300"
+                    ? "bg-amber-50/50 border-amber-400 ring-1 ring-amber-400/30"
+                    : "bg-slate-50/80 border-slate-200/90 hover:border-slate-300"
                 }`}
               >
-                <div className="flex items-center justify-between gap-1">
-                  <Label className="text-[11px] font-bold text-slate-700 flex items-center gap-1 cursor-pointer">
-                    <Receipt size={13} className="text-amber-600 shrink-0" />
-                    <span>Receipts / Docs (ใบเสร็จ: {formReceiptUrls.length})</span>
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-[11.5px] font-bold text-slate-800 flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
+                    <Receipt size={14} className="text-amber-600 shrink-0" />
+                    <span>Receipts / Docs</span>
+                    <span className="px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 text-[10px] font-mono">
+                      {formReceiptUrls.length}
+                    </span>
                   </Label>
                   <input
                     ref={receiptInputRef}
@@ -4461,7 +4561,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                       setPasteTarget("receipts");
                       receiptInputRef.current?.click();
                     }}
-                    className="h-7 px-2 text-[10.5px] font-bold rounded-lg bg-white cursor-pointer gap-1 shrink-0"
+                    className="h-7 px-2.5 text-[10.5px] font-bold rounded-lg bg-white cursor-pointer gap-1 shrink-0 whitespace-nowrap"
                   >
                     {isUploadingReceipts ? (
                       <Loader2 size={11} className="animate-spin" />
@@ -4471,14 +4571,14 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                     Upload / Ctrl+V
                   </Button>
                 </div>
-                <div className="flex items-center justify-between text-[10px]">
-                  <span className="text-slate-400">Images (.jpg, .png) & Docs (.pdf, .xlsx)</span>
+                <div className="flex items-center justify-between gap-2 text-[10.5px]">
+                  <span className="text-slate-400 truncate">Images & Docs (.jpg, .png, .pdf, .xlsx)</span>
                   {pasteTarget === "receipts" ? (
-                    <span className="font-extrabold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded text-[9.5px]">
+                    <span className="font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-md text-[10px] whitespace-nowrap shrink-0">
                       Ctrl+V Active (พร้อมวางรูป)
                     </span>
                   ) : (
-                    <span className="text-slate-400">Hover/click for Ctrl+V</span>
+                    <span className="text-slate-400 whitespace-nowrap shrink-0">คลิกหรือชี้เพื่อวางรูป</span>
                   )}
                 </div>
 
@@ -4527,16 +4627,19 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
               <div
                 onClick={() => setPasteTarget("slips")}
                 onMouseEnter={() => setPasteTarget("slips")}
-                className={`p-3 rounded-xl border transition-all space-y-2 cursor-pointer ${
+                className={`p-3.5 rounded-2xl border transition-all space-y-2.5 cursor-pointer ${
                   pasteTarget === "slips"
-                    ? "bg-emerald-50/40 border-emerald-400 ring-1 ring-emerald-400/30"
-                    : "bg-slate-50 border-slate-200/90 hover:border-slate-300"
+                    ? "bg-emerald-50/50 border-emerald-400 ring-1 ring-emerald-400/30"
+                    : "bg-slate-50/80 border-slate-200/90 hover:border-slate-300"
                 }`}
               >
-                <div className="flex items-center justify-between gap-1">
-                  <Label className="text-[11px] font-bold text-slate-700 flex items-center gap-1 cursor-pointer">
-                    <Banknote size={13} className="text-emerald-600 shrink-0" />
-                    <span>Transfer Slips (สลิปโอนเงิน: {formSlipUrls.length})</span>
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-[11.5px] font-bold text-slate-800 flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
+                    <Banknote size={14} className="text-emerald-600 shrink-0" />
+                    <span>Transfer Slips (สลิป)</span>
+                    <span className="px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-mono">
+                      {formSlipUrls.length}
+                    </span>
                   </Label>
                   <input
                     ref={slipInputRef}
@@ -4564,7 +4667,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                       setPasteTarget("slips");
                       slipInputRef.current?.click();
                     }}
-                    className="h-7 px-2 text-[10.5px] font-bold rounded-lg bg-white cursor-pointer gap-1 shrink-0"
+                    className="h-7 px-2.5 text-[10.5px] font-bold rounded-lg bg-white cursor-pointer gap-1 shrink-0 whitespace-nowrap"
                   >
                     {isUploadingSlips ? (
                       <Loader2 size={11} className="animate-spin" />
@@ -4574,14 +4677,14 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                     Upload / Ctrl+V
                   </Button>
                 </div>
-                <div className="flex items-center justify-between text-[10px]">
-                  <span className="text-slate-400">Attach bank transfer or PromptPay slip</span>
+                <div className="flex items-center justify-between gap-2 text-[10.5px]">
+                  <span className="text-slate-400 truncate">Bank transfer / PromptPay slip</span>
                   {pasteTarget === "slips" ? (
-                    <span className="font-extrabold text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded text-[9.5px]">
+                    <span className="font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md text-[10px] whitespace-nowrap shrink-0">
                       Ctrl+V Active (พร้อมวางสลิป)
                     </span>
                   ) : (
-                    <span className="text-slate-400">Hover/click for Ctrl+V</span>
+                    <span className="text-slate-400 whitespace-nowrap shrink-0">คลิกหรือชี้เพื่อวางสลิป</span>
                   )}
                 </div>
 
@@ -4628,12 +4731,12 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
             </div>
           </div>
 
-          <DialogFooter className="gap-2 pt-2">
+          <DialogFooter className="gap-2 pt-3 border-t border-slate-100">
             <Button
               type="button"
               variant="outline"
               onClick={() => setTxModalOpen(false)}
-              className="h-9 text-xs font-bold rounded-xl cursor-pointer"
+              className="h-10 px-4 text-xs font-bold rounded-xl cursor-pointer"
             >
               Cancel (ยกเลิก)
             </Button>
@@ -4641,7 +4744,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
               type="button"
               disabled={isSubmittingTx || isUploadingReceipts || isUploadingSlips}
               onClick={handleSubmitTransaction}
-              className={`h-9 text-xs font-bold rounded-xl text-white cursor-pointer ${
+              className={`h-10 px-5 text-xs font-bold rounded-xl text-white cursor-pointer shadow-sm ${
                 txMode === "TOPUP"
                   ? "bg-emerald-600 hover:bg-emerald-700"
                   : "bg-indigo-600 hover:bg-indigo-700"
@@ -5222,7 +5325,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
 
                     {unclaimedTxs.length === 0 ? (
                       <div className="p-6 rounded-xl border border-dashed border-slate-200 text-center text-slate-400">
-                        ไม่มีบิลค่าใช้จ่ายค้างสรุปเบิกสำหรับกระเป๋านี้ (บิลทั้งหมดถูกส่งสรุปเบิกแล้ว หรือยังไม่มีรายการใช้จ่ายใหม่)
+                        ไม่มีบิลค่าใช้จ่ายที่อนุมัติแล้ว (Approved) และค้างสรุปเบิกสำหรับกระเป๋านี้ (รายการ PENDING / REJECTED จะไม่ถูกดึงเข้า Report)
                       </div>
                     ) : (
                       <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100">

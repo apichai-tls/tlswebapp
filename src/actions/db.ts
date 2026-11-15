@@ -10629,17 +10629,24 @@ export async function submitPettyCashReplenishmentReportAction(data: {
       return { success: false, error: "ยอดขอเบิกชดเชยต้องมากกว่า 0 บาท" };
     }
 
-    // Prevent duplicate submission of expense bills already attached to another active report (single batch query)
-    const alreadyAttachedRows: any[] = await prisma.$queryRaw`
-      SELECT "id", "replenishmentReportId" FROM "PettyCashTransaction"
+    // Prevent duplicate submission and ensure only APPROVED expenses (never PENDING / REJECTED / VOID) are included
+    const invalidTxRows: any[] = await prisma.$queryRaw`
+      SELECT "id", "status", "replenishmentReportId" FROM "PettyCashTransaction"
       WHERE "id" = ANY(${txIds}::text[])
-        AND "replenishmentReportId" IS NOT NULL
+        AND ("replenishmentReportId" IS NOT NULL OR "status" <> 'APPROVED')
       LIMIT 1
     `;
-    if (alreadyAttachedRows.length > 0) {
+    if (invalidTxRows.length > 0) {
+      const invalid = invalidTxRows[0];
+      if (invalid.replenishmentReportId) {
+        return {
+          success: false,
+          error: "มีบางรายการใช้จ่ายถูกส่งในใบสรุป Report อื่นไปแล้ว กรุณารีเฟรชหน้าแล้วเลือกใหม่",
+        };
+      }
       return {
         success: false,
-        error: "มีบางรายการใช้จ่ายถูกส่งในใบสรุป Report อื่นไปแล้ว กรุณารีเฟรชหน้าแล้วเลือกใหม่",
+        error: "ไม่สามารถดึงรายการที่ยังไม่ผ่านการอนุมัติ (PENDING), ถูกปฏิเสธ (REJECTED) หรือยกเลิก (VOID) เข้าใบสรุปเบิกเงินสดย่อยได้",
       };
     }
 
@@ -12848,9 +12855,8 @@ export async function getSupplyVendorsAction() {
       }
     }
 
-    if (!vendors || vendors.length === 0) {
-      const { DEFAULT_SUPPLY_VENDORS } = await import('@/types/supply-order');
-      vendors = [...DEFAULT_SUPPLY_VENDORS];
+    if (!Array.isArray(vendors)) {
+      vendors = [];
     }
 
     return { success: true, vendors };
@@ -12890,7 +12896,6 @@ export async function saveSupplyVendorAction(vendorInput: {
       return { success: false, error: "Vendor company/supplier name is required." };
     }
 
-    const { DEFAULT_SUPPLY_VENDORS } = await import('@/types/supply-order');
     const setting = await prisma.setting.findUnique({
       where: { key: SUPPLY_VENDORS_SETTING_KEY },
     });
@@ -12903,8 +12908,8 @@ export async function saveSupplyVendorAction(vendorInput: {
         vendors = [];
       }
     }
-    if (!vendors || vendors.length === 0) {
-      vendors = [...DEFAULT_SUPPLY_VENDORS];
+    if (!Array.isArray(vendors)) {
+      vendors = [];
     }
 
     const nowIso = new Date().toISOString();
@@ -12976,7 +12981,6 @@ export async function deleteSupplyVendorAction(vendorId: string) {
       return { success: false, error: "Permission Denied: Only Admin, CSO, or Marketing can delete Vendors." };
     }
 
-    const { DEFAULT_SUPPLY_VENDORS } = await import('@/types/supply-order');
     const setting = await prisma.setting.findUnique({
       where: { key: SUPPLY_VENDORS_SETTING_KEY },
     });
@@ -12989,8 +12993,8 @@ export async function deleteSupplyVendorAction(vendorId: string) {
         vendors = [];
       }
     }
-    if (!vendors || vendors.length === 0) {
-      vendors = [...DEFAULT_SUPPLY_VENDORS];
+    if (!Array.isArray(vendors)) {
+      vendors = [];
     }
 
     const filtered = vendors.filter((v: any) => v.id !== vendorId);

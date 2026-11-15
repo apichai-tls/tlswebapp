@@ -373,10 +373,6 @@ export function AdminSocialInbox({
               second: '2-digit',
             })
           );
-
-          if (!selectedConvId && res.conversations && res.conversations.length > 0) {
-            setSelectedConvId(res.conversations[0].id);
-          }
         } else {
           if (!silent) toast.error(res.error || 'Failed to load social inbox');
         }
@@ -1463,7 +1459,7 @@ export function AdminSocialInbox({
       setConversations(res.conversations || []);
       setMessages(res.messages || []);
       if (selectedConvId === convId) {
-        setSelectedConvId(res.conversations?.[0]?.id || null);
+        setSelectedConvId(null);
       }
       toast.success('Conversation deleted');
     }
@@ -2991,77 +2987,6 @@ export function AdminSocialInbox({
                     </div>
                   </div>
 
-                  {/* Customer's Laundry Orders */}
-                  <div className="space-y-2 pt-2 border-t border-slate-100">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1">
-                        <ShoppingBag size={12} /> Recent Laundry Orders ({customerJobs.length})
-                      </span>
-                    </div>
-
-                    {customerJobs.length === 0 ? (
-                      <p className="text-[11px] text-slate-400 italic py-3 text-center">
-                        No recent laundry orders found for this contact.
-                      </p>
-                    ) : (
-                      <div className="space-y-2">
-                        {customerJobs.map((job) => {
-                          const hasProofPhoto = Boolean(
-                            job.deliveryProofImageUrl || job.proofImageUrl
-                          );
-                          return (
-                            <div
-                              key={job.id}
-                              className="p-2.5 rounded-xl border border-slate-200/90 bg-slate-50/70 hover:bg-white transition-all space-y-1.5 shadow-2xs"
-                            >
-                              <div className="flex items-center justify-between gap-1">
-                                <span
-                                  onClick={() => onEditJob && onEditJob(job)}
-                                  className="font-mono text-xs font-black text-indigo-700 hover:underline cursor-pointer"
-                                >
-                                  #{job.id}
-                                </span>
-                                <Badge
-                                  variant="outline"
-                                  className={`text-[9px] font-bold uppercase px-1.5 py-0 ${
-                                    job.status === 'delivered' || job.status === 'completed'
-                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                      : 'bg-amber-50 text-amber-700 border-amber-200'
-                                  }`}
-                                >
-                                  {job.status}
-                                </Badge>
-                              </div>
-                              <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600">
-                                <span className="truncate">{job.serviceType || 'Laundry'}</span>
-                                {job.totalPrice !== undefined && Number(job.totalPrice) > 0 && (
-                                  <span className="font-black text-slate-900 shrink-0">
-                                    ฿{Number(job.totalPrice).toLocaleString()}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="grid grid-cols-1 gap-1 pt-0.5">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => handleInsertJobStatus(job, hasProofPhoto)}
-                                  className="w-full h-7 text-[10px] font-bold rounded-lg gap-1 bg-white border-slate-200 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-300 cursor-pointer"
-                                >
-                                  <Send size={10} />
-                                  <span>
-                                    {hasProofPhoto
-                                      ? 'Insert Order + Proof Photo'
-                                      : 'Insert Order Update'}
-                                  </span>
-                                </Button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
                   {/* ============================================================ */}
                   {/* COMPACT MINI DISTANCE & DELIVERY FEE CALCULATOR (SIDEBAR)    */}
                   {/* ============================================================ */}
@@ -3305,6 +3230,77 @@ export function AdminSocialInbox({
                         </div>
                       </div>
                     </div>
+                  </div>
+
+                  {/* Customer's Laundry Orders */}
+                  <div className="space-y-2 pt-2 border-t border-slate-100">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                        <ShoppingBag size={12} /> Recent Laundry Orders ({customerJobs.length})
+                      </span>
+                    </div>
+
+                    {customerJobs.length === 0 ? (
+                      <p className="text-[11px] text-slate-400 italic py-3 text-center">
+                        No recent laundry orders found for this contact.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {customerJobs.map((job) => {
+                          const hasProofPhoto = Boolean(
+                            job.deliveryProofImageUrl || job.proofImageUrl
+                          );
+                          return (
+                            <div
+                              key={job.id}
+                              className="p-2.5 rounded-xl border border-slate-200/90 bg-slate-50/70 hover:bg-white transition-all space-y-1.5 shadow-2xs"
+                            >
+                              <div className="flex items-center justify-between gap-1">
+                                <span
+                                  onClick={() => onEditJob && onEditJob(job)}
+                                  className="font-mono text-xs font-black text-indigo-700 hover:underline cursor-pointer"
+                                >
+                                  #{job.id}
+                                </span>
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[9px] font-bold uppercase px-1.5 py-0 ${
+                                    job.status === 'delivered' || job.status === 'completed'
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                      : 'bg-amber-50 text-amber-700 border-amber-200'
+                                  }`}
+                                >
+                                  {job.status}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600">
+                                <span className="truncate">{job.serviceType || 'Laundry'}</span>
+                                {job.totalPrice !== undefined && Number(job.totalPrice) > 0 && (
+                                  <span className="font-black text-slate-900 shrink-0">
+                                    ฿{Number(job.totalPrice).toLocaleString()}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="grid grid-cols-1 gap-1 pt-0.5">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleInsertJobStatus(job, hasProofPhoto)}
+                                  className="w-full h-7 text-[10px] font-bold rounded-lg gap-1 bg-white border-slate-200 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-300 cursor-pointer"
+                                >
+                                  <Send size={10} />
+                                  <span>
+                                    {hasProofPhoto
+                                      ? 'Insert Order + Proof Photo'
+                                      : 'Insert Order Update'}
+                                  </span>
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </>
               )}
