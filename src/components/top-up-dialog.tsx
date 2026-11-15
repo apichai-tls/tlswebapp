@@ -554,16 +554,24 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
       const now = new Date();
 
+      // Sequential counter for Top-Up Receipt (Option C: No Job created)
+      const freshSettings = settingsStore.getSnapshot();
+      const currentSeq = parseInt(freshSettings?.[TOPUP_SEQ_KEY] || "0", 10);
+      const nextSeq = currentSeq + 1;
+      settingsStore.updateSetting(TOPUP_SEQ_KEY, String(nextSeq)).catch(() => {});
+
+      const topUpReceiptNo = generateTopUpReceiptNumber(nextSeq, now);
+
       let memberPriceListId: string | undefined = undefined;
       if (!selectedCustomer.isMember) {
         const memberList = priceLists.find(p => p.name.toLowerCase().includes("member"));
         if (memberList) memberPriceListId = memberList.id;
       }
 
-      // Build receipt data (server allocates authoritative sequential TU-YYMM-XXXXX)
+      // Build receipt data
       const rdata: any = {
-        id: "AUTO",
-        receiptNumber: "AUTO",
+        id: topUpReceiptNo,
+        receiptNumber: topUpReceiptNo,
         isDraft: false,
         status: "completed",
         createdAt: now,
@@ -591,7 +599,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       };
 
       const topUpResult = await customerStore.topUpCustomer({
-        receiptNumber: "AUTO",
+        receiptNumber: topUpReceiptNo,
         customerId: selectedCustomer.id,
         paidAmount: cartTotal,
         bonusAmount: bonusTotal,
@@ -605,12 +613,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         branchId: selectedCustomer.branchId || user?.branchId || null,
         priceListId: memberPriceListId,
         paymentLinkId: currentPaymentLinkId,
-        idempotencyKey: `topup-${selectedCustomer.id}-${now.getTime()}`,
       });
-
-      const finalReceiptNo = topUpResult.receiptNumber || "AUTO";
-      rdata.id = finalReceiptNo;
-      rdata.receiptNumber = finalReceiptNo;
 
       isPaymentCompletedRef.current = true;
       setBeamPaymentData(null);
@@ -633,12 +636,12 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       );
 
       setReceiptData(rdata);
-      setReceiptJobId(finalReceiptNo);
+      setReceiptJobId(topUpReceiptNo);
       setShowReceipt(true);
       import("@/lib/cash-drawer").then(({ triggerCashDrawerIfEnabled }) => {
         triggerCashDrawerIfEnabled("pay", paymentChannel);
       }).catch(() => {});
-      onSuccess?.(finalReceiptNo);
+      onSuccess?.(topUpReceiptNo);
     } catch (err: any) {
       isPaymentCompletedRef.current = false;
       console.error("[TopUpDialog] Pay failed:", err);
