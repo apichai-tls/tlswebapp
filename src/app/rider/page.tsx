@@ -1274,7 +1274,7 @@ export default function RiderPage() {
           job: j,
           legType: "pickup",
           isCompleted: isPickupCompleted,
-          isActive: ["pending", "accepted", "pickup"].includes(j.status),
+          isActive: ["accepted", "pickup"].includes(j.status),
           scheduledAt: j.pickupScheduledAt ? new Date(j.pickupScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()),
           // For history: use actual pickupOutbound completion time, fallback to scheduled times
           completedAt: isPickupCompleted ? (
