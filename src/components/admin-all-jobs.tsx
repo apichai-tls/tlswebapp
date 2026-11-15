@@ -26,6 +26,8 @@ import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { DailySaleDialog } from "@/components/daily-sale-dialog";
+import { LaundryChecklistDialog, parseJobChecklist, getStageMeta } from "@/components/admin-laundry-checklist";
+import { ClipboardCheck } from "lucide-react";
 import { sendDeliveryProofViaLineAction, getLineOaContactsAction, linkLineUserToCustomerAction, syncLineOaFollowersAction } from "@/actions/line";
 import type { LineContactRecord } from "@/lib/line";
 
@@ -524,6 +526,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const riders = useRiders();
   const systemSettings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
   const realtimeState = useSyncExternalStore(realtimeStore.subscribe, realtimeStore.getSnapshot, realtimeStore.getSnapshot);
+  const [quickChecklistJob, setQuickChecklistJob] = useState<Job | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "kanban">("kanban");
   // Screen Layout Fit & Zoom scaling for different device screens
   const [screenFit, setScreenFit] = useState<"fit" | "standard">("fit");
@@ -3550,6 +3553,29 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             {job.subStatus === 'dry'   && <span title="Drying" className="w-4 h-4 rounded flex items-center justify-center bg-orange-100 text-orange-700 border border-orange-200"><Wind size={10} /></span>}
                             {job.subStatus === 'iron'  && <span title="Ironing" className="w-4 h-4 rounded flex items-center justify-center bg-indigo-100 text-indigo-700 border border-indigo-200"><Shirt size={10} /></span>}
                             {job.subStatus === 'ready' && <span title="Ready" className="w-4 h-4 rounded flex items-center justify-center bg-emerald-100 text-emerald-700 border border-emerald-200"><CheckCircle2 size={10} /></span>}
+                            {systemSettings.enableItemCountQc !== "false" && (() => {
+                              const chk = parseJobChecklist(job, systemSettings);
+                              const pcs = (chk?.items || []).reduce((s, it) => s + (Number(it.checkerQty) || 0), 0);
+                              const activeStaff = chk?.activeAssignee?.staffName;
+                              if (!chk || (pcs === 0 && chk.stage !== "recheck_required" && !activeStaff)) return null;
+                              const sMeta = getStageMeta(chk.stage);
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setQuickChecklistJob(job);
+                                  }}
+                                  title={`${sMeta.label} (${sMeta.labelTh}) • ${pcs} pcs${activeStaff ? ` • Managed by: ${activeStaff}` : ""} — Click to open Item Checklist`}
+                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-black border cursor-pointer transition-transform hover:scale-105 ${sMeta.badgeClass}`}
+                                >
+                                  <ClipboardCheck size={10} className="shrink-0" />
+                                  <span>
+                                    {sMeta.labelTh} ({pcs}){activeStaff ? ` • 👤 ${activeStaff}` : ""}
+                                  </span>
+                                </button>
+                              );
+                            })()}
                           </div>
                         </div>
                       </TableCell>
@@ -4585,6 +4611,29 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                 {job.subStatus === 'dry'     && <span title="Drying" className="w-5 h-5 rounded-md flex items-center justify-center bg-orange-100 text-orange-700 border border-orange-200"><Wind size={11} /></span>}
                                 {job.subStatus === 'iron'    && <span title="Ironing" className="w-5 h-5 rounded-md flex items-center justify-center bg-indigo-100 text-indigo-700 border border-indigo-200"><Shirt size={11} /></span>}
                                 {job.subStatus === 'ready'   && <span title="Ready" className="w-5 h-5 rounded-md flex items-center justify-center bg-emerald-100 text-emerald-700 border border-emerald-200"><CheckCircle2 size={11} /></span>}
+                                {systemSettings.enableItemCountQc !== "false" && (() => {
+                                  const chk = parseJobChecklist(job, systemSettings);
+                                  const pcs = (chk?.items || []).reduce((s, it) => s + (Number(it.checkerQty) || 0), 0);
+                                  const activeStaff = chk?.activeAssignee?.staffName;
+                                  if (!chk || (pcs === 0 && chk.stage !== "recheck_required" && !activeStaff)) return null;
+                                  const sMeta = getStageMeta(chk.stage);
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setQuickChecklistJob(job);
+                                      }}
+                                      title={`${sMeta.label} (${sMeta.labelTh}) • ${pcs} pcs${activeStaff ? ` • Managed by: ${activeStaff}` : ""} — Click to open Item Checklist`}
+                                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9.5px] font-black border cursor-pointer transition-transform hover:scale-105 ${sMeta.badgeClass}`}
+                                    >
+                                      <ClipboardCheck size={10} className="shrink-0" />
+                                      <span className="truncate max-w-[165px]">
+                                        {sMeta.labelTh} ({pcs}){activeStaff ? ` • 👤 ${activeStaff}` : ""}
+                                      </span>
+                                    </button>
+                                  );
+                                })()}
                               </div>
                             </div>
 
@@ -6090,6 +6139,15 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Quick Item Checklist Modal launched from Kanban / List badge */}
+      <LaundryChecklistDialog
+        open={Boolean(quickChecklistJob)}
+        onOpenChange={(v) => {
+          if (!v) setQuickChecklistJob(null);
+        }}
+        job={quickChecklistJob}
+      />
     </div>
   );
 });

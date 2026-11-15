@@ -93,6 +93,7 @@ export function AdminSettings() {
   const [vatRateInput, setVatRateInput] = useState("7");
   const [sessionTimeoutInput, setSessionTimeoutInput] = useState("20");
   const [enableCustomerPortal, setEnableCustomerPortal] = useState(false);
+  const [enableItemCountQc, setEnableItemCountQc] = useState(true);
   const [enableWise, setEnableWise] = useState(true);
   const [wiseTag, setWiseTag] = useState("");
   const [wiseEmail, setWiseEmail] = useState("");
@@ -129,6 +130,20 @@ export function AdminSettings() {
         nextVal
           ? "เปิดใช้งาน Customer Portal (/portal) สำหรับลูกค้าทั่วไปเรียบร้อยแล้ว"
           : "ปิด Customer Portal แล้ว (ผู้ที่เข้า /portal จะถูกดีดไปหน้า /login ทันที — ทีมงานยังเข้าผ่านปุ่ม Preview ได้)"
+      );
+    } catch (err) {
+      toast.error("Failed to save setting: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
+
+  const handleToggleItemCountQc = async (nextVal: boolean) => {
+    setEnableItemCountQc(nextVal);
+    try {
+      await settingsStore.updateSetting("enableItemCountQc", nextVal ? "true" : "false");
+      toast.success(
+        nextVal
+          ? "Activated Laundry Item Count & Department QC System (เปิดระบบตรวจนับผ้าแยกแผนกเรียบร้อยแล้ว)"
+          : "Deactivated Laundry Item Count & Department QC System (ปิดระบบตรวจนับผ้าแยกแผนกแล้ว)"
       );
     } catch (err) {
       toast.error("Failed to save setting: " + (err instanceof Error ? err.message : "Unknown error"));
@@ -279,6 +294,7 @@ export function AdminSettings() {
       setVatRateInput(systemSettings.vatRate || "7");
       setSessionTimeoutInput(systemSettings.sessionTimeoutMinutes ?? "20");
       setEnableCustomerPortal(systemSettings.enableCustomerPortal === "true");
+      setEnableItemCountQc(systemSettings.enableItemCountQc !== "false");
       setEnableWise(systemSettings.enableWise !== "false");
       setWiseTag(systemSettings.wiseTag || "");
       setWiseEmail(systemSettings.wiseEmail || "");
@@ -2626,8 +2642,129 @@ export function AdminSettings() {
       {/* SECTION 5: SYSTEM, INTEGRATIONS & SECURITY                                */}
       {/* ========================================================================= */}
       {(activeSettingsTab === "all" || activeSettingsTab === "system") && (
-        (!settingsSearch || "system api google maps rider commission rate timeout session security deploy customer portal app member".includes(settingsSearch.toLowerCase())) && (
+        (!settingsSearch || "system api google maps rider commission rate timeout session security deploy customer portal app member item count qc checker washing ironing department checklist".includes(settingsSearch.toLowerCase())) && (
           <div className="space-y-6 animate-in fade-in duration-300">
+            {/* Laundry Item Count & Department QC System Switch Card */}
+            <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white flex items-center justify-center shadow-md shadow-indigo-500/20">
+                    <Layers size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">
+                        Laundry Item Count &amp; Department QC System (/item-check)
+                      </h3>
+                      <span
+                        className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full ${
+                          enableItemCountQc
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        {enableItemCountQc
+                          ? "Active (เปิดใช้งาน)"
+                          : "Disabled (ปิดใช้งาน)"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Activate or deactivate per-garment item counting, treatment routing (Wash / Iron / Dry Clean), employee ownership tracking, and dedicated department station pages.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="max-w-3xl space-y-4">
+                <div
+                  onClick={() => handleToggleItemCountQc(!enableItemCountQc)}
+                  className={`flex items-start justify-between gap-4 p-4.5 rounded-2xl border transition-all cursor-pointer ${
+                    enableItemCountQc
+                      ? "bg-indigo-50/50 border-indigo-200/90 shadow-2xs"
+                      : "bg-slate-50/80 border-slate-200/80 hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="flex items-start gap-3.5">
+                    <div
+                      className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
+                        enableItemCountQc
+                          ? "bg-indigo-600 text-white shadow-xs"
+                          : "bg-slate-200 text-slate-500"
+                      }`}
+                    >
+                      <Layers size={18} />
+                    </div>
+                    <div>
+                      <span className="text-sm font-extrabold text-slate-900 block">
+                        Activate Item Count &amp; Department QC Workflow (เปิดใช้งานระบบตรวจนับผ้าแยกแผนก)
+                      </span>
+                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                        When <strong>Active</strong>, staff can access the <strong>Item Count &amp; QC</strong> board in Admin, the <strong>Item Count</strong> button inside Order Dialogs, live stage &amp; employee badges on Kanban cards, and the standalone department pages (<code>/item-check/checker</code>, <code>/item-check/washing</code>, <code>/item-check/ironing</code>, <code>/item-check/delivery-prep</code>). When <strong>Disabled</strong>, all Item Count &amp; QC menus and badges are hidden.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div
+                    className={`w-11 h-6 rounded-full transition-colors relative shrink-0 mt-1 ${
+                      enableItemCountQc ? "bg-indigo-600" : "bg-slate-300"
+                    }`}
+                  >
+                    <div
+                      className={`w-5 h-5 rounded-full bg-white shadow-sm absolute top-0.5 transition-transform ${
+                        enableItemCountQc ? "translate-x-5.5" : "translate-x-0.5"
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                {enableItemCountQc && (
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <a
+                      href="/item-check"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-xs transition-all"
+                    >
+                      <span>Open All Departments Hub (/item-check)</span>
+                      <ArrowRight size={13} />
+                    </a>
+                    <a
+                      href="/item-check/checker"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 text-xs font-extrabold transition-all"
+                    >
+                      <span>1. Checker Page</span>
+                    </a>
+                    <a
+                      href="/item-check/washing"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-blue-100 hover:bg-blue-200 text-blue-950 border border-blue-300 text-xs font-extrabold transition-all"
+                    >
+                      <span>2. Washing Page</span>
+                    </a>
+                    <a
+                      href="/item-check/ironing"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-violet-100 hover:bg-violet-200 text-violet-950 border border-violet-300 text-xs font-extrabold transition-all"
+                    >
+                      <span>3. Ironing Page</span>
+                    </a>
+                    <a
+                      href="/item-check/delivery-prep"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-teal-100 hover:bg-teal-200 text-teal-950 border border-teal-300 text-xs font-extrabold transition-all"
+                    >
+                      <span>4. Delivery Prep Page</span>
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Customer Portal & Mobile App Switch Card */}
             <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
               <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100">

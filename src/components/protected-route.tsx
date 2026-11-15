@@ -32,13 +32,17 @@ export function ProtectedRoute({
         // Redirect to login and save the attempted URL using full navigation
         window.location.replace(`/login?redirect=${encodeURIComponent(pathname)}`);
       } else {
-        // Check if running in a native platform (BILL APK context)
+        // Check if running in a native platform (BILL / ITEM-CHECK APK context)
         import("@capacitor/core")
           .then(({ Capacitor }) => {
             if (Capacitor.isNativePlatform() && user.role !== "rider") {
-              // BILL APK isolation: Force the user to only view the billing page
-              if (pathname !== "/billing") {
-                router.push("/billing");
+              // Allow /billing and /item-check standalone APK pages
+              if (pathname !== "/billing" && !pathname.startsWith("/item-check")) {
+                const preferredApkRoute =
+                  typeof window !== "undefined"
+                    ? localStorage.getItem("tls_apk_default_route") || "/billing"
+                    : "/billing";
+                router.push(preferredApkRoute);
               }
             } else if (allowedRole && !isRoleAllowed(user.role)) {
               // Role mismatch, send them to their proper dashboard

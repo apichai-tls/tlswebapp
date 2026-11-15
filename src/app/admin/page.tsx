@@ -171,11 +171,19 @@ import {
   ChevronUp,
   ChevronDown,
   Columns,
+  Image as ImageIcon,
 } from "lucide-react";
 
 import Link from "next/link";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
+import { ServiceItemVisual } from "@/components/service-item-visual";
+import {
+  LaundryChecklistDialog,
+  AdminLaundryChecklistBoard,
+  parseJobChecklist,
+  getStageMeta,
+} from "@/components/admin-laundry-checklist";
 
 const getCommissionRate = (settings: Record<string, string> | undefined | null) => {
   if (!settings) return 2;
@@ -315,7 +323,8 @@ function AdminPageContent() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox" | "item-check">("dashboard");
+  const [showChecklistModal, setShowChecklistModal] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
@@ -334,7 +343,7 @@ function AdminPageContent() {
     const searchParams = new URLSearchParams(window.location.search);
     const tabParam = searchParams.get("tab");
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "petty-cash", "building-report", "marketing", "top-spenders", "tasks", "supplies", "inbox"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "petty-cash", "building-report", "marketing", "top-spenders", "tasks", "supplies", "inbox", "item-check"];
     const targetTab = (tabParam && validTabs.includes(tabParam)) ? tabParam : hash;
 
     if (validTabs.includes(targetTab)) {
@@ -358,12 +367,12 @@ function AdminPageContent() {
     }
 
     // For all other roles: jump to the first tab they have access to (default is dashboard)
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "inbox", "services", "map", "riders", "calculator", "tasks", "reports", "petty-cash", "marketing", "settings", "users", "activity-logs", "supplies"
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox" | "item-check"> = [
+      "dashboard", "jobs", "item-check", "dispatch", "pos", "customers", "inbox", "services", "map", "riders", "calculator", "tasks", "reports", "petty-cash", "marketing", "settings", "users", "activity-logs", "supplies"
     ];
     const hasPermission = (key: string) => {
       if (user.role === 'admin') return true;
-      if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois') return true;
+      if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois' || key === 'item-check') return true;
     if (key === 'building-report' || key === 'top-spenders') return Boolean(user?.permissions?.includes('reports') || user?.permissions?.includes('marketing') || user?.permissions?.includes('customers') || user?.permissions?.includes('building-report') || user?.permissions?.includes('top-spenders'));
       return user.permissions?.includes(key) ?? false;
     };
@@ -386,7 +395,7 @@ function AdminPageContent() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox" | "item-check") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -2078,12 +2087,39 @@ function AdminPageContent() {
   const categories = useMemo(() => {
     const sourceServices = (activeDialogCorpPriceList && !showAllStoreServicesInDialog) ? dialogCorporateServices : services;
     const activeServices = sourceServices.filter(s => s.isActive !== false && s.category !== 'PACKAGE');
-    return Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
+    return Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort((a, b) =>
+      String(a).localeCompare(String(b), undefined, { sensitivity: 'base', numeric: true })
+    );
   }, [services, dialogCorporateServices, activeDialogCorpPriceList, showAllStoreServicesInDialog]);
 
   const visibleCategories = useMemo(() => {
     return categories.filter(cat => cat !== 'PACKAGE');
   }, [categories]);
+
+  const serviceItemImages = useMemo<Record<string, string>>(() => {
+    try {
+      const raw = systemSettings?.service_item_images;
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }, [systemSettings?.service_item_images]);
+
+  const categoryReferenceImages = useMemo<Record<string, string[]>>(() => {
+    try {
+      const raw = systemSettings?.service_category_reference_images;
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }, [systemSettings?.service_category_reference_images]);
+
+  const [isEditingRefImages, setIsEditingRefImages] = useState(false);
+  const [zoomedRefImage, setZoomedRefImage] = useState<{ url: string; label: string } | null>(null);
 
   // Merged Customer Past Transactions (DB + in-memory store)
   const customerPastJobs = useMemo<any[]>(() => {
@@ -6132,6 +6168,26 @@ function AdminPageContent() {
                   </Link>
                 )}
 
+                {systemSettings.enableItemCountQc !== "false" && (
+                  <motion.a
+                    href="#item-check"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("item-check"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "item-check"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="Item Count & QC (ตรวจนับผ้าแยกแผนก)"
+                  >
+                    {activeTab === "item-check" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <Shirt size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "item-check" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {!isSidebarCollapsed && <span className="truncate">Item Count & QC</span>}
+                  </motion.a>
+                )}
+
                 <motion.a
                   href="#tasks"
                   onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("tasks"); }}
@@ -6672,6 +6728,22 @@ function AdminPageContent() {
                         <span>Billing</span>
                       </Link>
                     )}
+                    {systemSettings.enableItemCountQc !== "false" && (
+                      <a
+                        href="#item-check"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleTabChange("item-check");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                          activeTab === "item-check" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                        }`}
+                      >
+                        <Shirt size={17} className={activeTab === "item-check" ? "text-indigo-600" : "text-slate-400"} />
+                        <span>Item Count & QC</span>
+                      </a>
+                    )}
                     <a
                       href="#tasks"
                       onClick={(e) => {
@@ -7043,6 +7115,7 @@ function AdminPageContent() {
               const tabMeta: Record<string, { section: string; title: string; subtitle: string }> = {
                 dashboard: { section: "Operations", title: "Command Center", subtitle: "Live orders, fleet overview & team tasks" },
                 jobs: { section: "Operations", title: "All Jobs", subtitle: "Kanban board, order tracking & payment statuses" },
+                "item-check": { section: "Operations", title: "Laundry Item Count & Department QC", subtitle: "Checker garment counting, Washing & Ironing counter-checks, and Final Packing verification" },
                 pos: { section: "Operations", title: "POS Terminal", subtitle: "In-store walk-in & order creation" },
                 tasks: { section: "Operations", title: "Task Management", subtitle: "Team assignments, checklists & SLA tracking" },
                 customers: { section: "Sales & CRM", title: "Customers (CRM)", subtitle: "Profiles, corporate accounts, wallets & vouchers" },
@@ -7820,6 +7893,43 @@ function AdminPageContent() {
                             </div>
                             <span className={`hidden sm:inline text-[8.5px] font-bold leading-none mt-0.5 ${editingSubStatus === 'ready' ? 'text-white' : 'text-slate-500'}`}>Ready</span>
                           </button>
+
+                          {/* Item Count & Department QC Checklist Button */}
+                          {editingJobId && systemSettings.enableItemCountQc !== "false" && (() => {
+                            const currentJobObj = jobs.find(j => j.id === editingJobId) || null;
+                            const chk = parseJobChecklist(currentJobObj, systemSettings);
+                            const totalPcs = (chk?.items || []).reduce((sum, it) => sum + (Number(it.checkerQty) || 0), 0);
+                            const isRecheck = chk?.stage === "recheck_required";
+                            const stageMeta = chk ? getStageMeta(chk.stage) : null;
+                            const activeStaff = chk?.activeAssignee?.staffName;
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => setShowChecklistModal(true)}
+                                className={`flex items-center gap-1.5 rounded-lg transition-all px-2.5 h-[26px] sm:h-9 cursor-pointer font-bold text-xs border ml-1 ${
+                                  isRecheck
+                                    ? "bg-rose-600 text-white border-rose-700 animate-pulse"
+                                    : chk?.stage === "ready_for_delivery"
+                                    ? "bg-emerald-600 text-white border-emerald-700 shadow-2xs"
+                                    : chk?.stage === "packing_verify"
+                                    ? "bg-teal-600 text-white border-teal-700 shadow-2xs"
+                                    : totalPcs > 0 || activeStaff
+                                    ? "bg-indigo-600 text-white border-indigo-700 shadow-2xs"
+                                    : "bg-white text-indigo-700 border-indigo-200 hover:bg-indigo-50"
+                                }`}
+                                title={stageMeta ? `${stageMeta.label} (${stageMeta.labelTh})${activeStaff ? ` • Managed by: ${activeStaff}` : ""} — Click to open Item Checklist` : "Open Laundry Item Count & Department Handoff Checklist"}
+                              >
+                                <ClipboardCheck className="w-3.5 h-3.5 shrink-0" />
+                                <span className="text-[10.5px] font-extrabold whitespace-nowrap">
+                                  {isRecheck
+                                    ? `⚠️ Recheck (${totalPcs} pcs)`
+                                    : (totalPcs > 0 || activeStaff) && stageMeta
+                                    ? `${stageMeta.label} • ${totalPcs} pcs${activeStaff ? ` • 👤 ${activeStaff}` : ""}`
+                                    : "Item Count"}
+                                </span>
+                              </button>
+                            );
+                          })()}
 
                         </div>
                       </div>
@@ -9510,13 +9620,13 @@ function AdminPageContent() {
   <>
                     {/* COL 3: Job Photos & Service Catalog / Payment Overview */}
                     <motion.div
-                      className="col-span-1 flex flex-col gap-2.5 overflow-y-auto pr-0.5 pb-2 min-w-0"
+                      className="col-span-1 flex flex-col gap-2.5 h-full min-h-0 overflow-hidden pr-0.5 pb-2 min-w-0"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.15, duration: 0.3 }}
                     >
                       {/* Job Photos Unified Section */}
-                      <div className="bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs space-y-2.5">
+                      <div className="bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs space-y-2.5 shrink-0">
                         <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                           <div className="flex items-center gap-2">
                             <div className="w-6 h-6 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
@@ -9615,7 +9725,7 @@ function AdminPageContent() {
                       </div>
 
                       {/* Laundry Service Type & Speed / Paid Summary */}
-                      <div className="bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs flex-1 flex flex-col gap-2 min-h-[350px]">
+                      <div className="bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs flex-1 flex flex-col gap-2 min-h-0 overflow-hidden">
                         {isPaidJob ? (
                           <div className="flex-1 flex flex-col rounded-xl overflow-hidden border border-emerald-200/80 bg-gradient-to-b from-emerald-50/40 via-white to-slate-50/50">
                             {/* Paid Banner Header */}
@@ -9733,7 +9843,7 @@ function AdminPageContent() {
                           </div>
                         ) : (
 
-                          <div className="flex-1 flex flex-col gap-1">
+                          <div className="flex-1 flex flex-col gap-1 min-h-0 overflow-hidden">
                             {/* Corporate Contract Banner in Dialog */}
                             {activeDialogCorpPriceList && (
                               <div className="p-2.5 rounded-lg bg-indigo-50 border border-indigo-200/80 flex items-center justify-between gap-2 shrink-0 mb-1">
@@ -9808,14 +9918,14 @@ function AdminPageContent() {
                                   </p>
                                 </div>
                               ) : (
-                                <div className={`grid grid-cols-2 gap-2.5 pt-2 flex-1 ${visibleCategories.length <= 4 ? "auto-rows-[48px]" : "grid-rows-[repeat(5,1fr)]"}`}>
+                                <div className={`grid grid-cols-2 gap-2.5 pt-2 flex-1 ${visibleCategories.length <= 4 ? "auto-rows-[minmax(48px,auto)]" : "auto-rows-[minmax(48px,1fr)]"}`}>
                                   {visibleCategories.map((cat) => (
                                     <Button
                                       key={cat}
                                       type="button"
                                       variant="outline"
                                       disabled={isPricingLocked}
-                                      className="h-full text-xs font-bold uppercase justify-center hover:bg-indigo-50 hover:text-indigo-600 border-slate-200 rounded-lg shadow-sm"
+                                      className="h-full min-h-[48px] px-2 py-1.5 text-xs font-bold uppercase justify-center text-center whitespace-normal break-words leading-snug hover:bg-indigo-50 hover:text-indigo-600 border-slate-200 rounded-lg shadow-sm"
                                       onClick={() => setDialogSelectedCategory(cat)}
                                     >
                                       {cat}
@@ -9848,86 +9958,223 @@ function AdminPageContent() {
                                 </div>
                               )
                             ) : (
-                              <div className="flex-1 flex flex-col gap-2 pt-2">
-                                <div className="grid grid-cols-3 auto-rows-max gap-2 overflow-y-auto flex-1 pr-0.5 animate-in fade-in duration-200">
-                                  {dialogActiveServices
-                                    .filter((s) => (dialogSelectedCategory === null ? true : s.category === dialogSelectedCategory) && s.category !== 'PACKAGE')
-                                    .filter((s) => {
-                                      if (activeDialogCorpPriceList && !showAllStoreServicesInDialog) return true;
-                                      const name = (s.name || "").toLowerCase();
-                                      const en = (s.nameEn || "").toLowerCase();
-                                      return !name.includes("delivery") && !en.includes("delivery") &&
-                                             !name.includes("pickup") && !en.includes("pickup") &&
-                                             !name.includes("pick up") && !en.includes("pick up") &&
-                                             !name.includes("express") && !en.includes("express") &&
-                                             !name.includes("ผ้าด่วน");
-                                    })
-                                    .map((s) => {
-                                      const cartItem = dialogCart.find(item => item.id === s.id);
-                                      const quantity = cartItem ? cartItem.quantity : 0;
-                                      const resolvedPrice = getServicePrice(s, selectedProfileCustomer, customerPriceListId);
-                                      return (
-                                        <Button
-                                          key={s.id}
-                                          type="button"
-                                          variant={quantity > 0 ? "default" : "outline"}
-                                          disabled={isPricingLocked}
-                                          className={`relative h-12 text-xs font-semibold flex flex-col items-center justify-center p-1 rounded-lg shadow-sm transition-all ${
-                                            quantity > 0 
-                                              ? 'bg-indigo-600 text-white hover:bg-indigo-700 font-bold border-none' 
-                                              : 'hover:bg-indigo-50 hover:text-indigo-600 border-slate-200'
-                                          }`}
-                                          onClick={() => {
-                                            handleServiceOrSpeedChange(s.id, serviceSpeed, serviceWeight);
-                                            setDialogCart(prev => {
-                                              const existing = prev.find(item => item.id === s.id);
-                                              const isKiloService = s.unit === 'kg' || s.category?.toUpperCase().includes('KILO');
-                                              let updated;
-                                              if (existing) {
-                                                const step = isKiloService ? 0.5 : 1;
-                                                updated = prev.map(item => 
-                                                  item.id === s.id 
-                                                    ? { ...item, quantity: Math.round((item.quantity + step) * 100) / 100 }
-                                                    : item
-                                                );
-                                              } else {
-                                                // L1 Fix: Warn if other items in cart have custom prices that won't carry over
-                                                const hasCustomPriced = prev.some(item => item.basePrice !== undefined && item.price !== item.basePrice);
-                                                if (hasCustomPriced) {
-                                                  toast(`⚠️ มีรายการที่ปรับราคาพิเศษอยู่ในตะกร้า — ราคาสินค้าใหม่จะใช้ราคาตามปกติ`, { duration: 3000 });
+                              <div className="flex-1 flex flex-col gap-2 pt-2 min-h-0 overflow-hidden">
+                                <div className="overflow-y-auto flex-1 min-h-0 pr-1 pb-1 show-scrollbar space-y-3 animate-in fade-in duration-200">
+                                  <div className="grid grid-cols-2 auto-rows-max items-stretch gap-2">
+                                    {(() => {
+                                      const visibleItems = dialogActiveServices
+                                        .filter((s) => (dialogSelectedCategory === null ? true : s.category === dialogSelectedCategory) && s.category !== 'PACKAGE')
+                                        .filter((s) => {
+                                          if (activeDialogCorpPriceList && !showAllStoreServicesInDialog) return true;
+                                          const name = (s.name || "").toLowerCase();
+                                          const en = (s.nameEn || "").toLowerCase();
+                                          return !name.includes("delivery") && !en.includes("delivery") &&
+                                                 !name.includes("pickup") && !en.includes("pickup") &&
+                                                 !name.includes("pick up") && !en.includes("pick up") &&
+                                                 !name.includes("express") && !en.includes("express") &&
+                                                 !name.includes("ผ้าด่วน");
+                                        })
+                                        .sort((a, b) =>
+                                          (a.name || "").trim().localeCompare((b.name || "").trim(), undefined, {
+                                            sensitivity: "base",
+                                            numeric: true,
+                                          })
+                                        );
+                                      return visibleItems.map((s) => {
+                                        const cartItem = dialogCart.find(item => item.id === s.id);
+                                        const quantity = cartItem ? cartItem.quantity : 0;
+                                        const resolvedPrice = getServicePrice(s, selectedProfileCustomer, customerPriceListId);
+                                        const rawMenuName = (s.name || "").trim();
+                                        const formattedMenuName = rawMenuName.replace(/\s*\/\s*/g, "/\u200B");
+                                        const itemImg = serviceItemImages[s.id] || serviceItemImages[rawMenuName.toUpperCase()];
+                                        const nameSizeClass =
+                                          rawMenuName.length <= 10
+                                            ? "text-[13.5px]"
+                                            : rawMenuName.length <= 18
+                                            ? "text-[12px]"
+                                            : "text-[11px]";
+                                        return (
+                                          <Button
+                                            key={s.id}
+                                            type="button"
+                                            variant={quantity > 0 ? "default" : "outline"}
+                                            disabled={isPricingLocked}
+                                            title={s.name}
+                                            className={`relative h-full min-h-[64px] w-full ${nameSizeClass} font-bold flex flex-row items-center justify-start gap-2.5 px-2.5 py-2 rounded-xl shadow-sm transition-all whitespace-normal text-left ${
+                                              quantity > 0 
+                                                ? 'bg-indigo-600 text-white hover:bg-indigo-700 font-bold border-none' 
+                                                : 'hover:bg-indigo-50 hover:text-indigo-600 border-slate-200'
+                                            }`}
+                                            onClick={() => {
+                                              handleServiceOrSpeedChange(s.id, serviceSpeed, serviceWeight);
+                                              setDialogCart(prev => {
+                                                const existing = prev.find(item => item.id === s.id);
+                                                const isKiloService = s.unit === 'kg' || s.category?.toUpperCase().includes('KILO');
+                                                let updated;
+                                                if (existing) {
+                                                  const step = isKiloService ? 0.5 : 1;
+                                                  updated = prev.map(item => 
+                                                    item.id === s.id 
+                                                      ? { ...item, quantity: Math.round((item.quantity + step) * 100) / 100 }
+                                                      : item
+                                                  );
+                                                } else {
+                                                  // L1 Fix: Warn if other items in cart have custom prices that won't carry over
+                                                  const hasCustomPriced = prev.some(item => item.basePrice !== undefined && item.price !== item.basePrice);
+                                                  if (hasCustomPriced) {
+                                                    toast(`⚠️ มีรายการที่ปรับราคาพิเศษอยู่ในตะกร้า — ราคาสินค้าใหม่จะใช้ราคาตามปกติ`, { duration: 3000 });
+                                                  }
+                                                  const defaultQty = isKiloService ? 2 : 1;
+                                                  const effectiveItemPrice = isRewashJob ? 0 : resolvedPrice;
+                                                  updated = [...prev, {
+                                                    id: s.id,
+                                                    name: s.name,
+                                                    nameEn: s.nameEn || s.name,
+                                                    quantity: defaultQty,
+                                                    price: effectiveItemPrice,
+                                                    basePrice: resolvedPrice,
+                                                    isCustomPrice: isRewashJob,
+                                                    category: s.category || "",
+                                                    unit: s.unit || "piece"
+                                                  }];
                                                 }
-                                                const defaultQty = isKiloService ? 2 : 1;
-                                                const effectiveItemPrice = isRewashJob ? 0 : resolvedPrice;
-                                                updated = [...prev, {
-                                                  id: s.id,
-                                                  name: s.name,
-                                                  nameEn: s.nameEn || s.name,
-                                                  quantity: defaultQty,
-                                                  price: effectiveItemPrice,
-                                                  basePrice: resolvedPrice,
-                                                  isCustomPrice: isRewashJob,
-                                                  category: s.category || "",
-                                                  unit: s.unit || "piece"
-                                                }];
-                                              }
-                                              const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
-                                              setLaundryPrice(totalSum);
-                                              return updated;
-                                            });
-                                          }}
-                                        >
-                                          <span className="truncate w-full text-center">{s.name}</span>
-                                          <span className={`text-[10px] ${quantity > 0 ? "text-indigo-100" : "text-slate-500 font-bold"}`}>
-                                            ฿{resolvedPrice}{s.unit ? `/${s.unit}` : ''}
+                                                const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+                                                setLaundryPrice(totalSum);
+                                                return updated;
+                                              });
+                                            }}
+                                          >
+                                            <ServiceItemVisual
+                                              name={s.name}
+                                              category={s.category}
+                                              imageUrl={itemImg}
+                                              selected={quantity > 0}
+                                              sizeClass="w-10 h-10"
+                                            />
+                                            <div className="flex-1 min-w-0 flex flex-col items-start justify-center gap-0.5">
+                                              <span className="w-full text-left text-balance whitespace-normal break-words leading-tight">{formattedMenuName}</span>
+                                              <span className={`text-[11px] shrink-0 ${quantity > 0 ? "text-indigo-100" : "text-slate-500 font-bold"}`}>
+                                                ฿{resolvedPrice}{s.unit ? `/${s.unit}` : ''}
+                                              </span>
+                                            </div>
+                                            {quantity > 0 && (
+                                              <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[9px] font-black w-4.5 h-4.5 rounded-full flex items-center justify-center border border-white shadow-sm animate-in zoom-in duration-200">
+                                                {quantity}
+                                              </span>
+                                            )}
+                                          </Button>
+                                        );
+                                      });
+                                    })()}
+                                  </div>
+
+                                  {/* Visual Reference Images Section under the Menu */}
+                                  {(() => {
+                                    const activeCatKey = dialogSelectedCategory || (activeDialogCorpPriceList ? `CORP_${activeDialogCorpPriceList.id}` : "ALL");
+                                    const catImgs = categoryReferenceImages[activeCatKey] || [];
+                                    const itemRefs = dialogActiveServices
+                                      .filter((s) => (dialogSelectedCategory === null ? true : s.category === dialogSelectedCategory) && s.category !== 'PACKAGE')
+                                      .map((s) => {
+                                        const url = serviceItemImages[s.id] || serviceItemImages[(s.name || "").trim().toUpperCase()];
+                                        return url ? { url, label: s.name, price: getServicePrice(s, selectedProfileCustomer, customerPriceListId), unit: s.unit } : null;
+                                      })
+                                      .filter(Boolean) as { url: string; label: string; price: number; unit?: string | null }[];
+                                    const allRefCards = [
+                                      ...itemRefs,
+                                      ...catImgs.map((url, idx) => ({
+                                        url,
+                                        label: `${dialogSelectedCategory || "Menu"} Reference #${idx + 1}`,
+                                        price: null as number | null,
+                                        unit: null as string | null,
+                                      })),
+                                    ];
+
+                                    return (
+                                      <div className="pt-2.5 border-t border-slate-100 space-y-2">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                                            <ImageIcon size={13} className="text-indigo-500" />
+                                            {currentLanguage === "en" ? "Reference Images" : "รูปภาพอ้างอิงสินค้า (Reference)"}
                                           </span>
-                                          {quantity > 0 && (
-                                            <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[9px] font-black w-4.5 h-4.5 rounded-full flex items-center justify-center border border-white shadow-sm animate-in zoom-in duration-200">
-                                              {quantity}
-                                            </span>
+                                          {isAdmin && (
+                                            <button
+                                              type="button"
+                                              onClick={() => setIsEditingRefImages((v) => !v)}
+                                              className="text-[10.5px] font-bold px-2 py-1 rounded-md border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors cursor-pointer"
+                                            >
+                                              {isEditingRefImages
+                                                ? (currentLanguage === "en" ? "Done" : "เสร็จสิ้น")
+                                                : (currentLanguage === "en" ? "+ Add / Edit Images" : "+ เพิ่ม/แก้ไขรูปภาพ")}
+                                            </button>
                                           )}
-                                        </Button>
-                                      );
-                                    })}
+                                        </div>
+
+                                        {isEditingRefImages && isAdmin && (
+                                          <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                                            <p className="text-[10px] font-semibold text-slate-500">
+                                              อัปโหลดรูปภาพอ้างอิงสำหรับหมวด {dialogSelectedCategory || "นี้"} (แสดงให้พนักงานดูประกอบการเลือกรายการ)
+                                            </p>
+                                            <MultiImageUploader
+                                              entityType="system"
+                                              entityId={`cat_ref_${activeCatKey}`}
+                                              value={catImgs}
+                                              maxFiles={6}
+                                              onValueChange={async (urls) => {
+                                                const nextMap = { ...categoryReferenceImages, [activeCatKey]: urls };
+                                                if (urls.length === 0) delete nextMap[activeCatKey];
+                                                await settingsStore
+                                                  .updateSetting("service_category_reference_images", JSON.stringify(nextMap))
+                                                  .catch(() => {});
+                                              }}
+                                            />
+                                          </div>
+                                        )}
+
+                                        {allRefCards.length > 0 ? (
+                                          <div className="grid grid-cols-2 gap-2">
+                                            {allRefCards.map((refCard, idx) => (
+                                              <button
+                                                key={`${refCard.url}_${idx}`}
+                                                type="button"
+                                                onClick={() => setZoomedRefImage({ url: refCard.url, label: refCard.label })}
+                                                className="group relative rounded-xl border border-slate-200 bg-slate-50/70 hover:border-indigo-300 overflow-hidden text-left transition-all shadow-2xs cursor-pointer"
+                                              >
+                                                <div className="aspect-[4/3] w-full bg-white overflow-hidden">
+                                                  <img
+                                                    src={refCard.url}
+                                                    alt={refCard.label}
+                                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                                                  />
+                                                </div>
+                                                <div className="px-2 py-1.5 bg-white border-t border-slate-100">
+                                                  <p className="text-[11px] font-bold text-slate-800 truncate">{refCard.label}</p>
+                                                  {refCard.price !== null && (
+                                                    <p className="text-[10px] font-semibold text-indigo-600">
+                                                      ฿{refCard.price}{refCard.unit ? `/${refCard.unit}` : ""}
+                                                    </p>
+                                                  )}
+                                                </div>
+                                              </button>
+                                            ))}
+                                          </div>
+                                        ) : !isEditingRefImages ? (
+                                          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-4 text-center">
+                                            <ImageIcon size={20} className="mx-auto text-slate-300 mb-1" />
+                                            <p className="text-[11px] font-semibold text-slate-500">
+                                              {currentLanguage === "en"
+                                                ? "No reference images yet for this category"
+                                                : "ยังไม่มีรูปภาพอ้างอิงสำหรับหมวดนี้"}
+                                            </p>
+                                            {isAdmin && (
+                                              <p className="text-[10px] text-slate-400 mt-0.5">
+                                                กดปุ่ม &quot;+ เพิ่ม/แก้ไขรูปภาพ&quot; ด้านบน หรือเพิ่มรูปได้ในหน้า Service Menu
+                                              </p>
+                                            )}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                               </div>
                             )}
@@ -10056,7 +10303,7 @@ function AdminPageContent() {
                               dialogCart.map((item, idx) => (
                                 <div key={`${item.id}_${idx}`} className="flex justify-between items-center bg-slate-800/70 hover:bg-slate-800 p-2 rounded-xl border border-slate-700/60 text-[11px] transition-all">
                                   <div className="flex-1 min-w-0 pr-1.5 flex flex-col">
-                                    <span className="font-bold text-white truncate text-xs">{item.name}</span>
+                                    <span className="font-bold text-white whitespace-normal break-words leading-snug text-xs">{item.name}</span>
                                     <span className="text-[9px] text-slate-400 font-bold uppercase">{item.category}</span>
                                   </div>
                                   <div className="flex items-center gap-1.5 shrink-0">
@@ -12659,6 +12906,34 @@ function AdminPageContent() {
 
           {activeTab === "tasks" && hasAccess("tasks") && <AdminTasks />}
 
+          {activeTab === "item-check" && (
+            systemSettings.enableItemCountQc !== "false" ? (
+              <AdminLaundryChecklistBoard
+                jobs={jobs}
+                shops={shopLocations}
+                actorName={user?.name || user?.email?.split("@")[0] || "Staff"}
+                onOpenOrderDialog={stableHandleEditFullJob}
+              />
+            ) : (
+              <div className="p-8 max-w-xl mx-auto mt-10 bg-white rounded-3xl border border-slate-200 text-center space-y-3 shadow-xs">
+                <ClipboardCheck size={40} className="mx-auto text-slate-300" />
+                <h3 className="text-base font-black text-slate-900">
+                  Item Count &amp; Department QC is Deactivated
+                </h3>
+                <p className="text-xs text-slate-500">
+                  You can activate the Item Count &amp; Department QC workflow at any time in <strong>Settings → System</strong>.
+                </p>
+                <Button
+                  type="button"
+                  onClick={() => handleTabChange("settings")}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl"
+                >
+                  Open Settings to Activate
+                </Button>
+              </div>
+            )
+          )}
+
           {activeTab === "supplies" && hasAccess("supplies") && (
             <AdminSuppliesOrders currentUser={user} shops={shopLocations} jobs={jobs} />
           )}
@@ -13247,6 +13522,35 @@ function AdminPageContent() {
 
       {/* Silent Background Auto-Receipt Worker */}
       <AutoReceiptWorker />
+
+      {/* Zoom Preview Modal for Menu Reference Images */}
+      <Dialog open={Boolean(zoomedRefImage)} onOpenChange={(open) => !open && setZoomedRefImage(null)}>
+        <DialogContent className="max-w-2xl p-4 rounded-2xl bg-white">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-bold text-slate-900">
+              {zoomedRefImage?.label || "Reference Image"}
+            </DialogTitle>
+          </DialogHeader>
+          {zoomedRefImage && (
+            <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50 flex items-center justify-center max-h-[75vh]">
+              <img
+                src={zoomedRefImage.url}
+                alt={zoomedRefImage.label}
+                className="max-w-full max-h-[72vh] object-contain"
+              />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Laundry Item Count & Department Handoff Checklist Modal */}
+      <LaundryChecklistDialog
+        open={showChecklistModal}
+        onOpenChange={setShowChecklistModal}
+        job={editingJobId ? jobs.find((j) => j.id === editingJobId) || null : null}
+        actorName={user?.name || user?.email?.split("@")[0] || "Staff"}
+        onSubStatusChange={(newSubStatus) => setEditingSubStatus(newSubStatus)}
+      />
 
       {/* Silent Background Auto-Recurring Orders Worker */}
       <AutoRecurringWorker />

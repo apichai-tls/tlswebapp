@@ -72,11 +72,15 @@ function LoginForm() {
       if (safeRedirect) {
         window.location.href = safeRedirect;
       } else {
-        // If it's a native platform and NOT a rider, default to /billing (BILL APK)
+        // If it's a native platform and NOT a rider, default to preferred APK page (/item-check or /billing)
         import("@capacitor/core")
           .then(({ Capacitor }) => {
             if (Capacitor.isNativePlatform() && targetUser.role !== "rider") {
-              router.push("/billing");
+              const preferredApkRoute =
+                typeof window !== "undefined"
+                  ? localStorage.getItem("tls_apk_default_route") || "/billing"
+                  : "/billing";
+              router.push(preferredApkRoute);
             } else {
               window.location.href = targetUser.role === "rider" ? "/rider" : "/admin";
             }

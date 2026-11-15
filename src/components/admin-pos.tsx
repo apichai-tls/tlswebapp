@@ -1992,11 +1992,24 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     return customers.filter(c => matchCustomerSearch(c, customerSearch));
   }, [customerSearch, customers]);
 
+  const serviceItemImages = useMemo<Record<string, string>>(() => {
+    try {
+      const raw = settings?.service_item_images;
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }, [settings?.service_item_images]);
+
   // Dynamically compute unique categories from active services (excluding PACKAGE)
   const categories = useMemo(() => {
     const sourceServices = (activeCorpPriceList && !showAllStoreServices) ? corporateServices : services;
     const activeServices = sourceServices.filter(s => s.isActive !== false && s.category !== "PACKAGE");
-    const uniqueCats = Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
+    const uniqueCats = Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort((a, b) =>
+      String(a).localeCompare(String(b), undefined, { sensitivity: "base", numeric: true })
+    );
     return ["All", ...uniqueCats];
   }, [services, corporateServices, activeCorpPriceList, showAllStoreServices]);
 
@@ -2058,14 +2071,20 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const filteredProducts = useMemo(() => {
     const sourceServices = (activeCorpPriceList && !showAllStoreServices) ? corporateServices : services;
     const activeServices = sourceServices.filter(p => p.isActive !== false && p.category !== "PACKAGE");
-    return activeServices.filter(p => {
-      const matchesCategory = selectedCategory === "All" || p.category === selectedCategory;
-      const nameMatch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
-      const nameEnMatch = p.nameEn ? p.nameEn.toLowerCase().includes(searchQuery.toLowerCase()) : false;
-      const matchesSearch = nameMatch || nameEnMatch;
-      return matchesCategory && matchesSearch;
-    });
-  }, [selectedCategory, searchQuery, services, corporateServices, activeCorpPriceList, showAllStoreServices]);
+    return activeServices
+      .filter(p => {
+        const matchesCategory = selectedCategory === "All" || p.category === selectedCategory;
+        const nameMatch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
+        const nameEnMatch = p.nameEn ? p.nameEn.toLowerCase().includes(searchQuery.toLowerCase()) : false;
+        const matchesSearch = nameMatch || nameEnMatch;
+        return matchesCategory && matchesSearch;
+      })
+      .sort((a, b) => {
+        const aName = ((currentLanguage === "en" && a.nameEn) ? a.nameEn : a.name) || "";
+        const bName = ((currentLanguage === "en" && b.nameEn) ? b.nameEn : b.name) || "";
+        return aName.trim().localeCompare(bName.trim(), undefined, { sensitivity: "base", numeric: true });
+      });
+  }, [selectedCategory, searchQuery, services, corporateServices, activeCorpPriceList, showAllStoreServices, currentLanguage]);
 
   // Cart logic
   const addToCart = (product: ServiceItem, customPrice?: number) => {
@@ -4600,12 +4619,27 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         }`}
                       >
                         <div className="flex items-start gap-2 mb-2">
-                          <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center group-hover:bg-primary/10 transition-colors shrink-0">
-                            {getProductIcon(product.icon, product.name, product.nameEn, product.category)}
-                          </div>
+                          {(() => {
+                            const customImg =
+                              serviceItemImages[product.id] ||
+                              serviceItemImages[(product.name || "").trim().toUpperCase()];
+                            return customImg ? (
+                              <div className="w-9 h-9 rounded-lg bg-muted overflow-hidden border border-border/60 shrink-0">
+                                <img
+                                  src={customImg}
+                                  alt={displayName}
+                                  className="w-full h-full object-cover"
+                                />
+                              </div>
+                            ) : (
+                              <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center group-hover:bg-primary/10 transition-colors shrink-0">
+                                {getProductIcon(product.icon, product.name, product.nameEn, product.category)}
+                              </div>
+                            );
+                          })()}
                           <div className="flex-1 min-w-0">
-                            <h3 className="font-bold text-foreground text-[13px] line-clamp-2 leading-tight" title={displayName}>
-                              {displayName}
+                            <h3 className="font-bold text-foreground text-[12.5px] whitespace-normal break-normal leading-tight" title={displayName}>
+                              {(displayName || "").replace(/\s*\/\s*/g, "/\u200B")}
                             </h3>
                           </div>
                         </div>
@@ -4958,7 +4992,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   >
                     {/* Left: Name and base rate */}
                     <div className="flex-1 min-w-0">
-                      <p className="text-[13px] font-extrabold text-foreground truncate" title={displayItemName}>
+                      <p className="text-[13px] font-extrabold text-foreground whitespace-normal break-words leading-snug" title={displayItemName}>
                         {displayItemName}
                       </p>
                       {item.price !== item.basePrice && (

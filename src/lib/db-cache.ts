@@ -405,6 +405,10 @@ const SAFE_UI_SETTING_EXACT_KEYS = new Set<string>([
   'expressRate3',
   'shopOpenTime',
   'shopCloseTime',
+  'service_item_images',
+  'service_category_reference_images',
+  'custom_checklist_garments',
+  'enableItemCountQc',
 ]);
 
 const RIDER_ALLOWED_SETTING_KEYS = new Set<string>([
@@ -414,6 +418,8 @@ const RIDER_ALLOWED_SETTING_KEYS = new Set<string>([
   'sessionTimeoutMinutes',
   'shopOpenTime',
   'shopCloseTime',
+  'service_item_images',
+  'service_category_reference_images',
 ]);
 
 export function isSafeUiPollSettingKey(key: string): boolean {
@@ -422,6 +428,7 @@ export function isSafeUiPollSettingKey(key: string): boolean {
   if (key.startsWith('TLS_')) return false;
   if (SAFE_UI_SETTING_EXACT_KEYS.has(key)) return true;
   if (key.startsWith('promptpayId_') || key.startsWith('promptpayName_')) return true;
+  if (key.startsWith('job_checklist:')) return true;
   return false;
 }
 

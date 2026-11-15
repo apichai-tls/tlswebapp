@@ -1484,6 +1484,16 @@ export default function BillingPage() {
             </motion.a>
           )}
 
+          <motion.a
+            href="/item-check"
+            whileHover={{ x: 2 }}
+            className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+            title="Item Count & QC APK"
+          >
+            <ClipboardCheck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+            {!isSidebarCollapsed && <span className="truncate">Item Count & QC</span>}
+          </motion.a>
+
           {hasAccess("riders") && (
             <motion.a
               href="/admin#riders"
@@ -1631,7 +1641,15 @@ export default function BillingPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            <Link
+              href="/item-check"
+              className="gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-xs cursor-pointer rounded-xl px-3 py-2 flex items-center text-xs transition-all active:scale-[0.98]"
+              title="Open Standalone Item Count & Department QC Page"
+            >
+              <ClipboardCheck size={15} />
+              <span>Item Count APK</span>
+            </Link>
             <FitScreenToggle />
             <NotificationBell
               onSelectTask={() => {

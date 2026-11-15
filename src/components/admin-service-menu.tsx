@@ -16,7 +16,8 @@ import {
   Gift,
   CheckCircle2,
   Percent,
-  Coins
+  Coins,
+  Image as ImageIcon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,11 +38,24 @@ import {
   DialogTitle, 
   DialogFooter 
 } from "@/components/ui/dialog";
-import { serviceStore, type ServiceItem, getServiceSKU } from "@/lib/store";
+import { serviceStore, settingsStore, type ServiceItem, getServiceSKU } from "@/lib/store";
+import { MultiImageUploader } from "@/components/ui/multi-image-uploader";
 import { toast } from "sonner";
 
 export function AdminServiceMenu() {
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
+  const settings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
+  const serviceItemImages = useMemo<Record<string, string>>(() => {
+    try {
+      const raw = settings?.service_item_images;
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }, [settings?.service_item_images]);
+  const [formImageUrls, setFormImageUrls] = useState<string[]>([]);
   
   // Main Tab: "services" (Laundry Services) or "packages" (Promotion & Top-up)
   const [mainTab, setMainTab] = useState<"services" | "packages">("services");
@@ -117,6 +131,8 @@ export function AdminServiceMenu() {
         category: service.category,
         unit: service.unit || ""
       });
+      const existingImg = serviceItemImages[service.id] || serviceItemImages[(service.name || "").trim().toUpperCase()];
+      setFormImageUrls(existingImg ? [existingImg] : []);
     } else {
       setEditingService(null);
       const isPkg = forcePackage || mainTab === "packages";
@@ -128,17 +144,34 @@ export function AdminServiceMenu() {
         category: isPkg ? "PACKAGE" : "DRY CLEAN",
         unit: isPkg ? "pack" : ""
       });
+      setFormImageUrls([]);
     }
     setIsModalOpen(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const imgUrl = formImageUrls[0] || "";
+    const nameKey = (formData.name || "").trim().toUpperCase();
+
     if (editingService) {
       serviceStore.updateService(editingService.id, formData);
+      const nextImages = { ...serviceItemImages };
+      if (imgUrl) {
+        nextImages[editingService.id] = imgUrl;
+        if (nameKey) nextImages[nameKey] = imgUrl;
+      } else {
+        delete nextImages[editingService.id];
+        if (nameKey) delete nextImages[nameKey];
+      }
+      await settingsStore.updateSetting("service_item_images", JSON.stringify(nextImages)).catch(() => {});
       toast.success(formData.category === "PACKAGE" ? "Package updated successfully" : "Service updated successfully");
     } else {
       serviceStore.addService(formData);
+      if (imgUrl && nameKey) {
+        const nextImages = { ...serviceItemImages, [nameKey]: imgUrl };
+        await settingsStore.updateSetting("service_item_images", JSON.stringify(nextImages)).catch(() => {});
+      }
       toast.success(formData.category === "PACKAGE" ? "New package added" : "New service added");
     }
     setIsModalOpen(false);
@@ -631,6 +664,22 @@ export function AdminServiceMenu() {
                   />
                 </div>
               </div>
+
+              {!isFormPackage && (
+                <div className="space-y-2 pt-1">
+                  <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                    <ImageIcon size={13} className="text-indigo-500" />
+                    Reference Image (รูปภาพอ้างอิงสินค้า)
+                  </Label>
+                  <MultiImageUploader
+                    entityType="system"
+                    entityId={editingService?.id || "service_menu_item"}
+                    value={formImageUrls}
+                    onValueChange={setFormImageUrls}
+                    maxFiles={1}
+                  />
+                </div>
+              )}
             </div>
 
             <DialogFooter className="p-6 bg-slate-50 border-t border-slate-100">
