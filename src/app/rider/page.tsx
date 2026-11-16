@@ -901,7 +901,7 @@ export default function RiderPage() {
       } catch {}
     }
     await logout();
-    window.location.href = "/login";
+    window.location.href = "/login?redirect=/rider";
   };
 
   const [selectedPreviewRiderId, setSelectedPreviewRiderId] = useState<string>("");

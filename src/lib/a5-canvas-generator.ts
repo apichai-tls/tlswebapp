@@ -88,7 +88,13 @@ async function generateA5ReceiptImageInternal(
         const checkCommitted = () => {
           const el = wrapper.firstElementChild as HTMLElement | null;
           if (el && el.offsetHeight > 0) {
-            requestAnimationFrame(() => setTimeout(resolve, 16));
+            const imgs = Array.from(el.querySelectorAll("img"));
+            const allImgsReady = imgs.every((img) => img.complete);
+            if (allImgsReady || Date.now() - startWait >= 2500) {
+              requestAnimationFrame(() => setTimeout(resolve, 16));
+            } else {
+              setTimeout(checkCommitted, 25);
+            }
           } else if (Date.now() - startWait < 3000) {
             setTimeout(checkCommitted, 16);
           } else {
@@ -115,7 +121,9 @@ async function generateA5ReceiptImageInternal(
       windowHeight: 793,
       imageTimeout: 8000,
       ignoreElements: (el) => {
-        if (el.tagName === "HEAD" || el.tagName === "STYLE" || el.tagName === "LINK" || el.closest?.("head")) return false;
+        const tag = el.tagName?.toUpperCase();
+        if (tag === "HEAD" || tag === "STYLE" || tag === "LINK" || el.closest?.("head")) return false;
+        if (el.querySelector?.("style, link[rel='stylesheet']")) return false;
         if (target.contains(el) || el.contains(target)) return false;
         return true;
       },

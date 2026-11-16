@@ -33,6 +33,8 @@ import {
   ChevronDown,
   Files,
   Calendar,
+  Car,
+  BarChart3,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -229,6 +231,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
 
   // Filters
   const [holderFilter, setHolderFilter] = useState<string>("ALL");
+  const hasInitializedDefaultWalletRef = useRef<boolean>(false);
   const [branchFilter, setBranchFilter] = useState<string>(selectedBranchId || "ALL");
   const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
@@ -260,7 +263,9 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
   const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
   const [showSummaryTable, setShowSummaryTable] = useState<boolean>(false);
-  const [activeViewTab, setActiveViewTab] = useState<"ledger" | "claims" | "wallets" | "report">("ledger");
+  const [activeViewTab, setActiveViewTab] = useState<"ledger" | "claims" | "wallets" | "report" | "fuel">("ledger");
+  const [fuelIncludeMaintenance, setFuelIncludeMaintenance] = useState<boolean>(false);
+  const [selectedFuelPlate, setSelectedFuelPlate] = useState<string>("ALL");
   const [formHolderId, setFormHolderId] = useState<string>("");
   const [formHolderName, setFormHolderName] = useState<string>("");
   const [formBranchId, setFormBranchId] = useState<string>("");
@@ -308,6 +313,8 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
   const [catModalOpen, setCatModalOpen] = useState<boolean>(false);
   const [editableCategories, setEditableCategories] = useState<string[]>([]);
   const [newCategoryInput, setNewCategoryInput] = useState<string>("");
+  const [editingCategoryIdx, setEditingCategoryIdx] = useState<number | null>(null);
+  const [editingCategoryValue, setEditingCategoryValue] = useState<string>("");
   const [isSavingCategories, setIsSavingCategories] = useState<boolean>(false);
 
   // Reject / Void Modal
@@ -492,6 +499,9 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         }
         if (Array.isArray((res as any).replenishmentReports)) {
           setReplenishmentReports((res as any).replenishmentReports);
+        }
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new Event("petty-cash-updated"));
         }
       } else {
         toast.error(res.error || "ไม่สามารถโหลดข้อมูลเงินสดย่อยได้");
@@ -717,6 +727,16 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     () => holderSummaries.filter((h) => h.isAccounting),
     [holderSummaries]
   );
+
+  // Default Wallet filter to the currently logged-in user's wallet (if they have one) on initial load
+  useEffect(() => {
+    if (hasInitializedDefaultWalletRef.current) return;
+    if (!currentUser?.id || holderSummaries.length === 0) return;
+    hasInitializedDefaultWalletRef.current = true;
+    if (holderSummaries.some((h) => h.holderId === currentUser.id)) {
+      setHolderFilter(currentUser.id);
+    }
+  }, [currentUser?.id, holderSummaries]);
   const storeCustodians = useMemo(
     () => holderSummaries.filter((h) => !h.isAccounting),
     [holderSummaries]
@@ -794,6 +814,8 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     let pendingCount = 0;
     let pendingAmount = 0;
 
+    const accountingIds = new Set(accountingCustodians.map((h) => h.holderId));
+
     filteredTransactions.forEach((t) => {
       if (t.status === "REJECTED" || t.status === "VOID") return;
       const amt = Number(t.amount) || 0;
@@ -806,7 +828,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         }
       } else {
         totalDebit = Math.round((totalDebit + amt) * 100) / 100;
-        if (t.type !== "TRANSFER_OUT") {
+        if (t.type !== "TRANSFER_OUT" || accountingIds.has(t.holderId)) {
           realExpenseTotal = Math.round((realExpenseTotal + amt) * 100) / 100;
         }
       }
@@ -1494,6 +1516,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       if (res.success) {
         toast.success(`อนุมัติรายการ ${tx.txNumber || ""} เรียบร้อยแล้ว`);
         await loadData();
+        window.dispatchEvent(new Event("petty-cash-updated"));
       } else {
         toast.error(res.error || "ไม่สามารถอนุมัติรายการได้");
       }
@@ -1526,6 +1549,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         setRejectTargetTx(null);
         setRejectReason("");
         await loadData();
+        window.dispatchEvent(new Event("petty-cash-updated"));
       } else {
         toast.error(res.error || "ดำเนินการไม่สำเร็จ");
       }
@@ -1563,7 +1587,6 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         (t) =>
           t.holderId === targetHolderId &&
           t.direction === "DEBIT" &&
-          t.type !== "TRANSFER_OUT" &&
           t.status === "APPROVED" &&
           !t.replenishmentReportId
       );
@@ -1757,6 +1780,8 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     let approvedExpenseTotal = 0;
     const categorySpendMap = new Map<string, { category: string; amount: number; count: number }>();
 
+    const accountingIds = new Set(accountingCustodians.map((h) => h.holderId));
+
     filteredTransactions.forEach((t) => {
       if (t.status === "REJECTED" || t.status === "VOID") return;
       const amt = Number(t.amount) || 0;
@@ -1767,6 +1792,17 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         topupTxCount += 1;
       } else if (t.type === "TRANSFER_IN" || t.type === "TRANSFER_OUT") {
         transferTxCount += 1;
+        if (t.type === "TRANSFER_OUT" && accountingIds.has(t.holderId)) {
+          expenseTxCount += 1;
+          if (t.status === "APPROVED") {
+            approvedExpenseTotal = Math.round((approvedExpenseTotal + amt) * 100) / 100;
+          }
+          const catName = t.category || "Transfer to Store";
+          const prev = categorySpendMap.get(catName) || { category: catName, amount: 0, count: 0 };
+          prev.amount = Math.round((prev.amount + amt) * 100) / 100;
+          prev.count += 1;
+          categorySpendMap.set(catName, prev);
+        }
       } else if (t.direction === "DEBIT") {
         expenseTxCount += 1;
         if (t.status === "APPROVED") {
@@ -1826,6 +1862,126 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     holderFilter,
     branchFilter,
   ]);
+
+  // ── Fuel & Vehicle Analytics (แยกตามทะเบียนรถ + กราฟ) ──────────────────
+  const fuelAnalytics = useMemo(() => {
+    const isFuelCategory = (cat?: string | null, desc?: string | null) => {
+      const c = (cat || "").toLowerCase();
+      const d = (desc || "").toLowerCase();
+      if (c.includes("fuel") || c.includes("น้ำมัน") || c.includes("transport")) return true;
+      if (!c && (d.includes("petrol") || d.includes("diesel") || d.includes("น้ำมัน"))) return true;
+      return false;
+    };
+    const isMaintCategory = (cat?: string | null) => {
+      const c = (cat || "").toLowerCase();
+      return c.includes("maintenance") || c.includes("ซ่อม") || c.includes("อะไหล่") || c.includes("parts");
+    };
+    const resolvePlate = (tx: PettyCashTx): string => {
+      if (tx.vehiclePlate && tx.vehiclePlate.trim()) return tx.vehiclePlate.trim();
+      const desc = tx.description || "";
+      const normDesc = desc.replace(/[\s-]/g, "").toLowerCase();
+      for (const vp of vehiclePlates) {
+        const normVp = vp.replace(/[\s-]/g, "").toLowerCase();
+        if (normVp && normDesc.includes(normVp)) return vp;
+      }
+      const plateMatch = desc.match(/\b\d?[ก-ฮ]{2}\s*\d{3,4}(?:กทม|ชม|ภก|ชบ)?\b/i);
+      if (plateMatch) return plateMatch[0].trim();
+      return "ไม่ระบุทะเบียน (Unspecified)";
+    };
+
+    const matchedTxs: Array<PettyCashTx & { resolvedPlate: string; isFuel: boolean; isMaint: boolean }> = [];
+    const byPlateMap = new Map<
+      string,
+      {
+        plate: string;
+        fuelAmount: number;
+        maintAmount: number;
+        totalAmount: number;
+        billCount: number;
+        fuelCount: number;
+        maintCount: number;
+        lastDate: string;
+      }
+    >();
+    const byDateMap = new Map<string, { dateKey: string; label: string; fuelAmount: number; maintAmount: number; totalAmount: number; count: number }>();
+
+    filteredTransactions.forEach((tx) => {
+      if (tx.status === "REJECTED" || tx.status === "VOID") return;
+      if (tx.direction !== "DEBIT" || tx.type === "TRANSFER_OUT") return;
+      const isFuel = isFuelCategory(tx.category, tx.description);
+      const isMaint = isMaintCategory(tx.category);
+      if (!isFuel && !(fuelIncludeMaintenance && isMaint)) return;
+
+      const amt = Number(tx.amount) || 0;
+      const resolvedPlate = resolvePlate(tx);
+      matchedTxs.push({ ...tx, resolvedPlate, isFuel, isMaint });
+
+      const dt = new Date(tx.transactionDate || tx.createdAt);
+      const dateKey = isNaN(dt.getTime()) ? "unknown" : format(dt, "yyyy-MM-dd");
+      const dateLabel = isNaN(dt.getTime()) ? "-" : format(dt, "dd/MM");
+
+      const pEntry = byPlateMap.get(resolvedPlate) || {
+        plate: resolvedPlate,
+        fuelAmount: 0,
+        maintAmount: 0,
+        totalAmount: 0,
+        billCount: 0,
+        fuelCount: 0,
+        maintCount: 0,
+        lastDate: dateKey,
+      };
+      if (isFuel) {
+        pEntry.fuelAmount = Math.round((pEntry.fuelAmount + amt) * 100) / 100;
+        pEntry.fuelCount += 1;
+      } else if (isMaint) {
+        pEntry.maintAmount = Math.round((pEntry.maintAmount + amt) * 100) / 100;
+        pEntry.maintCount += 1;
+      }
+      pEntry.totalAmount = Math.round((pEntry.totalAmount + amt) * 100) / 100;
+      pEntry.billCount += 1;
+      if (dateKey > pEntry.lastDate || pEntry.lastDate === "unknown") pEntry.lastDate = dateKey;
+      byPlateMap.set(resolvedPlate, pEntry);
+
+      const dEntry = byDateMap.get(dateKey) || {
+        dateKey,
+        label: dateLabel,
+        fuelAmount: 0,
+        maintAmount: 0,
+        totalAmount: 0,
+        count: 0,
+      };
+      if (isFuel) dEntry.fuelAmount = Math.round((dEntry.fuelAmount + amt) * 100) / 100;
+      else if (isMaint) dEntry.maintAmount = Math.round((dEntry.maintAmount + amt) * 100) / 100;
+      dEntry.totalAmount = Math.round((dEntry.totalAmount + amt) * 100) / 100;
+      dEntry.count += 1;
+      byDateMap.set(dateKey, dEntry);
+    });
+
+    const plateRows = Array.from(byPlateMap.values()).sort((a, b) => b.totalAmount - a.totalAmount);
+    const dailyRows = Array.from(byDateMap.values()).sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+    const totalFuelAmount = Math.round(plateRows.reduce((s, r) => s + r.fuelAmount, 0) * 100) / 100;
+    const totalMaintAmount = Math.round(plateRows.reduce((s, r) => s + r.maintAmount, 0) * 100) / 100;
+    const totalAmount = Math.round((totalFuelAmount + totalMaintAmount) * 100) / 100;
+    const totalCount = matchedTxs.length;
+    const totalFuelCount = matchedTxs.filter((t) => t.isFuel).length;
+    const avgPerBill = totalCount > 0 ? Math.round((totalAmount / totalCount) * 100) / 100 : 0;
+    const maxPlateAmount = plateRows.length > 0 ? Math.max(...plateRows.map((r) => r.totalAmount)) : 0;
+    const maxDailyAmount = dailyRows.length > 0 ? Math.max(...dailyRows.map((r) => r.totalAmount)) : 0;
+
+    return {
+      matchedTxs,
+      plateRows,
+      dailyRows,
+      totalFuelAmount,
+      totalMaintAmount,
+      totalAmount,
+      totalCount,
+      totalFuelCount,
+      avgPerBill,
+      maxPlateAmount,
+      maxDailyAmount,
+    };
+  }, [filteredTransactions, vehiclePlates, fuelIncludeMaintenance]);
 
   // Export CSV (Full Executive Summary + Custodian Summary + Category Summary + Transaction Ledger)
   const handleExportCsv = () => {
@@ -2269,101 +2425,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     </div>
   </div>
 
-  <div class="kpi-grid">
-    <div class="kpi-card" style="border-top-color:#0f172a;">
-      <div class="kpi-label">Total Balance</div>
-      <div class="kpi-val" style="color:#0f172a;">฿${fmtMoney(holderFilter === "ALL" ? dashboardDetails.totalWalletBalanceAll : kpiStats.netBalance)}</div>
-      <div class="kpi-sub">Total Quota: ฿${fmtMoney(dashboardDetails.totalLimitAll)}</div>
-    </div>
-    <div class="kpi-card" style="border-top-color:#059669;">
-      <div class="kpi-label">Company Top-up</div>
-      <div class="kpi-val" style="color:#059669;">+฿${fmtMoney(kpiStats.companyTopupTotal)}</div>
-      <div class="kpi-sub">${dashboardDetails.topupTxCount} top-up ${dashboardDetails.topupTxCount === 1 ? "entry" : "entries"}</div>
-    </div>
-    <div class="kpi-card" style="border-top-color:#0284c7;">
-      <div class="kpi-label">Store Transfers</div>
-      <div class="kpi-val" style="color:#0284c7;">฿${fmtMoney(kpiStats.transferredToStoreTotal)}</div>
-      <div class="kpi-sub">${dashboardDetails.transferTxCount} ${dashboardDetails.transferTxCount === 1 ? "transfer" : "transfers"}</div>
-    </div>
-    <div class="kpi-card" style="border-top-color:#e11d48;">
-      <div class="kpi-label">Total Expenses</div>
-      <div class="kpi-val" style="color:#e11d48;">-฿${fmtMoney(kpiStats.realExpenseTotal)}</div>
-      <div class="kpi-sub">Approved: ฿${fmtMoney(dashboardDetails.approvedExpenseTotal)} (${dashboardDetails.expenseTxCount} bills)</div>
-    </div>
-    <div class="kpi-card" style="border-top-color:#4f46e5;">
-      <div class="kpi-label">Pool Breakdown</div>
-      <div class="kpi-val" style="color:#4f46e5;font-size:12.5px;">Acct: ฿${fmtMoney(kpiStats.accountingPoolBalance)}</div>
-      <div class="kpi-sub">Stores: ฿${fmtMoney(kpiStats.storePoolBalance)}</div>
-    </div>
-    <div class="kpi-card" style="border-top-color:#d97706;">
-      <div class="kpi-label">To Replenish</div>
-      <div class="kpi-val" style="color:#d97706;">฿${fmtMoney(dashboardDetails.totalShortfallAll)}</div>
-      <div class="kpi-sub">Pending Audit: ${kpiStats.pendingCount} (฿${fmtMoney(kpiStats.pendingAmount)})</div>
-    </div>
-  </div>
-
-  <div class="section-title">1. Custodian Replenishment &amp; Usage Summary</div>
-  <table>
-    <thead>
-      <tr>
-        <th style="text-align:center;width:28px;">#</th>
-        <th>Custodian</th>
-        <th>Dept / Branch</th>
-        <th style="text-align:right;">Quota</th>
-        <th style="text-align:right;">Opening</th>
-        <th style="text-align:right;">Company (+)</th>
-        <th style="text-align:right;">Transfer In (+)</th>
-        <th style="text-align:right;">Total In (+)</th>
-        <th style="text-align:right;">Transfer Out (-)</th>
-        <th style="text-align:right;">Expenses (-)</th>
-        <th style="text-align:right;">Current Bal.</th>
-        <th style="text-align:right;">Shortfall</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${custodianRowsHtml}
-    </tbody>
-    <tfoot>
-      <tr>
-        <td colspan="3" style="text-align:right;">Total (${dashboardDetails.visibleHolderSummaries.length} Wallets)</td>
-        <td class="num">฿${fmtMoney(sumLimit)}</td>
-        <td class="num">฿${fmtMoney(sumOpening)}</td>
-        <td class="num" style="color:#059669;">+฿${fmtMoney(sumCompanyTopup)}</td>
-        <td class="num" style="color:#0284c7;">+฿${fmtMoney(sumTransferIn)}</td>
-        <td class="num" style="color:#059669;">+฿${fmtMoney(sumTotalTopup)}</td>
-        <td class="num" style="color:#6366f1;">-฿${fmtMoney(sumTransferOut)}</td>
-        <td class="num" style="color:#e11d48;">-฿${fmtMoney(sumExpense)}</td>
-        <td class="num">฿${fmtMoney(sumCurrentBal)}</td>
-        <td class="num" style="color:#d97706;">฿${fmtMoney(sumShortfall)}</td>
-      </tr>
-    </tfoot>
-  </table>
-
-  <div class="section-title">2. Expense Breakdown by Category</div>
-  <table style="width:65%;">
-    <thead>
-      <tr>
-        <th style="text-align:center;width:28px;">#</th>
-        <th>Category</th>
-        <th style="text-align:center;width:100px;">Bills</th>
-        <th style="text-align:right;width:150px;">Total Expense (THB)</th>
-        <th style="text-align:right;width:85px;">Share (%)</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${categoryRowsHtml}
-    </tbody>
-    <tfoot>
-      <tr>
-        <td colspan="2" style="text-align:right;">Total Expenses</td>
-        <td class="num" style="text-align:center;">${dashboardDetails.expenseTxCount} ${dashboardDetails.expenseTxCount === 1 ? "bill" : "bills"}</td>
-        <td class="num" style="color:#e11d48;">-฿${fmtMoney(kpiStats.realExpenseTotal)}</td>
-        <td class="num">100.0%</td>
-      </tr>
-    </tfoot>
-  </table>
-
-  <div class="section-title">3. Detailed Transaction Ledger</div>
+  <div class="section-title">Detailed Transaction Ledger</div>
   <table>
     <thead>
       <tr>
@@ -2587,19 +2649,19 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 <Plus size={13.5} />
                 <span>Top-up (เติมเงิน)</span>
               </Button>
+
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => handleOpenSubmitReportModal()}
+                className="h-9 px-2.5 text-[11.5px] font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-1 shadow-2xs cursor-pointer whitespace-nowrap shrink-0"
+                title="สรุป Report การใช้จ่ายของรอบนี้เพื่อขอเบิกชดเชยเงินสดย่อย"
+              >
+                <Files size={13.5} />
+                <span>Submit Report (สรุปเบิกเงินสดย่อย)</span>
+              </Button>
             </>
           )}
-
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => handleOpenSubmitReportModal()}
-            className="h-9 px-2.5 text-[11.5px] font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-1 shadow-2xs cursor-pointer whitespace-nowrap shrink-0"
-            title="สรุป Report การใช้จ่ายของรอบนี้เพื่อขอเบิกชดเชยเงินสดย่อย"
-          >
-            <Files size={13.5} />
-            <span>Submit Report (สรุปเบิกเงินสดย่อย)</span>
-          </Button>
 
           <Button
             type="button"
@@ -2801,6 +2863,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                     : "",
                 },
                 { id: "report", label: "Summary & Analytics (ตารางสรุปยอด)", count: null, badgeColor: "" },
+                { id: "fuel", label: "Fuel & Vehicle (สรุปค่าน้ำมัน)", count: fuelAnalytics.totalCount, badgeColor: "bg-sky-100 text-sky-700" },
               ]
             : [
                 { id: "ledger", label: "My Transactions (รายการเดินบัญชี)", count: filteredTransactions.length, badgeColor: "" },
@@ -2810,6 +2873,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                   count: replenishmentReports.filter((r) => r.holderId === currentUser?.id).length,
                   badgeColor: "",
                 },
+                { id: "fuel", label: "Fuel & Vehicle (สรุปค่าน้ำมัน)", count: fuelAnalytics.totalCount, badgeColor: "bg-sky-100 text-sky-700" },
               ]
           ).map((t) => {
             const isActive = activeViewTab === t.id;
@@ -3386,6 +3450,408 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         </div>
       )}
 
+      {/* ── TAB 4: FUEL & VEHICLE SUMMARY + GRAPHS (สรุปค่าน้ำมันตามทะเบียนรถ) ── */}
+      {activeViewTab === "fuel" && (
+        <div className="space-y-4">
+          {/* Header & Mode Toggle */}
+          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-sky-50 border border-sky-200 text-sky-600 flex items-center justify-center shrink-0">
+                <Car size={20} />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">
+                  Fuel &amp; Vehicle Expense Summary (สรุปค่าน้ำมันแยกตามทะเบียนรถ)
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  แสดงยอดเบิกจ่ายค่าน้ำมันแยกตามเลขทะเบียนรถและกราฟแนวโน้มรายวัน (อ้างอิงตามช่วงวันที่/สาขา/ผู้ถือวงเงินที่เลือกด้านบน)
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="inline-flex bg-slate-100 p-1 rounded-xl border border-slate-200/70">
+                <button
+                  type="button"
+                  onClick={() => setFuelIncludeMaintenance(false)}
+                  className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                    !fuelIncludeMaintenance ? "bg-white text-slate-900 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  Fuel Only (เฉพาะค่าน้ำมัน)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFuelIncludeMaintenance(true)}
+                  className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                    fuelIncludeMaintenance ? "bg-white text-slate-900 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  Fuel + Maintenance (รวมค่าซ่อมรถ)
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* KPI Strip */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+            <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
+              <span className="text-xs font-semibold text-slate-500">
+                {fuelIncludeMaintenance ? "Total Vehicle Spend (รวมทั้งหมด)" : "Total Fuel Spend (ค่าน้ำมันรวม)"}
+              </span>
+              <div className="text-2xl font-extrabold font-mono text-rose-600 mt-1.5">
+                ฿{fuelAnalytics.totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              {fuelIncludeMaintenance && (
+                <div className="text-[11px] text-slate-400 mt-1">
+                  ค่าน้ำมัน ฿{fuelAnalytics.totalFuelAmount.toLocaleString()} • ค่าซ่อม ฿{fuelAnalytics.totalMaintAmount.toLocaleString()}
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
+              <span className="text-xs font-semibold text-slate-500">Total Refuels / Bills (จำนวนบิล)</span>
+              <div className="text-2xl font-extrabold font-mono text-slate-900 mt-1.5">
+                {fuelAnalytics.totalCount}
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1">
+                เฉลี่ย ฿{fuelAnalytics.avgPerBill.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / บิล
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
+              <span className="text-xs font-semibold text-slate-500">Vehicles Active (จำนวนทะเบียนรถ)</span>
+              <div className="text-2xl font-extrabold font-mono text-sky-600 mt-1.5">
+                {fuelAnalytics.plateRows.length}
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1">
+                คลิกที่แท่งกราฟหรือตารางเพื่อดูบิลรายคัน
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
+              <span className="text-xs font-semibold text-slate-500">Top Vehicle (คันที่ใช้งบสูงสุด)</span>
+              <div className="text-lg font-extrabold font-mono text-amber-600 mt-1.5 truncate">
+                {fuelAnalytics.plateRows[0]?.plate || "-"}
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1">
+                {fuelAnalytics.plateRows[0]
+                  ? `฿${fuelAnalytics.plateRows[0].totalAmount.toLocaleString()} (${fuelAnalytics.plateRows[0].billCount} บิล)`
+                  : "ยังไม่มีข้อมูล"}
+              </div>
+            </div>
+          </div>
+
+          {/* Graphs Row: Bar Chart by License Plate + Daily Trend Chart */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Graph 1: Spend by Vehicle License Plate */}
+            <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                    <BarChart3 size={15} className="text-sky-600" />
+                    <span>Spend by Vehicle Plate (กราฟเปรียบเทียบรายทะเบียนรถ)</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    แสดงยอดใช้จ่ายแยกตามทะเบียนรถแต่ละคัน (คลิกเพื่อกรองรายการ)
+                  </p>
+                </div>
+              </div>
+
+              {fuelAnalytics.plateRows.length === 0 ? (
+                <div className="h-52 flex items-center justify-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-xl">
+                  ไม่มีข้อมูลค่าน้ำมันในช่วงเวลาที่เลือก
+                </div>
+              ) : (
+                <div className="space-y-3 pt-1">
+                  {fuelAnalytics.plateRows.map((row, idx) => {
+                    const pctWidth = fuelAnalytics.maxPlateAmount > 0
+                      ? Math.round((row.totalAmount / fuelAnalytics.maxPlateAmount) * 100)
+                      : 0;
+                    const fuelPctOfRow = row.totalAmount > 0 ? Math.round((row.fuelAmount / row.totalAmount) * 100) : 100;
+                    const sharePct = fuelAnalytics.totalAmount > 0
+                      ? Math.round((row.totalAmount / fuelAnalytics.totalAmount) * 1000) / 10
+                      : 0;
+                    const isSelected = selectedFuelPlate === row.plate;
+                    const barColors = [
+                      "bg-sky-600",
+                      "bg-indigo-600",
+                      "bg-emerald-600",
+                      "bg-amber-500",
+                      "bg-purple-600",
+                      "bg-rose-500",
+                    ];
+                    return (
+                      <button
+                        key={row.plate}
+                        type="button"
+                        onClick={() => setSelectedFuelPlate(isSelected ? "ALL" : row.plate)}
+                        className={`w-full text-left p-2.5 rounded-xl border transition-all cursor-pointer ${
+                          isSelected
+                            ? "border-sky-500 bg-sky-50/50 ring-1 ring-sky-200"
+                            : "border-slate-100 hover:border-slate-200 hover:bg-slate-50/60"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between text-xs mb-1.5">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="font-mono font-extrabold text-slate-900 truncate">{row.plate}</span>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                              {row.billCount} บิล ({sharePct}%)
+                            </span>
+                          </div>
+                          <span className="font-mono font-black text-rose-600 shrink-0">
+                            ฿{row.totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <div className="w-full h-3.5 bg-slate-100 rounded-full overflow-hidden flex">
+                          {fuelIncludeMaintenance ? (
+                            <>
+                              <div
+                                className="h-full bg-sky-600 transition-all duration-300"
+                                style={{ width: `${Math.max((pctWidth * fuelPctOfRow) / 100, row.fuelAmount > 0 ? 3 : 0)}%` }}
+                                title={`ค่าน้ำมัน: ฿${row.fuelAmount.toLocaleString()}`}
+                              />
+                              <div
+                                className="h-full bg-amber-500 transition-all duration-300"
+                                style={{ width: `${Math.max((pctWidth * (100 - fuelPctOfRow)) / 100, row.maintAmount > 0 ? 3 : 0)}%` }}
+                                title={`ค่าซ่อมบำรุง: ฿${row.maintAmount.toLocaleString()}`}
+                              />
+                            </>
+                          ) : (
+                            <div
+                              className={`h-full ${barColors[idx % barColors.length]} rounded-full transition-all duration-300`}
+                              style={{ width: `${Math.max(pctWidth, 4)}%` }}
+                            />
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                  {fuelIncludeMaintenance && (
+                    <div className="flex items-center gap-4 pt-1 text-[11px] text-slate-500">
+                      <span className="flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-sm bg-sky-600 inline-block" /> ค่าน้ำมัน (Fuel)
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-sm bg-amber-500 inline-block" /> ค่าซ่อมบำรุง (Maintenance)
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Graph 2: Daily Fuel Trend Chart */}
+            <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs space-y-4">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                  <Calendar size={15} className="text-indigo-600" />
+                  <span>Daily Spend Trend (กราฟยอดเบิกจ่ายรายวัน)</span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  แนวโน้มค่าใช้จ่ายค่าน้ำมันในแต่ละวันของช่วงเวลาที่เลือก
+                </p>
+              </div>
+
+              {fuelAnalytics.dailyRows.length === 0 ? (
+                <div className="h-52 flex items-center justify-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-xl">
+                  ไม่มีข้อมูลกราฟรายวันในช่วงเวลาที่เลือก
+                </div>
+              ) : (
+                <div className="pt-2">
+                  <div className="h-52 flex items-end gap-2 border-b border-slate-200 pb-2 px-1 overflow-x-auto">
+                    {fuelAnalytics.dailyRows.map((d) => {
+                      const heightPct = fuelAnalytics.maxDailyAmount > 0
+                        ? Math.max(8, Math.round((d.totalAmount / fuelAnalytics.maxDailyAmount) * 100))
+                        : 8;
+                      return (
+                        <div
+                          key={d.dateKey}
+                          className="flex-1 min-w-[44px] h-full flex flex-col items-center justify-end group"
+                          title={`${d.label}: ฿${d.totalAmount.toLocaleString()} (${d.count} บิล)`}
+                        >
+                          <span className="text-[10px] font-mono font-bold text-slate-600 mb-1 opacity-90 group-hover:text-sky-700 whitespace-nowrap">
+                            ฿{d.totalAmount.toLocaleString()}
+                          </span>
+                          <div className="w-full max-w-[36px] flex-1 flex items-end">
+                            <div
+                              className="w-full rounded-t-lg bg-gradient-to-t from-sky-600 to-indigo-500 group-hover:from-sky-500 group-hover:to-indigo-400 transition-all shadow-2xs"
+                              style={{ height: `${heightPct}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="flex items-center gap-2 pt-1.5 px-1 overflow-x-auto">
+                    {fuelAnalytics.dailyRows.map((d) => (
+                      <div key={d.dateKey} className="flex-1 min-w-[44px] text-center">
+                        <div className="text-[10px] font-bold text-slate-600">{d.label}</div>
+                        <div className="text-[9px] text-slate-400">{d.count} บิล</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Summary Table by License Plate */}
+          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xs overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Summary by License Plate (ตารางสรุปยอดค่าน้ำมันแยกตามทะเบียนรถ)
+                </h3>
+              </div>
+              {selectedFuelPlate !== "ALL" && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedFuelPlate("ALL")}
+                  className="px-2.5 py-1 rounded-lg bg-sky-50 border border-sky-200 text-sky-700 text-xs font-bold hover:bg-sky-100 cursor-pointer"
+                >
+                  Showing: {selectedFuelPlate} (Clear)
+                </button>
+              )}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-slate-50 border-b border-slate-200 text-[10.5px] font-bold uppercase text-slate-500">
+                  <tr>
+                    <th className="px-4 py-2.5 text-center w-10">#</th>
+                    <th className="px-4 py-2.5">License Plate (ทะเบียนรถ)</th>
+                    <th className="px-4 py-2.5 text-center">Bills (จำนวนครั้ง)</th>
+                    <th className="px-4 py-2.5 text-right">Fuel (ค่าน้ำมัน)</th>
+                    {fuelIncludeMaintenance && (
+                      <th className="px-4 py-2.5 text-right">Maintenance (ค่าซ่อม)</th>
+                    )}
+                    <th className="px-4 py-2.5 text-right">Total (รวมทั้งหมด)</th>
+                    <th className="px-4 py-2.5 text-right">Avg / Bill (เฉลี่ย/ครั้ง)</th>
+                    <th className="px-4 py-2.5 text-right">Share (%)</th>
+                    <th className="px-4 py-2.5 text-center">Last Refuel (ล่าสุด)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {fuelAnalytics.plateRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={fuelIncludeMaintenance ? 9 : 8} className="px-4 py-8 text-center text-slate-400">
+                        ไม่มีข้อมูลค่าน้ำมันในช่วงเวลาที่เลือก
+                      </td>
+                    </tr>
+                  ) : (
+                    fuelAnalytics.plateRows.map((row, idx) => {
+                      const avg = row.billCount > 0 ? row.totalAmount / row.billCount : 0;
+                      const share = fuelAnalytics.totalAmount > 0 ? (row.totalAmount / fuelAnalytics.totalAmount) * 100 : 0;
+                      const isSelected = selectedFuelPlate === row.plate;
+                      return (
+                        <tr
+                          key={row.plate}
+                          onClick={() => setSelectedFuelPlate(isSelected ? "ALL" : row.plate)}
+                          className={`cursor-pointer transition-colors ${
+                            isSelected ? "bg-sky-50/70" : "hover:bg-slate-50"
+                          }`}
+                        >
+                          <td className="px-4 py-2.5 text-center text-slate-400 font-mono">{idx + 1}</td>
+                          <td className="px-4 py-2.5 font-mono font-extrabold text-slate-900">
+                            <span className="inline-flex items-center gap-1.5">
+                              <Car size={13} className="text-sky-600" />
+                              {row.plate}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2.5 text-center font-bold text-slate-700">{row.billCount}</td>
+                          <td className="px-4 py-2.5 text-right font-mono font-bold text-rose-600">
+                            ฿{row.fuelAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          {fuelIncludeMaintenance && (
+                            <td className="px-4 py-2.5 text-right font-mono font-bold text-amber-600">
+                              ฿{row.maintAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                          )}
+                          <td className="px-4 py-2.5 text-right font-mono font-black text-slate-900">
+                            ฿{row.totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-mono text-slate-600">
+                            ฿{avg.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-mono font-bold text-indigo-600">
+                            {share.toFixed(1)}%
+                          </td>
+                          <td className="px-4 py-2.5 text-center text-slate-500 font-mono">{row.lastDate}</td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Detail Fuel Bills Table */}
+          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xs overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-900">
+                Fuel Expense Bills (รายการบิลค่าน้ำมัน{selectedFuelPlate !== "ALL" ? ` • ${selectedFuelPlate}` : ""})
+              </h3>
+              <span className="text-xs font-bold text-slate-400">
+                {fuelAnalytics.matchedTxs.filter((t) => selectedFuelPlate === "ALL" || t.resolvedPlate === selectedFuelPlate).length} รายการ
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-slate-50 border-b border-slate-200 text-[10.5px] font-bold uppercase text-slate-500">
+                  <tr>
+                    <th className="px-4 py-2.5">Date</th>
+                    <th className="px-4 py-2.5">Ref No.</th>
+                    <th className="px-4 py-2.5">License Plate</th>
+                    <th className="px-4 py-2.5">Holder / Branch</th>
+                    <th className="px-4 py-2.5">Description</th>
+                    <th className="px-4 py-2.5">Invoice No.</th>
+                    <th className="px-4 py-2.5 text-right">Amount</th>
+                    <th className="px-4 py-2.5 text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {fuelAnalytics.matchedTxs
+                    .filter((t) => selectedFuelPlate === "ALL" || t.resolvedPlate === selectedFuelPlate)
+                    .map((tx) => (
+                      <tr key={tx.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-2.5 font-mono text-slate-500 whitespace-nowrap">
+                          {format(new Date(tx.transactionDate || tx.createdAt), "dd/MM/yyyy HH:mm")}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono font-bold text-slate-700">{tx.txNumber || "-"}</td>
+                        <td className="px-4 py-2.5">
+                          <span className="px-2 py-0.5 rounded-md bg-sky-50 border border-sky-200 text-sky-800 font-mono font-bold text-[11px]">
+                            {tx.resolvedPlate}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <div className="font-bold text-slate-800">{tx.holderName}</div>
+                          <div className="text-[10.5px] text-slate-400">{getBranchDisplayName(tx.branchId)}</div>
+                        </td>
+                        <td className="px-4 py-2.5 text-slate-700">{tx.description}</td>
+                        <td className="px-4 py-2.5 font-mono text-slate-500">{tx.invoiceNo || "-"}</td>
+                        <td className="px-4 py-2.5 text-right font-mono font-bold text-rose-600">
+                          -฿{Number(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-4 py-2.5 text-center">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              tx.status === "APPROVED"
+                                ? "bg-emerald-50 text-emerald-700"
+                                : "bg-amber-50 text-amber-700"
+                            }`}
+                          >
+                            {tx.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── TAB 1 (DEFAULT): STREAMLINED TRANSACTIONS LEDGER ─────────────────── */}
       {activeViewTab === "ledger" && (
         <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xs overflow-hidden">
@@ -3729,19 +4195,35 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                             </button>
 
                             {canApproveOrTopUp && tx.status === "APPROVED" && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setRejectTargetTx(tx);
-                                  setRejectActionType("VOID");
-                                  setRejectReason("");
-                                  setRejectModalOpen(true);
-                                }}
-                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                                title="Void transaction"
-                              >
-                                <Trash2 size={13} />
-                              </button>
+                              <div className="inline-flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  disabled={isReviewing}
+                                  onClick={() => {
+                                    setRejectTargetTx(tx);
+                                    setRejectActionType("REJECT");
+                                    setRejectReason("");
+                                    setRejectModalOpen(true);
+                                  }}
+                                  className="px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 text-[10.5px] font-semibold cursor-pointer"
+                                  title="Reject retroactively & refund to wallet (ปฏิเสธย้อนหลังและคืนเงินเข้า Wallet)"
+                                >
+                                  Reject
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRejectTargetTx(tx);
+                                    setRejectActionType("VOID");
+                                    setRejectReason("");
+                                    setRejectModalOpen(true);
+                                  }}
+                                  className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                  title="Void transaction"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
                             )}
                           </div>
                         </td>
@@ -4815,19 +5297,95 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
               {editableCategories.map((cat, idx) => (
                 <div
                   key={idx}
-                  className="flex items-center justify-between p-2 rounded-xl bg-slate-50 border border-slate-200/80 text-xs font-semibold text-slate-800"
+                  className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-50 border border-slate-200/80 text-xs font-semibold text-slate-800"
                 >
-                  <span className="truncate">{cat}</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setEditableCategories((prev) => prev.filter((_, i) => i !== idx))
-                    }
-                    className="p-1 text-slate-400 hover:text-rose-600 rounded cursor-pointer"
-                    title="Delete category (ลบหมวดหมู่นี้)"
-                  >
-                    <Trash2 size={13} />
-                  </button>
+                  {editingCategoryIdx === idx ? (
+                    <>
+                      <Input
+                        value={editingCategoryValue}
+                        onChange={(e) => setEditingCategoryValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            const trimmed = editingCategoryValue.trim();
+                            if (trimmed) {
+                              setEditableCategories((prev) =>
+                                prev.map((c, i) => (i === idx ? trimmed : c))
+                              );
+                            }
+                            setEditingCategoryIdx(null);
+                            setEditingCategoryValue("");
+                          } else if (e.key === "Escape") {
+                            setEditingCategoryIdx(null);
+                            setEditingCategoryValue("");
+                          }
+                        }}
+                        autoFocus
+                        className="h-7 text-xs rounded-lg bg-white flex-1"
+                      />
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const trimmed = editingCategoryValue.trim();
+                            if (trimmed) {
+                              setEditableCategories((prev) =>
+                                prev.map((c, i) => (i === idx ? trimmed : c))
+                              );
+                            }
+                            setEditingCategoryIdx(null);
+                            setEditingCategoryValue("");
+                          }}
+                          className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer"
+                          title="Confirm edit (ยืนยันแก้ไข)"
+                        >
+                          <CheckCircle2 size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingCategoryIdx(null);
+                            setEditingCategoryValue("");
+                          }}
+                          className="p-1 text-slate-400 hover:text-slate-600 rounded cursor-pointer"
+                          title="Cancel edit (ยกเลิก)"
+                        >
+                          <XCircle size={14} />
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="truncate flex-1">{cat}</span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingCategoryIdx(idx);
+                            setEditingCategoryValue(cat);
+                          }}
+                          className="p-1 text-slate-400 hover:text-indigo-600 rounded cursor-pointer"
+                          title="Edit category (แก้ไขหมวดหมู่นี้)"
+                        >
+                          <Edit2 size={13} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditableCategories((prev) => prev.filter((_, i) => i !== idx));
+                            if (editingCategoryIdx === idx) {
+                              setEditingCategoryIdx(null);
+                              setEditingCategoryValue("");
+                            }
+                          }}
+                          className="p-1 text-slate-400 hover:text-rose-600 rounded cursor-pointer"
+                          title="Delete category (ลบหมวดหมู่นี้)"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               ))}
             </div>

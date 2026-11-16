@@ -237,7 +237,9 @@ async function generateThermalReceiptImageInternal(
       logging: false,
       imageTimeout: 5000,
       ignoreElements: (el) => {
-        if (el.tagName === "HEAD" || el.tagName === "STYLE" || el.tagName === "LINK" || el.closest?.("head")) return false;
+        const tag = el.tagName?.toUpperCase();
+        if (tag === "HEAD" || tag === "STYLE" || tag === "LINK" || el.closest?.("head")) return false;
+        if (el.querySelector?.("style, link[rel='stylesheet']")) return false;
         if (targetEl.contains(el) || el.contains(targetEl)) return false;
         return true;
       },

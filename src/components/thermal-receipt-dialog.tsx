@@ -528,7 +528,9 @@ export function ThermalReceiptDialog({
               logging: false,
               imageTimeout: 5000,
               ignoreElements: (el) => {
-                if (el.tagName === "HEAD" || el.tagName === "STYLE" || el.tagName === "LINK" || el.closest?.("head")) return false;
+                const tag = el.tagName?.toUpperCase();
+                if (tag === "HEAD" || tag === "STYLE" || tag === "LINK" || el.closest?.("head")) return false;
+                if (el.querySelector?.("style, link[rel='stylesheet']")) return false;
                 if (captureEl.contains(el) || el.contains(captureEl)) return false;
                 return true;
               },
@@ -830,6 +832,7 @@ export function ThermalReceiptDialog({
               <img 
                 src={activeShop?.logoUrl || "/logo.png"} 
                 alt="Shop Logo" 
+                style={{ height: 40, width: "auto", maxWidth: 120, objectFit: "contain", filter: "grayscale(100%) contrast(125%)", display: "block", margin: "0 auto" }}
                 className="h-10 max-w-[120px] object-contain filter grayscale contrast-125 block mx-auto" 
               />
             </div>

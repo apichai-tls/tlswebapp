@@ -333,7 +333,8 @@ export function AdminCampaignModal({
     setIsSaving(true);
     try {
       const targetCategory = applicableCategory && applicableCategory !== "ALL" ? applicableCategory : null;
-      const isInstant = campaignMode === "INSTANT_DISCOUNT";
+      const isServicePromo = campaignMode === "SERVICE_PROMO";
+      const isInstant = campaignMode === "INSTANT_DISCOUNT" || isServicePromo;
       const normalizedInstantCode = (instantPromoCode || codePrefix || "PROMO").toUpperCase().trim();
       const matchedSvc = availableServices.find(s => s.id === instantTargetServiceId);
       const effectiveTargetSvcName = matchedSvc
@@ -473,7 +474,8 @@ export function AdminCampaignModal({
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {campaigns.map((c) => {
-                    const isInstant = c.campaignMode === "INSTANT_DISCOUNT" || Boolean(c.instantRule);
+                    const isServicePromo = c.campaignMode === "SERVICE_PROMO";
+                    const isInstant = !isServicePromo && (c.campaignMode === "INSTANT_DISCOUNT" || Boolean(c.instantRule));
                     return (
                     <div
                       key={c.id}
@@ -494,7 +496,11 @@ export function AdminCampaignModal({
                               >
                                 {c.enabled ? "Active (เปิดใช้งาน)" : "Inactive (ปิดใช้งาน)"}
                               </Badge>
-                              {isInstant ? (
+                              {isServicePromo ? (
+                                <Badge className="bg-purple-600 text-white text-[10px] font-bold">
+                                  🎁 Service Promo (เมนูโปรโมชั่น)
+                                </Badge>
+                              ) : isInstant ? (
                                 <Badge className="bg-amber-500 text-white text-[10px] font-bold">
                                   ⚡ Instant Promo (ลดทันที)
                                 </Badge>
@@ -512,7 +518,19 @@ export function AdminCampaignModal({
 
                         {/* Conditions Badges */}
                         <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[11px]">
-                          {isInstant && c.instantRule ? (
+                          {isServicePromo && c.instantRule ? (
+                            <>
+                              <span className="px-2 py-0.5 rounded-lg bg-purple-50 dark:bg-purple-950/40 text-purple-800 dark:text-purple-300 font-black border border-purple-300 dark:border-purple-800 font-mono">
+                                🏷️ Code: {c.instantRule.promoCode}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 font-bold border border-indigo-200 dark:border-indigo-800">
+                                🛏️ {c.instantRule.targetServiceName || "Service Promo"}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 font-bold border border-emerald-200 dark:border-emerald-800">
+                                Set Price ฿{Number(c.instantRule.promoUnitPrice || 899).toLocaleString()} (Standard Wash & Dry)
+                              </span>
+                            </>
+                          ) : isInstant && c.instantRule ? (
                             <>
                               <span className="px-2 py-0.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 font-black border border-amber-300 dark:border-amber-800 font-mono">
                                 🏷️ Code: {c.instantRule.promoCode} {c.instantRule.autoApply ? "(Auto-Apply)" : "(Manual)"}

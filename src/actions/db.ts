@@ -6,7 +6,7 @@ import { listFilesForJob } from '@/lib/gcs';
 import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, TOPUP_SEQ_KEY, generateTopUpReceiptNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone, findDuplicateCustomerByPhone, computeMembershipExpiryDate } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
-import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel, isItemMatchingInstantCampaign } from '@/lib/promotions';
+import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel, isItemMatchingInstantCampaign, cartHasWinterBeddingPromo, isWinterBeddingPromoItem, WINTER_BEDDING_PROMO_SERVICE_ID } from '@/lib/promotions';
 import { invalidateDbCache, sanitizeCustomerRecord, primeCustomerCache, removeCustomerFromCache, patchSettingsInCache, primeJobCache } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
 import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, canAccessCustomerRecords, canAccessCustomerOrLinkedJob, canAccessFinancialData, isAdminOrSuperadmin } from '@/lib/server-auth';
@@ -1779,6 +1779,63 @@ export async function setPrimaryCustomerAddressAction(customerId: string, addres
 
 const recentJobCreationsByRequestId = new Map<string, { promise: Promise<any>; createdAt: number }>();
 
+async function validateWinterBeddingPromoForJob(
+  tx: any,
+  params: {
+    items?: any[] | null;
+    customerId?: string | null;
+    customerPhone?: string | null;
+    customerName?: string | null;
+    paymentChannel?: string | null;
+    isPaid?: boolean;
+    isShopPaid?: boolean;
+    excludeJobId?: string | null;
+  }
+) {
+  if (!Array.isArray(params.items) || !cartHasWinterBeddingPromo(params.items)) return;
+
+  const promoItems = params.items.filter(isWinterBeddingPromoItem);
+  const totalQty = promoItems.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+  if (totalQty > 1) {
+    throw new Error("โปรโมชั่น Winter Bedding Set ฿899 จำกัด 1 สิทธิ์ (1 เซ็ต) ต่อลูกค้าตลอดรายการ");
+  }
+
+  if (
+    (params.isPaid || params.isShopPaid) &&
+    params.paymentChannel &&
+    params.paymentChannel.toLowerCase().includes("deduct member")
+  ) {
+    throw new Error("โปรโมชั่น Winter Bedding Set ฿899 ชำระได้เฉพาะเงินสด / โอนเงิน / บัตรเครดิต เท่านั้น (ห้ามหักเครดิต Member)");
+  }
+
+  const orConditions: any[] = [];
+  if (params.customerId) {
+    orConditions.push({ customerId: params.customerId });
+  }
+  const cleanPhone = String(params.customerPhone || "").replace(/\D/g, "");
+  if (cleanPhone.length >= 8) {
+    orConditions.push({ customerPhone: { contains: cleanPhone.slice(-8) } });
+  }
+  if (orConditions.length === 0 && params.customerName?.trim()) {
+    orConditions.push({ customerName: { equals: params.customerName.trim(), mode: "insensitive" } });
+  }
+
+  if (orConditions.length > 0) {
+    const priorPromoJob = await tx.job.findFirst({
+      where: {
+        status: { not: "cancel" },
+        ...(params.excludeJobId ? { id: { not: params.excludeJobId } } : {}),
+        itemsJson: { contains: WINTER_BEDDING_PROMO_SERVICE_ID },
+        OR: orConditions,
+      },
+      select: { id: true },
+    });
+    if (priorPromoJob) {
+      throw new Error(`ลูกค้าท่านนี้ใช้สิทธิ์ Winter Bedding Set ฿899 ครบ 1 ครั้งแล้ว (ออเดอร์ #${priorPromoJob.id})`);
+    }
+  }
+}
+
 export async function addJobAction(data: any) {
   const authUser = await assertServerActionAuthorized({
     requireWrite: true,
@@ -1860,6 +1917,16 @@ export async function addJobAction(data: any) {
           ? (String(resolvedRemark).includes('Proforma:') ? resolvedRemark : `${proformaRemark} | ${resolvedRemark}`)
           : proformaRemark;
       }
+
+      await validateWinterBeddingPromoForJob(tx, {
+        items: Array.isArray(data.items) ? data.items : null,
+        customerId: data.customerId,
+        customerPhone: data.customerPhone,
+        customerName: data.customerName,
+        paymentChannel: data.paymentChannel,
+        isPaid: Boolean(data.isPaid),
+        isShopPaid: Boolean(data.isShopPaid),
+      });
 
       const createBeamSettlement = (data.isPaid || data.isShopPaid)
         ? resolveBeamSettlementDate(new Date(), data.paymentChannel)
@@ -3208,7 +3275,21 @@ async function updateJobActionInternal(id: string, updates: any) {
       data.billNo = updates.billNo;
     }
   }
-  if (updates.items !== undefined) data.itemsJson = updates.items ? JSON.stringify(updates.items) : null;
+  if (updates.items !== undefined) {
+    if (Array.isArray(updates.items) && cartHasWinterBeddingPromo(updates.items)) {
+      await validateWinterBeddingPromoForJob(tx, {
+        items: updates.items,
+        customerId: updates.customerId !== undefined ? updates.customerId : existingJob?.customerId,
+        customerPhone: updates.customerPhone !== undefined ? updates.customerPhone : existingJob?.customerPhone,
+        customerName: updates.customerName !== undefined ? updates.customerName : existingJob?.customerName,
+        paymentChannel: updates.paymentChannel !== undefined ? updates.paymentChannel : existingJob?.paymentChannel,
+        isPaid: updates.isPaid !== undefined ? Boolean(updates.isPaid) : Boolean(existingJob?.isPaid),
+        isShopPaid: updates.isShopPaid !== undefined ? Boolean(updates.isShopPaid) : Boolean(existingJob?.isShopPaid),
+        excludeJobId: id,
+      });
+    }
+    data.itemsJson = updates.items ? JSON.stringify(updates.items) : null;
+  }
 
   // Additional fields for full job edits
   if (updates.customerName !== undefined) {
@@ -10255,6 +10336,9 @@ export async function reviewPettyCashTransactionAction(data: {
     if (!existing) return { success: false, error: "\u0E44\u0E21\u0E48\u0E1E\u0E1A\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E19\u0E35\u0E49\u0E43\u0E19\u0E23\u0E30\u0E1A\u0E1A" };
 
     const nextStatus = data.action === "APPROVE" ? "APPROVED" : data.action === "REJECT" ? "REJECTED" : "VOID";
+    if (existing.status === nextStatus) {
+      return { success: false, error: `รายการนี้อยู่ในสถานะ ${nextStatus} แล้ว` };
+    }
     const now = new Date();
     const actorName = authUser.name || authUser.email || "Accounting";
     const cleanReason = data.reason?.trim() || "";
@@ -10394,6 +10478,43 @@ export async function reviewPettyCashTransactionAction(data: {
   } catch (err: any) {
     console.error("[reviewPettyCashTransactionAction] Error:", err);
     return { success: false, error: err?.message || "Failed to review petty cash transaction" };
+  }
+}
+
+export async function getPettyCashPendingApprovalCountAction(): Promise<{
+  success: boolean;
+  pendingTxCount: number;
+  pendingReportCount: number;
+  total: number;
+}> {
+  try {
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+    const role = (authUser.role || "").toLowerCase();
+    const canApprove =
+      role === "admin" ||
+      role === "superadmin" ||
+      role === "accounting" ||
+      (authUser.permissions || []).includes("approve-petty-cash");
+    if (!canApprove) {
+      return { success: true, pendingTxCount: 0, pendingReportCount: 0, total: 0 };
+    }
+    await ensurePettyCashTableExists();
+
+    const [txRes, repRes] = await Promise.all([
+      prisma.$queryRaw<any[]>`SELECT COUNT(*)::int AS cnt FROM "PettyCashTransaction" WHERE "status" = 'PENDING'`,
+      prisma.$queryRaw<any[]>`SELECT COUNT(*)::int AS cnt FROM "PettyCashReplenishmentReport" WHERE "status" = 'PENDING_APPROVAL'`,
+    ]);
+
+    const pendingTxCount = Number(txRes?.[0]?.cnt || 0);
+    const pendingReportCount = Number(repRes?.[0]?.cnt || 0);
+    return {
+      success: true,
+      pendingTxCount,
+      pendingReportCount,
+      total: pendingTxCount + pendingReportCount,
+    };
+  } catch {
+    return { success: false, pendingTxCount: 0, pendingReportCount: 0, total: 0 };
   }
 }
 

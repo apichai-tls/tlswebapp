@@ -38,6 +38,12 @@ import {
   resolveEffectiveCategory,
   DEFAULT_PROMOTION_CAMPAIGNS,
   calculateInstantCampaignDiscount,
+  WINTER_BEDDING_PROMO_SERVICE_ID,
+  WINTER_BEDDING_PROMO_PRICE,
+  WINTER_BEDDING_CAMPAIGN_ID,
+  isWinterBeddingPromoItem,
+  cartHasWinterBeddingPromo,
+  hasCustomerUsedWinterBeddingPromo,
   type PromotionCampaign,
   type InstantRuleConfig,
 } from "@/lib/promotions";
@@ -93,7 +99,7 @@ const WisePaymentDialog = dynamic(() => import("@/components/wise-payment-dialog
 const OnlinePaymentDialog = dynamic(() => import("@/components/online-payment-dialog").then((m) => m.OnlinePaymentDialog), { ssr: false });
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
-import { addJobLogAction, unlockPaidJobAction, getCustomerCouponsAction, getCustomerJobsAction, splitJobDeliveryAction, getPromotionCampaignsAction } from "@/actions/db";
+import { addJobLogAction, unlockPaidJobAction, getCustomerCouponsAction, getCustomerJobsAction, splitJobDeliveryAction, getPromotionCampaignsAction, getPettyCashPendingApprovalCountAction } from "@/actions/db";
 import { createTaxInvoiceTaskForJobAction } from "@/actions/tasks";
 import { useRiders } from "@/lib/use-riders";
 import {
@@ -332,11 +338,44 @@ function AdminPageContent() {
   const [refundJob, setRefundJob] = useState<Job | null>(null);
   const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
   const canApproveWallet = Boolean(user?.permissions?.includes('approve-wallet') || user?.role === 'admin');
+  const canApprovePettyCash = Boolean(
+    user?.role === 'admin' ||
+    user?.role === 'superadmin' ||
+    user?.role === 'accounting' ||
+    user?.permissions?.includes('approve-petty-cash')
+  );
+  const [pettyCashPendingCount, setPettyCashPendingCount] = useState(0);
   const canRefund = Boolean(user?.permissions?.includes('refund-job') || user?.role === 'admin');
 
   useEffect(() => {
     walletApprovalStore.refreshPendingMap().catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!canApprovePettyCash) {
+      setPettyCashPendingCount(0);
+      return;
+    }
+    let cancelled = false;
+    const fetchCount = () => {
+      getPettyCashPendingApprovalCountAction()
+        .then((res) => {
+          if (!cancelled && res?.success) {
+            setPettyCashPendingCount(res.total || 0);
+          }
+        })
+        .catch(() => {});
+    };
+    fetchCount();
+    const timer = setInterval(fetchCount, 60000);
+    const onUpdated = () => fetchCount();
+    window.addEventListener("petty-cash-updated", onUpdated);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener("petty-cash-updated", onUpdated);
+    };
+  }, [canApprovePettyCash]);
 
   // Restore tab from URL hash/query param, or auto-navigate to first accessible tab for this user
   useEffect(() => {
@@ -1012,7 +1051,7 @@ function AdminPageContent() {
   const draftJobRequestIdRef = useRef<string>("");
 
   const stripRoomSuffix = useCallback((loc: string) => {
-    return (loc || "").replace(/(?:\s*\(Room\s*[^)]*\))+$/i, "").trim();
+    return (loc || "").replace(/(?:\s*\(Room\s*(?:[^()]|\([^)]*\))*\))+$/i, "").trim();
   }, []);
 
   // Persist in-flight job updates to sessionStorage so clicking Refresh during a slow save never loses edits
@@ -1081,6 +1120,9 @@ function AdminPageContent() {
   const [serviceWeight, setServiceWeight] = useState(2);
   
   const getServicePrice = useCallback((service: ServiceItem, customer: Customer | null = selectedProfileCustomer, plId: string | null = customerPriceListId) => {
+    if (isWinterBeddingPromoItem(service)) {
+      return WINTER_BEDDING_PROMO_PRICE;
+    }
     const targetPlId = plId || customer?.priceListId;
     if (targetPlId && targetPlId !== "regular") {
       const customPl = priceLists.find(pl => pl.id === targetPlId);
@@ -1706,14 +1748,34 @@ function AdminPageContent() {
     }
   }, [dialogOpen]);
 
+  const hasWinterBeddingPromoInCart = useMemo(() => cartHasWinterBeddingPromo(dialogCart), [dialogCart]);
+
   const isMemberWalletDisallowedByPromo = useMemo(() => {
+    if (hasWinterBeddingPromoInCart) return true;
     if (!appliedPromo) return false;
     if (appliedPromo.disallowMemberWallet) return true;
     const matched = promoCampaigns.find(
       (c) => (c.instantRule?.promoCode || c.reward?.codePrefix || "").toUpperCase() === appliedPromo.code.toUpperCase()
     );
     return Boolean(matched?.conditions?.disallowMemberWallet || matched?.instantRule?.disallowMemberWallet);
-  }, [appliedPromo, promoCampaigns]);
+  }, [hasWinterBeddingPromoInCart, appliedPromo, promoCampaigns]);
+
+  useEffect(() => {
+    if (hasWinterBeddingPromoInCart && !isPaidJob) {
+      if (serviceSpeed !== "standard") {
+        setServiceSpeed("standard");
+      }
+      if (showDialogDiscount || dialogDiscountPercent > 0) {
+        setShowDialogDiscount(false);
+        setDialogDiscountPercent(0);
+      }
+      if (appliedPromo || promoCodeInput) {
+        setAppliedPromo(null);
+        setPromoCodeInput("");
+        setPromoError(null);
+      }
+    }
+  }, [hasWinterBeddingPromoInCart, isPaidJob, serviceSpeed, showDialogDiscount, dialogDiscountPercent, appliedPromo, promoCodeInput]);
 
   const hasDialogNonPackageItems = useMemo(() => {
     if (isRewashJob) return false;
@@ -2670,7 +2732,7 @@ function AdminPageContent() {
     const isPickupService = !!sourceJob.pickupLocation && !shopLocations.some(s => s.address === sourceJob.pickupLocation || s.name === sourceJob.pickupLocation || (sourceJob.pickupLocation && sourceJob.pickupLocation.includes("POS Counter")));
     const isDeliveryService = !!sourceJob.dropoffLocation && !shopLocations.some(s => s.address === sourceJob.dropoffLocation || s.name === sourceJob.dropoffLocation);
     const parseRoom = (loc: string) => {
-      const match = loc.match(/^(.*?)(?:\s*\(Room\s*([^)]*)\))+$/i);
+      const match = loc.match(/^(.*?)(?:\s*\(Room\s*((?:[^()]|\([^)]*\))*)\))+$/i);
       if (match) return { base: match[1].trim(), room: (match[2] || "").trim() };
       return { base: loc, room: "" };
     };
@@ -2891,6 +2953,10 @@ function AdminPageContent() {
 
   const handleApplyPromo = async (codeOverride?: unknown) => {
     if (isPaidJob) return;
+    if (hasWinterBeddingPromoInCart) {
+      toast.error("โปรโมชั่น Winter Bedding Set ฿899 ไม่สามารถใช้ร่วมกับคูปองหรือส่วนลดอื่นได้");
+      return;
+    }
     const targetCode = typeof codeOverride === "string" ? codeOverride : promoCodeInput;
     const code = targetCode.trim().toUpperCase();
     if (!code) return;
@@ -3546,7 +3612,7 @@ function AdminPageContent() {
     const isDeliveryService = !!job.dropoffLocation && !shopLocations.some(s => s.address === job.dropoffLocation || s.name === job.dropoffLocation);
 
     const parseRoom = (loc: string) => {
-      const match = loc.match(/^(.*?)(?:\s*\(Room\s*([^)]*)\))+$/i);
+      const match = loc.match(/^(.*?)(?:\s*\(Room\s*((?:[^()]|\([^)]*\))*)\))+$/i);
       if (match) return { base: match[1].trim(), room: (match[2] || "").trim() };
       return { base: loc, room: "" };
     };
@@ -4124,8 +4190,34 @@ function AdminPageContent() {
     }
 
     if (!isAlreadyPaidJob && (paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0) && isMemberWalletDisallowedByPromo) {
-      abortSubmit(`โปรโมชั่น ${appliedPromo?.code || ""} ไม่สามารถชำระด้วยเครดิตสมาชิก (Deduct Member) ได้ กรุณาเลือกชำระด้วยเงินสด โอนเงิน หรือบัตรเครดิต`);
+      abortSubmit(
+        hasWinterBeddingPromoInCart
+          ? "โปรโมชั่น Winter Bedding Set ฿899 ชำระได้เฉพาะเงินสด / โอนเงิน / บัตรเครดิต เท่านั้น (ห้ามหักเครดิต Member)"
+          : `โปรโมชั่น ${appliedPromo?.code || ""} ไม่สามารถชำระด้วยเครดิตสมาชิก (Deduct Member) ได้ กรุณาเลือกชำระด้วยเงินสด โอนเงิน หรือบัตรเครดิต`
+      );
       return;
+    }
+
+    if (!isAlreadyPaidJob && hasWinterBeddingPromoInCart) {
+      const promoItem = dialogCart.find(isWinterBeddingPromoItem);
+      if (promoItem && Number(promoItem.quantity) > 1) {
+        abortSubmit("โปรโมชั่น Winter Bedding Set ฿899 จำกัด 1 สิทธิ์ (1 เซ็ต) ต่อลูกค้าตลอดรายการ");
+        return;
+      }
+      const winterCamp = promoCampaigns.find((c) => c.id === WINTER_BEDDING_CAMPAIGN_ID);
+      if (winterCamp && winterCamp.enabled === false) {
+        abortSubmit("แคมเปญ Winter Bedding Set ฿899 ถูกปิดใช้งานอยู่");
+        return;
+      }
+      const usage = hasCustomerUsedWinterBeddingPromo(
+        jobs,
+        selectedProfileCustomer || { name: customerName, phone: customerPhone },
+        editingJobId
+      );
+      if (usage.used) {
+        abortSubmit(`ลูกค้าท่านนี้ใช้สิทธิ์ Winter Bedding Set ฿899 ครบ 1 ครั้งแล้ว (ออเดอร์ #${usage.existingJobId})`);
+        return;
+      }
     }
 
     if (isNewDeduction) {
@@ -5532,8 +5624,21 @@ function AdminPageContent() {
         setDialogReceivedCash("");
       }
 
-      // Auto-create Tax Invoice Task for Accounting Team if requested
-      if (isTaxInvoiceRequested && savedJobId) {
+      // Auto-create Tax Invoice Task for Accounting Team ONLY when newly requested (not on every subsequent job save)
+      const wasTaxInvoiceAlreadyRequested = Boolean(
+        isEditMode &&
+        existingJob &&
+        ((existingJob.remark && (existingJob.remark.includes("ขอใบกำกับภาษี") || existingJob.remark.includes("Tax Invoice") || existingJob.remark.includes("Req Tax Inv"))) ||
+          (() => {
+            try {
+              const p = existingJob.adminNotesJson ? JSON.parse(existingJob.adminNotesJson) : null;
+              return Boolean(p && typeof p === "object" && p.isTaxInvoiceRequested);
+            } catch {
+              return false;
+            }
+          })())
+      );
+      if (isTaxInvoiceRequested && !wasTaxInvoiceAlreadyRequested && savedJobId) {
         createTaxInvoiceTaskForJobAction({
           jobId: savedJobId,
           customerName: customerName || selectedProfileCustomer?.name,
@@ -6480,8 +6585,22 @@ function AdminPageContent() {
                   {activeTab === "petty-cash" && !isSidebarCollapsed && (
                     <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
                   )}
-                  <Wallet size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "petty-cash" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
-                  {!isSidebarCollapsed && <span className="truncate">Petty Cash</span>}
+                  <div className="relative shrink-0 flex items-center justify-center">
+                    <Wallet size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "petty-cash" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {isSidebarCollapsed && canApprovePettyCash && pettyCashPendingCount > 0 && (
+                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-rose-500 rounded-full animate-pulse border border-white" />
+                    )}
+                  </div>
+                  {!isSidebarCollapsed && (
+                    <div className="flex items-center justify-between flex-1 min-w-0 gap-1.5">
+                      <span className="truncate">Petty Cash</span>
+                      {canApprovePettyCash && pettyCashPendingCount > 0 && (
+                        <span className="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-black bg-rose-500 text-white animate-pulse shrink-0">
+                          {pettyCashPendingCount}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </motion.a>
               )}
 
@@ -6939,7 +7058,12 @@ function AdminPageContent() {
                         }`}
                       >
                         <Wallet size={17} className={activeTab === "petty-cash" ? "text-indigo-600" : "text-slate-400"} />
-                        <span>Petty Cash</span>
+                        <span className="flex-1">Petty Cash</span>
+                        {canApprovePettyCash && pettyCashPendingCount > 0 && (
+                          <span className="px-1.5 py-0.5 rounded-full text-[10px] font-black bg-rose-500 text-white animate-pulse">
+                            {pettyCashPendingCount}
+                          </span>
+                        )}
                       </a>
                     )}
                     {hasAccess("building-report") && (
@@ -10006,12 +10130,41 @@ function AdminPageContent() {
                                                 : 'hover:bg-indigo-50 hover:text-indigo-600 border-slate-200'
                                             }`}
                                             onClick={() => {
-                                              handleServiceOrSpeedChange(s.id, serviceSpeed, serviceWeight);
+                                              if (isWinterBeddingPromoItem(s)) {
+                                                const winterCamp = promoCampaigns.find((c) => c.id === WINTER_BEDDING_CAMPAIGN_ID);
+                                                if (winterCamp && winterCamp.enabled === false) {
+                                                  toast.error("แคมเปญ Winter Bedding Set ฿899 ถูกปิดใช้งานอยู่");
+                                                  return;
+                                                }
+                                                const nowBkkStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+                                                const endStr = (winterCamp?.endDate || "2026-11-30").slice(0, 10);
+                                                if (nowBkkStr > endStr) {
+                                                  toast.error(`โปรโมชั่น Winter Bedding Set ฿899 หมดเขตแล้ว (สิ้นสุด ${endStr})`);
+                                                  return;
+                                                }
+                                                const usage = hasCustomerUsedWinterBeddingPromo(
+                                                  jobs,
+                                                  selectedProfileCustomer || { name: customerName, phone: customerPhone },
+                                                  editingJobId
+                                                );
+                                                if (usage.used) {
+                                                  toast.error(`ลูกค้าท่านนี้ใช้สิทธิ์ Winter Bedding Set ฿899 ครบ 1 ครั้งแล้ว (ออเดอร์ #${usage.existingJobId})`);
+                                                  return;
+                                                }
+                                                if (dialogCart.some(isWinterBeddingPromoItem)) {
+                                                  toast.error("โปรโมชั่น Winter Bedding Set ฿899 จำกัด 1 สิทธิ์ / 1 ลูกค้า / 1 ครั้ง ตลอดรายการ");
+                                                  return;
+                                                }
+                                              }
+                                              handleServiceOrSpeedChange(s.id, isWinterBeddingPromoItem(s) ? "standard" : serviceSpeed, serviceWeight);
                                               setDialogCart(prev => {
                                                 const existing = prev.find(item => item.id === s.id);
                                                 const isKiloService = s.unit === 'kg' || s.category?.toUpperCase().includes('KILO');
                                                 let updated;
                                                 if (existing) {
+                                                  if (isWinterBeddingPromoItem(s)) {
+                                                    return prev;
+                                                  }
                                                   const step = isKiloService ? 0.5 : 1;
                                                   updated = prev.map(item => 
                                                     item.id === s.id 
@@ -10361,6 +10514,10 @@ function AdminPageContent() {
                                         disabled={isCartLocked}
                                         className={`w-4 h-4 flex items-center justify-center text-slate-400 font-bold rounded ${isCartLocked ? 'opacity-40 cursor-not-allowed' : 'hover:text-indigo-400 hover:bg-slate-800'}`}
                                         onClick={() => {
+                                          if (isWinterBeddingPromoItem(item) && Number(item.quantity) >= 1) {
+                                            toast.error("โปรโมชั่น Winter Bedding Set ฿899 จำกัด 1 สิทธิ์ / 1 ลูกค้า ตลอดรายการ");
+                                            return;
+                                          }
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => {
                                               if (it.id !== item.id) return it;
@@ -10494,13 +10651,20 @@ function AdminPageContent() {
                                 <button
                                   key={spd.id}
                                   type="button"
-                                  disabled={isPaidJob}
-                                  onClick={() => handleServiceOrSpeedChange(serviceType, spd.id as any, serviceWeight)}
+                                  disabled={isPaidJob || (hasWinterBeddingPromoInCart && spd.id !== "standard")}
+                                  title={hasWinterBeddingPromoInCart && spd.id !== "standard" ? "โปรโมชั่น Winter Bedding Set ฿899 ใช้ได้เฉพาะ Standard Wash & Dry เท่านั้น" : undefined}
+                                  onClick={() => {
+                                    if (hasWinterBeddingPromoInCart && spd.id !== "standard") {
+                                      toast.error("โปรโมชั่น Winter Bedding Set ฿899 ใช้ได้เฉพาะบริการซักอบปกติ (Standard) เท่านั้น");
+                                      return;
+                                    }
+                                    handleServiceOrSpeedChange(serviceType, spd.id as any, serviceWeight);
+                                  }}
                                   className={`py-1 text-[10.5px] font-bold rounded-lg transition-all cursor-pointer ${
                                     serviceSpeed === spd.id
                                       ? (spd.id === "standard" ? "bg-indigo-600 text-white shadow-xs" : spd.id === "express_50" ? "bg-amber-500 text-slate-950 shadow-xs font-black" : "bg-rose-600 text-white shadow-xs font-black")
                                       : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-                                  } ${isPaidJob ? "opacity-60 cursor-not-allowed" : ""}`}
+                                  } ${(isPaidJob || (hasWinterBeddingPromoInCart && spd.id !== "standard")) ? "opacity-40 cursor-not-allowed" : ""}`}
                                 >
                                   {spd.label}
                                 </button>

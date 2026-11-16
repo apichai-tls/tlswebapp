@@ -1702,13 +1702,11 @@ export async function createTaxInvoiceTaskForJobAction(params: {
     const createdByName = authUser.name || authUser.email || params.createdByName || "Staff";
     if (!jobId) return { success: false, error: "Missing jobId" };
 
-    // 1. Check for duplicate task for this job
+    // 1. Check for duplicate task for this job (including already completed/archived tax invoice tasks so saving a job later never re-creates it)
     const existing = await prisma.task.findFirst({
       where: {
         jobId,
         title: { startsWith: "ออกใบกำกับภาษี" },
-        status: { not: "done" },
-        isArchived: false,
       },
     });
 

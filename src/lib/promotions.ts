@@ -3,8 +3,15 @@
  * TLS POS & CRM
  */
 
-export type CampaignMode = "ISSUE_COUPON" | "INSTANT_DISCOUNT";
+export type CampaignMode = "ISSUE_COUPON" | "INSTANT_DISCOUNT" | "SERVICE_PROMO";
 export type InstantDiscountMode = "SPECIAL_UNIT_PRICE" | "DISCOUNT_PER_UNIT" | "FIXED" | "PERCENTAGE";
+
+export const WINTER_BEDDING_PROMO_SERVICE_ID = "PROMO-BED-899";
+export const WINTER_BEDDING_PROMO_CODE = "WINTER899";
+export const WINTER_BEDDING_PROMO_PRICE = 899;
+export const WINTER_BEDDING_PROMO_START = "2026-11-18";
+export const WINTER_BEDDING_PROMO_END = "2026-11-30";
+export const WINTER_BEDDING_CAMPAIGN_ID = "promo_winter_bedding_899_nov26";
 
 export interface InstantRuleConfig {
   promoCode: string;                 // e.g. "WIF120"
@@ -61,6 +68,49 @@ export interface PromotionCampaign {
 }
 
 export const DEFAULT_PROMOTION_CAMPAIGNS: PromotionCampaign[] = [
+  {
+    id: WINTER_BEDDING_CAMPAIGN_ID,
+    name: "Get Your Bedding Ready for Winter — ฿899/Set",
+    description:
+      "เซ็ตเครื่องนอนราคาพิเศษ ฿899 (1 Bedsheet + 1 Duvet + 1 Duvet Cover + 2 Pillowcases ขนาด 3.5–6 ฟุต) เฉพาะบริการซักอบปกติ (Standard Wash & Dry) ไม่รวม Express/รีด/ซักแห้ง ชำระเงินสด/โอน/บัตรเท่านั้น (ไม่หักเครดิต Member) จำกัด 1 สิทธิ์/ลูกค้า ตลอดรายการ (18–30 พ.ย. 2026)",
+    enabled: true,
+    campaignMode: "SERVICE_PROMO",
+    startDate: WINTER_BEDDING_PROMO_START,
+    endDate: WINTER_BEDDING_PROMO_END,
+    conditions: {
+      minOrderSubtotal: 0,
+      excludeDeliveryFee: true,
+      excludeCorporate: true,
+      allowGeneral: true,
+      allowMember: true,
+      allowVIP: true,
+      allowCorporate: false,
+      disallowMemberWallet: true,
+      limitPerCustomer: 1,
+      eligibleBrands: ["that_laundry_shop"],
+    },
+    instantRule: {
+      promoCode: WINTER_BEDDING_PROMO_CODE,
+      autoApply: false,
+      targetServiceId: WINTER_BEDDING_PROMO_SERVICE_ID,
+      targetServiceName: "WINTER BEDDING SET (PROMO ฿899)",
+      targetCategory: "PROMOTION",
+      minQuantity: 1,
+      maxQuantity: 1,
+      discountMode: "FIXED",
+      promoUnitPrice: WINTER_BEDDING_PROMO_PRICE,
+      discountValue: 0,
+      disallowMemberWallet: true,
+    },
+    reward: {
+      couponName: "Winter Bedding Set ฿899",
+      codePrefix: WINTER_BEDDING_PROMO_CODE,
+      discountType: "FIXED",
+      discountValue: 0,
+      applicableCategory: "PROMOTION",
+      minOrderAmount: null,
+    },
+  },
   {
     id: "promo_wif120_nov26",
     name: "11.11 Wash Iron Fold 120 บาท/Kg (ขั้นต่ำ 4 Kg)",
@@ -375,5 +425,89 @@ export function calculateInstantCampaignDiscount(
     discountAmount,
     meetsMinQuantity: true,
   };
+}
+
+/**
+ * Checks if a cart/order item is the Winter Bedding Set ฿899 promotion service.
+ */
+export function isWinterBeddingPromoItem(item: {
+  id?: string | null;
+  serviceId?: string | null;
+  name?: string | null;
+  nameEn?: string | null;
+}): boolean {
+  if (!item) return false;
+  const sid = (item.serviceId || item.id || "").trim().toUpperCase();
+  if (sid === WINTER_BEDDING_PROMO_SERVICE_ID) return true;
+  const name = (item.name || "").trim().toUpperCase();
+  const nameEn = (item.nameEn || "").trim().toUpperCase();
+  return name.includes("WINTER BEDDING SET") || nameEn.includes("WINTER BEDDING SET");
+}
+
+export function cartHasWinterBeddingPromo(
+  items: Array<{ id?: string | null; serviceId?: string | null; name?: string | null; nameEn?: string | null }> | null | undefined
+): boolean {
+  return Array.isArray(items) && items.some(isWinterBeddingPromoItem);
+}
+
+function normalizePhoneForPromoCheck(phone?: string | null): string {
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (digits.startsWith("66") && digits.length >= 10) return "0" + digits.slice(2);
+  return digits;
+}
+
+/**
+ * Checks if a customer has already redeemed the Winter Bedding Set ฿899 promotion
+ * in any non-cancelled job.
+ */
+export function hasCustomerUsedWinterBeddingPromo(
+  jobs: Array<{
+    id: string;
+    status?: string | null;
+    customerId?: string | null;
+    customerPhone?: string | null;
+    customerName?: string | null;
+    items?: any[];
+    itemsJson?: string | null;
+  }>,
+  customer: { id?: string | null; phone?: string | null; secondaryPhone?: string | null; name?: string | null } | null | undefined,
+  excludeJobId?: string | null
+): { used: boolean; existingJobId?: string } {
+  if (!customer || !Array.isArray(jobs)) return { used: false };
+  const targetId = customer.id ? String(customer.id).trim() : "";
+  const targetPhones = new Set(
+    [customer.phone, customer.secondaryPhone]
+      .map(normalizePhoneForPromoCheck)
+      .filter((p) => p.length >= 8)
+  );
+  const targetName = (customer.name || "").trim().toLowerCase();
+
+  for (const j of jobs) {
+    if (!j || j.status === "cancel") continue;
+    if (excludeJobId && j.id === excludeJobId) continue;
+
+    let jobItems: any[] = [];
+    if (Array.isArray(j.items)) {
+      jobItems = j.items;
+    } else if (j.itemsJson) {
+      try {
+        const parsed = JSON.parse(j.itemsJson);
+        if (Array.isArray(parsed)) jobItems = parsed;
+      } catch {}
+    }
+    if (!cartHasWinterBeddingPromo(jobItems)) continue;
+
+    if (targetId && j.customerId === targetId) {
+      return { used: true, existingJobId: j.id };
+    }
+    const jobPhone = normalizePhoneForPromoCheck(j.customerPhone);
+    if (jobPhone && targetPhones.has(jobPhone)) {
+      return { used: true, existingJobId: j.id };
+    }
+    if (!targetId && targetPhones.size === 0 && targetName && (j.customerName || "").trim().toLowerCase() === targetName) {
+      return { used: true, existingJobId: j.id };
+    }
+  }
+  return { used: false };
 }
 

@@ -91,6 +91,11 @@ import {
   getCategoryLabel,
   getCategoryIcon,
   resolveEffectiveCategory,
+  WINTER_BEDDING_PROMO_PRICE,
+  WINTER_BEDDING_CAMPAIGN_ID,
+  isWinterBeddingPromoItem,
+  cartHasWinterBeddingPromo,
+  hasCustomerUsedWinterBeddingPromo,
 } from "@/lib/promotions";
 import { getRoute } from "@/lib/map-api";
 import { toast } from "sonner";
@@ -1902,6 +1907,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   }, [selectedCustomer?.id, selectedCustomer?.priceListId]);
 
   const getProductPrice = useCallback((product: ServiceItem) => {
+    if (isWinterBeddingPromoItem(product)) {
+      return WINTER_BEDDING_PROMO_PRICE;
+    }
     if (selectedCustomer?.priceListId && selectedCustomer.priceListId !== "regular") {
       const pl = priceLists.find(p => p.id === selectedCustomer.priceListId);
       if (pl && (pl.isCorporate || (pl.customItems && pl.customItems.length > 0)) && pl.customItems) {
@@ -2105,6 +2113,34 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       return;
     }
 
+    if (isWinterBeddingPromoItem(product)) {
+      const winterCamp = promotionCampaigns.find((c) => c.id === WINTER_BEDDING_CAMPAIGN_ID);
+      if (winterCamp && winterCamp.enabled === false) {
+        toast.error("แคมเปญ Winter Bedding Set ฿899 ถูกปิดใช้งานอยู่");
+        return;
+      }
+      const nowBkkStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+      const endStr = (winterCamp?.endDate || "2026-11-30").slice(0, 10);
+      if (nowBkkStr > endStr) {
+        toast.error(`โปรโมชั่น Winter Bedding Set ฿899 หมดเขตแล้ว (สิ้นสุด ${endStr})`);
+        return;
+      }
+      const usage = hasCustomerUsedWinterBeddingPromo(jobs, selectedCustomer, loadedJobId);
+      if (usage.used) {
+        toast.error(`ลูกค้าท่านนี้ใช้สิทธิ์ Winter Bedding Set ฿899 ครบ 1 ครั้งแล้ว (ออเดอร์ #${usage.existingJobId})`);
+        return;
+      }
+      if (cart.some(isWinterBeddingPromoItem)) {
+        toast.error("โปรโมชั่น Winter Bedding Set ฿899 จำกัด 1 สิทธิ์ / 1 ลูกค้า / 1 ครั้ง ตลอดรายการ");
+        return;
+      }
+      setServiceSpeed("standard");
+      setShowDiscount(false);
+      setDiscountPercent(0);
+      setAppliedPromo(null);
+      setPromoCodeInput("");
+    }
+
     playAudioFeedback("click");
     const price = customPrice !== undefined ? customPrice : getProductPrice(product);
     // Detect KILO: check unit field (primary), category name, or product name as fallback
@@ -2131,6 +2167,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   const updateQuantity = (id: string, delta: number) => {
     if (isSpectatorMode) return;
+    if (delta > 0) {
+      const target = cart.find(item => item.id === id);
+      if (target && isWinterBeddingPromoItem(target) && Number(target.quantity) >= 1) {
+        toast.error("โปรโมชั่น Winter Bedding Set ฿899 จำกัด 1 สิทธิ์ / 1 ลูกค้า ตลอดรายการ");
+        return;
+      }
+    }
     playAudioFeedback("click");
     setCart(prev => prev.map(item => {
       if (item.id === id) {
@@ -2326,6 +2369,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   const handleApplyPromo = async (codeOverride?: unknown) => {
     if (isPaidJob) return;
+    if (cartHasWinterBeddingPromo(cart)) {
+      toast.error("โปรโมชั่น Winter Bedding Set ฿899 ไม่สามารถใช้ร่วมกับคูปองหรือส่วนลดอื่นได้");
+      return;
+    }
     const targetCode = typeof codeOverride === "string" ? codeOverride : promoCodeInput;
     const code = targetCode.trim().toUpperCase();
     if (!code) return;
@@ -2601,14 +2648,34 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     selectedCustomer?.brand,
   ]);
 
+  const hasWinterBeddingPromoInCart = useMemo(() => cartHasWinterBeddingPromo(cart), [cart]);
+
   const isMemberWalletDisallowedByPromo = useMemo(() => {
+    if (hasWinterBeddingPromoInCart) return true;
     if (!appliedPromo) return false;
     if (appliedPromo.disallowMemberWallet) return true;
     const matched = promotionCampaigns.find(
       (c) => (c.instantRule?.promoCode || c.reward?.codePrefix || "").toUpperCase() === appliedPromo.code.toUpperCase()
     );
     return Boolean(matched?.conditions?.disallowMemberWallet || matched?.instantRule?.disallowMemberWallet);
-  }, [appliedPromo, promotionCampaigns]);
+  }, [hasWinterBeddingPromoInCart, appliedPromo, promotionCampaigns]);
+
+  useEffect(() => {
+    if (hasWinterBeddingPromoInCart && !isPaidJob) {
+      if (serviceSpeed !== "standard") {
+        setServiceSpeed("standard");
+      }
+      if (showDiscount || discountPercent > 0) {
+        setShowDiscount(false);
+        setDiscountPercent(0);
+      }
+      if (appliedPromo || promoCodeInput) {
+        setAppliedPromo(null);
+        setPromoCodeInput("");
+        setPromoError(null);
+      }
+    }
+  }, [hasWinterBeddingPromoInCart, isPaidJob, serviceSpeed, showDiscount, discountPercent, appliedPromo, promoCodeInput]);
 
   const activePaymentChannels = useMemo(() => {
     const ch = getActivePaymentChannels(settings, Boolean(selectedCustomer?.isMember));
@@ -3923,7 +3990,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   onClick={() => {
                     setActiveBranchId(shop.id);
                     localStorage.setItem("pos_active_branch_id", shop.id);
-                    playAudioFeedback("click");
+    playAudioFeedback("click");
                   }}
                   className="flex flex-col items-start text-left p-4.5 bg-muted/20 hover:bg-muted/40 border border-border hover:border-primary/40 rounded-xl cursor-pointer transition-all shadow-sm w-full relative overflow-hidden"
                 >
@@ -4000,7 +4067,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               onClick={() => {
                 setActiveBranchId(activeShift.branchId);
                 localStorage.setItem("pos_active_branch_id", activeShift.branchId);
-                playAudioFeedback("click");
+    playAudioFeedback("click");
               }}
               className="w-full bg-primary hover:bg-primary/95 text-white font-bold h-10 rounded-xl cursor-pointer"
             >
@@ -4331,7 +4398,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 value={activeBranchId}
                 onChange={(e) => {
                   setActiveBranchId(e.target.value);
-                  playAudioFeedback("click");
+    playAudioFeedback("click");
                 }}
                 className="bg-transparent text-[11px] font-black text-foreground outline-none cursor-pointer border-none p-0 pr-5 appearance-none select-none focus:ring-0 focus:outline-none"
                 style={{
@@ -4515,7 +4582,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 onClick={() => {
                   setShowAllStoreServices(!showAllStoreServices);
                   setSelectedCategory("All");
-                  playAudioFeedback("click");
+    playAudioFeedback("click");
                 }}
                 className="shrink-0 h-8 text-xs font-bold rounded-xl border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 cursor-pointer"
               >
@@ -4536,7 +4603,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               onClick={() => {
                 setSelectedCategory("All");
                 setSearchQuery("");
-                playAudioFeedback("click");
+    playAudioFeedback("click");
               }}
               className="border-border text-foreground font-bold h-8.5 rounded-xl cursor-pointer text-xs flex items-center gap-1.5 hover:bg-muted"
             >
@@ -4568,7 +4635,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     key={cat}
                     onClick={() => {
                       setSelectedCategory(cat);
-                      playAudioFeedback("click");
+    playAudioFeedback("click");
                     }}
                     className={`bg-card border border-border ${style.hover} p-6 rounded-2xl shadow-sm cursor-pointer transition-all flex flex-col items-center justify-center text-center h-44 relative group overflow-hidden`}
                   >
@@ -4857,7 +4924,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               type="button"
               className="h-9 w-9 rounded-xl border bg-card hover:bg-muted text-foreground flex items-center justify-center cursor-pointer shrink-0"
               onClick={() => {
-                playAudioFeedback("click");
+    playAudioFeedback("click");
                 setIsAddCustomerOpen(true);
               }}
               title={currentLanguage === "en" ? "Add Customer" : "เพิ่มลูกค้า"}
@@ -4882,7 +4949,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               type="button"
               className="h-9 text-[10px] font-bold px-2.5 flex items-center gap-1 border-dashed hover:border-primary hover:text-primary transition-all cursor-pointer bg-muted/40 rounded-xl shrink-0"
               onClick={() => {
-                playAudioFeedback("click");
+    playAudioFeedback("click");
                 setIsRecallOpen(true);
               }}
             >
@@ -5136,8 +5203,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   {rate1Num !== null && rate1Num > 0 && (
                     <button
                       type="button"
+                      disabled={hasWinterBeddingPromoInCart}
+                      title={hasWinterBeddingPromoInCart ? "โปรโมชั่น Winter Bedding Set ฿899 ใช้ได้เฉพาะ Standard Wash & Dry เท่านั้น" : undefined}
                       onClick={() => setServiceSpeed("express_rate1")}
-                      className={`px-2.5 py-0.5 text-[9px] font-bold rounded-lg transition-all cursor-pointer ${serviceSpeed === "express_rate1" || (serviceSpeed === "express_50" && rate1Num === 50) || (serviceSpeed === "express_100" && rate1Num === 100) ? "bg-purple-600 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                      className={`px-2.5 py-0.5 text-[9px] font-bold rounded-lg transition-all ${hasWinterBeddingPromoInCart ? "opacity-40 cursor-not-allowed" : "cursor-pointer"} ${serviceSpeed === "express_rate1" || (serviceSpeed === "express_50" && rate1Num === 50) || (serviceSpeed === "express_100" && rate1Num === 100) ? "bg-purple-600 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                     >
                       Exp {rate1Num}%
                     </button>
@@ -5145,8 +5214,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   {rate2Num !== null && rate2Num > 0 && (
                     <button
                       type="button"
+                      disabled={hasWinterBeddingPromoInCart}
+                      title={hasWinterBeddingPromoInCart ? "โปรโมชั่น Winter Bedding Set ฿899 ใช้ได้เฉพาะ Standard Wash & Dry เท่านั้น" : undefined}
                       onClick={() => setServiceSpeed("express_rate2")}
-                      className={`px-2.5 py-0.5 text-[9px] font-bold rounded-lg transition-all cursor-pointer ${serviceSpeed === "express_rate2" || (serviceSpeed === "express_50" && rate2Num === 50) || (serviceSpeed === "express_100" && rate2Num === 100) ? "bg-purple-600 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                      className={`px-2.5 py-0.5 text-[9px] font-bold rounded-lg transition-all ${hasWinterBeddingPromoInCart ? "opacity-40 cursor-not-allowed" : "cursor-pointer"} ${serviceSpeed === "express_rate2" || (serviceSpeed === "express_50" && rate2Num === 50) || (serviceSpeed === "express_100" && rate2Num === 100) ? "bg-purple-600 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                     >
                       Exp {rate2Num}%
                     </button>
@@ -5154,8 +5225,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   {rate3Num !== null && rate3Num > 0 && (
                     <button
                       type="button"
+                      disabled={hasWinterBeddingPromoInCart}
+                      title={hasWinterBeddingPromoInCart ? "โปรโมชั่น Winter Bedding Set ฿899 ใช้ได้เฉพาะ Standard Wash & Dry เท่านั้น" : undefined}
                       onClick={() => setServiceSpeed("express_rate3")}
-                      className={`px-2.5 py-0.5 text-[9px] font-bold rounded-lg transition-all cursor-pointer ${serviceSpeed === "express_rate3" || (serviceSpeed === "express_50" && rate3Num === 50) || (serviceSpeed === "express_100" && rate3Num === 100) ? "bg-purple-600 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                      className={`px-2.5 py-0.5 text-[9px] font-bold rounded-lg transition-all ${hasWinterBeddingPromoInCart ? "opacity-40 cursor-not-allowed" : "cursor-pointer"} ${serviceSpeed === "express_rate3" || (serviceSpeed === "express_50" && rate3Num === 50) || (serviceSpeed === "express_100" && rate3Num === 100) ? "bg-purple-600 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                     >
                       Exp {rate3Num}%
                     </button>
@@ -6090,7 +6163,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 variant="outline"
                 disabled={cart.length === 0 || isProcessing}
                 onClick={() => {
-                  playAudioFeedback("click");
+    playAudioFeedback("click");
 
                   const isDeliveryCheck = Boolean(deliveryServiceType);
                   const cartHash = computeCartHash({

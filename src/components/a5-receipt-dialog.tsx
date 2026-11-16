@@ -798,6 +798,8 @@ export function A5ReceiptContent({
   const outerPadding = isUltraCompact ? "10px 16px" : isCompact ? "14px 20px" : "24px 28px";
   const headerMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
   const logoClass = isUltraCompact ? "h-6" : isCompact ? "h-7" : "h-9";
+  const logoHeightPx = isUltraCompact ? 24 : isCompact ? 28 : 36;
+  const qrSizePx = isUltraCompact ? 44 : isCompact ? 52 : 72;
   const customerMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
   const tableMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
   const tableHeaderClass = isUltraCompact ? "py-0.5 px-1 text-[9px]" : isCompact ? "py-0.5 px-1 text-[9.5px]" : "py-1.5 px-1 text-[10px]";
@@ -924,6 +926,14 @@ export function A5ReceiptContent({
                 <img
                   src={activeShop?.logoUrl || "/logo.png"}
                   alt="Shop Logo"
+                  style={{
+                    height: `${logoHeightPx}px`,
+                    width: "auto",
+                    maxWidth: "160px",
+                    objectFit: "contain",
+                    filter: "grayscale(100%) contrast(125%)",
+                    display: "block",
+                  }}
                   className={`${logoClass} object-contain filter grayscale contrast-125`}
                 />
               </div>
@@ -1335,6 +1345,7 @@ export function A5ReceiptContent({
                       <img
                         src={activeShop.proformaQrUrl}
                         alt="Payment QR Code"
+                        style={{ width: `${qrSizePx}px`, height: `${qrSizePx}px`, objectFit: "contain", flexShrink: 0 }}
                         className={`${qrImageClass} object-contain shrink-0`}
                         crossOrigin="anonymous"
                       />
@@ -1364,6 +1375,7 @@ export function A5ReceiptContent({
                     <img
                       src={activeShop.proformaQrUrl}
                       alt="Payment QR Code"
+                      style={{ width: `${qrSizePx}px`, height: `${qrSizePx}px`, objectFit: "contain", flexShrink: 0 }}
                       className={`${qrImageClass} object-contain shrink-0`}
                       crossOrigin="anonymous"
                     />
