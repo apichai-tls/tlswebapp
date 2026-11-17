@@ -70,6 +70,7 @@ import {
 import { toast } from "sonner";
 import Link from "next/link";
 import { useAuth } from "@/providers/auth-provider";
+import { FitScreenToggle } from "@/components/fit-screen-toggle";
 import { optimizeRiderRoute, calculateEstimatedDistanceKm, getTaskExpressPriorityTier } from "@/lib/route-optimizer";
 
 // Framer Motion variants
@@ -2176,6 +2177,7 @@ export default function RiderPage() {
 
               {/* Right: Status Pill & Logout */}
               <div className="flex items-center gap-1.5 shrink-0">
+                <FitScreenToggle variant="compact" showSettings={false} />
                 <button
                   type="button"
                   onClick={toggleRiderStatus}

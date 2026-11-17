@@ -1493,38 +1493,6 @@ export function AdminCRM({
             </div>
           )}
 
-          {/* 1-Click Fit Screen Toggle Button */}
-          <button
-            type="button"
-            onClick={() => {
-              const nextMode = screenFit === "fit" ? "standard" : "fit";
-              setScreenFit(nextMode);
-              if (typeof window !== "undefined") {
-                localStorage.setItem("tls_crm_screen_fit", nextMode);
-                localStorage.setItem("tls_global_screen_fit", nextMode);
-                window.dispatchEvent(new CustomEvent("tls-screen-fit-changed", { detail: { fit: nextMode } }));
-              }
-              toast.success(
-                nextMode === "fit" 
-                  ? "Fit Screen active: All customer records fitted to screen (พอดีหน้าจอ)" 
-                  : "Standard layout active: Spacious scrollable layout (ขนาดปกติ)"
-              );
-            }}
-            className={`flex items-center gap-1.5 px-3 h-9 text-xs font-bold rounded-xl transition-all cursor-pointer border ${
-              screenFit === "fit"
-                ? "bg-slate-900 text-white border-slate-900 shadow-2xs"
-                : "bg-white text-slate-700 hover:text-slate-900 border-slate-200 shadow-2xs hover:bg-slate-50"
-            }`}
-            title={
-              screenFit === "fit"
-                ? "Fit Screen is active (Click for Standard Scrollable)"
-                : "Click to fit customer table to screen (ย่อให้พอดีหน้าจอ)"
-            }
-          >
-            {screenFit === "fit" ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-            <span>{screenFit === "fit" ? "Fit Screen" : "Expand"}</span>
-          </button>
-
           <Button 
             onClick={() => onTopUp ? onTopUp() : setTopUpOpen(true)} 
             className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-2xs transition-all rounded-xl h-9 px-3.5 text-xs cursor-pointer"

@@ -6,7 +6,8 @@ import {
   Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, 
   Clock, AlertTriangle, Receipt, Eye, Coins, ImageIcon, ExternalLink, X, Edit, MessageCircle, 
   MessageSquare, ShieldCheck, CheckCircle2, Plus, Trash2, Tag, Check, Smartphone, Globe, 
-  AlertCircle, ChevronRight, UserCheck, Shield, Ticket, Gift, Sparkles, Copy, Ban, Truck, Loader2, Bike, FileDown
+  AlertCircle, ChevronRight, UserCheck, Shield, Ticket, Gift, Sparkles, Copy, Ban, Truck, Loader2, Bike, FileDown,
+  ClipboardCheck, Send, Building2
 } from "lucide-react";
 
 import { format } from "date-fns";
@@ -25,6 +26,17 @@ import {
   getCustomerJobsAction,
   getCustomerWalletAdjustmentsAction
 } from "@/actions/db";
+import {
+  createTask,
+  updateTask,
+  addTaskNote,
+  getCustomerTasksAction,
+  type TaskItem,
+  type TaskNote,
+  type TaskPriority,
+  type TaskStatus,
+} from "@/actions/tasks";
+import { extractTaskMetaFromNotesJson } from "@/lib/task-meta";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
 import { WalletStatementDialog } from "@/components/wallet-statement-dialog";
@@ -87,13 +99,17 @@ export function AdminCustomerProfileModal({
   onOpenChange, 
   customer,
   onEditCustomer,
-  onViewJob
+  onViewJob,
+  initialTab,
+  initialTasks,
 }: { 
   open: boolean; 
   onOpenChange: (open: boolean) => void; 
   customer: Customer | null;
   onEditCustomer?: (c: Customer) => void;
   onViewJob?: (job: any) => void;
+  initialTab?: "profile" | "orders" | "tickets";
+  initialTasks?: TaskItem[];
 }) {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
@@ -195,9 +211,13 @@ export function AdminCustomerProfileModal({
     }
   };
 
-  // Local state for addresses & tickets (REAL DATA ONLY - NO MOCK)
+  // Local state for addresses, legacy tickets, and synced DB Customer Tasks
   const [localAddresses, setLocalAddresses] = useState<CustomerAddress[]>([]);
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
+  const [dbCustomerTasks, setDbCustomerTasks] = useState<TaskItem[]>([]);
+  const [isLoadingTasks, setIsLoadingTasks] = useState(false);
+  const [followUpDrafts, setFollowUpDrafts] = useState<Record<string, string>>({});
+  const [savingTaskId, setSavingTaskId] = useState<string | null>(null);
 
   // Modals inside profile
   const [pinModalOpen, setPinModalOpen] = useState(false);
@@ -221,12 +241,15 @@ export function AdminCustomerProfileModal({
   const [ticketModalOpen, setTicketModalOpen] = useState(false);
   const [newTicketTitle, setNewTicketTitle] = useState("");
   const [newTicketCat, setNewTicketCat] = useState("Special Laundry Request");
+  const [newTicketDept, setNewTicketDept] = useState("branch_ops");
+  const [newTicketJobId, setNewTicketJobId] = useState("");
   const [newTicketUrgency, setNewTicketUrgency] = useState<"NORMAL URGENCY" | "URGENT" | "LOW URGENCY">("NORMAL URGENCY");
-  const [newTicketStatus, setNewTicketStatus] = useState<"RESOLVED" | "IN PROGRESS" | "OPEN">("RESOLVED");
+  const [newTicketStatus, setNewTicketStatus] = useState<"RESOLVED" | "IN PROGRESS" | "OPEN">("OPEN");
   const [newTicketItem, setNewTicketItem] = useState("");
   const [newTicketCustMsg, setNewTicketCustMsg] = useState("");
   const [newTicketStaffResp, setNewTicketStaffResp] = useState("");
   const [newTicketChannel, setNewTicketChannel] = useState("WHATSAPP");
+  const [isSavingTicket, setIsSavingTicket] = useState(false);
 
   // Wallet & Top-up ledger state
   const [topUpTxs, setTopUpTxs] = useState<any[]>([]);
@@ -292,10 +315,43 @@ export function AdminCustomerProfileModal({
       if (canSeeCoupons) {
         fetchCoupons();
       }
+
+      // Fetch synced DB tasks / complaints / feedbacks linked to this customer or their orders
+      if (initialTab) {
+        setActiveTab(initialTab);
+      }
+      if (initialTasks && initialTasks.length > 0) {
+        setDbCustomerTasks(initialTasks);
+      }
+      setIsLoadingTasks(true);
+      getCustomerTasksAction({
+        customerId: customer.id,
+        customerPhone: customer.phone,
+        customerName: customer.name,
+        customerMemberId: customer.memberId,
+      })
+        .then((res) => {
+          const fromServer = res.success && res.data ? res.data : [];
+          const mergedMap = new Map<string, TaskItem>();
+          (initialTasks || []).forEach((t) => {
+            if (t?.id) mergedMap.set(t.id, t);
+          });
+          fromServer.forEach((t) => {
+            if (t?.id) mergedMap.set(t.id, t);
+          });
+          setDbCustomerTasks(Array.from(mergedMap.values()));
+        })
+        .catch(() => {
+          if (!initialTasks || initialTasks.length === 0) {
+            setDbCustomerTasks([]);
+          }
+        })
+        .finally(() => setIsLoadingTasks(false));
     } else {
       setDbJobs([]);
+      setDbCustomerTasks([]);
     }
-  }, [open, customer?.id, customer?.phone, canSeeCoupons]);
+  }, [open, customer?.id, customer?.phone, customer?.memberId, canSeeCoupons, initialTab]);
 
   // Jobs calculation from actual jobs (combining DB on-demand jobs + in-memory jobs)
   const { jobsCount, ltv, customerJobs } = useMemo(() => {
@@ -898,33 +954,139 @@ export function AdminCustomerProfileModal({
     }
   };
 
-  // Add Ticket Action
-  const handleSaveTicket = (e: React.FormEvent) => {
+  // Add Ticket / Customer Feedback Action (Saves directly to DB Task + syncs with CRM & Task Board)
+  const CRM_DEPT_LABELS: Record<string, string> = {
+    accounting_cso: "Accounting & CSO",
+    branch_ops: "Branch Operations",
+    logistics: "Logistics Fleet",
+    management: "Management & IT",
+  };
+
+  const handleSaveTicket = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTicketTitle.trim()) return;
+    setIsSavingTicket(true);
 
-    const newTicket: SupportTicket = {
-      id: `INC-${Math.floor(100 + Math.random() * 900)}`,
-      title: newTicketTitle.trim(),
-      category: newTicketCat,
-      urgency: newTicketUrgency,
-      status: newTicketStatus,
-      affectedItem: newTicketItem.trim() || "Laundry items",
-      customerMessage: newTicketCustMsg.trim() || "No message detail provided.",
-      staffResponse: newTicketStaffResp.trim() || "Under review by staff.",
-      channel: `${newTicketChannel} • ${customer.phone || "-"}`,
-      loggedAt: format(new Date(), "yyyy-MM-dd HH:mm")
-    };
+    try {
+      const priorityMap: Record<string, TaskPriority> = {
+        URGENT: "urgent",
+        "LOW URGENCY": "low",
+        "NORMAL URGENCY": "medium",
+      };
+      const statusMap: Record<string, TaskStatus> = {
+        RESOLVED: "done",
+        "IN PROGRESS": "in_progress",
+        OPEN: "todo",
+      };
 
-    const updated = [newTicket, ...tickets];
-    setTickets(updated);
-    localStorage.setItem(`crm_tickets_${customer.id}`, JSON.stringify(updated));
-    setTicketModalOpen(false);
-    // Reset form
-    setNewTicketTitle("");
-    setNewTicketItem("");
-    setNewTicketCustMsg("");
-    setNewTicketStaffResp("");
+      const deptLabel = CRM_DEPT_LABELS[newTicketDept] || newTicketDept;
+      const isComplaint =
+        newTicketCat.toLowerCase().includes("issue") ||
+        newTicketCat.toLowerCase().includes("damage") ||
+        newTicketCat.toLowerCase().includes("complaint") ||
+        newTicketCat.toLowerCase().includes("missing");
+
+      const descParts = [
+        newTicketCustMsg.trim(),
+        newTicketItem.trim() ? `Affected Item: ${newTicketItem.trim()}` : "",
+        `Channel: ${newTicketChannel} (${customer.phone || "-"})`,
+      ].filter(Boolean);
+
+      const res = await createTask({
+        title: newTicketTitle.trim(),
+        description: descParts.join("\n") || undefined,
+        priority: priorityMap[newTicketUrgency] || "medium",
+        status: statusMap[newTicketStatus] || "todo",
+        jobId: newTicketJobId.trim() || undefined,
+        meta: {
+          department: newTicketDept,
+          departmentLabel: deptLabel,
+          taskType: isComplaint ? "complaint" : "feedback",
+          issueCategory: newTicketCat,
+          affectedItem: newTicketItem.trim() || null,
+          customerId: customer.id,
+          customerName: customer.name,
+          customerPhone: customer.phone || null,
+          customerMemberId: customer.memberId || null,
+          channel: newTicketChannel,
+          staffResponse: newTicketStaffResp.trim() || null,
+        },
+        createdById: user?.id || "system",
+        createdByName: user?.name || user?.email || "Staff",
+      });
+
+      if (res.success && res.data) {
+        let createdTask = res.data;
+        if (newTicketStaffResp.trim()) {
+          const noteRes = await addTaskNote(createdTask.id, {
+            text: `Staff Response: ${newTicketStaffResp.trim()}`,
+            userId: user?.id || "system",
+            userName: user?.name || user?.email || "Staff",
+          });
+          if (noteRes.success && noteRes.data) {
+            createdTask = noteRes.data;
+          }
+        }
+        setDbCustomerTasks((prev) => [createdTask, ...prev]);
+        window.dispatchEvent(new CustomEvent("tasks-changed"));
+        toast.success(`Recorded in CRM & assigned to ${deptLabel} team!`);
+        setTicketModalOpen(false);
+        setNewTicketTitle("");
+        setNewTicketJobId("");
+        setNewTicketItem("");
+        setNewTicketCustMsg("");
+        setNewTicketStaffResp("");
+      } else {
+        toast.error(res.error || "Failed to save CRM ticket");
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to save CRM ticket");
+    } finally {
+      setIsSavingTicket(false);
+    }
+  };
+
+  const handleCrmTaskStatusChange = async (taskId: string, nextStatus: TaskStatus) => {
+    setSavingTaskId(taskId);
+    try {
+      const res = await updateTask(
+        taskId,
+        { status: nextStatus },
+        { id: user?.id || "system", name: user?.name || user?.email || "Staff", role: user?.role }
+      );
+      if (res.success && res.data) {
+        setDbCustomerTasks((prev) => prev.map((t) => (t.id === taskId ? res.data! : t)));
+        window.dispatchEvent(new CustomEvent("tasks-changed"));
+        toast.success(`Updated task #${taskId} status`);
+      } else {
+        toast.error(res.error || "Failed to update task status");
+      }
+    } finally {
+      setSavingTaskId(null);
+    }
+  };
+
+  const handleCrmTaskAddNote = async (taskId: string) => {
+    const draft = (followUpDrafts[taskId] || "").trim();
+    if (!draft) return;
+    setSavingTaskId(taskId);
+    try {
+      const res = await addTaskNote(taskId, {
+        text: draft,
+        userId: user?.id || "system",
+        userName: user?.name || user?.email || "Staff",
+      });
+      if (res.success && res.data) {
+        setDbCustomerTasks((prev) => prev.map((t) => (t.id === taskId ? res.data! : t)));
+        setFollowUpDrafts((prev) => ({ ...prev, [taskId]: "" }));
+        window.dispatchEvent(new CustomEvent("tasks-changed"));
+        toast.success("Follow-up note saved");
+      } else {
+        toast.error(res.error || "Failed to add follow-up note");
+      }
+    } finally {
+      setSavingTaskId(null);
+    }
   };
 
   return (
@@ -1128,7 +1290,7 @@ export function AdminCustomerProfileModal({
                 }`}
               >
                 <AlertCircle size={15} className={activeTab === "tickets" ? "text-sky-600" : "text-slate-400"} />
-                <span>Reported Issues & Tickets ({tickets.length})</span>
+                <span>Tasks, Issues & Feedbacks ({dbCustomerTasks.length + tickets.length})</span>
               </button>
             </div>
           </div>
@@ -1581,6 +1743,99 @@ export function AdminCustomerProfileModal({
                       <span className="text-slate-400 italic">ไม่มีบันทึกคำสั่งพิเศษสำหรับลูกค้ารายนี้ (No internal staff notes)</span>
                     )}
                   </div>
+                </div>
+
+                {/* SECTION 6: RECORDED CUSTOMER COMPLAINTS, FEEDBACKS & TASKS SUMMARY */}
+                <div className="bg-white border border-rose-200/80 rounded-2xl p-5 shadow-2xs space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <AlertCircle size={16} className="text-rose-600" />
+                      <h3 className="text-xs font-black uppercase tracking-wider text-slate-900">
+                        Customer Complaints, Feedbacks & Tasks Recorded ({dbCustomerTasks.length + tickets.length})
+                      </h3>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setActiveTab("tickets")}
+                        className="h-7 px-3 text-xs font-bold border-indigo-200 text-indigo-700 hover:bg-indigo-50 rounded-full cursor-pointer"
+                      >
+                        View All & Follow Up ({dbCustomerTasks.length + tickets.length}) →
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => {
+                          setActiveTab("tickets");
+                          setTicketModalOpen(true);
+                        }}
+                        className="h-7 px-3 text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white rounded-full gap-1 cursor-pointer"
+                      >
+                        <Plus size={12} />
+                        <span>Log Feedback / Issue</span>
+                      </Button>
+                    </div>
+                  </div>
+
+                  {dbCustomerTasks.length > 0 ? (
+                    <div className="space-y-2.5">
+                      {dbCustomerTasks.slice(0, 4).map((t) => {
+                        const tMeta = extractTaskMetaFromNotesJson(t.notesJson);
+                        let tNotes: Array<{ id?: string; text?: string; userName?: string; timestamp?: string }> = [];
+                        try {
+                          const p = JSON.parse(t.notesJson || "[]");
+                          if (Array.isArray(p)) {
+                            tNotes = p.filter((n: any) => n && n.type !== "activity" && n.type !== "meta");
+                          }
+                        } catch {}
+                        const cleanJId = (t.jobId || "").replace(/^#+/, "");
+                        return (
+                          <div
+                            key={t.id}
+                            onClick={() => setActiveTab("tickets")}
+                            className="bg-rose-50/30 hover:bg-rose-50/60 border border-rose-200/70 rounded-xl p-3.5 space-y-1.5 text-xs transition-colors cursor-pointer"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="font-mono font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded">
+                                  #{t.id}
+                                </span>
+                                <span className="font-black text-slate-900">{t.title}</span>
+                                {cleanJId && (
+                                  <span className="bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded-full font-bold text-[10px]">
+                                    Order #{cleanJId}
+                                  </span>
+                                )}
+                                {tMeta?.departmentLabel && (
+                                  <span className="bg-violet-50 text-violet-700 border border-violet-200 px-2 py-0.5 rounded-full font-bold text-[10px]">
+                                    {tMeta.departmentLabel}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="bg-emerald-50 text-emerald-800 border border-emerald-300 text-[10px] font-black uppercase px-2 py-0.5 rounded-full">
+                                {t.status}
+                              </span>
+                            </div>
+                            {t.description && (
+                              <p className="text-slate-700 font-medium line-clamp-2">{t.description}</p>
+                            )}
+                            {tNotes.length > 0 && (
+                              <div className="text-[11px] text-indigo-900 bg-white/90 border border-indigo-100 rounded-lg px-2.5 py-1.5">
+                                <strong className="text-indigo-700">{tNotes[0].userName || "Staff"}:</strong>{" "}
+                                {tNotes[0].text}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5 text-xs text-slate-400 italic">
+                      ยังไม่มีประวัติข้อร้องเรียนหรือฟีดแบ็กสำหรับลูกค้ารายนี้ (No complaints or feedbacks recorded yet)
+                    </div>
+                  )}
                 </div>
 
               </div>
@@ -2244,11 +2499,11 @@ export function AdminCustomerProfileModal({
                     <div className="flex items-center gap-2">
                       <AlertCircle size={16} className="text-orange-500" />
                       <h3 className="text-xs font-black uppercase tracking-wider text-slate-800">
-                        Reported Incident & Special Request History ({tickets.length})
+                        Reported Incident, Tasks & Feedback History ({dbCustomerTasks.length + tickets.length})
                       </h3>
                     </div>
                     <p className="text-[11px] text-slate-400 mt-0.5">
-                      ประวัติการแจ้งปัญหา คำขอพิเศษสำหรับผ้า และข้อร้องเรียนของลูกค้ารายนี้
+                      ประวัติการแจ้งปัญหา คำขอพิเศษ ข้อร้องเรียน และ Task ที่เชื่อมกับ Task Board และแผนกที่รับผิดชอบ
                     </p>
                   </div>
 
@@ -2263,7 +2518,296 @@ export function AdminCustomerProfileModal({
                   </Button>
                 </div>
 
-                {/* Ticket Cards List */}
+                {/* Live DB Tasks & Customer Feedback synced with Task Board */}
+                {isLoadingTasks && dbCustomerTasks.length === 0 && (
+                  <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 text-center text-xs font-semibold text-slate-500">
+                    กำลังโหลดข้อมูล Task & ประวัติการติดตามจากระบบ...
+                  </div>
+                )}
+
+                {dbCustomerTasks.length > 0 && (
+                  <div className="space-y-4">
+                    {dbCustomerTasks.map((task) => {
+                      const meta = extractTaskMetaFromNotesJson(task.notesJson);
+                      let userNotes: Array<{
+                        id?: string;
+                        text?: string;
+                        userName?: string;
+                        timestamp?: string;
+                        attachments?: Array<{ id?: string; name?: string; url?: string; type?: string }>;
+                      }> = [];
+                      try {
+                        const parsed = JSON.parse(task.notesJson || "[]");
+                        if (Array.isArray(parsed)) {
+                          userNotes = parsed.filter(
+                            (n: any) => n && n.type !== "activity" && n.type !== "meta"
+                          );
+                        }
+                      } catch {
+                        userNotes = [];
+                      }
+                      let taskAttachments: Array<{
+                        id?: string;
+                        name?: string;
+                        url?: string;
+                        type?: string;
+                      }> = [];
+                      try {
+                        const parsedAtts = JSON.parse(task.attachmentsJson || "[]");
+                        if (Array.isArray(parsedAtts)) {
+                          taskAttachments = parsedAtts.filter((a: any) => a && a.url);
+                        }
+                      } catch {
+                        taskAttachments = [];
+                      }
+                      const cleanJobRef = (task.jobId || "").replace(/^#+/, "").trim();
+                      const inferredCategory =
+                        meta?.issueCategory ||
+                        (/complain|feedback|shrink|stain|damage|missing|lost|ร้องเรียน|คอมเพลน|ผ้าหาย/i.test(
+                          `${task.title} ${task.description || ""}`
+                        )
+                          ? "Customer Complaint / Feedback"
+                          : null);
+                      const draftText = followUpDrafts[task.id] || "";
+                      const isUpdating = savingTaskId === task.id;
+
+                      return (
+                        <div
+                          key={task.id}
+                          className="bg-white border border-indigo-200/80 rounded-2xl p-5 shadow-2xs space-y-3.5"
+                        >
+                          {/* Top Row: #ID • Title • Department • Issue Category • Priority • Inline Status */}
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-mono text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
+                                #{task.id}
+                              </span>
+                              <span className="text-sm font-black text-slate-900">
+                                {task.title}
+                              </span>
+                              {meta?.departmentLabel && (
+                                <span className="bg-violet-50 text-violet-700 border border-violet-200 text-xs font-bold px-2.5 py-0.5 rounded-full">
+                                  Dept: {meta.departmentLabel}
+                                </span>
+                              )}
+                              {inferredCategory && (
+                                <span className="bg-rose-50 text-rose-700 border border-rose-200/80 text-xs font-bold px-2.5 py-0.5 rounded-full">
+                                  {inferredCategory}
+                                </span>
+                              )}
+                              {task.priority && (
+                                <span className="bg-slate-100 text-slate-600 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full">
+                                  {task.priority}
+                                </span>
+                              )}
+                            </div>
+
+                            <select
+                              value={task.status}
+                              disabled={isUpdating}
+                              onChange={(e) =>
+                                handleCrmTaskStatusChange(task.id, e.target.value as TaskStatus)
+                              }
+                              aria-label="Update task status"
+                              className="bg-emerald-50 text-emerald-800 border border-emerald-300 text-xs font-black px-2.5 py-1 rounded-full shadow-2xs cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
+                            >
+                              {(
+                                [
+                                  { value: "todo", label: "To Do" },
+                                  { value: "in_progress", label: "In Progress" },
+                                  { value: "stuck", label: "Stuck / Follow-Up" },
+                                  { value: "done", label: "Done / Resolved" },
+                                ] as const satisfies ReadonlyArray<{ value: TaskStatus; label: string }>
+                              ).map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {/* Linked Order, Assigned Staff & Affected Garment Pills */}
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            {cleanJobRef && (
+                              <span className="bg-amber-50 text-amber-800 border border-amber-200 px-3 py-1 rounded-xl font-bold">
+                                Order #{cleanJobRef}
+                              </span>
+                            )}
+                            {task.assignedToName && (
+                              <span className="bg-slate-50 text-slate-700 border border-slate-200 px-3 py-1 rounded-xl font-medium">
+                                Assigned: <strong className="text-slate-900">{task.assignedToName}</strong>
+                              </span>
+                            )}
+                            {task.createdAt && (
+                              <span className="bg-slate-50 text-slate-500 border border-slate-200 px-3 py-1 rounded-xl">
+                                Logged: <strong className="text-slate-700">{new Date(task.createdAt).toLocaleString()}</strong>
+                              </span>
+                            )}
+                            {meta?.affectedItem && (
+                              <span className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200/60 px-3 py-1 rounded-xl text-slate-600">
+                                <Tag size={13} className="text-sky-500" />
+                                <span>Item:</span>
+                                <strong className="text-slate-900 font-bold">{meta.affectedItem}</strong>
+                              </span>
+                            )}
+                            {meta?.channel && (
+                              <span className="bg-slate-50 text-slate-600 border border-slate-200 px-3 py-1 rounded-xl">
+                                Channel: <strong className="text-slate-800">{meta.channel}</strong>
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Issue Description / Complaint Detail */}
+                          {task.description && (
+                            <div className="bg-slate-50/70 border border-slate-200/70 rounded-xl p-3.5 space-y-1 text-xs">
+                              <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                                Issue Detail / Complaint Description:
+                              </div>
+                              <p className="text-slate-800 font-medium whitespace-pre-line leading-relaxed">
+                                {task.description}
+                              </p>
+                            </div>
+                          )}
+
+                          {/* Task Attachments / Complaint Photos */}
+                          {taskAttachments.length > 0 && (
+                            <div className="space-y-1.5">
+                              <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                                Attached Evidence / Photos ({taskAttachments.length})
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {taskAttachments.map((att, aIdx) => {
+                                  const isImage =
+                                    (att.type && att.type.startsWith("image/")) ||
+                                    /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(att.url || "");
+                                  return isImage ? (
+                                    <button
+                                      key={att.id || aIdx}
+                                      type="button"
+                                      onClick={() => {
+                                        if (att.url) {
+                                          setPreviewSlipUrl(att.url);
+                                          setPreviewSlipTitle(att.name || `Attachment #${aIdx + 1}`);
+                                          setPreviewSlipModalOpen(true);
+                                        }
+                                      }}
+                                      className="group relative w-20 h-20 rounded-xl overflow-hidden border border-slate-200 hover:border-indigo-400 bg-slate-100 shadow-2xs cursor-pointer"
+                                      title={att.name || "View attachment"}
+                                    >
+                                      <img
+                                        src={att.url}
+                                        alt={att.name || "Attachment"}
+                                        className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                      />
+                                    </button>
+                                  ) : (
+                                    <a
+                                      key={att.id || aIdx}
+                                      href={att.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
+                                    >
+                                      <FileText size={13} />
+                                      <span className="truncate max-w-[180px]">{att.name || "Attachment"}</span>
+                                    </a>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Follow-Up Notes Thread */}
+                          <div className="bg-indigo-50/40 border border-indigo-200/60 rounded-xl p-3.5 space-y-2.5 text-xs">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-black uppercase tracking-wider text-indigo-700">
+                                Follow-Up Notes & Updates ({userNotes.length})
+                              </span>
+                            </div>
+
+                            {userNotes.length > 0 ? (
+                              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                                {userNotes.map((note, idx) => (
+                                  <div
+                                    key={note.id || idx}
+                                    className="bg-white border border-indigo-100 rounded-lg px-3 py-2 space-y-1"
+                                  >
+                                    <div className="flex items-center justify-between text-[10px] text-slate-400">
+                                      <strong className="text-slate-700">
+                                        {note.userName || "Staff"}
+                                      </strong>
+                                      {note.timestamp && (
+                                        <span>
+                                          {new Date(note.timestamp).toLocaleString()}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-slate-800 whitespace-pre-line leading-relaxed">
+                                      {note.text}
+                                    </p>
+                                    {Array.isArray(note.attachments) && note.attachments.length > 0 && (
+                                      <div className="flex flex-wrap gap-1.5 pt-1">
+                                        {note.attachments.map((nAtt, nIdx) => (
+                                          <a
+                                            key={nAtt.id || nIdx}
+                                            href={nAtt.url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[10px] font-semibold hover:underline"
+                                          >
+                                            <span>📎 {nAtt.name || "File"}</span>
+                                          </a>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-[11px] text-slate-400 italic">
+                                ยังไม่มีบันทึกการติดตามงาน (Add a follow-up update below)
+                              </p>
+                            )}
+
+                            {/* Inline Add Follow-up Note */}
+                            <div className="flex items-center gap-2 pt-1">
+                              <input
+                                type="text"
+                                value={draftText}
+                                disabled={isUpdating}
+                                onChange={(e) =>
+                                  setFollowUpDrafts((prev) => ({
+                                    ...prev,
+                                    [task.id]: e.target.value,
+                                  }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    handleCrmTaskAddNote(task.id);
+                                  }
+                                }}
+                                placeholder="พิมพ์บันทึกติดตามงาน / ตอบกลับลูกค้า..."
+                                className="flex-1 bg-white py-1.5 px-3 border border-indigo-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                disabled={isUpdating || !draftText.trim()}
+                                onClick={() => handleCrmTaskAddNote(task.id)}
+                                className="h-7 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shrink-0 cursor-pointer disabled:opacity-50"
+                              >
+                                {isUpdating ? "Saving..." : "Add Follow-Up"}
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Legacy LocalStorage Ticket Cards List (if any exist) */}
                 {tickets.length > 0 ? (
                   <div className="space-y-4">
                     {tickets.map(ticket => (
@@ -2330,13 +2874,13 @@ export function AdminCustomerProfileModal({
                       </div>
                     ))}
                   </div>
-                ) : (
+                ) : !isLoadingTasks && dbCustomerTasks.length === 0 ? (
                   <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-8 text-center text-slate-400 text-xs font-semibold space-y-2">
                     <AlertCircle size={28} className="mx-auto text-slate-300" />
                     <div>ยังไม่มีประวัติการแจ้งปัญหาหรือคำขอพิเศษ (No reported incidents or tickets)</div>
-                    <div className="text-[11px] text-slate-400 font-normal">กดปุ่ม "+ Log New Issue / Ticket" เพื่อบันทึกคำขอหรือปัญหาใหม่</div>
+                    <div className="text-[11px] text-slate-400 font-normal">กดปุ่ม "+ Log New Issue / Ticket" เพื่อบันทึกคำขอ ข้อร้องเรียน หรือสร้าง Task ใหม่</div>
                   </div>
-                )}
+                ) : null}
 
               </div>
             )}
@@ -2593,7 +3137,7 @@ export function AdminCustomerProfileModal({
                 Log New Issue / Ticket
               </DialogTitle>
               <DialogDescription className="text-xs text-slate-500">
-                Log a special laundry request, garment care note, or support incident for {customer.name}.
+                บันทึกข้อร้องเรียน ฟีดแบ็ก หรือคำขอพิเศษสำหรับ {customer.name} พร้อมส่งต่อให้แผนกที่เกี่ยวข้องใน Task Board อัตโนมัติ
               </DialogDescription>
             </DialogHeader>
 
@@ -2604,10 +3148,51 @@ export function AdminCustomerProfileModal({
                   type="text"
                   value={newTicketTitle}
                   onChange={(e) => setNewTicketTitle(e.target.value)}
-                  placeholder="e.g. Special instruction: Extra starch on shirt"
+                  placeholder="e.g. Complaint: Missing shirt on delivery / Special instruction"
                   className="w-full py-2 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500"
                   required
                 />
+              </div>
+
+              {/* Target Department & Linked Order */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Assign Department
+                  </label>
+                  <select
+                    value={newTicketDept}
+                    onChange={(e) => setNewTicketDept(e.target.value)}
+                    className="w-full py-2 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
+                  >
+                    <option value="branch_ops">Branch Operations / Laundry</option>
+                    <option value="accounting_cso">Accounting &amp; CSO</option>
+                    <option value="logistics">Logistics / Rider</option>
+                    <option value="management">Management / Admin</option>
+                  </select>
+                  <p className="text-[10px] text-indigo-600 font-medium mt-1">
+                    พนักงานทุกคนในแผนกที่เลือกจะได้รับมอบหมายอัตโนมัติ
+                  </p>
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Linked Order No. (ถ้ามี)
+                  </label>
+                  <select
+                    value={newTicketJobId}
+                    onChange={(e) => setNewTicketJobId(e.target.value)}
+                    className="w-full py-2 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
+                  >
+                    <option value="">-- Not linked to a specific order --</option>
+                    {customerJobs.map((j) => (
+                      <option key={j.id} value={j.id}>
+                        #{j.id}
+                        {j.billNo ? ` (${j.billNo})` : ""} — {j.serviceType} [{j.status}]
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -2618,6 +3203,9 @@ export function AdminCustomerProfileModal({
                     onChange={(e) => setNewTicketCat(e.target.value)}
                     className="w-full py-2 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
                   >
+                    <option value="Customer Complaint">Customer Complaint</option>
+                    <option value="Customer Feedback">Customer Feedback</option>
+                    <option value="Complained / Damaged / Lost Item">Complained / Damaged / Lost Item</option>
                     <option value="Special Laundry Request">Special Laundry Request</option>
                     <option value="Garment Care & Stains">Garment Care & Stains</option>
                     <option value="Pickup / Delivery Issue">Pickup / Delivery Issue</option>
@@ -2639,14 +3227,14 @@ export function AdminCustomerProfileModal({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="font-bold text-slate-700 block mb-1">Affected Item / Garment</label>
                   <input
                     type="text"
                     value={newTicketItem}
                     onChange={(e) => setNewTicketItem(e.target.value)}
-                    placeholder="e.g. Shirt, Silk dress, Jacket"
+                    placeholder="e.g. Silk dress, Shirt"
                     className="w-full py-2 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500"
                   />
                 </div>
@@ -2657,9 +3245,23 @@ export function AdminCustomerProfileModal({
                     onChange={(e) => setNewTicketStatus(e.target.value as any)}
                     className="w-full py-2 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
                   >
-                    <option value="RESOLVED">RESOLVED</option>
-                    <option value="IN PROGRESS">IN PROGRESS</option>
                     <option value="OPEN">OPEN</option>
+                    <option value="IN PROGRESS">IN PROGRESS</option>
+                    <option value="RESOLVED">RESOLVED</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Channel</label>
+                  <select
+                    value={newTicketChannel}
+                    onChange={(e) => setNewTicketChannel(e.target.value)}
+                    className="w-full py-2 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
+                  >
+                    <option value="LINE OA">LINE OA</option>
+                    <option value="WhatsApp">WhatsApp</option>
+                    <option value="Phone Call">Phone Call</option>
+                    <option value="Walk-in / Branch">Walk-in / Branch</option>
+                    <option value="CRM Portal">CRM Portal</option>
                   </select>
                 </div>
               </div>
@@ -2669,7 +3271,7 @@ export function AdminCustomerProfileModal({
                 <textarea
                   value={newTicketCustMsg}
                   onChange={(e) => setNewTicketCustMsg(e.target.value)}
-                  placeholder="Enter the customer's request or message..."
+                  placeholder="Enter the customer's complaint, feedback, or request..."
                   rows={2}
                   className="w-full py-2 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500"
                 />
@@ -2691,6 +3293,7 @@ export function AdminCustomerProfileModal({
                   type="button"
                   variant="outline"
                   size="sm"
+                  disabled={isSavingTicket}
                   onClick={() => setTicketModalOpen(false)}
                   className="rounded-xl font-bold text-xs"
                 >
@@ -2699,9 +3302,10 @@ export function AdminCustomerProfileModal({
                 <Button
                   type="submit"
                   size="sm"
-                  className="bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs px-4"
+                  disabled={isSavingTicket}
+                  className="bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs px-4 disabled:opacity-60"
                 >
-                  Log Ticket
+                  {isSavingTicket ? "Saving..." : "Log Ticket & Sync Task"}
                 </Button>
               </div>
             </form>

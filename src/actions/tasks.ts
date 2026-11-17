@@ -3,7 +3,15 @@
 import { prisma } from "@/lib/prisma";
 import { format } from "date-fns";
 import { assertServerActionAuthorized, canUserAccessJob } from "@/lib/server-auth";
+import {
+  extractTaskMetaFromNotesJson,
+  upsertTaskMetaInNotes,
+  normalizeTaskPhone,
+  doesUserBelongToDepartment,
+  type TaskMetadata,
+} from "@/lib/task-meta";
 
+export type { TaskMetadata };
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
 export type TaskStatus = "todo" | "in_progress" | "stuck" | "done";
 
@@ -47,8 +55,9 @@ export interface TaskNote {
   userId: string;
   userName: string;
   timestamp: string; // ISO string
-  type?: "user" | "activity"; // user message vs system field change log
+  type?: "user" | "activity" | "meta"; // user message vs system field change log vs hidden metadata
   attachments?: TaskAttachment[];
+  meta?: TaskMetadata;
 }
 
 export interface TaskChecklistItem {
@@ -134,7 +143,7 @@ export async function getTasksInitialData(
       ? baseWhereClause
       : { ...baseWhereClause, isArchived: false };
 
-    const [tasks, usersRes, deptsRes, archivedCount] = await Promise.all([
+    const [rawTasks, usersRes, deptsRes, archivedCount] = await Promise.all([
       prisma.task.findMany({
         where: taskWhere,
         orderBy: [{ createdAt: "desc" }],
@@ -163,6 +172,8 @@ export async function getTasksInitialData(
         where: { ...baseWhereClause, isArchived: true },
       }),
     ]);
+
+    const tasks = await enrichAndSyncCustomerFeedbackTasks(rawTasks as TaskItem[]);
 
     return {
       success: true,
@@ -213,10 +224,11 @@ export async function getArchivedTasks(_viewer?: {
       }
     }
 
-    const tasks = await prisma.task.findMany({
+    const rawTasks = await prisma.task.findMany({
       where: baseWhereClause,
       orderBy: [{ archivedAt: "desc" }, { createdAt: "desc" }],
     });
+    const tasks = await enrichAndSyncCustomerFeedbackTasks(rawTasks as TaskItem[]);
     return { success: true, data: tasks as TaskItem[] };
   } catch (error: any) {
     console.error("Failed to fetch archived tasks:", error);
@@ -327,7 +339,495 @@ const TASK_FIELD_LABELS: Record<string, string> = {
   attachments: "ไฟล์แนบ (Attachments)",
   checklist: "รายการย่อย (Checklist)",
   isArchived: "สถานะการเก็บเข้าคลัง (Archive Status)",
+  department: "แผนกที่รับผิดชอบ (Department)",
+  customerName: "ลูกค้าที่ผูก (CRM Customer)",
 };
+
+const JOB_SELECT_FOR_TASK = {
+  id: true,
+  billNo: true,
+  proformaNumber: true,
+  branchId: true,
+  customerId: true,
+  riderId: true,
+  pickupRiderId: true,
+  deliveryRiderId: true,
+  customerName: true,
+  customerPhone: true,
+  status: true,
+  subStatus: true,
+  serviceType: true,
+  laundryTypes: true,
+  itemsJson: true,
+  pickupLocation: true,
+  dropoffLocation: true,
+  bagImageUrl: true,
+  billImageUrl: true,
+  pickupProofImageUrl: true,
+  deliveryProofImageUrl: true,
+  proofImageUrl: true,
+  adminNotesJson: true,
+  totalAmount: true,
+  fee: true,
+  isPaid: true,
+  paymentMethod: true,
+  paymentChannel: true,
+  remark: true,
+  createdAt: true,
+  completedAt: true,
+  brand: true,
+} as const;
+
+function normalizeJobRefString(rawRef: string | null | undefined): string {
+  if (!rawRef) return "";
+  return rawRef
+    .trim()
+    .replace(/^(?:job|order|bill)\s*/i, "")
+    .replace(/^#+/, "")
+    .trim();
+}
+
+function extractOrderRefFromText(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const jobMatch = text.match(/#?(202\d{7})\b/);
+  if (jobMatch && jobMatch[1]) return jobMatch[1];
+  const billMatch = text.match(/\b([A-Z]{2,4}\d{2,4}\/\d{3,6})\b/i);
+  if (billMatch && billMatch[1]) return billMatch[1].toUpperCase();
+  return null;
+}
+
+async function enrichAndSyncCustomerFeedbackTasks(tasks: TaskItem[]): Promise<TaskItem[]> {
+  const result = [...tasks];
+  for (let i = 0; i < result.length; i++) {
+    const t = result[i];
+    const existingMeta = extractTaskMetaFromNotesJson(t.notesJson);
+    const cleanRef =
+      normalizeJobRefString(t.jobId) ||
+      extractOrderRefFromText(t.title) ||
+      extractOrderRefFromText(t.description) ||
+      extractOrderRefFromText(t.notesJson);
+
+    const isComplaintLike = /complain|feedback|shrink|stain|damage|missing|lost|ร้องเรียน|คอมเพลน|ผ้าหาย|ผ้าเสียหาย/i.test(
+      `${t.title} ${t.description || ""}`
+    );
+
+    const needsJobNormalize = Boolean(cleanRef && t.jobId !== cleanRef);
+    const needsCustomerResolve = Boolean(
+      (cleanRef && !existingMeta.customerName && existingMeta.isCustomerFeedback === undefined) ||
+        (isComplaintLike && existingMeta.isCustomerFeedback === undefined && !existingMeta.customerName)
+    );
+
+    if (!needsJobNormalize && !needsCustomerResolve) continue;
+
+    try {
+      let matchedJob = cleanRef ? await findJobByAnyRef(cleanRef) : null;
+      let matchedCust = matchedJob
+        ? await resolveCustomerRecordForTask({
+            customerId: matchedJob.customerId,
+            customerPhone: matchedJob.customerPhone,
+            customerName: matchedJob.customerName,
+          })
+        : null;
+
+      if (
+        !matchedCust &&
+        isComplaintLike &&
+        t.description &&
+        t.description.trim().length >= 3 &&
+        t.description.trim().length <= 60
+      ) {
+        matchedCust = await resolveCustomerRecordForTask({
+          customerName: t.description.trim().replace(/\s+CUSTOMER$/i, "").trim(),
+        });
+      }
+
+      const canonicalJobId = matchedJob?.id || cleanRef || t.jobId || null;
+      const nextMeta: TaskMetadata = {
+        ...existingMeta,
+        billNo:
+          existingMeta.billNo ||
+          (matchedJob?.billNo && matchedJob.billNo !== "--" && matchedJob.billNo !== "-"
+            ? matchedJob.billNo
+            : null),
+        customerId: matchedCust?.id || existingMeta.customerId || matchedJob?.customerId || null,
+        customerName:
+          matchedCust?.name || existingMeta.customerName || matchedJob?.customerName || null,
+        customerPhone:
+          matchedCust?.phone || existingMeta.customerPhone || matchedJob?.customerPhone || null,
+        customerMemberId: matchedCust?.memberId || existingMeta.customerMemberId || null,
+        isCustomerFeedback:
+          existingMeta.isCustomerFeedback ??
+          Boolean(isComplaintLike || matchedCust || matchedJob),
+        issueCategory:
+          existingMeta.issueCategory ||
+          (isComplaintLike ? "Customer Complaint / Feedback" : existingMeta.issueCategory || null),
+      };
+
+      if (canonicalJobId !== t.jobId || JSON.stringify(existingMeta) !== JSON.stringify(nextMeta)) {
+        const notes: TaskNote[] = t.notesJson ? JSON.parse(t.notesJson) : [];
+        const updatedNotesJson = JSON.stringify(upsertTaskMetaInNotes<TaskNote>(notes, nextMeta));
+        const updatedTask = await prisma.task.update({
+          where: { id: t.id },
+          data: {
+            jobId: canonicalJobId,
+            notesJson: updatedNotesJson,
+          },
+        });
+        result[i] = updatedTask as TaskItem;
+      }
+    } catch (e) {
+      // Ignore individual task enrichment failure
+    }
+  }
+  return result;
+}
+
+async function findJobByAnyRef(rawRef: string) {
+  const cleanId = normalizeJobRefString(rawRef);
+  if (!cleanId) return null;
+  const rawTrimmed = rawRef.trim();
+
+  let job = await prisma.job.findFirst({
+    where: {
+      OR: [
+        { id: cleanId },
+        { id: { equals: cleanId, mode: "insensitive" } },
+        { billNo: { equals: cleanId, mode: "insensitive" } },
+        { proformaNumber: { equals: cleanId, mode: "insensitive" } },
+        ...(rawTrimmed !== cleanId
+          ? [
+              { id: rawTrimmed },
+              { billNo: { equals: rawTrimmed, mode: "insensitive" as const } },
+            ]
+          : []),
+      ],
+    },
+    select: JOB_SELECT_FOR_TASK,
+  });
+
+  if (!job && cleanId.length >= 4) {
+    job = await prisma.job.findFirst({
+      where: {
+        OR: [
+          { id: { contains: cleanId, mode: "insensitive" } },
+          { billNo: { contains: cleanId, mode: "insensitive" } },
+          { proformaNumber: { contains: cleanId, mode: "insensitive" } },
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+      select: JOB_SELECT_FOR_TASK,
+    });
+  }
+
+  return job;
+}
+
+async function resolveCustomerRecordForTask(params: {
+  customerId?: string | null;
+  customerPhone?: string | null;
+  customerName?: string | null;
+}) {
+  if (params.customerId) {
+    const byId = await prisma.customer.findUnique({ where: { id: params.customerId } });
+    if (byId) return byId;
+  }
+
+  const rawPhone = (params.customerPhone || "").trim();
+  const norm = normalizeTaskPhone(rawPhone);
+  if (norm && norm.length >= 6) {
+    const tail8 = norm.slice(-8);
+    const tail4 = norm.slice(-4);
+    const phoneOr: any[] = [{ phone: { contains: tail4 } }];
+    if (tail8.length >= 6) phoneOr.push({ phone: { contains: tail8 } });
+    if (rawPhone) phoneOr.push({ phone: rawPhone });
+
+    const candidates = await prisma.customer.findMany({
+      where: { OR: phoneOr },
+      take: 25,
+    });
+    const exactPhone = candidates.find(
+      (c) =>
+        normalizeTaskPhone(c.phone) === norm ||
+        normalizeTaskPhone((c as any).secondaryPhone) === norm
+    );
+    if (exactPhone) return exactPhone;
+    const tailMatch = candidates.find((c) => {
+      const cn = normalizeTaskPhone(c.phone);
+      return cn && norm.length >= 8 && cn.slice(-8) === tail8;
+    });
+    if (tailMatch) return tailMatch;
+  }
+
+  if (params.customerName && params.customerName.trim().length >= 2) {
+    const cleanName = params.customerName.trim();
+    const byName = await prisma.customer.findFirst({
+      where: { name: { equals: cleanName, mode: "insensitive" } },
+    });
+    if (byName) return byName;
+  }
+
+  return null;
+}
+
+async function findTasksForCustomerInternal(params: {
+  customerId?: string | null;
+  customerPhone?: string | null;
+  customerName?: string | null;
+  customerMemberId?: string | null;
+}): Promise<TaskItem[]> {
+  const rawPhone = (params.customerPhone || "").trim();
+  const normPhone = normalizeTaskPhone(rawPhone);
+  const cleanCustomerName = (params.customerName || "").trim();
+  const cleanCustomerNameLower = cleanCustomerName.toLowerCase();
+
+  const jobWhereClauses: any[] = [];
+  if (params.customerId) jobWhereClauses.push({ customerId: params.customerId });
+  if (rawPhone && rawPhone !== "--" && rawPhone !== "-") {
+    jobWhereClauses.push({ customerPhone: rawPhone });
+  }
+  if (normPhone && normPhone.length >= 6) {
+    jobWhereClauses.push({ customerPhone: { contains: normPhone.slice(-4) } });
+  }
+  if (cleanCustomerName.length >= 2) {
+    jobWhereClauses.push({ customerName: { equals: cleanCustomerName, mode: "insensitive" } });
+  }
+
+  const cleanJobRefSet = new Set<string>();
+  const exactJobIdCandidates = new Set<string>();
+
+  if (jobWhereClauses.length > 0) {
+    const rawCandidateJobs = await prisma.job.findMany({
+      where: { OR: jobWhereClauses },
+      select: {
+        id: true,
+        billNo: true,
+        proformaNumber: true,
+        customerId: true,
+        customerPhone: true,
+        customerName: true,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+
+    const verifiedJobs = rawCandidateJobs.filter((j) => {
+      if (params.customerId && j.customerId === params.customerId) return true;
+      if (normPhone && normPhone.length >= 6 && normalizeTaskPhone(j.customerPhone) === normPhone) {
+        return true;
+      }
+      if (
+        cleanCustomerNameLower.length >= 2 &&
+        (j.customerName || "").trim().toLowerCase() === cleanCustomerNameLower
+      ) {
+        return true;
+      }
+      return false;
+    });
+
+    verifiedJobs.forEach((j) => {
+      if (j.id) {
+        const cid = normalizeJobRefString(j.id);
+        if (cid) {
+          cleanJobRefSet.add(cid.toLowerCase());
+          exactJobIdCandidates.add(cid);
+          exactJobIdCandidates.add(`#${cid}`);
+          exactJobIdCandidates.add(`##${cid}`);
+        }
+      }
+      if (j.billNo && j.billNo !== "--" && j.billNo !== "-") {
+        const cbill = normalizeJobRefString(j.billNo);
+        if (cbill) {
+          cleanJobRefSet.add(cbill.toLowerCase());
+          exactJobIdCandidates.add(cbill);
+          exactJobIdCandidates.add(`#${cbill}`);
+        }
+      }
+      if (j.proformaNumber && j.proformaNumber !== "--" && j.proformaNumber !== "-") {
+        const cpr = normalizeJobRefString(j.proformaNumber);
+        if (cpr) {
+          cleanJobRefSet.add(cpr.toLowerCase());
+          exactJobIdCandidates.add(cpr);
+          exactJobIdCandidates.add(`#${cpr}`);
+        }
+      }
+    });
+  }
+
+  const orClauses: any[] = [];
+  const exactJobIdList = Array.from(exactJobIdCandidates);
+  if (exactJobIdList.length > 0) {
+    orClauses.push({ jobId: { in: exactJobIdList } });
+  }
+
+  // Also search jobId / title / description / notesJson for the customer's job refs (e.g. "#2026007407" or "PK019/0926")
+  const primaryJobRefs = Array.from(cleanJobRefSet).filter((r) => r.length >= 5).slice(0, 30);
+  for (const ref of primaryJobRefs) {
+    orClauses.push({ jobId: { contains: ref, mode: "insensitive" } });
+    orClauses.push({ title: { contains: ref, mode: "insensitive" } });
+    orClauses.push({ description: { contains: ref, mode: "insensitive" } });
+    orClauses.push({ notesJson: { contains: ref, mode: "insensitive" } });
+  }
+
+  if (params.customerId) {
+    orClauses.push({ notesJson: { contains: params.customerId } });
+  }
+  if (cleanCustomerName.length >= 3) {
+    orClauses.push({ title: { contains: cleanCustomerName, mode: "insensitive" } });
+    orClauses.push({ description: { contains: cleanCustomerName, mode: "insensitive" } });
+    orClauses.push({ notesJson: { contains: cleanCustomerName, mode: "insensitive" } });
+  }
+  if (normPhone && normPhone.length >= 6) {
+    const tail4 = normPhone.slice(-4);
+    orClauses.push({ notesJson: { contains: tail4 } });
+    orClauses.push({ description: { contains: tail4 } });
+    orClauses.push({ title: { contains: tail4 } });
+  }
+  if (params.customerMemberId && params.customerMemberId.trim().length >= 3) {
+    orClauses.push({ notesJson: { contains: params.customerMemberId.trim() } });
+  }
+
+  if (orClauses.length === 0) return [];
+
+  const matched = await prisma.task.findMany({
+    where: { OR: orClauses },
+    orderBy: [{ createdAt: "desc" }],
+    take: 120,
+  });
+
+  // Strict verification pass so only tasks genuinely belonging to this customer or their orders are returned
+  const verified = matched.filter((t) => {
+    const normTaskJobId = normalizeJobRefString(t.jobId).toLowerCase();
+    if (normTaskJobId && cleanJobRefSet.has(normTaskJobId)) return true;
+
+    const hayTitle = (t.title || "").toLowerCase();
+    const hayDesc = (t.description || "").toLowerCase();
+    const hayNotes = (t.notesJson || "").toLowerCase();
+
+    for (const ref of cleanJobRefSet) {
+      if (ref.length >= 5) {
+        if (normTaskJobId && normTaskJobId.includes(ref)) return true;
+        if (hayTitle.includes(ref) || hayDesc.includes(ref) || hayNotes.includes(ref)) return true;
+      }
+    }
+
+    const meta = extractTaskMetaFromNotesJson(t.notesJson);
+    if (params.customerId && meta.customerId === params.customerId) return true;
+    if (
+      cleanCustomerNameLower.length >= 3 &&
+      meta.customerName &&
+      meta.customerName.trim().toLowerCase() === cleanCustomerNameLower
+    ) {
+      return true;
+    }
+    if (normPhone && normPhone.length >= 6) {
+      if (normalizeTaskPhone(meta.customerPhone) === normPhone) return true;
+      if (
+        normalizeTaskPhone(t.description) === normPhone ||
+        (t.notesJson && normalizeTaskPhone(t.notesJson)?.includes(normPhone))
+      ) {
+        return true;
+      }
+    }
+    if (params.customerId && (t.notesJson || "").includes(params.customerId)) return true;
+    if (
+      cleanCustomerNameLower.length >= 3 &&
+      (hayTitle.includes(cleanCustomerNameLower) ||
+        hayDesc.includes(cleanCustomerNameLower) ||
+        hayNotes.includes(cleanCustomerNameLower))
+    ) {
+      return true;
+    }
+    return false;
+  }) as TaskItem[];
+
+  return await enrichAndSyncCustomerFeedbackTasks(verified);
+}
+
+async function buildCustomerCrmBundle(customer: any) {
+  if (!customer) return { customer: null, customerTasks: [] as TaskItem[] };
+  const rawPhone = (customer.phone || "").trim();
+  const normPhone = normalizeTaskPhone(rawPhone);
+  const cleanName = (customer.name || "").trim();
+  const jobWhereOr: any[] = [{ customerId: customer.id }];
+  if (rawPhone && rawPhone !== "--" && rawPhone !== "-") {
+    jobWhereOr.push({ customerPhone: rawPhone });
+  }
+  if (normPhone && normPhone.length >= 6) {
+    jobWhereOr.push({ customerPhone: { contains: normPhone.slice(-4) } });
+  }
+  if (cleanName.length >= 2) {
+    jobWhereOr.push({ customerName: { equals: cleanName, mode: "insensitive" } });
+  }
+
+  const rawRecentJobs = await prisma.job.findMany({
+    where: { OR: jobWhereOr },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+    select: {
+      id: true,
+      billNo: true,
+      status: true,
+      serviceType: true,
+      totalAmount: true,
+      fee: true,
+      isPaid: true,
+      paymentChannel: true,
+      createdAt: true,
+      itemsJson: true,
+      customerId: true,
+      customerPhone: true,
+      customerName: true,
+    },
+  });
+
+  const recentJobs = rawRecentJobs.filter((j) => {
+    if (j.customerId === customer.id) return true;
+    if (normPhone && normPhone.length >= 6 && normalizeTaskPhone(j.customerPhone) === normPhone) {
+      return true;
+    }
+    if (cleanName.length >= 2 && (j.customerName || "").trim().toLowerCase() === cleanName.toLowerCase()) {
+      return true;
+    }
+    return false;
+  });
+
+  const nonCancelJobs = recentJobs.filter((j) => j.status !== "cancel" && j.status !== "cancelled");
+  const totalSpent = nonCancelJobs.reduce((sum, j) => sum + Number(j.totalAmount || j.fee || 0), 0);
+  const customerTasks = await findTasksForCustomerInternal({
+    customerId: customer.id,
+    customerPhone: customer.phone,
+    customerName: customer.name,
+    customerMemberId: customer.memberId,
+  });
+
+  return {
+    customer: {
+      id: customer.id,
+      name: customer.name,
+      nickName: customer.nickName || null,
+      phone: customer.phone,
+      email: customer.email || null,
+      lineId: customer.lineId || null,
+      whatsappId: customer.whatsappId || null,
+      isWhatsapp: Boolean(customer.isWhatsapp),
+      isMember: Boolean(customer.isMember),
+      memberId: customer.memberId || null,
+      isVIP: Boolean(customer.isVIP),
+      isCorporate: Boolean(customer.isCorporate || customer.tier === "corporate"),
+      tier: customer.tier || null,
+      creditBalance: Number(customer.creditBalance || 0),
+      defaultAddress: customer.defaultAddress || null,
+      roomNo: customer.roomNo || null,
+      brand: customer.brand || "that_laundry_shop",
+      priceListId: customer.priceListId || null,
+      remark: customer.remark || null,
+      ordersCount: nonCancelJobs.length,
+      totalSpent,
+      recentJobs: recentJobs.slice(0, 10),
+    },
+    customerTasks,
+  };
+}
 
 function mergeTaskAttachments(
   existingRaw: string | null | undefined,
@@ -424,12 +924,14 @@ export async function createTask(data: {
   title: string;
   description?: string;
   priority: TaskPriority;
+  status?: TaskStatus;
   jobId?: string;
   assignedToId?: string;
   assignedToName?: string;
   dueDate?: string;
   attachments?: TaskAttachment[];
   checklist?: TaskChecklistItem[];
+  meta?: TaskMetadata;
   createdById: string;
   createdByName: string;
 }) {
@@ -440,13 +942,105 @@ export async function createTask(data: {
       createdById: authUser.id,
       createdByName: authUser.name || authUser.email || data.createdByName || "Staff",
     };
-    const cleanAssigneeId = data.assignedToId && data.assignedToId.trim() !== "" ? data.assignedToId.trim() : null;
-    const cleanAssigneeName = cleanAssigneeId ? (data.assignedToName?.trim() || null) : null;
+
+    let cleanAssigneeId = data.assignedToId && data.assignedToId.trim() !== "" ? data.assignedToId.trim() : null;
+    let cleanAssigneeName = cleanAssigneeId ? (data.assignedToName?.trim() || null) : null;
     const effectiveDueDate = data.dueDate ? new Date(data.dueDate) : getAutoDueDate(data.priority);
+    const meta: TaskMetadata = data.meta ? { ...data.meta } : {};
+
+    // Auto-assign all active staff in the selected department if no specific assignees were passed
+    if (meta.department && !cleanAssigneeId) {
+      const allActiveUsers = await prisma.adminUser.findMany({
+        where: { isActive: true },
+        select: { id: true, name: true, email: true, role: true, department: true, isActive: true },
+        orderBy: { name: "asc" },
+      });
+      const nonRiderMatches = allActiveUsers.filter(
+        (u) => u.role !== "rider" && doesUserBelongToDepartment(u, meta.department!)
+      );
+      const deptMembers =
+        nonRiderMatches.length > 0
+          ? nonRiderMatches
+          : allActiveUsers.filter((u) => doesUserBelongToDepartment(u, meta.department!));
+
+      if (deptMembers.length > 0) {
+        cleanAssigneeId = deptMembers.map((u) => u.id).join(",");
+        cleanAssigneeName = deptMembers.map((u) => u.name || u.email).join(", ");
+      }
+    }
+
+    // Auto-resolve Job and CRM Customer linkage when jobId / billNo is entered or mentioned in title/description
+    let cleanJobId =
+      normalizeJobRefString(data.jobId) ||
+      extractOrderRefFromText(data.title) ||
+      extractOrderRefFromText(data.description) ||
+      null;
+    if (cleanJobId) {
+      try {
+        const matchedJob = await findJobByAnyRef(cleanJobId);
+        if (matchedJob) {
+          cleanJobId = matchedJob.id;
+          if (!meta.billNo && matchedJob.billNo && matchedJob.billNo !== "--" && matchedJob.billNo !== "-") {
+            meta.billNo = matchedJob.billNo;
+          }
+          if (!meta.customerId || !meta.customerName) {
+            const matchedCust = await resolveCustomerRecordForTask({
+              customerId: matchedJob.customerId,
+              customerPhone: matchedJob.customerPhone,
+              customerName: matchedJob.customerName,
+            });
+            if (matchedCust) {
+              meta.customerId = meta.customerId || matchedCust.id;
+              meta.customerName = meta.customerName || matchedCust.name;
+              meta.customerPhone = meta.customerPhone || matchedCust.phone;
+              meta.customerMemberId = meta.customerMemberId || matchedCust.memberId || null;
+            } else {
+              meta.customerName = meta.customerName || matchedJob.customerName || null;
+              meta.customerPhone = meta.customerPhone || matchedJob.customerPhone || null;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Auto-resolve job/customer on createTask failed:", e);
+      }
+    } else if (meta.customerId && (!meta.customerName || !meta.customerPhone)) {
+      try {
+        const cust = await prisma.customer.findUnique({ where: { id: meta.customerId } });
+        if (cust) {
+          meta.customerName = meta.customerName || cust.name;
+          meta.customerPhone = meta.customerPhone || cust.phone;
+          meta.customerMemberId = meta.customerMemberId || cust.memberId || null;
+        }
+      } catch {}
+    }
+
+    if (
+      meta.customerId ||
+      meta.customerName ||
+      /complain|feedback|shrink|stain|damage|missing|lost|issue|ร้องเรียน|คอมเพลน|ผ้าหาย|ผ้าเสียหาย/i.test(
+        `${data.title} ${data.description || ""} ${meta.issueCategory || ""}`
+      )
+    ) {
+      meta.isCustomerFeedback = true;
+    }
 
     const now = new Date();
     const prefix = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, "0")}`;
     const lockKey = `task_seq:${prefix}`;
+
+    const initialNotes: TaskNote[] = upsertTaskMetaInNotes<TaskNote>(
+      [
+        {
+          id: Math.random().toString(36).slice(2, 9),
+          text: `Created task "${data.title.trim()}" (Priority: ${data.priority.toUpperCase()}${meta.departmentLabel ? `, Dept: ${meta.departmentLabel}` : ""}${cleanAssigneeName ? `, Assigned to: ${cleanAssigneeName}` : ""}${meta.customerName ? `, Customer: ${meta.customerName}` : ""}${effectiveDueDate ? `, Due: ${format(effectiveDueDate, "d MMM yyyy")}` : ""})`,
+          userId: data.createdById,
+          userName: data.createdByName,
+          timestamp: new Date().toISOString(),
+          type: "activity",
+        },
+      ],
+      meta
+    );
 
     const task = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
@@ -456,10 +1050,10 @@ export async function createTask(data: {
         data: {
           id: nextId,
           title: data.title.trim(),
-          description: data.description?.trim().slice(0, 100) || null,
+          description: data.description?.trim().slice(0, 4000) || null,
           priority: data.priority,
-          status: "todo",
-          jobId: data.jobId?.trim() || null,
+          status: data.status || "todo",
+          jobId: cleanJobId,
           assignedToId: cleanAssigneeId,
           assignedToName: cleanAssigneeName,
           createdById: data.createdById,
@@ -467,16 +1061,7 @@ export async function createTask(data: {
           dueDate: effectiveDueDate,
           attachmentsJson: data.attachments && data.attachments.length > 0 ? JSON.stringify(data.attachments) : null,
           checklistJson: data.checklist && data.checklist.length > 0 ? JSON.stringify(data.checklist) : null,
-          notesJson: JSON.stringify([
-            {
-              id: Math.random().toString(36).slice(2, 9),
-              text: `Created task "${data.title.trim()}" (Priority: ${data.priority.toUpperCase()}${data.assignedToName ? `, Assigned to: ${data.assignedToName}` : ""}${effectiveDueDate ? `, Due: ${format(effectiveDueDate, "d MMM yyyy")}` : ""})`,
-              userId: data.createdById,
-              userName: data.createdByName,
-              timestamp: new Date().toISOString(),
-              type: "activity",
-            }
-          ]),
+          notesJson: JSON.stringify(initialNotes),
         },
       });
     });
@@ -493,6 +1078,9 @@ export async function createTask(data: {
             priority: task.priority,
             assignedTo: task.assignedToName,
             dueDate: task.dueDate,
+            department: meta.department || null,
+            customerId: meta.customerId || null,
+            customerName: meta.customerName || null,
           }),
           userId: data.createdById,
           userName: data.createdByName,
@@ -512,8 +1100,8 @@ export async function createTask(data: {
               data: {
                 userId: uid,
                 taskId: task.id,
-                title: "New Task Assigned 👤",
-                message: `${data.createdByName} assigned task "${task.title}" to you`,
+                title: meta.departmentLabel ? `New ${meta.departmentLabel} Task 📋` : "New Task Assigned 👤",
+                message: `${data.createdByName} assigned task "${task.title}" to you${meta.customerName ? ` (Customer: ${meta.customerName})` : ""}`,
                 type: "assigned",
                 isRead: false,
               },
@@ -543,6 +1131,7 @@ export async function updateTask(
     dueDate?: string | null;
     attachments?: TaskAttachment[];
     checklist?: TaskChecklistItem[];
+    meta?: TaskMetadata;
     expectedUpdatedAt?: string | Date;
     updatedAt?: string | Date;
   },
@@ -566,6 +1155,39 @@ export async function updateTask(
       name: authUser.name || authUser.email || "User",
       role: authUser.role,
     };
+
+    // Pre-resolve job/customer metadata when jobId changes or meta.customerId is given
+    let normalizedJobIdUpdate = updates.jobId !== undefined ? (updates.jobId?.trim() || null) : undefined;
+    let resolvedMetaPatch: TaskMetadata | undefined = updates.meta ? { ...updates.meta } : undefined;
+    if (normalizedJobIdUpdate) {
+      try {
+        const matchedJob = await findJobByAnyRef(normalizedJobIdUpdate);
+        if (matchedJob) {
+          normalizedJobIdUpdate = matchedJob.id;
+          resolvedMetaPatch = resolvedMetaPatch || {};
+          if (!resolvedMetaPatch.billNo && matchedJob.billNo && matchedJob.billNo !== "--" && matchedJob.billNo !== "-") {
+            resolvedMetaPatch.billNo = matchedJob.billNo;
+          }
+          if (!resolvedMetaPatch.customerId || !resolvedMetaPatch.customerName) {
+            const matchedCust = await resolveCustomerRecordForTask({
+              customerId: matchedJob.customerId,
+              customerPhone: matchedJob.customerPhone,
+              customerName: matchedJob.customerName,
+            });
+            if (matchedCust) {
+              resolvedMetaPatch.customerId = resolvedMetaPatch.customerId || matchedCust.id;
+              resolvedMetaPatch.customerName = resolvedMetaPatch.customerName || matchedCust.name;
+              resolvedMetaPatch.customerPhone = resolvedMetaPatch.customerPhone || matchedCust.phone;
+              resolvedMetaPatch.customerMemberId = resolvedMetaPatch.customerMemberId || matchedCust.memberId || null;
+            } else {
+              resolvedMetaPatch.customerName = resolvedMetaPatch.customerName || matchedJob.customerName || null;
+              resolvedMetaPatch.customerPhone = resolvedMetaPatch.customerPhone || matchedJob.customerPhone || null;
+            }
+          }
+        }
+      } catch {}
+    }
+
     return await withTaskUpdateLock(id, async () => {
       const txRes = await prisma.$transaction(async (tx) => {
         await lockTaskRowForUpdate(tx, id);
@@ -595,7 +1217,7 @@ export async function updateTask(
             (updates.title !== undefined && updates.title.trim() !== existing.title) ||
             (updates.description !== undefined && (updates.description?.trim() || null) !== existing.description) ||
             (updates.priority !== undefined && updates.priority !== existing.priority) ||
-            (updates.jobId !== undefined && (updates.jobId?.trim() || null) !== existing.jobId) ||
+            (normalizedJobIdUpdate !== undefined && normalizedJobIdUpdate !== existing.jobId) ||
             (updates.dueDate !== undefined && newDueDay !== oldDueDay)
           ) {
             return {
@@ -629,8 +1251,8 @@ export async function updateTask(
 
         // Track Description change
         if (updates.description !== undefined) {
-          const newDesc = updates.description?.trim().slice(0, 100) || null;
-          const oldDesc = existing.description?.trim().slice(0, 100) || null;
+          const newDesc = updates.description?.trim().slice(0, 4000) || null;
+          const oldDesc = existing.description?.trim().slice(0, 4000) || null;
           if (newDesc !== oldDesc) {
             changes.description = { from: existing.description, to: newDesc };
             activityMessages.push("Updated description");
@@ -655,11 +1277,10 @@ export async function updateTask(
         }
 
         // Track Job ID change
-        if (updates.jobId !== undefined && (updates.jobId?.trim() || null) !== existing.jobId) {
-          const newJobId = updates.jobId?.trim() || null;
-          changes.jobId = { from: existing.jobId, to: newJobId };
-          activityMessages.push(newJobId ? `Linked to Job #${newJobId}` : "Removed Job link");
-          data.jobId = newJobId;
+        if (normalizedJobIdUpdate !== undefined && normalizedJobIdUpdate !== existing.jobId) {
+          changes.jobId = { from: existing.jobId, to: normalizedJobIdUpdate };
+          activityMessages.push(normalizedJobIdUpdate ? `Linked to Job #${normalizedJobIdUpdate}` : "Removed Job link");
+          data.jobId = normalizedJobIdUpdate;
         }
 
         // Track Assignee change
@@ -692,7 +1313,7 @@ export async function updateTask(
         // Track Attachments change (Smart Merge additive attachments unless explicitly deleting)
         if (updates.attachments !== undefined) {
           const nonMetaKeys = Object.keys(updates).filter(
-            (k) => !["expectedUpdatedAt", "updatedAt"].includes(k)
+            (k) => !["expectedUpdatedAt", "updatedAt", "meta"].includes(k)
           );
           const isExplicitAttachmentDeletion =
             nonMetaKeys.length === 1 && nonMetaKeys[0] === "attachments";
@@ -730,6 +1351,34 @@ export async function updateTask(
               activityMessages.push(`Updated checklist`);
             }
             data.checklistJson = newChecklistJson;
+          }
+        }
+
+        // Track Task Metadata changes (department, issueCategory, CRM customer link)
+        const existingMeta = extractTaskMetaFromNotesJson(existing.notesJson);
+        let mergedMeta: TaskMetadata | null = null;
+        if (resolvedMetaPatch) {
+          const candidateMeta: TaskMetadata = { ...existingMeta, ...resolvedMetaPatch };
+          if (JSON.stringify(candidateMeta) !== JSON.stringify(existingMeta)) {
+            mergedMeta = candidateMeta;
+            if (candidateMeta.department !== existingMeta.department) {
+              changes.department = {
+                from: existingMeta.departmentLabel || existingMeta.department || "None",
+                to: candidateMeta.departmentLabel || candidateMeta.department || "None",
+              };
+              activityMessages.push(
+                candidateMeta.departmentLabel
+                  ? `Assigned Dept: ${candidateMeta.departmentLabel}`
+                  : "Cleared department tag"
+              );
+            }
+            if (candidateMeta.customerId !== existingMeta.customerId && candidateMeta.customerName) {
+              changes.customerName = {
+                from: existingMeta.customerName || "None",
+                to: candidateMeta.customerName,
+              };
+              activityMessages.push(`Linked CRM Customer: ${candidateMeta.customerName}`);
+            }
           }
         }
 
@@ -795,7 +1444,7 @@ export async function updateTask(
           }
         }
 
-        // Append auto-activity note if any fields changed
+        // Append auto-activity note / update meta entry if any fields changed
         let notes: TaskNote[] = existing.notesJson ? JSON.parse(existing.notesJson) : [];
         if (activityMessages.length > 0) {
           const activityNote: TaskNote = {
@@ -807,6 +1456,11 @@ export async function updateTask(
             type: "activity",
           };
           notes = [activityNote, ...notes];
+        }
+        if (mergedMeta) {
+          notes = upsertTaskMetaInNotes(notes, mergedMeta);
+        }
+        if (activityMessages.length > 0 || mergedMeta) {
           data.notesJson = JSON.stringify(notes);
         }
 
@@ -1195,52 +1849,217 @@ export async function deleteTask(id: string, _actor?: { id: string; name: string
   }
 }
 
-export async function getLinkedJobDetails(jobId: string) {
+export async function getLinkedJobDetails(jobId: string, taskId?: string) {
   try {
     const authUser = await assertServerActionAuthorized({ forbidRoles: ["rider"] });
     const cleanId = jobId.trim();
     if (!cleanId) return { success: false, error: "No Job ID provided" };
 
-    const job = await prisma.job.findFirst({
-      where: {
-        OR: [
-          { id: cleanId },
-          { id: { equals: cleanId, mode: "insensitive" } },
-        ],
-      },
-      select: {
-        id: true,
-        branchId: true,
-        riderId: true,
-        pickupRiderId: true,
-        deliveryRiderId: true,
-        customerName: true,
-        customerPhone: true,
-        status: true,
-        serviceType: true,
-        pickupLocation: true,
-        dropoffLocation: true,
-        bagImageUrl: true,
-        billImageUrl: true,
-        pickupProofImageUrl: true,
-        deliveryProofImageUrl: true,
-        proofImageUrl: true,
-        adminNotesJson: true,
-        totalAmount: true,
-        fee: true,
-        remark: true,
-        createdAt: true,
-      },
-    });
+    const job = await findJobByAnyRef(cleanId);
 
-    if (!job) return { success: false, error: "Job not found" };
+    if (!job) return { success: false, error: "Order / Job not found" };
     if (!canUserAccessJob(authUser, job)) {
       return { success: false, error: "Forbidden: You do not have access to this job" };
     }
-    return { success: true, data: job };
+
+    let parsedItems: any[] = [];
+    if (job.itemsJson) {
+      try {
+        const p = JSON.parse(job.itemsJson);
+        if (Array.isArray(p)) parsedItems = p;
+      } catch {}
+    }
+
+    const matchedCust = await resolveCustomerRecordForTask({
+      customerId: job.customerId,
+      customerPhone: job.customerPhone,
+      customerName: job.customerName,
+    });
+
+    // If an existing task is being viewed/linked, auto-persist the canonical jobId & CRM customer metadata onto that task immediately
+    let syncedCurrentTask: TaskItem | null = null;
+    if (taskId && taskId.trim()) {
+      try {
+        const existingTask = await prisma.task.findUnique({ where: { id: taskId.trim() } });
+        if (existingTask) {
+          const existingMeta = extractTaskMetaFromNotesJson(existingTask.notesJson);
+          const nextMeta: TaskMetadata = {
+            ...existingMeta,
+            billNo:
+              existingMeta.billNo ||
+              (job.billNo && job.billNo !== "--" && job.billNo !== "-" ? job.billNo : null),
+            customerId: matchedCust?.id || existingMeta.customerId || job.customerId || null,
+            customerName: matchedCust?.name || existingMeta.customerName || job.customerName || null,
+            customerPhone: matchedCust?.phone || existingMeta.customerPhone || job.customerPhone || null,
+            customerMemberId: matchedCust?.memberId || existingMeta.customerMemberId || null,
+            isCustomerFeedback: true,
+          };
+          const needsJobFix = existingTask.jobId !== job.id;
+          const needsMetaFix = JSON.stringify(existingMeta) !== JSON.stringify(nextMeta);
+          if (needsJobFix || needsMetaFix) {
+            const existingNotes: TaskNote[] = existingTask.notesJson
+              ? JSON.parse(existingTask.notesJson)
+              : [];
+            const updatedNotes = upsertTaskMetaInNotes<TaskNote>(existingNotes, nextMeta);
+            syncedCurrentTask = (await prisma.task.update({
+              where: { id: existingTask.id },
+              data: {
+                jobId: job.id,
+                notesJson: JSON.stringify(updatedNotes),
+              },
+            })) as TaskItem;
+          } else {
+            syncedCurrentTask = existingTask as TaskItem;
+          }
+        }
+      } catch (err) {
+        console.warn("Failed to auto-sync existing task CRM link in getLinkedJobDetails:", err);
+      }
+    }
+
+    const crmBundle = matchedCust
+      ? await buildCustomerCrmBundle(matchedCust)
+      : { customer: null, customerTasks: [] as TaskItem[] };
+
+    if (
+      syncedCurrentTask &&
+      !crmBundle.customerTasks.some((t) => t.id === syncedCurrentTask!.id)
+    ) {
+      crmBundle.customerTasks = [syncedCurrentTask, ...crmBundle.customerTasks];
+    }
+
+    return {
+      success: true,
+      data: { ...job, items: parsedItems },
+      customer: crmBundle.customer,
+      customerTasks: crmBundle.customerTasks,
+      syncedTask: syncedCurrentTask,
+    };
   } catch (e: any) {
     console.error("Failed to fetch linked job details:", e);
     return { success: false, error: e.message || "Failed to fetch job" };
+  }
+}
+
+export async function searchCustomersForTaskAction(query: string) {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+    const q = query.trim();
+    if (q.length < 2) return { success: true, data: [] as any[] };
+
+    const customers = await prisma.customer.findMany({
+      where: {
+        OR: [
+          { name: { contains: q, mode: "insensitive" } },
+          { nickName: { contains: q, mode: "insensitive" } },
+          { phone: { contains: q, mode: "insensitive" } },
+          { memberId: { contains: q, mode: "insensitive" } },
+          { lineId: { contains: q, mode: "insensitive" } },
+          { whatsappId: { contains: q, mode: "insensitive" } },
+        ],
+      },
+      orderBy: [{ updatedAt: "desc" }],
+      take: 12,
+      select: {
+        id: true,
+        name: true,
+        nickName: true,
+        phone: true,
+        memberId: true,
+        isMember: true,
+        isVIP: true,
+        isCorporate: true,
+        tier: true,
+        creditBalance: true,
+        defaultAddress: true,
+        roomNo: true,
+        brand: true,
+        lineId: true,
+        whatsappId: true,
+        isWhatsapp: true,
+      },
+    });
+
+    return { success: true, data: customers };
+  } catch (e: any) {
+    console.error("Failed to search customers for task:", e);
+    return { success: false, data: [] as any[], error: e.message || "Search failed" };
+  }
+}
+
+export async function getCustomerCrmForTaskAction(customerId: string, taskId?: string) {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+    const cleanId = customerId.trim();
+    if (!cleanId) return { success: false, error: "Customer ID required" };
+    const cust = await prisma.customer.findUnique({ where: { id: cleanId } });
+    if (!cust) return { success: false, error: "Customer not found" };
+
+    let syncedCurrentTask: TaskItem | null = null;
+    if (taskId && taskId.trim()) {
+      try {
+        const existingTask = await prisma.task.findUnique({ where: { id: taskId.trim() } });
+        if (existingTask) {
+          const existingMeta = extractTaskMetaFromNotesJson(existingTask.notesJson);
+          const nextMeta: TaskMetadata = {
+            ...existingMeta,
+            customerId: cust.id,
+            customerName: cust.name,
+            customerPhone: cust.phone,
+            customerMemberId: cust.memberId || null,
+            isCustomerFeedback: true,
+          };
+          if (JSON.stringify(existingMeta) !== JSON.stringify(nextMeta)) {
+            const existingNotes: TaskNote[] = existingTask.notesJson
+              ? JSON.parse(existingTask.notesJson)
+              : [];
+            const updatedNotes = upsertTaskMetaInNotes<TaskNote>(existingNotes, nextMeta);
+            syncedCurrentTask = (await prisma.task.update({
+              where: { id: existingTask.id },
+              data: { notesJson: JSON.stringify(updatedNotes) },
+            })) as TaskItem;
+          } else {
+            syncedCurrentTask = existingTask as TaskItem;
+          }
+        }
+      } catch (err) {
+        console.warn("Failed to auto-sync existing task customer link in getCustomerCrmForTaskAction:", err);
+      }
+    }
+
+    const bundle = await buildCustomerCrmBundle(cust);
+    if (
+      syncedCurrentTask &&
+      !bundle.customerTasks.some((t) => t.id === syncedCurrentTask!.id)
+    ) {
+      bundle.customerTasks = [syncedCurrentTask, ...bundle.customerTasks];
+    }
+
+    return {
+      success: true,
+      customer: bundle.customer,
+      customerTasks: bundle.customerTasks,
+      syncedTask: syncedCurrentTask,
+    };
+  } catch (e: any) {
+    console.error("Failed to load customer CRM bundle:", e);
+    return { success: false, error: e.message || "Failed to load customer CRM" };
+  }
+}
+
+export async function getCustomerTasksAction(params: {
+  customerId?: string;
+  customerPhone?: string | null;
+  customerName?: string | null;
+  customerMemberId?: string | null;
+}): Promise<{ success: boolean; data?: TaskItem[]; error?: string }> {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+    const tasks = await findTasksForCustomerInternal(params);
+    return { success: true, data: tasks };
+  } catch (e: any) {
+    console.error("Failed to fetch customer tasks:", e);
+    return { success: false, error: e.message || "Failed to fetch customer tasks" };
   }
 }
 
@@ -1714,11 +2533,14 @@ export async function createTaxInvoiceTaskForJobAction(params: {
       return { success: true, data: existing as TaskItem, alreadyExisted: true };
     }
 
-    // 2. Query all active accounting staff members
+    // 2. Query all active accounting staff members (by role or department)
     const accountingUsers = await prisma.adminUser.findMany({
       where: {
-        role: "accounting",
         isActive: true,
+        OR: [
+          { role: "accounting" },
+          { department: { in: ["accounting_cso", "accounting"] } },
+        ],
       },
       select: {
         id: true,
@@ -1774,6 +2596,14 @@ export async function createTaxInvoiceTaskForJobAction(params: {
       assignedToName: assignedToName || undefined,
       dueDate: dueDate.toISOString(),
       checklist,
+      meta: {
+        department: "accounting_cso",
+        departmentLabel: "Accounting & CSO",
+        taskType: "accounting",
+        issueCategory: "Tax Invoice / Receipt Issue",
+        customerName: customerName || null,
+        customerPhone: customerPhone || null,
+      },
       createdById: createdById || "system",
       createdByName: createdByName || "System Auto",
     });

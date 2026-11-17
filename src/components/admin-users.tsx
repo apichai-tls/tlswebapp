@@ -26,7 +26,6 @@ import {
   CheckCircle2,
   Sparkles,
 } from "lucide-react";
-import { FitScreenToggle } from "@/components/fit-screen-toggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -1141,7 +1140,6 @@ export function AdminUsers() {
 
         {/* Quick Create Buttons */}
         <div className="flex items-center gap-2 flex-wrap">
-          <FitScreenToggle />
           <Button
             type="button"
             variant="outline"

@@ -7,6 +7,7 @@ import { useJobs } from "@/lib/use-jobs";
 import { shopStore, settingsStore, type Job } from "@/lib/store";
 import { useAuth } from "@/providers/auth-provider";
 import { formatJobDisplayId } from "@/lib/utils";
+import { FitScreenToggle } from "@/components/fit-screen-toggle";
 import {
   LaundryChecklistWorkspace,
   parseJobChecklist,
@@ -358,6 +359,8 @@ export function ItemCheckDepartmentStation({
             <LayoutDashboard size={13} />
             <span>Admin</span>
           </Link>
+
+          <FitScreenToggle />
 
           <Button
             type="button"

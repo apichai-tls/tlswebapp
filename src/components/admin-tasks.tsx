@@ -12,7 +12,9 @@ import {
   Inbox, Flame, CheckSquare, RotateCw, Search,
   BarChart2, Star, Award, TrendingUp, Timer, Target, Activity,
   Layers, ShieldCheck, ArrowUpRight, ChevronRight, Zap, Trophy,
-  UserCheck, AlertCircle, HelpCircle, UploadCloud, Upload
+  UserCheck, AlertCircle, HelpCircle, UploadCloud, Upload,
+  Building2, Wallet, Phone, MessageCircle, Crown, ShoppingBag,
+  Megaphone, Receipt, Tag
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,12 +25,24 @@ import { useAuth } from "@/providers/auth-provider";
 import { format, isPast, isToday } from "date-fns";
 import {
   getTasks, getTasksInitialData, getArchivedTasks, createTask, updateTask, deleteTask, addTaskNote, deleteTaskNote,
-  getLinkedJobDetails, archiveTask, unarchiveTask, archiveAllDoneTasks,
+  getLinkedJobDetails, searchCustomersForTaskAction, getCustomerCrmForTaskAction,
+  archiveTask, unarchiveTask, archiveAllDoneTasks,
   toggleTaskChecklistItem, addChecklistItem, deleteChecklistItem,
   type TaskItem, type TaskPriority, type TaskStatus, type TaskNote, type TaskAttachment, type TaskChecklistItem,
 } from "@/actions/tasks";
 import { getUsers } from "@/actions/users";
 import { getDepartments, type DepartmentItem } from "@/actions/departments";
+import {
+  extractTaskMetaFromNotesJson,
+  upsertTaskMetaInNotes,
+  doesUserBelongToDepartment,
+  DEPARTMENT_ISSUE_PRESETS,
+  FOLLOWUP_QUICK_REPLIES,
+  type TaskMetadata,
+  type IssueCategoryPreset,
+} from "@/lib/task-meta";
+import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
+import { customerStore, type Customer } from "@/lib/store";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -750,7 +764,7 @@ function NotesPanel({
   // Sort chronological ascending: oldest at top, latest at bottom (like standard chat)
   const userNotes = useMemo(() => {
     return notes
-      .filter((n) => n.type !== "activity")
+      .filter((n) => n.type !== "activity" && n.type !== "meta")
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   }, [notes]);
 
@@ -976,6 +990,28 @@ function NotesPanel({
         </div>
       )}
 
+      {/* Quick Follow-Up Templates */}
+      {!compact && (
+        <div className="mb-1.5 flex items-center gap-1 overflow-x-auto pb-1 shrink-0 scrollbar-hide">
+          <span className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider shrink-0 mr-0.5">
+            Quick:
+          </span>
+          {FOLLOWUP_QUICK_REPLIES.map((tpl) => (
+            <button
+              key={tpl}
+              type="button"
+              onClick={() => {
+                setText((prev) => (prev.trim() ? `${prev.trim()} — ${tpl}` : tpl));
+                setTimeout(() => textareaRef.current?.focus(), 10);
+              }}
+              className="text-[10px] font-semibold bg-slate-100 hover:bg-indigo-50 text-slate-600 hover:text-indigo-700 border border-slate-200 hover:border-indigo-200 px-2 py-0.5 rounded-full whitespace-nowrap transition-colors cursor-pointer shrink-0"
+            >
+              + {tpl}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Input box (Available in both tabs for convenience) with Drag & Drop & Paste */}
       <div
         onDragOver={(e) => {
@@ -1161,10 +1197,12 @@ function TaskCard({
   const priority = PRIORITY_CONFIG[task.priority] ?? PRIORITY_CONFIG.medium;
   const overdue = task.dueDate && isPast(new Date(task.dueDate)) && task.status !== "done";
 
+  const taskMeta = useMemo(() => extractTaskMetaFromNotesJson(task.notesJson), [task.notesJson]);
+
   const noteCount = useMemo(() => {
     try {
       const parsed: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-      return parsed.filter((n) => n.type !== "activity").length;
+      return parsed.filter((n) => n.type !== "activity" && n.type !== "meta").length;
     } catch {
       return 0;
     }
@@ -1173,7 +1211,7 @@ function TaskCard({
   const latestNote = useMemo(() => {
     try {
       const parsed: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-      const userNotes = parsed.filter((n) => n.type !== "activity");
+      const userNotes = parsed.filter((n) => n.type !== "activity" && n.type !== "meta");
       if (userNotes.length === 0) return null;
       const sorted = [...userNotes].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       return sorted[0] || null;
@@ -1488,8 +1526,30 @@ function TaskCard({
         </div>
       )}
 
-      {/* Assignees, Due Date & Linked Job Pills */}
+      {/* Department, Category, CRM Customer, Assignees, Due Date & Linked Job Pills */}
       <div className="flex flex-wrap items-center gap-1.5 mb-2">
+        {taskMeta.departmentLabel && (
+          <span className="inline-flex items-center gap-1 text-[10px] bg-sky-50 text-sky-700 border border-sky-200/80 px-1.5 py-0.5 rounded-md font-bold">
+            <Building2 size={9} /> {taskMeta.departmentLabel}
+          </span>
+        )}
+        {taskMeta.issueCategory && (
+          <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md border font-bold ${
+            taskMeta.taskType === "complaint"
+              ? "bg-rose-50 text-rose-700 border-rose-200"
+              : taskMeta.taskType === "feedback"
+              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+              : "bg-amber-50 text-amber-800 border-amber-200"
+          }`}>
+            <Tag size={9} /> {taskMeta.issueCategory}
+          </span>
+        )}
+        {taskMeta.customerName && (
+          <span className="inline-flex items-center gap-1 text-[10px] bg-purple-50 text-purple-700 border border-purple-200/80 px-1.5 py-0.5 rounded-md font-bold max-w-[160px]" title={`CRM Customer: ${taskMeta.customerName}${taskMeta.customerPhone ? ` (${taskMeta.customerPhone})` : ""}`}>
+            <User size={9} className="shrink-0" />
+            <span className="truncate">{taskMeta.customerName}</span>
+          </span>
+        )}
         {task.jobId && (
           <span className="inline-flex items-center gap-1 text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200/80 px-1.5 py-0.5 rounded-md font-mono font-bold">
             <Hash size={9} /> {task.jobId}
@@ -1651,6 +1711,7 @@ export function TaskFormModal({
   onUnarchive,
   initialTask,
   adminUsers,
+  departments = [],
   currentUser,
   onUpdateTask,
   onPreviewImage,
@@ -1662,6 +1723,7 @@ export function TaskFormModal({
   onUnarchive?: (id: string) => Promise<void>;
   initialTask?: TaskItem | null;
   adminUsers: AdminUser[];
+  departments?: DepartmentItem[];
   currentUser?: any;
   onUpdateTask: (task: TaskItem) => void;
   onPreviewImage: (url: string) => void;
@@ -1680,6 +1742,21 @@ export function TaskFormModal({
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [assigneeDropdownOpen, setAssigneeDropdownOpen] = useState(false);
 
+  // Department & Issue Category + Customer CRM States
+  const [selectedDepartment, setSelectedDepartment] = useState<string>("");
+  const [taskType, setTaskType] = useState<string>("general");
+  const [issueCategory, setIssueCategory] = useState<string>("");
+  const [affectedItem, setAffectedItem] = useState<string>("");
+  const [contactChannel, setContactChannel] = useState<string>("WHATSAPP");
+  const [linkedCustomer, setLinkedCustomer] = useState<any>(null);
+  const [customerTasksHistory, setCustomerTasksHistory] = useState<TaskItem[]>([]);
+  const [crmSearchQuery, setCrmSearchQuery] = useState("");
+  const [crmSearchResults, setCrmSearchResults] = useState<any[]>([]);
+  const [isSearchingCrm, setIsSearchingCrm] = useState(false);
+  const [loadingCustomerCrm, setLoadingCustomerCrm] = useState(false);
+  const [crmProfileModalOpen, setCrmProfileModalOpen] = useState(false);
+  const [quickStatusSaving, setQuickStatusSaving] = useState(false);
+
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadingJob, setLoadingJob] = useState(false);
@@ -1690,12 +1767,36 @@ export function TaskFormModal({
   const assigneeInputRef = useRef<HTMLInputElement>(null);
   const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Build normalized department list (from DB departments or fallback DEPARTMENT_CONFIG)
+  const effectiveDepartments = useMemo(() => {
+    if (departments && departments.length > 0) {
+      return departments.map((d) => ({
+        key: d.key,
+        name: d.name,
+        nameTh: d.nameTh || "",
+        icon: d.icon || "🏢",
+      }));
+    }
+    return Object.values(DEPARTMENT_CONFIG).map((d) => ({
+      key: d.key,
+      name: d.label,
+      nameTh: d.labelTh,
+      icon: d.icon,
+    }));
+  }, [departments]);
+
+  const getDepartmentLabelByKey = (deptKey: string) => {
+    if (!deptKey) return null;
+    const found = effectiveDepartments.find((d) => d.key === deptKey);
+    return found ? found.name : (DEPARTMENT_CONFIG[deptKey]?.label || deptKey);
+  };
+
   // Auto-resize description textarea based on content
   useEffect(() => {
     if (descriptionTextareaRef.current) {
       descriptionTextareaRef.current.style.height = "auto";
       const scrollH = descriptionTextareaRef.current.scrollHeight;
-      descriptionTextareaRef.current.style.height = `${Math.max(54, scrollH)}px`;
+      descriptionTextareaRef.current.style.height = `${Math.max(64, Math.min(220, scrollH))}px`;
     }
   }, [description, open]);
 
@@ -1733,18 +1834,89 @@ export function TaskFormModal({
     return isCreator || isAdmin || isAssignee;
   }, [initialTask, currentUserId, currentUserRole]);
 
-  const groupedUsers = useMemo(() => {
-    const active = adminUsers.filter((u) => u.isActive !== false && u.role !== "rider");
-    const byRole: Record<string, Record<string, AdminUser[]>> = {};
-    active.forEach((u) => {
-      const role = u.role || "staff";
-      const branch = u.area || "General";
-      if (!byRole[role]) byRole[role] = {};
-      if (!byRole[role][branch]) byRole[role][branch] = [];
-      byRole[role][branch].push(u);
-    });
-    return byRole;
-  }, [adminUsers]);
+  // Helper: Select department & automatically assign ALL active employees in that department
+  const handleSelectDepartment = (deptKey: string) => {
+    if (!canEditTaskDetails && initialTask) return;
+    if (selectedDepartment === deptKey) {
+      setSelectedDepartment("");
+      return;
+    }
+    setSelectedDepartment(deptKey);
+
+    // Infer matching taskType if not explicitly in complaint/feedback mode
+    if (taskType !== "complaint" && taskType !== "feedback") {
+      if (deptKey.includes("accounting") || deptKey === "cso") {
+        setTaskType("accounting");
+      } else if (deptKey === "branch_ops") {
+        setTaskType("operations");
+      } else if (deptKey === "logistics") {
+        setTaskType("logistics");
+      } else {
+        setTaskType("general");
+      }
+    }
+
+    // Automatically assign all active staff belonging to this department
+    const nonRiders = adminUsers.filter(
+      (u) => u.isActive !== false && u.role !== "rider" && doesUserBelongToDepartment(u, deptKey)
+    );
+    const deptStaff =
+      nonRiders.length > 0
+        ? nonRiders
+        : adminUsers.filter((u) => u.isActive !== false && doesUserBelongToDepartment(u, deptKey));
+
+    if (deptStaff.length > 0) {
+      setSelectedAssignees(deptStaff);
+      const deptLabel = getDepartmentLabelByKey(deptKey);
+      toast.success(`Assigned all ${deptStaff.length} staff in ${deptLabel}`);
+    } else {
+      toast.info(`No active employees found in ${getDepartmentLabelByKey(deptKey)}`);
+    }
+  };
+
+  // Issue Category Presets for current department / complaint mode
+  const availableIssuePresets: IssueCategoryPreset[] = useMemo(() => {
+    if (taskType === "complaint" || taskType === "feedback") {
+      return DEPARTMENT_ISSUE_PRESETS.complaint_crm;
+    }
+    if (selectedDepartment && DEPARTMENT_ISSUE_PRESETS[selectedDepartment]) {
+      return DEPARTMENT_ISSUE_PRESETS[selectedDepartment];
+    }
+    if (selectedDepartment.includes("accounting")) {
+      return DEPARTMENT_ISSUE_PRESETS.accounting_cso;
+    }
+    return [
+      ...DEPARTMENT_ISSUE_PRESETS.accounting_cso.slice(0, 2),
+      ...DEPARTMENT_ISSUE_PRESETS.complaint_crm.slice(0, 2),
+      ...DEPARTMENT_ISSUE_PRESETS.branch_ops.slice(0, 1),
+    ];
+  }, [selectedDepartment, taskType]);
+
+  const handleApplyIssuePreset = (preset: IssueCategoryPreset) => {
+    if (!canEditTaskDetails && initialTask) return;
+    setIssueCategory(preset.label);
+    setTaskType(preset.taskType);
+
+    if (!title.trim()) {
+      setTitle(`${preset.label}${linkedCustomer?.name ? ` - ${linkedCustomer.name}` : ""}`);
+    }
+    if (!initialTask && preset.defaultPriority) {
+      setPriority(preset.defaultPriority);
+      setDueDate(getAutoDueDateString(preset.defaultPriority));
+    }
+    if (!initialTask && checklist.length === 0 && preset.checklist && preset.checklist.length > 0) {
+      setChecklist(
+        preset.checklist.map((text, idx) => ({
+          id: `chk_${Date.now()}_${idx}`,
+          text,
+          completed: false,
+        }))
+      );
+    }
+    if (preset.taskType === "accounting" && !selectedDepartment) {
+      handleSelectDepartment("accounting_cso");
+    }
+  };
 
   const prevTaskIdRef = useRef<string | null>(null);
   const originalTaskRef = useRef<TaskItem | null>(null);
@@ -1767,11 +1939,26 @@ export function TaskFormModal({
     });
   };
 
+  const buildCurrentMetaPayload = (): TaskMetadata => ({
+    department: selectedDepartment || null,
+    departmentLabel: getDepartmentLabelByKey(selectedDepartment),
+    taskType: taskType || "general",
+    issueCategory: issueCategory.trim() || null,
+    affectedItem: affectedItem.trim() || null,
+    customerId: linkedCustomer?.id || null,
+    customerName: linkedCustomer?.name || linkedJob?.customerName || null,
+    customerPhone: linkedCustomer?.phone || linkedJob?.customerPhone || null,
+    customerMemberId: linkedCustomer?.memberId || null,
+    billNo: linkedJob?.billNo && linkedJob.billNo !== "--" && linkedJob.billNo !== "-" ? linkedJob.billNo : null,
+    channel: contactChannel || null,
+  });
+
   const buildNormalizedTaskSnapshot = (task: TaskItem) => {
     const initPriority = (task.priority as TaskPriority) ?? "medium";
     const parsedAssignees = parseAssigneesFromTask(task);
     const finalAssigneeId = parsedAssignees.length > 0 ? parsedAssignees.map((a) => a.id).join(",") : "";
     const finalAssigneeName = parsedAssignees.length > 0 ? parsedAssignees.map((a) => a.name).join(", ") : "";
+    const meta = extractTaskMetaFromNotesJson(task.notesJson);
     let parsedAtts: TaskAttachment[] = [];
     let parsedCheck: TaskChecklistItem[] = [];
     try {
@@ -1783,7 +1970,7 @@ export function TaskFormModal({
 
     return {
       title: (task.title ?? "").trim(),
-      description: (task.description ?? "").trim().slice(0, 100),
+      description: (task.description ?? "").trim().slice(0, 2000),
       priority: initPriority,
       status: (task.status as TaskStatus) ?? "todo",
       jobId: (task.jobId ?? "").trim(),
@@ -1794,12 +1981,26 @@ export function TaskFormModal({
         : getAutoDueDateString(initPriority),
       attachments: parsedAtts,
       checklist: parsedCheck,
+      meta: {
+        department: meta.department || null,
+        departmentLabel: meta.departmentLabel || null,
+        taskType: meta.taskType || "general",
+        issueCategory: meta.issueCategory || null,
+        affectedItem: meta.affectedItem || null,
+        customerId: meta.customerId || null,
+        customerName: meta.customerName || null,
+        customerPhone: meta.customerPhone || null,
+        customerMemberId: meta.customerMemberId || null,
+        billNo: meta.billNo || null,
+        channel: meta.channel || "WHATSAPP",
+      },
     };
   };
 
   const applyTaskToForm = (task: TaskItem, fieldsToUpdate?: Set<string>) => {
     const shouldSet = (field: string) => !fieldsToUpdate || fieldsToUpdate.has(field);
     const initPriority = (task.priority as TaskPriority) ?? "medium";
+    const meta = extractTaskMetaFromNotesJson(task.notesJson);
 
     if (shouldSet("title")) setTitle(task.title ?? "");
     if (shouldSet("description")) setDescription(task.description ?? "");
@@ -1830,6 +2031,28 @@ export function TaskFormModal({
         setChecklist([]);
       }
     }
+    if (shouldSet("meta")) {
+      setSelectedDepartment(meta.department || "");
+      setTaskType(meta.taskType || "general");
+      setIssueCategory(meta.issueCategory || "");
+      setAffectedItem(meta.affectedItem || "");
+      setContactChannel(meta.channel || "WHATSAPP");
+      if (meta.customerId) {
+        setLoadingCustomerCrm(true);
+        getCustomerCrmForTaskAction(meta.customerId)
+          .then((res) => {
+            if (res.success && res.customer) {
+              setLinkedCustomer(res.customer);
+              setCustomerTasksHistory(res.customerTasks || []);
+            }
+          })
+          .catch(() => {})
+          .finally(() => setLoadingCustomerCrm(false));
+      } else {
+        setLinkedCustomer(null);
+        setCustomerTasksHistory([]);
+      }
+    }
   };
 
   useEffect(() => {
@@ -1854,9 +2077,18 @@ export function TaskFormModal({
           setDueDate(getAutoDueDateString(initPriority));
           setAttachments([]);
           setChecklist([]);
+          setSelectedDepartment("");
+          setTaskType("general");
+          setIssueCategory("");
+          setAffectedItem("");
+          setContactChannel("WHATSAPP");
+          setLinkedCustomer(null);
+          setCustomerTasksHistory([]);
         }
         setAssigneeSearch("");
         setAssigneeDropdownOpen(false);
+        setCrmSearchQuery("");
+        setCrmSearchResults([]);
         lastFetchedJobIdRef.current = null;
         setLinkedJob(null);
         setNewChecklistText("");
@@ -1867,6 +2099,10 @@ export function TaskFormModal({
       originalTaskRef.current = null;
       lastFetchedJobIdRef.current = null;
       setLinkedJob(null);
+      setLinkedCustomer(null);
+      setCustomerTasksHistory([]);
+      setCrmSearchQuery("");
+      setCrmSearchResults([]);
       setJobId("");
       setSelectedAssignees([]);
       setAssigneeSearch("");
@@ -1874,9 +2110,12 @@ export function TaskFormModal({
     }
   }, [open, initialTask?.id, adminUsers]);
 
-  // Synchronize checklist and attachments in real-time when updated remotely
+  // Synchronize checklist, attachments, and status in real-time when updated remotely
   useEffect(() => {
     if (open && initialTask) {
+      if (initialTask.status) {
+        setStatus((initialTask.status as TaskStatus) || "todo");
+      }
       if (initialTask.checklistJson !== undefined) {
         try {
           const remoteChecklist = initialTask.checklistJson ? JSON.parse(initialTask.checklistJson) : [];
@@ -1907,7 +2146,7 @@ export function TaskFormModal({
         } catch {}
       }
     }
-  }, [open, initialTask?.checklistJson, initialTask?.attachmentsJson]);
+  }, [open, initialTask?.checklistJson, initialTask?.attachmentsJson, initialTask?.status]);
 
   // Click outside to close assignee auto-complete dropdown
   useEffect(() => {
@@ -1924,7 +2163,9 @@ export function TaskFormModal({
 
   const filteredUsers = useMemo(() => {
     const q = assigneeSearch.trim().toLowerCase();
-    const active = adminUsers.filter((u) => u.isActive !== false && u.role !== "rider");
+    const active = adminUsers.filter(
+      (u) => u.isActive !== false && (u.role !== "rider" || selectedDepartment === "logistics")
+    );
     if (!q) return active;
     return active.filter((u) => {
       const nameMatch = u.name.toLowerCase().includes(q);
@@ -1932,32 +2173,115 @@ export function TaskFormModal({
       const areaMatch = (u.area || "").toLowerCase().includes(q);
       return nameMatch || roleMatch || areaMatch;
     });
-  }, [adminUsers, assigneeSearch]);
+  }, [adminUsers, assigneeSearch, selectedDepartment]);
 
-  // Auto-fetch linked job details and photos
+  // Auto-fetch linked job details, photos, AND Customer CRM profile/tasks when Order No. / Job ID is entered
   useEffect(() => {
     const cleanJobId = jobId ? jobId.trim() : "";
     if (open && cleanJobId.length >= 4) {
       if (lastFetchedJobIdRef.current === cleanJobId && linkedJob) {
         return; // Already loaded this exact job
       }
-      setLoadingJob(true);
-      lastFetchedJobIdRef.current = cleanJobId;
-      getLinkedJobDetails(cleanJobId)
-        .then((res) => {
-          if (res.success && res.data) {
-            setLinkedJob(res.data);
-          } else {
-            setLinkedJob(null);
-          }
-        })
-        .catch(() => setLinkedJob(null))
-        .finally(() => setLoadingJob(false));
+      const timer = setTimeout(() => {
+        setLoadingJob(true);
+        lastFetchedJobIdRef.current = cleanJobId;
+        getLinkedJobDetails(cleanJobId, initialTask?.id)
+          .then((res: any) => {
+            if (res.success && res.data) {
+              setLinkedJob(res.data);
+              if (res.customer) {
+                setLinkedCustomer(res.customer);
+                setCustomerTasksHistory(res.customerTasks || []);
+              }
+              if (res.syncedTask && initialTask?.id) {
+                originalTaskRef.current = { ...res.syncedTask };
+                onUpdateTask(res.syncedTask);
+              }
+            } else {
+              setLinkedJob(null);
+            }
+          })
+          .catch(() => setLinkedJob(null))
+          .finally(() => setLoadingJob(false));
+      }, 280);
+      return () => clearTimeout(timer);
     } else {
       lastFetchedJobIdRef.current = null;
       setLinkedJob(null);
     }
   }, [open, jobId]);
+
+  // Debounced Customer CRM direct search
+  useEffect(() => {
+    const q = crmSearchQuery.trim();
+    if (!open || q.length < 2) {
+      setCrmSearchResults([]);
+      return;
+    }
+    let cancelled = false;
+    setIsSearchingCrm(true);
+    const timer = setTimeout(() => {
+      searchCustomersForTaskAction(q)
+        .then((res) => {
+          if (!cancelled && res.success) {
+            setCrmSearchResults(res.data || []);
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) setIsSearchingCrm(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [open, crmSearchQuery]);
+
+  const handleSelectCrmCustomer = async (custSummary: any) => {
+    setCrmSearchQuery("");
+    setCrmSearchResults([]);
+    setLoadingCustomerCrm(true);
+    try {
+      const res: any = await getCustomerCrmForTaskAction(custSummary.id, initialTask?.id);
+      if (res.success && res.customer) {
+        setLinkedCustomer(res.customer);
+        setCustomerTasksHistory(res.customerTasks || []);
+        if (res.syncedTask && initialTask?.id) {
+          originalTaskRef.current = { ...res.syncedTask };
+          onUpdateTask(res.syncedTask);
+        }
+      } else {
+        setLinkedCustomer(custSummary);
+      }
+    } catch {
+      setLinkedCustomer(custSummary);
+    } finally {
+      setLoadingCustomerCrm(false);
+    }
+  };
+
+  const handleQuickStatusUpdate = async (nextStatus: TaskStatus) => {
+    if (!initialTask) return;
+    setQuickStatusSaving(true);
+    setStatus(nextStatus);
+    try {
+      const res = await updateTask(
+        initialTask.id,
+        { status: nextStatus },
+        { id: currentUserId, name: currentUserName, role: currentUserRole }
+      );
+      if (res.success && res.data) {
+        originalTaskRef.current = { ...res.data };
+        onUpdateTask(res.data);
+        toast.success(`Status updated to ${STATUS_CONFIG[nextStatus]?.label || nextStatus}`);
+      } else {
+        toast.error(res.error || "Failed to update status");
+      }
+    } finally {
+      setQuickStatusSaving(false);
+    }
+  };
 
   const jobPhotos: JobPhoto[] = useMemo(() => {
     return extractJobImages(linkedJob);
@@ -2086,18 +2410,20 @@ export function TaskFormModal({
     try {
       const finalAssigneeId = selectedAssignees.length > 0 ? selectedAssignees.map((a) => a.id).join(",") : "";
       const finalAssigneeName = selectedAssignees.length > 0 ? selectedAssignees.map((a) => a.name).join(", ") : "";
+      const metaPayload = buildCurrentMetaPayload();
 
       const fullPayload: Record<string, any> = {
         title: title.trim(),
-        description: description.trim().slice(0, 100),
+        description: description.trim().slice(0, 2000),
         priority,
         status,
-        jobId: jobId.trim(),
+        jobId: linkedJob?.id || jobId.trim(),
         assignedToId: finalAssigneeId,
         assignedToName: finalAssigneeName,
         dueDate,
         attachments,
         checklist,
+        meta: metaPayload,
       };
 
       const baseTask = originalTaskRef.current || initialTask || null;
@@ -2106,9 +2432,9 @@ export function TaskFormModal({
         const dirtyPayload: Record<string, any> = {};
         const dirtyKeys: string[] = [];
 
-        for (const key of ["title", "description", "priority", "status", "jobId", "assignedToId", "dueDate", "attachments", "checklist"] as const) {
+        for (const key of ["title", "description", "priority", "status", "jobId", "assignedToId", "dueDate", "attachments", "checklist", "meta"] as const) {
           const isEqual =
-            key === "attachments" || key === "checklist"
+            key === "attachments" || key === "checklist" || key === "meta"
               ? JSON.stringify(fullPayload[key]) === JSON.stringify(baseline[key])
               : (fullPayload[key] || "") === (baseline[key] || "");
           if (!isEqual) {
@@ -2135,7 +2461,7 @@ export function TaskFormModal({
           const conflictSet = new Set<string>(res.conflictFields || []);
           const dirtySet = new Set<string>(dirtyKeys);
           const fieldsToRefresh = new Set<string>();
-          for (const key of ["title", "description", "priority", "status", "jobId", "assignedToId", "dueDate", "attachments", "checklist"]) {
+          for (const key of ["title", "description", "priority", "status", "jobId", "assignedToId", "dueDate", "attachments", "checklist", "meta"]) {
             if (!dirtySet.has(key) || conflictSet.has(key) || (key === "assignedToId" && conflictSet.has("assignedTo"))) {
               fieldsToRefresh.add(key);
             }
@@ -2151,7 +2477,69 @@ export function TaskFormModal({
     }
   };
 
+  const resolvedCrmModalCustomer = useMemo(() => {
+    if (!linkedCustomer) return null;
+    const match = customerStore.getSnapshot().find((c) => c.id === linkedCustomer.id);
+    return match || (linkedCustomer as Customer);
+  }, [linkedCustomer, crmProfileModalOpen]);
+
+  const effectiveCustomerTasksHistory = useMemo(() => {
+    const list = [...customerTasksHistory];
+    if (initialTask && linkedCustomer) {
+      const currentMeta = buildCurrentMetaPayload();
+      const liveCurrentTask: TaskItem = {
+        ...initialTask,
+        title: title.trim() || initialTask.title,
+        description: description.trim() || initialTask.description,
+        priority,
+        status,
+        jobId: (linkedJob?.id || jobId || initialTask.jobId || "").replace(/^#+/, "") || null,
+        assignedToId:
+          selectedAssignees.length > 0
+            ? selectedAssignees.map((a) => a.id).join(",")
+            : initialTask.assignedToId,
+        assignedToName:
+          selectedAssignees.length > 0
+            ? selectedAssignees.map((a) => a.name).join(", ")
+            : initialTask.assignedToName,
+        attachmentsJson:
+          attachments.length > 0 ? JSON.stringify(attachments) : initialTask.attachmentsJson,
+        notesJson: JSON.stringify(
+          upsertTaskMetaInNotes(
+            initialTask.notesJson ? JSON.parse(initialTask.notesJson) : [],
+            currentMeta
+          )
+        ),
+      };
+      const existingIdx = list.findIndex((t) => t.id === initialTask.id);
+      if (existingIdx >= 0) {
+        list[existingIdx] = liveCurrentTask;
+      } else {
+        list.unshift(liveCurrentTask);
+      }
+    }
+    return list;
+  }, [
+    customerTasksHistory,
+    initialTask,
+    linkedCustomer,
+    title,
+    description,
+    priority,
+    status,
+    linkedJob,
+    jobId,
+    selectedAssignees,
+    attachments,
+    selectedDepartment,
+    issueCategory,
+    affectedItem,
+    contactChannel,
+    taskType,
+  ]);
+
   return (
+    <>
     <Dialog 
       open={open} 
       onOpenChange={(newOpen, eventDetails) => {
@@ -2165,26 +2553,36 @@ export function TaskFormModal({
       <DialogContent className={`max-h-[94vh] sm:max-h-[90vh] flex flex-col p-3.5 sm:p-6 overflow-hidden ${
         initialTask
           ? "h-[92vh] sm:h-[88vh] sm:max-w-6xl max-w-[96vw] lg:max-w-7xl"
-          : "h-[90vh] sm:h-[680px] sm:max-w-3xl lg:max-w-4xl max-w-[96vw]"
+          : "h-[92vh] sm:h-[82vh] sm:max-w-4xl lg:max-w-5xl max-w-[96vw]"
       }`}>
         {/* Header */}
         <DialogHeader className="shrink-0 pb-2.5 sm:pb-3 border-b border-slate-100">
-          <div className="flex items-center justify-between pr-6">
-            <div className="flex items-center gap-2.5">
+          <div className="flex items-center justify-between pr-6 gap-2 flex-wrap">
+            <div className="flex items-center gap-2.5 min-w-0">
               <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold shrink-0">
                 <ClipboardCheck size={17} />
               </div>
               <div className="min-w-0">
                 <DialogTitle className="text-sm sm:text-base font-bold text-slate-900 flex flex-wrap items-center gap-1.5 sm:gap-2">
-                  <span>{initialTask ? `Edit Task #${initialTask.id.startsWith("20") ? initialTask.id : initialTask.id.slice(-6).toUpperCase()}` : "Create New Task"}</span>
+                  <span>{initialTask ? `Edit & Follow Up #${initialTask.id.startsWith("20") ? initialTask.id : initialTask.id.slice(-6).toUpperCase()}` : "Create New Task"}</span>
                   {initialTask && (
                     <span className={`text-[9px] sm:text-[10px] uppercase font-bold px-1.5 sm:px-2 py-0.5 rounded border ${PRIORITY_CONFIG[initialTask.priority]?.color}`}>
                       {PRIORITY_CONFIG[initialTask.priority]?.icon} {PRIORITY_CONFIG[initialTask.priority]?.label}
                     </span>
                   )}
+                  {selectedDepartment && (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200 flex items-center gap-1">
+                      <Building2 size={10} /> {getDepartmentLabelByKey(selectedDepartment)}
+                    </span>
+                  )}
+                  {issueCategory && (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1">
+                      <Tag size={10} /> {issueCategory}
+                    </span>
+                  )}
                 </DialogTitle>
-                <p className="text-[11px] sm:text-xs text-slate-500 mt-0.5 truncate max-w-[280px] sm:max-w-none">
-                  {initialTask ? `Created by ${initialTask.createdByName} on ${format(new Date(initialTask.createdAt), "d MMM yyyy HH:mm")}` : "Assign tasks, checklist sub-tasks and track team workflow."}
+                <p className="text-[11px] sm:text-xs text-slate-500 mt-0.5 truncate max-w-[320px] sm:max-w-none">
+                  {initialTask ? `Created by ${initialTask.createdByName} on ${format(new Date(initialTask.createdAt), "d MMM yyyy HH:mm")}` : "Assign department teams, link orders & Customer CRM, and track issue follow-up."}
                 </p>
               </div>
             </div>
@@ -2194,6 +2592,50 @@ export function TaskFormModal({
               </span>
             )}
           </div>
+
+          {/* Quick Follow-Up Status Bar (Existing Tasks) */}
+          {initialTask && (
+            <div className="mt-2.5 pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1">
+                  Quick Follow-Up Status:
+                </span>
+                {(
+                  [
+                    { key: "todo", label: "To Do", activeClass: "bg-slate-800 text-white border-slate-800" },
+                    { key: "in_progress", label: "In Progress", activeClass: "bg-blue-600 text-white border-blue-600" },
+                    { key: "stuck", label: "Stuck", activeClass: "bg-amber-600 text-white border-amber-600" },
+                    { key: "done", label: "Done / Resolved", activeClass: "bg-emerald-600 text-white border-emerald-600" },
+                  ] as const
+                ).map((s) => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    disabled={quickStatusSaving}
+                    onClick={() => handleQuickStatusUpdate(s.key)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
+                      status === s.key
+                        ? `${s.activeClass} shadow-xs`
+                        : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+              {linkedCustomer && (
+                <button
+                  type="button"
+                  onClick={() => setCrmProfileModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                >
+                  <User size={12} />
+                  <span>CRM: {linkedCustomer.name}</span>
+                  <ExternalLink size={11} />
+                </button>
+              )}
+            </div>
+          )}
         </DialogHeader>
 
         {/* 📱 Mobile Section Switcher (< lg) */}
@@ -2206,7 +2648,7 @@ export function TaskFormModal({
             }`}
           >
             <FileText size={12} className={mobileTab === "info" ? "text-indigo-600" : "text-slate-400"} />
-            <span>Info & Job</span>
+            <span>Info & CRM</span>
           </button>
 
           <button
@@ -2238,11 +2680,115 @@ export function TaskFormModal({
         <div className={`grid grid-cols-1 gap-5 flex-1 min-h-0 py-2 overflow-y-auto lg:overflow-hidden ${
           initialTask ? "lg:grid-cols-12" : "lg:grid-cols-2"
         }`}>
-          {/* ─── COLUMN 1: Basic Info & Linked Job ─── */}
+          {/* ─── COLUMN 1: Department, Issue Description, Order Lookup & Customer CRM ─── */}
           <div className={`${
             initialTask ? "lg:col-span-4" : "lg:col-span-1"
           } flex flex-col min-h-0 overflow-y-auto overflow-x-hidden pr-1 space-y-3.5 ${mobileTab === "info" ? "flex" : "hidden lg:flex"}`}>
             <form id="task-form" onSubmit={handleSubmit} className="space-y-3">
+              {/* Department Selector & Customer Complaint Mode (Auto-Assigns All Staff in Selected Department) */}
+              <div className="bg-slate-50/90 border border-slate-200/90 rounded-xl p-2.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-[11px] font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                    <Building2 size={12} className="text-indigo-600" />
+                    Department & Issue Type
+                  </Label>
+                  <button
+                    type="button"
+                    disabled={!canEditTaskDetails}
+                    onClick={() => {
+                      const nextIsComplaint = taskType !== "complaint" && taskType !== "feedback";
+                      setTaskType(nextIsComplaint ? "complaint" : (selectedDepartment.includes("accounting") ? "accounting" : "general"));
+                    }}
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-all cursor-pointer flex items-center gap-1 ${
+                      taskType === "complaint" || taskType === "feedback"
+                        ? "bg-rose-600 text-white border-rose-600 shadow-2xs"
+                        : "bg-white text-rose-700 border-rose-200 hover:bg-rose-50"
+                    }`}
+                  >
+                    <Megaphone size={10} />
+                    <span>Customer Complaint / CRM</span>
+                  </button>
+                </div>
+
+                {/* Department Chips */}
+                <div className="flex flex-wrap gap-1.5">
+                  {effectiveDepartments.map((dept) => {
+                    const isSelected = selectedDepartment === dept.key;
+                    const memberCount = adminUsers.filter(
+                      (u) => u.isActive !== false && (u.role !== "rider" || dept.key === "logistics") && doesUserBelongToDepartment(u, dept.key)
+                    ).length;
+
+                    return (
+                      <button
+                        key={dept.key}
+                        type="button"
+                        disabled={!canEditTaskDetails}
+                        onClick={() => handleSelectDepartment(dept.key)}
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
+                          isSelected
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-xs"
+                            : "bg-white text-slate-700 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/40"
+                        } ${!canEditTaskDetails ? "opacity-60 cursor-not-allowed" : ""}`}
+                        title={`Select ${dept.name} (auto-assigns all ${memberCount} employees)`}
+                      >
+                        <span>{dept.icon}</span>
+                        <span>{dept.name}</span>
+                        <span className={`text-[9.5px] px-1 rounded ${isSelected ? "bg-indigo-500 text-white" : "bg-slate-100 text-slate-500"}`}>
+                          {memberCount}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {selectedDepartment && (
+                  <div className="flex items-center justify-between text-[10px] text-emerald-700 bg-emerald-50/90 border border-emerald-200 rounded-lg px-2 py-1 font-semibold">
+                    <span className="flex items-center gap-1">
+                      <CheckCircle2 size={11} className="text-emerald-600 shrink-0" />
+                      All active staff in {getDepartmentLabelByKey(selectedDepartment)} assigned ({selectedAssignees.length} selected)
+                    </span>
+                  </div>
+                )}
+
+                {/* Issue Category Presets */}
+                <div className="space-y-1 pt-1 border-t border-slate-200/70">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      Issue Category Preset (Optional)
+                    </span>
+                    {issueCategory && (
+                      <button
+                        type="button"
+                        onClick={() => setIssueCategory("")}
+                        className="text-[10px] text-slate-400 hover:text-rose-600 cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {availableIssuePresets.map((preset) => {
+                      const active = issueCategory === preset.label;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          disabled={!canEditTaskDetails}
+                          onClick={() => handleApplyIssuePreset(preset)}
+                          className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border transition-all cursor-pointer ${
+                            active
+                              ? "bg-amber-500 text-white border-amber-500 shadow-2xs"
+                              : "bg-white text-slate-600 border-slate-200 hover:border-amber-300 hover:bg-amber-50/50"
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
               {/* Title */}
               <div className="space-y-1">
                 <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
@@ -2252,44 +2798,88 @@ export function TaskFormModal({
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   disabled={!canEditTaskDetails}
-                  placeholder="e.g. Follow up with customer..."
+                  placeholder={
+                    taskType === "complaint" || taskType === "feedback"
+                      ? "e.g. Missing shirt / Stain feedback for Order #..."
+                      : selectedDepartment.includes("accounting")
+                      ? "e.g. Verify transfer slip / Issue Tax Invoice..."
+                      : "e.g. Follow up with customer..."
+                  }
                   className={`h-9 text-sm font-semibold ${!canEditTaskDetails ? "bg-slate-100 text-slate-600 cursor-not-allowed border-slate-200" : ""}`}
                   autoFocus={canEditTaskDetails}
                 />
               </div>
 
-              {/* Description */}
+              {/* Description (Expanded to 2000 chars for full Accounting / Complaint explanation) */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
                   <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-                    Description {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
+                    Issue Description & Instructions {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
                   </Label>
-                  <span className={`text-[10px] font-semibold tabular-nums ${description.length >= 100 ? "text-amber-600 font-bold" : "text-slate-400"}`}>
-                    {description.length}/100
+                  <span className={`text-[10px] font-semibold tabular-nums ${description.length >= 1900 ? "text-amber-600 font-bold" : "text-slate-400"}`}>
+                    {description.length}/2000
                   </span>
                 </div>
                 <textarea
                   ref={descriptionTextareaRef}
                   value={description}
                   onChange={(e) => {
-                    setDescription(e.target.value.slice(0, 100));
+                    setDescription(e.target.value.slice(0, 2000));
                     if (descriptionTextareaRef.current) {
                       descriptionTextareaRef.current.style.height = "auto";
                       const scrollH = descriptionTextareaRef.current.scrollHeight;
-                      descriptionTextareaRef.current.style.height = `${Math.max(54, scrollH)}px`;
+                      descriptionTextareaRef.current.style.height = `${Math.max(64, Math.min(220, scrollH))}px`;
                     }
                   }}
-                  maxLength={100}
+                  maxLength={2000}
                   disabled={!canEditTaskDetails}
-                  placeholder="Additional task description or instructions... (Max 100 characters)"
-                  rows={2}
-                  className={`w-full text-xs border rounded-lg px-3 py-2 resize-none overflow-hidden transition-[border-color,box-shadow] ${
+                  placeholder={
+                    availableIssuePresets.find((p) => p.label === issueCategory)?.descriptionHint ||
+                    "Describe the issue, accounting details, customer complaint, or exact instructions..."
+                  }
+                  rows={3}
+                  className={`w-full text-xs border rounded-lg px-3 py-2 resize-y transition-[border-color,box-shadow] ${
                     !canEditTaskDetails
                       ? "bg-slate-100 text-slate-600 cursor-not-allowed border-slate-200"
                       : "border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300"
                   }`}
                 />
               </div>
+
+              {/* Optional Affected Item & Contact Channel when Complaint / Feedback / Customer linked */}
+              {(taskType === "complaint" || taskType === "feedback" || linkedCustomer || affectedItem) && (
+                <div className="grid grid-cols-2 gap-2.5 bg-rose-50/40 border border-rose-200/70 rounded-xl p-2.5">
+                  <div className="space-y-1">
+                    <Label className="text-[10px] font-bold uppercase tracking-wider text-rose-800">
+                      Affected Garment / Item
+                    </Label>
+                    <Input
+                      value={affectedItem}
+                      onChange={(e) => setAffectedItem(e.target.value)}
+                      disabled={!canEditTaskDetails}
+                      placeholder="e.g. White Linen Shirt x1"
+                      className="h-8 text-xs bg-white border-rose-200/80"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px] font-bold uppercase tracking-wider text-rose-800">
+                      Customer Channel
+                    </Label>
+                    <select
+                      value={contactChannel}
+                      onChange={(e) => setContactChannel(e.target.value)}
+                      disabled={!canEditTaskDetails}
+                      className="w-full h-8 text-xs font-semibold border border-rose-200/80 rounded-lg px-2 bg-white text-slate-800"
+                    >
+                      <option value="WHATSAPP">💬 WhatsApp</option>
+                      <option value="LINE">🟢 LINE OA</option>
+                      <option value="PHONE">📞 Phone Call</option>
+                      <option value="WALK_IN">🏪 Walk-In / Branch</option>
+                      <option value="EMAIL">✉️ Email</option>
+                    </select>
+                  </div>
+                </div>
+              )}
 
               {/* Priority & Status */}
               <div className="grid grid-cols-2 gap-2.5">
@@ -2343,8 +2933,8 @@ export function TaskFormModal({
                     Assign To {!canEditAssignees && <Lock size={10} className="text-amber-500" />}
                   </Label>
                   {selectedAssignees.length > 0 && (
-                    <span className="text-[10px] text-slate-400 font-medium">
-                      {selectedAssignees.length} staff selected
+                    <span className="text-[10px] text-indigo-600 font-bold">
+                      {selectedAssignees.length} staff assigned
                     </span>
                   )}
                 </div>
@@ -2541,7 +3131,7 @@ export function TaskFormModal({
                 )}
               </div>
 
-              {/* Due Date & Linked Job ID */}
+              {/* Due Date & Order No. / Linked Job ID */}
               <div className="grid grid-cols-2 gap-2.5">
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
@@ -2570,92 +3160,300 @@ export function TaskFormModal({
 
                 <div className="space-y-1">
                   <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-                    <Hash size={11} className="text-indigo-600" /> Linked Job ID {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
+                    <Hash size={11} className="text-indigo-600" /> Order No. / Job ID {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
                   </Label>
                   <Input
                     value={jobId}
                     onChange={(e) => setJobId(e.target.value)}
                     disabled={!canEditTaskDetails}
-                    placeholder="e.g. 2026002684"
+                    placeholder="e.g. 2026002684 or Bill#"
                     className={`h-8.5 text-xs font-mono ${!canEditTaskDetails ? "bg-slate-100 text-slate-600 cursor-not-allowed border-slate-200" : ""}`}
                   />
                 </div>
               </div>
 
-                {/* 📸 Linked Job Live Card / Loading State */}
-                {loadingJob && (
-                  <div className="flex items-center gap-2 p-2.5 bg-indigo-50/60 border border-indigo-150 rounded-xl text-xs text-indigo-700 font-medium">
-                    <Loader2 size={13} className="animate-spin text-indigo-600 shrink-0" />
-                    <span>Loading details for linked Job #{jobId}...</span>
+              {/* 📸 Linked Order Live Card / Loading State */}
+              {loadingJob && (
+                <div className="flex items-center gap-2 p-2.5 bg-indigo-50/60 border border-indigo-200/80 rounded-xl text-xs text-indigo-700 font-medium">
+                  <Loader2 size={13} className="animate-spin text-indigo-600 shrink-0" />
+                  <span>Looking up Order #{jobId} & Customer CRM...</span>
+                </div>
+              )}
+
+              {Boolean(jobId && jobId.trim().length >= 4 && !loadingJob && linkedJob) && (
+                <div className="bg-indigo-50/60 border border-indigo-200/80 rounded-xl p-2.5 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-950 truncate">
+                      <ShoppingBag size={13} className="text-indigo-600 shrink-0" />
+                      <span className="font-mono text-indigo-700">#{linkedJob.id}</span>
+                      {linkedJob.billNo && linkedJob.billNo !== "--" && linkedJob.billNo !== "-" && (
+                        <span className="text-[10px] bg-white border border-indigo-200 px-1.5 py-0.2 rounded text-indigo-700 font-mono">
+                          Bill: {linkedJob.billNo}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[9px] bg-white border border-indigo-200 text-indigo-700 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider shrink-0">
+                      {linkedJob.status}{linkedJob.subStatus ? ` · ${linkedJob.subStatus}` : ""}
+                    </span>
+                  </div>
+
+                  <div className="text-[11px] text-slate-700 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <span className="font-bold text-slate-900">{linkedJob.customerName || "Customer"}</span>
+                    {linkedJob.customerPhone && <span>📞 {linkedJob.customerPhone}</span>}
+                    {linkedJob.serviceType && <span>· 🧺 {linkedJob.serviceType}</span>}
+                    {linkedJob.totalAmount !== null && linkedJob.totalAmount !== undefined && (
+                      <span className="font-bold text-emerald-700">
+                        · ฿{Number(linkedJob.totalAmount).toLocaleString()} ({linkedJob.isPaid ? "Paid" : "Unpaid"})
+                      </span>
+                    )}
+                  </div>
+
+                  {Array.isArray(linkedJob.items) && linkedJob.items.length > 0 && (
+                    <div className="text-[10px] text-slate-600 bg-white/80 rounded-lg px-2 py-1 border border-indigo-100 truncate">
+                      Items: {linkedJob.items.map((it: any) => `${it.name || it.serviceName} ×${it.quantity || 1}`).join(", ")}
+                    </div>
+                  )}
+
+                  {/* Photos from the Linked Job */}
+                  {jobPhotos.length > 0 ? (
+                    <div className="space-y-1.5 pt-2 border-t border-indigo-100/80">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-indigo-900 uppercase tracking-wider flex items-center gap-1">
+                          <ImageIcon size={11} className="text-indigo-600" />
+                          Order Photos ({jobPhotos.length})
+                        </span>
+                        <span className="text-[10px] text-indigo-600 font-medium">Click to zoom</span>
+                      </div>
+
+                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-44 overflow-y-auto p-1.5 bg-white/95 rounded-xl border border-indigo-100/90 shadow-2xs">
+                        {jobPhotos.map((photo, idx) => (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => onPreviewImage(photo.url)}
+                            className="group relative flex flex-col rounded-xl overflow-hidden border border-slate-200 hover:border-indigo-400 bg-slate-100 transition-all cursor-pointer shadow-2xs hover:shadow-md aspect-square"
+                            title={`Preview: ${photo.label}`}
+                          >
+                            <img
+                              src={photo.url}
+                              alt={photo.label}
+                              className="w-full h-full object-cover group-hover:scale-108 transition-transform duration-200"
+                            />
+                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center">
+                              <ZoomIn size={18} className="text-white opacity-0 group-hover:opacity-100 drop-shadow-md transition-opacity" />
+                            </div>
+                            {photo.label && (
+                              <span className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent text-[9px] text-white font-medium px-1.5 py-0.5 truncate text-left">
+                                {photo.label}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-slate-400 italic pt-1 border-t border-indigo-100/80">
+                      No photos attached in this Order
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* 👤 Customer CRM Integration Section (Search OR Auto-Loaded from Order No.) */}
+              <div className="bg-purple-50/50 border border-purple-200/80 rounded-xl p-2.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-[10.5px] font-black uppercase tracking-wider text-purple-900 flex items-center gap-1.5">
+                    <Users size={12} className="text-purple-600" />
+                    Customer CRM Profile & History
+                  </Label>
+                  {linkedCustomer && canEditTaskDetails && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLinkedCustomer(null);
+                        setCustomerTasksHistory([]);
+                      }}
+                      className="text-[10px] text-slate-400 hover:text-rose-600 font-semibold cursor-pointer"
+                    >
+                      Unlink Customer
+                    </button>
+                  )}
+                </div>
+
+                {/* Direct CRM Customer Search (always available to search/switch customer) */}
+                {!linkedCustomer && canEditTaskDetails && (
+                  <div className="relative">
+                    <div className="relative">
+                      <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                      <Input
+                        value={crmSearchQuery}
+                        onChange={(e) => setCrmSearchQuery(e.target.value)}
+                        placeholder="Search CRM customer by name, phone, or Member ID..."
+                        className="h-8 pl-7 text-xs bg-white border-purple-200/80"
+                      />
+                      {isSearchingCrm && (
+                        <Loader2 size={12} className="animate-spin text-purple-600 absolute right-2.5 top-1/2 -translate-y-1/2" />
+                      )}
+                    </div>
+                    {crmSearchResults.length > 0 && (
+                      <div className="mt-1 bg-white border border-purple-200 rounded-lg shadow-lg max-h-40 overflow-y-auto divide-y divide-slate-100">
+                        {crmSearchResults.map((c) => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            onClick={() => handleSelectCrmCustomer(c)}
+                            className="w-full text-left px-2.5 py-1.5 hover:bg-purple-50 transition-colors flex items-center justify-between gap-2 text-xs cursor-pointer"
+                          >
+                            <div className="min-w-0">
+                              <span className="font-bold text-slate-900 truncate block">{c.name}</span>
+                              <span className="text-[10px] text-slate-500">
+                                {c.phone} {c.memberId ? `· #${c.memberId}` : ""}
+                              </span>
+                            </div>
+                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded shrink-0">
+                              ฿{Number(c.creditBalance || 0).toLocaleString()}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
-                {Boolean(jobId && jobId.trim().length >= 4 && !loadingJob && linkedJob) && (
-                  <div className="bg-indigo-50/60 border border-indigo-150 rounded-xl p-2.5 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-950 truncate">
-                        <span className="font-mono text-indigo-700">#{linkedJob.id}</span>
-                        <span className="text-indigo-800 truncate">· {linkedJob.customerName || "Customer"}</span>
+                {loadingCustomerCrm && (
+                  <div className="flex items-center gap-2 text-xs text-purple-700 py-1">
+                    <Loader2 size={12} className="animate-spin" />
+                    <span>Loading Customer CRM record...</span>
+                  </div>
+                )}
+
+                {linkedCustomer && !loadingCustomerCrm && (
+                  <div className="bg-white border border-purple-200/80 rounded-lg p-2.5 space-y-2 shadow-2xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-black text-xs text-slate-900 truncate">
+                            {linkedCustomer.name}
+                          </span>
+                          {linkedCustomer.isMember && (
+                            <span className="text-[9px] font-black bg-indigo-50 text-indigo-700 border border-indigo-200 px-1.5 py-0.2 rounded">
+                              MEMBER {linkedCustomer.memberId ? `#${linkedCustomer.memberId}` : ""}
+                            </span>
+                          )}
+                          {linkedCustomer.isVIP && (
+                            <span className="text-[9px] font-black bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.2 rounded">
+                              VIP
+                            </span>
+                          )}
+                          {linkedCustomer.isCorporate && (
+                            <span className="text-[9px] font-black bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0.2 rounded">
+                              CORP
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10.5px] text-slate-500 flex flex-wrap items-center gap-x-2 mt-0.5">
+                          <span>📞 {linkedCustomer.phone || "-"}</span>
+                          {linkedCustomer.lineId && <span>· LINE: {linkedCustomer.lineId}</span>}
+                        </div>
                       </div>
-                      <span className="text-[9px] bg-white border border-indigo-200 text-indigo-700 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider shrink-0">
-                        {linkedJob.status}
-                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => setCrmProfileModalOpen(true)}
+                        className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold bg-purple-600 hover:bg-purple-700 text-white px-2 py-1 rounded-lg transition-colors cursor-pointer"
+                      >
+                        <span>Open Full CRM</span>
+                        <ExternalLink size={10} />
+                      </button>
                     </div>
 
-                    {linkedJob.customerPhone && (
-                      <div className="text-[11px] text-slate-600 flex flex-wrap items-center gap-1.5">
-                        <span>📞 {linkedJob.customerPhone}</span>
-                        {linkedJob.serviceType && <span>· 🧺 {linkedJob.serviceType}</span>}
-                        {linkedJob.totalAmount !== null && linkedJob.totalAmount !== undefined && (
-                          <span className="font-semibold text-slate-800">· ฿{Number(linkedJob.totalAmount).toLocaleString()}</span>
-                        )}
+                    {/* CRM Metrics Strip */}
+                    <div className="grid grid-cols-3 gap-1.5 text-center bg-slate-50 rounded-lg p-1.5 border border-slate-100">
+                      <div>
+                        <span className="text-[9px] text-slate-400 font-bold uppercase block">Wallet</span>
+                        <span className={`text-[11px] font-black ${Number(linkedCustomer.creditBalance || 0) < 0 ? "text-rose-600" : "text-emerald-700"}`}>
+                          ฿{Number(linkedCustomer.creditBalance || 0).toLocaleString()}
+                        </span>
                       </div>
-                    )}
+                      <div>
+                        <span className="text-[9px] text-slate-400 font-bold uppercase block">Orders</span>
+                        <span className="text-[11px] font-black text-slate-800">
+                          {linkedCustomer.ordersCount ?? 0}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[9px] text-slate-400 font-bold uppercase block">CRM Tasks</span>
+                        <span className="text-[11px] font-black text-purple-700">
+                          {effectiveCustomerTasksHistory.length}
+                        </span>
+                      </div>
+                    </div>
 
-                    {/* Photos from the Linked Job */}
-                    {jobPhotos.length > 0 ? (
-                      <div className="space-y-1.5 pt-2 border-t border-indigo-100/80">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-indigo-900 uppercase tracking-wider flex items-center gap-1">
-                            <ImageIcon size={11} className="text-indigo-600" />
-                            Job Photos ({jobPhotos.length})
-                          </span>
-                          <span className="text-[10px] text-indigo-600 font-medium">Click to zoom</span>
-                        </div>
-
-                        <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-56 overflow-y-auto p-2 bg-white/95 rounded-xl border border-indigo-100/90 shadow-2xs">
-                          {jobPhotos.map((photo, idx) => (
+                    {/* Recent Orders Quick-Pick */}
+                    {Array.isArray(linkedCustomer.recentJobs) && linkedCustomer.recentJobs.length > 0 && canEditTaskDetails && (
+                      <div className="space-y-1">
+                        <span className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider block">
+                          Recent Orders (Click to link):
+                        </span>
+                        <div className="flex flex-wrap gap-1 max-h-16 overflow-y-auto">
+                          {linkedCustomer.recentJobs.slice(0, 6).map((rj: any) => (
                             <button
-                              key={idx}
+                              key={rj.id}
                               type="button"
-                              onClick={() => onPreviewImage(photo.url)}
-                              className="group relative flex flex-col rounded-xl overflow-hidden border border-slate-200 hover:border-indigo-400 bg-slate-100 transition-all cursor-pointer shadow-2xs hover:shadow-md aspect-square"
-                              title={`Preview: ${photo.label}`}
+                              onClick={() => setJobId(rj.id)}
+                              className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border cursor-pointer transition-colors ${
+                                jobId.replace(/^#+/, "") === rj.id || linkedJob?.id === rj.id
+                                  ? "bg-indigo-600 text-white border-indigo-600"
+                                  : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50"
+                              }`}
                             >
-                              <img
-                                src={photo.url}
-                                alt={photo.label}
-                                className="w-full h-full object-cover group-hover:scale-108 transition-transform duration-200"
-                              />
-                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center">
-                                <ZoomIn size={18} className="text-white opacity-0 group-hover:opacity-100 drop-shadow-md transition-opacity" />
-                              </div>
-                              {photo.label && (
-                                <span className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent text-[9px] text-white font-medium px-1.5 py-0.5 truncate text-left">
-                                  {photo.label}
-                                </span>
-                              )}
+                              #{rj.id} {rj.totalAmount ? `(฿${Number(rj.totalAmount).toLocaleString()})` : ""}
                             </button>
                           ))}
                         </div>
                       </div>
-                    ) : (
-                      <p className="text-[10px] text-slate-400 italic pt-1 border-t border-indigo-100/80">
-                        No photos attached in this Job
-                      </p>
+                    )}
+
+                    {/* Previous CRM Tasks / Complaints History */}
+                    {effectiveCustomerTasksHistory.length > 0 && (
+                      <div className="space-y-1 pt-1.5 border-t border-slate-100">
+                        <span className="text-[9.5px] font-bold text-purple-800 uppercase tracking-wider block">
+                          Recorded CRM History ({effectiveCustomerTasksHistory.length})
+                        </span>
+                        <div className="space-y-1 max-h-28 overflow-y-auto pr-0.5">
+                          {effectiveCustomerTasksHistory
+                            .slice(0, 6)
+                            .map((ht) => (
+                              <div key={ht.id} className="text-[10px] bg-slate-50 border border-slate-100 rounded px-2 py-1 flex items-center justify-between gap-2">
+                                <span className="truncate font-semibold text-slate-700 flex items-center gap-1">
+                                  <span>#{ht.id} {ht.title}</span>
+                                  {ht.id === initialTask?.id && (
+                                    <span className="text-[8.5px] font-black uppercase bg-purple-100 text-purple-700 px-1 py-0.2 rounded">
+                                      Current
+                                    </span>
+                                  )}
+                                </span>
+                                <span className={`px-1.5 py-0.2 rounded font-bold uppercase text-[9px] shrink-0 ${
+                                  ht.status === "done"
+                                    ? "bg-emerald-100 text-emerald-700"
+                                    : ht.status === "stuck"
+                                    ? "bg-amber-100 text-amber-800"
+                                    : "bg-slate-200 text-slate-700"
+                                }`}>
+                                  {ht.status}
+                                </span>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}
+
+                <p className="text-[10px] text-purple-800/80 font-medium">
+                  ✓ All tasks, complaints, and feedbacks linked to an order or customer are automatically recorded in Customer CRM.
+                </p>
+              </div>
             </form>
           </div>
 
@@ -2939,6 +3737,17 @@ export function TaskFormModal({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    {crmProfileModalOpen && resolvedCrmModalCustomer && (
+      <AdminCustomerProfileModal
+        open={crmProfileModalOpen}
+        onOpenChange={setCrmProfileModalOpen}
+        customer={resolvedCrmModalCustomer}
+        initialTab="tickets"
+        initialTasks={effectiveCustomerTasksHistory}
+      />
+    )}
+    </>
   );
 }
 
@@ -4020,7 +4829,7 @@ export function TaskUserDashboard({
       try {
         const parsed: TaskNote[] = t.notesJson ? JSON.parse(t.notesJson) : [];
         parsed
-          .filter((n) => n.type !== "activity")
+          .filter((n) => n.type !== "activity" && n.type !== "meta")
           .forEach((n) => {
             const isMentioned = n.text && n.text.toLowerCase().includes(`@${currentUserName.toLowerCase()}`);
             const isMyTask = t.assignedToId?.includes(currentUserId) || t.createdById === currentUserId;
@@ -4547,6 +5356,7 @@ export function AdminTasks() {
   const requestIdRef = useRef(0);
   const [viewMode, setViewMode] = useState<"board" | "list" | "dashboard">("board");
   const [filterStatus, setFilterStatus] = useState<"all" | "mine" | "open" | "overdue" | "due_today" | "archived">("all");
+  const [filterCategory, setFilterCategory] = useState<"all" | "accounting" | "complaint">("all");
   const [filterDepartment, setFilterDepartment] = useState<string>(() => {
     if (user?.isDepartmentHead && user?.department) {
       return user.department;
@@ -4778,8 +5588,28 @@ export function AdminTasks() {
         }
       }
 
-      // 2. Department filter (only filter if adminUsers list is loaded to prevent false negatives)
+      const meta = extractTaskMetaFromNotesJson(t.notesJson);
+
+      // 2. Category quick filter
+      if (filterCategory === "accounting") {
+        const isAcct =
+          meta.taskType === "accounting" ||
+          (meta.department || "").includes("accounting") ||
+          t.title.includes("ใบกำกับภาษี") ||
+          t.title.toLowerCase().includes("petty cash") ||
+          t.title.toLowerCase().includes("wallet");
+        if (!isAcct) return false;
+      } else if (filterCategory === "complaint") {
+        const isComplaint =
+          meta.taskType === "complaint" ||
+          meta.taskType === "feedback" ||
+          Boolean(meta.customerId);
+        if (!isComplaint) return false;
+      }
+
+      // 3. Department filter (check explicit metadata department first, then assignees/creator)
       if (filterDepartment !== "all" && adminUsers.length > 0) {
+        const matchesExplicitDept = meta.department ? meta.department === filterDepartment : false;
         const assigneeIds = t.assignedToId ? t.assignedToId.split(",").map((s) => s.trim()) : [];
         const assignedUsers = adminUsers.filter((u) => assigneeIds.includes(u.id));
         const hasMatchingAssignee = assignedUsers.some((u) => (u.department || 'branch_ops') === filterDepartment);
@@ -4787,10 +5617,10 @@ export function AdminTasks() {
         const creatorUser = adminUsers.find((u) => u.id === t.createdById);
         const isMatchingCreator = creatorUser ? (creatorUser.department || 'branch_ops') === filterDepartment : false;
 
-        if (!hasMatchingAssignee && !isMatchingCreator) return false;
+        if (!matchesExplicitDept && !hasMatchingAssignee && !isMatchingCreator) return false;
       }
 
-      // 3. Super Search multi-term matching (searches ID, title, description, job, staff, notes, checklist, attachments)
+      // 4. Super Search multi-term matching (searches ID, title, description, job, customer CRM, dept, staff, notes, checklist, attachments)
       if (terms.length === 0) return true;
 
       const checklistTexts = (() => {
@@ -4803,7 +5633,7 @@ export function AdminTasks() {
       const notesTexts = (() => {
         try {
           const notes: TaskNote[] = t.notesJson ? JSON.parse(t.notesJson) : [];
-          return notes.map((n) => `${n.text} ${n.userName || ""}`).join(" ");
+          return notes.filter((n) => n.type !== "meta").map((n) => `${n.text} ${n.userName || ""}`).join(" ");
         } catch { return ""; }
       })();
 
@@ -4829,6 +5659,12 @@ export function AdminTasks() {
         t.priority,
         statusLabel,
         t.status,
+        meta.departmentLabel || "",
+        meta.issueCategory || "",
+        meta.customerName || "",
+        meta.customerPhone || "",
+        meta.billNo || "",
+        meta.affectedItem || "",
         checklistTexts,
         notesTexts,
         attachmentNames,
@@ -4836,7 +5672,7 @@ export function AdminTasks() {
 
       return terms.every((term) => searchableBlob.includes(term));
     });
-  }, [tasks, archivedTasks, filterStatus, filterDepartment, adminUsers, user?.id, searchQuery]);
+  }, [tasks, archivedTasks, filterStatus, filterCategory, filterDepartment, adminUsers, user?.id, searchQuery]);
 
   const pendingCount = tasks.filter((t) => !t.isArchived && t.status !== "done").length;
   const doneUnarchivedCount = tasks.filter((t) => !t.isArchived && t.status === "done").length;
@@ -5189,16 +6025,48 @@ export function AdminTasks() {
             </button>
           </div>
 
-          {/* Right Controls: Super Search + Department Filter */}
-          <div className="flex items-center gap-2 flex-1 sm:flex-initial justify-end min-w-[240px]">
-            <div className="relative flex-1 sm:w-72">
+          {/* Right Controls: Issue Type Filter + Super Search + Department Filter */}
+          <div className="flex items-center gap-2 flex-1 sm:flex-initial justify-end flex-wrap min-w-[240px]">
+            <div className="flex items-center gap-1 bg-slate-100/90 rounded-xl p-1 border border-slate-200/60">
+              <button
+                type="button"
+                onClick={() => setFilterCategory("all")}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  filterCategory === "all" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                All Types
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterCategory("accounting")}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                  filterCategory === "accounting" ? "bg-sky-600 text-white shadow-2xs" : "text-sky-700 hover:bg-sky-50"
+                }`}
+              >
+                <Receipt size={11} />
+                <span>Accounting</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterCategory("complaint")}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                  filterCategory === "complaint" ? "bg-rose-600 text-white shadow-2xs" : "text-rose-700 hover:bg-rose-50"
+                }`}
+              >
+                <Megaphone size={11} />
+                <span>CRM Complaints</span>
+              </button>
+            </div>
+
+            <div className="relative flex-1 sm:w-64">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={14} />
               <Input
                 ref={searchInputRef}
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Super Search (ID, Job#, Note, Name...)"
+                placeholder="Search ID, Order#, Customer CRM, Note..."
                 className="h-9 pl-8 pr-7 text-xs bg-slate-50 hover:bg-white focus:bg-white border-slate-200 focus-visible:ring-indigo-500 transition-all rounded-xl"
               />
               {searchQuery && (
@@ -5497,10 +6365,11 @@ export function AdminTasks() {
                       const priority = PRIORITY_CONFIG[task.priority];
                       const status   = STATUS_CONFIG[task.status];
                       const overdue  = task.dueDate && isPast(new Date(task.dueDate)) && task.status !== "done";
+                      const taskMeta = extractTaskMetaFromNotesJson(task.notesJson);
                       const noteCount = (() => {
                         try {
                           const parsed: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-                          return parsed.filter((n) => n.type !== "activity").length;
+                          return parsed.filter((n) => n.type !== "activity" && n.type !== "meta").length;
                         } catch { return 0; }
                       })();
                       const attachments: TaskAttachment[] = (() => { try { return task.attachmentsJson ? JSON.parse(task.attachmentsJson) : []; } catch { return []; } })();
@@ -5520,11 +6389,21 @@ export function AdminTasks() {
                           >
                             <td className="px-4 py-3 text-xs text-slate-400">{i + 1}</td>
                             <td className="px-4 py-3">
-                              <div className="font-semibold text-slate-800 text-sm flex items-center gap-2">
+                              <div className="font-semibold text-slate-800 text-sm flex items-center gap-1.5 flex-wrap">
                                 <span className="font-mono text-xs font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 shrink-0">
                                   #{task.id.startsWith("20") ? task.id : task.id.slice(-6).toUpperCase()}
                                 </span>
                                 <span className="truncate">{task.title}</span>
+                                {taskMeta.departmentLabel && (
+                                  <span className="text-[10px] font-bold bg-sky-50 text-sky-700 border border-sky-200 px-1.5 py-0.2 rounded shrink-0">
+                                    {taskMeta.departmentLabel}
+                                  </span>
+                                )}
+                                {taskMeta.customerName && (
+                                  <span className="text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 px-1.5 py-0.2 rounded shrink-0">
+                                    👤 {taskMeta.customerName}
+                                  </span>
+                                )}
                                 {task.isArchived && (
                                   <span className="text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded shrink-0">
                                     Archived
@@ -5658,6 +6537,7 @@ export function AdminTasks() {
         onUnarchive={handleUnarchive}
         initialTask={editingTask}
         adminUsers={adminUsers}
+        departments={departments}
         currentUser={user}
         onUpdateTask={handleTaskUpdate}
         onPreviewImage={(url) => setPreviewImage(url)}
