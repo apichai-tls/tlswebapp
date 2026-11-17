@@ -438,10 +438,15 @@ export function isWinterBeddingPromoItem(item: {
 }): boolean {
   if (!item) return false;
   const sid = (item.serviceId || item.id || "").trim().toUpperCase();
-  if (sid === WINTER_BEDDING_PROMO_SERVICE_ID) return true;
+  if (sid === WINTER_BEDDING_PROMO_SERVICE_ID || sid === "LIN-PRO-001") return true;
   const name = (item.name || "").trim().toUpperCase();
   const nameEn = (item.nameEn || "").trim().toUpperCase();
-  return name.includes("WINTER BEDDING SET") || nameEn.includes("WINTER BEDDING SET");
+  return (
+    name.includes("WINTER BEDDING SET") ||
+    nameEn.includes("WINTER BEDDING SET") ||
+    name.includes(WINTER_BEDDING_PROMO_SERVICE_ID) ||
+    nameEn.includes(WINTER_BEDDING_PROMO_SERVICE_ID)
+  );
 }
 
 export function cartHasWinterBeddingPromo(

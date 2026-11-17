@@ -456,6 +456,15 @@ function AdminPageContent() {
   const [onlinePaymentJob, setOnlinePaymentJob] = useState<Job | null>(null);
   const [wisePaymentJob, setWisePaymentJob] = useState<Job | any | null>(null);
   const [isStartingBeamPayment, setIsStartingBeamPayment] = useState(false);
+  const [proformaConfirmModal, setProformaConfirmModal] = useState<{
+    open: boolean;
+    source: "button" | "save_changes";
+    isNewRevision: boolean;
+    proformaNumber: string;
+    targetRevision: number;
+    totalAmount: number;
+    itemCount: number;
+  } | null>(null);
   const [isVersionOutdated, setIsVersionOutdated] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const clientBuildTime = process.env.NEXT_PUBLIC_BUILD_TIME;
@@ -2048,10 +2057,10 @@ function AdminPageContent() {
       // Auto-select "Deduct Member" as payment channel for Member customers
       // But do NOT auto-set isPaid=true — user must confirm by pressing Paid themselves
       setPaymentChannel("Deduct Member");
-    } else if (hasDialogNonPackageItems && !appliedPromo && !paymentChannel) {
+    } else if (hasDialogNonPackageItems && !appliedPromo && !isMemberWalletDisallowedByPromo && !paymentChannel) {
       setPaymentChannel("Deduct Member");
     }
-  }, [forceMemberPaymentDialog, hasDialogNonPackageItems]);
+  }, [forceMemberPaymentDialog, hasDialogNonPackageItems, appliedPromo, isMemberWalletDisallowedByPromo]);
 
 
   useEffect(() => {
@@ -3930,7 +3939,7 @@ function AdminPageContent() {
   };
 
 
-  async function handleCreate(isPayment: boolean = false) {
+  async function handleCreate(isPayment: boolean = false, options?: { confirmProformaOnSave?: boolean }) {
     if (isSubmittingLockRef.current) {
       console.warn("handleCreate blocked: submit is already in progress");
       return;
@@ -4293,6 +4302,34 @@ function AdminPageContent() {
     );
 
     const hasActualItems = Boolean((itemsPayload && itemsPayload.length > 0) || (dialogCart && dialogCart.length > 0));
+
+    // [PROFORMA EDIT GUARD - Option C]:
+    // When an order already has a Proforma INV in the system, and the user modified cart items / fee / discount / total
+    // without pressing the Proforma Receipt button for this new cart state, prompt confirmation before saving!
+    if (
+      !isPayment &&
+      !options?.confirmProformaOnSave &&
+      editingJobId &&
+      !isAlreadyPaidJob &&
+      !isExistingCancelled &&
+      existingProformaNum &&
+      isCartChangedFromLastProforma &&
+      !isProformaCurrentForCart
+    ) {
+      const nextRev = (proformaRevision !== null ? proformaRevision : (isRfJob ? 1 : 0)) + 1;
+      isSubmittingLockRef.current = false;
+      setIsSubmitting(false);
+      setProformaConfirmModal({
+        open: true,
+        source: "save_changes",
+        isNewRevision: true,
+        proformaNumber: existingProformaNum,
+        targetRevision: nextRev,
+        totalAmount: calculatedTotal,
+        itemCount: dialogCart.length,
+      });
+      return;
+    }
 
     let targetProformaNum: string | null = null;
     let effectiveProformaRevision: number | null = null;
@@ -4906,7 +4943,7 @@ function AdminPageContent() {
         );
         const shouldCaptureProforma = Boolean(
           targetProformaNum && 
-          (proformaPressedSinceLastEdit || (isShopPaidNow && hasActualItems) || (isCartChangedFromLastProforma && !isAlreadyPaidJob))
+          (proformaPressedSinceLastEdit || (isShopPaidNow && hasActualItems) || Boolean(options?.confirmProformaOnSave))
         );
         let resolvedFinalProformaNum = "";
         let resolvedFinalRevision = 0;
@@ -5243,6 +5280,15 @@ function AdminPageContent() {
           if (appliedPromo) {
             handleRedeemPromo(appliedPromo.code, targetEditingJobId, calculatedTotal + promoDiscountAmount, promoDiscountAmount);
           }
+        } else if (options?.confirmProformaOnSave && resolvedFinalProformaNum) {
+          setProformaReceiptNumber(resolvedFinalProformaNum);
+          setProformaRevision(resolvedFinalRevision);
+          setLastProformaCartHash(resolvedFinalCartHash);
+          setProformaPressedSinceLastEdit(true);
+          setDraftCreatedAt(new Date());
+          setIsDraftPreview(true);
+          setIsPaymentEvent(false);
+          setShowReceipt(true);
         } else {
           resetDialogForm();
         }
@@ -11412,106 +11458,51 @@ function AdminPageContent() {
                                 if (editingJobId && editingJobId.startsWith("RF-")) {
                                   targetProformaNum = targetProformaNum || (cleanOriginalId ? `PR-${cleanOriginalId}` : generateProformaBaseNumber(editingJobId));
                                 }
-                                let targetRevision = proformaRevision;
                                 const currentEditingJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
-                                let shouldPersistProformaAndCart = false;
+                                const isFirstProforma = !targetProformaNum || targetProformaNum === "DRAFT" || proformaRevision === null;
 
-                                if (!targetProformaNum || targetProformaNum === "DRAFT" || targetRevision === null) {
-                                  if (editingJobId) {
-                                    targetProformaNum = generateProformaBaseNumber(editingJobId);
-                                    targetRevision = editingJobId.startsWith("RF-") ? 1 : 0;
-                                    setProformaReceiptNumber(targetProformaNum);
-                                    setProformaRevision(targetRevision);
-                                    setLastProformaCartHash(cartHash);
-                                    shouldPersistProformaAndCart = true;
-                                  } else {
-                                    targetProformaNum = "DRAFT";
-                                    targetRevision = 0;
-                                    setProformaReceiptNumber("DRAFT");
-                                    setProformaRevision(0);
-                                    setLastProformaCartHash(cartHash);
-                                  }
-                                } else {
-                                  const rawHash = (currentEditingJob as any)?.proformaCartHash;
-                                  const validHash = rawHash && rawHash.includes('"speed":') ? rawHash : null;
-                                  const baseHash = validHash || lastProformaCartHash;
-                                  const isCartChanged = Boolean(baseHash ? (cartHash !== baseHash) : (Math.abs((currentEditingJob?.totalAmount || 0) - dialogTotal) > 0.01));
-                                  if (isCartChanged) {
-                                    targetRevision = (proformaRevision !== null ? proformaRevision : (editingJobId?.startsWith("RF-") ? 1 : 0)) + 1;
-                                    setProformaRevision(targetRevision);
-                                    setLastProformaCartHash(cartHash);
-                                    shouldPersistProformaAndCart = true;
-                                  } else if (editingJobId?.startsWith("RF-") && (targetRevision === null || targetRevision === 0)) {
-                                    targetRevision = 1;
-                                    setProformaRevision(1);
-                                    shouldPersistProformaAndCart = true;
-                                  } else if (
-                                    editingJobId &&
-                                    !isPaidJob &&
-                                    !isCancelledJob &&
-                                    dialogCart.length > 0 &&
-                                    (!currentEditingJob?.items ||
-                                      currentEditingJob.items.length === 0 ||
-                                      computeCartHash({ items: currentEditingJob.items as any }) !== computeCartHash({ items: dialogCart }))
-                                  ) {
-                                    shouldPersistProformaAndCart = true;
-                                  }
-                                }
-
-                                if (editingJobId && shouldPersistProformaAndCart) {
-                                  const proformaSavePayload: Record<string, any> = {
-                                    proformaNumber: targetProformaNum,
-                                    proformaRevision: targetRevision ?? 0,
-                                    proformaCartHash: cartHash,
-                                  };
-                                  if (!isPaidJob && !isCancelledJob && dialogCart.length > 0) {
-                                    const itemsPayload = dialogCart.map((item) => ({
-                                      name: item.name,
-                                      nameEn: item.nameEn || item.name,
-                                      quantity: item.quantity,
-                                      price: item.price,
-                                      basePrice: item.basePrice,
-                                      serviceId: item.id,
-                                      category: item.category,
-                                      unit: item.unit || "pcs",
-                                    }));
-                                    const uniqueCategories = Array.from(
-                                      new Set(dialogCart.map((item) => item.category).filter(Boolean))
-                                    );
-                                    const subtotalVal = dialogCart.reduce(
-                                      (sum, item) => sum + safeCeil((item.price || 0) * (item.quantity || 0)),
-                                      0
-                                    );
-                                    const expressRateVal =
-                                      serviceSpeed === "express_50" ? 0.5 : serviceSpeed === "express_100" ? 1 : 0;
-                                    const surchargeVal = expressRateVal > 0 ? safeCeil(subtotalVal * expressRateVal) : 0;
-                                    const manualDiscountVal = showDialogDiscount
-                                      ? (subtotalVal + surchargeVal) * (dialogDiscountPercent / 100)
-                                      : 0;
-                                    const totalDiscountVal = manualDiscountVal + (appliedPromo ? promoDiscountAmount : 0);
-
-                                    proformaSavePayload.items = itemsPayload;
-                                    proformaSavePayload.totalAmount = dialogTotal;
-                                    proformaSavePayload.fee = fee;
-                                    proformaSavePayload.discount = totalDiscountVal;
-                                    proformaSavePayload.discountPercent = showDialogDiscount ? dialogDiscountPercent : 0;
-                                    proformaSavePayload.serviceType = dialogCart[0]?.id || currentEditingJob?.serviceType || "wash_fold";
-                                    if (uniqueCategories.length > 0) {
-                                      proformaSavePayload.laundryTypes = uniqueCategories;
-                                    }
-                                  }
-
-                                  if (originalJobRef.current && originalJobRef.current.id === editingJobId) {
-                                    Object.assign(originalJobRef.current, proformaSavePayload);
-                                  }
-
-                                  jobStore.updateJobDetails(editingJobId, proformaSavePayload as any).then((confirmed) => {
-                                    if (confirmed?.updatedAt && originalJobRef.current && originalJobRef.current.id === editingJobId) {
-                                      (originalJobRef.current as any).updatedAt = confirmed.updatedAt;
-                                    }
+                                if (isFirstProforma) {
+                                  const previewProformaNum = editingJobId ? generateProformaBaseNumber(editingJobId) : "DRAFT";
+                                  const previewRev = editingJobId?.startsWith("RF-") ? 1 : 0;
+                                  setProformaConfirmModal({
+                                    open: true,
+                                    source: "button",
+                                    isNewRevision: false,
+                                    proformaNumber: previewProformaNum,
+                                    targetRevision: previewRev,
+                                    totalAmount: dialogTotal,
+                                    itemCount: dialogCart.length,
                                   });
+                                  return;
                                 }
 
+                                const rawHash = (currentEditingJob as any)?.proformaCartHash;
+                                const validHash = rawHash && rawHash.includes('"speed":') ? rawHash : null;
+                                const baseHash = validHash || lastProformaCartHash;
+                                const isCartChanged = Boolean(
+                                  !isPaidJob &&
+                                  !isCancelledJob &&
+                                  (baseHash ? (cartHash !== baseHash) : (Math.abs((currentEditingJob?.totalAmount || 0) - dialogTotal) > 0.01))
+                                );
+
+                                if (isCartChanged) {
+                                  const nextRev = (proformaRevision !== null ? proformaRevision : (editingJobId?.startsWith("RF-") ? 1 : 0)) + 1;
+                                  setProformaConfirmModal({
+                                    open: true,
+                                    source: "button",
+                                    isNewRevision: true,
+                                    proformaNumber: targetProformaNum || "DRAFT",
+                                    targetRevision: nextRev,
+                                    totalAmount: dialogTotal,
+                                    itemCount: dialogCart.length,
+                                  });
+                                  return;
+                                }
+
+                                // Already has a Proforma INV and cart has NOT changed -> open directly without asking!
+                                if (editingJobId?.startsWith("RF-") && (proformaRevision === null || proformaRevision === 0)) {
+                                  setProformaRevision(1);
+                                }
                                 setProformaPressedSinceLastEdit(true);
                                 setDraftCreatedAt(new Date());
                                 setIsDraftPreview(true);
@@ -13276,6 +13267,229 @@ function AdminPageContent() {
         />
       )}
 
+      {/* Proforma INV Confirmation & Edit Guard Modal */}
+      <Dialog
+        open={Boolean(proformaConfirmModal?.open)}
+        onOpenChange={(open) => {
+          if (!open) setProformaConfirmModal(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[440px] bg-white border-slate-200 text-slate-900 rounded-2xl p-6 shadow-2xl">
+          <DialogHeader className="space-y-2">
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                proformaConfirmModal?.source === "save_changes"
+                  ? "bg-amber-50 text-amber-600 border border-amber-200"
+                  : "bg-sky-50 text-sky-600 border border-sky-200"
+              }`}>
+                <FileText size={20} />
+              </div>
+              <div>
+                <DialogTitle className="text-base font-bold text-slate-900">
+                  {proformaConfirmModal?.source === "save_changes"
+                    ? (currentLanguage === "en" ? "Items Modified — Issue New Proforma Version?" : "มีการแก้ไขรายการสินค้า — ยืนยันออกใบ Proforma INV เวอร์ชันใหม่?")
+                    : proformaConfirmModal?.isNewRevision
+                      ? (currentLanguage === "en" ? "Confirm New Proforma INV Version?" : "ยืนยันการออกใบ Proforma INV เวอร์ชันใหม่?")
+                      : (currentLanguage === "en" ? "Ready to Issue Proforma INV?" : "พร้อมสำหรับการออกใบ Proforma INV แล้วใช่ไหม?")}
+                </DialogTitle>
+                <DialogDescription className="text-xs text-slate-500 mt-0.5">
+                  {proformaConfirmModal?.source === "save_changes"
+                    ? (currentLanguage === "en"
+                        ? "You modified items or pricing on an order that already has a Proforma INV. Confirming will save changes and generate a new Proforma INV version for review."
+                        : "คุณมีการแก้ไขรายการสินค้าหรือยอดเงินหลังจากที่มีใบ Proforma INV ในระบบแล้ว เมื่อกดยืนยัน ระบบจะบันทึกข้อมูลและสร้างใบ Proforma INV เวอร์ชันใหม่ให้ตรวจสอบทันที")
+                    : proformaConfirmModal?.isNewRevision
+                      ? (currentLanguage === "en"
+                          ? "Items or pricing have changed since the last Proforma INV. This will generate a new revision."
+                          : "มีการเปลี่ยนแปลงรายการสินค้าหรือยอดเงิน ระบบจะออกใบ Proforma INV เวอร์ชันใหม่")
+                      : (currentLanguage === "en"
+                          ? "Please verify all items and amounts before generating the Proforma INV."
+                          : "กรุณาตรวจสอบรายการสินค้าและยอดเงินให้ครบถ้วนก่อนกดยืนยันออกใบรับเงินชั่วคราว (Proforma INV)")}
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          {proformaConfirmModal && (
+            <div className="my-3 rounded-xl bg-slate-50 border border-slate-200/80 p-3.5 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">{currentLanguage === "en" ? "Proforma No." : "เลขที่ใบ Proforma INV"}</span>
+                <span className="font-mono font-bold text-sky-600">
+                  {proformaConfirmModal.proformaNumber}
+                  {proformaConfirmModal.targetRevision > 0 ? `-R${proformaConfirmModal.targetRevision}` : ""}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">{currentLanguage === "en" ? "Laundry Items" : "จำนวนรายการสินค้า"}</span>
+                <span className="font-semibold text-slate-800">
+                  {proformaConfirmModal.itemCount} {currentLanguage === "en" ? "items" : "รายการ"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between pt-1.5 border-t border-slate-200">
+                <span className="text-slate-700 font-semibold">{currentLanguage === "en" ? "Total Amount" : "ยอดรวมสุทธิ"}</span>
+                <span className="text-sm font-black text-emerald-600">
+                  ฿{proformaConfirmModal.totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="bg-transparent border-t-0 p-0 m-0 flex gap-2 sm:justify-end pt-1">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setProformaConfirmModal(null)}
+              className="flex-1 sm:flex-none rounded-xl border-slate-200 bg-white text-slate-700 hover:bg-slate-100 text-xs font-semibold h-9 cursor-pointer"
+            >
+              {currentLanguage === "en" ? "Cancel / Review Again" : "ยกเลิก / กลับไปตรวจสอบ"}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                const modalState = proformaConfirmModal;
+                setProformaConfirmModal(null);
+                if (!modalState) return;
+
+                if (modalState.source === "save_changes") {
+                  handleCreate(false, { confirmProformaOnSave: true });
+                  return;
+                }
+
+                // Confirmed from Proforma Receipt button:
+                const cartHash = computeCartHash({
+                  items: dialogCart,
+                  serviceSpeed,
+                  fee,
+                  discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
+                  promoCode: appliedPromo?.code || promoCodeInput.trim() || null,
+                  promoDiscount: appliedPromo ? promoDiscountAmount : 0,
+                  vatType: dialogVatType,
+                  vatRate: dialogVatRate,
+                });
+
+                const cleanOriginalId = editingJobId ? formatJobDisplayId(editingJobId).replace(/^RF-/i, "") : "";
+                let targetProformaNum = proformaReceiptNumber ? cleanProformaNumber(proformaReceiptNumber) : null;
+                if (editingJobId && editingJobId.startsWith("RF-")) {
+                  targetProformaNum = targetProformaNum || (cleanOriginalId ? `PR-${cleanOriginalId}` : generateProformaBaseNumber(editingJobId));
+                }
+                let targetRevision = proformaRevision;
+                const currentEditingJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+                let shouldPersistProformaAndCart = false;
+
+                if (!targetProformaNum || targetProformaNum === "DRAFT" || targetRevision === null) {
+                  if (editingJobId) {
+                    targetProformaNum = generateProformaBaseNumber(editingJobId);
+                    targetRevision = editingJobId.startsWith("RF-") ? 1 : 0;
+                    setProformaReceiptNumber(targetProformaNum);
+                    setProformaRevision(targetRevision);
+                    setLastProformaCartHash(cartHash);
+                    shouldPersistProformaAndCart = true;
+                  } else {
+                    targetProformaNum = "DRAFT";
+                    targetRevision = 0;
+                    setProformaReceiptNumber("DRAFT");
+                    setProformaRevision(0);
+                    setLastProformaCartHash(cartHash);
+                  }
+                } else {
+                  const rawHash = (currentEditingJob as any)?.proformaCartHash;
+                  const validHash = rawHash && rawHash.includes('"speed":') ? rawHash : null;
+                  const baseHash = validHash || lastProformaCartHash;
+                  const isCartChanged = Boolean(baseHash ? (cartHash !== baseHash) : (Math.abs((currentEditingJob?.totalAmount || 0) - dialogTotal) > 0.01));
+                  if (isCartChanged) {
+                    targetRevision = (proformaRevision !== null ? proformaRevision : (editingJobId?.startsWith("RF-") ? 1 : 0)) + 1;
+                    setProformaRevision(targetRevision);
+                    setLastProformaCartHash(cartHash);
+                    shouldPersistProformaAndCart = true;
+                  } else if (editingJobId?.startsWith("RF-") && (targetRevision === null || targetRevision === 0)) {
+                    targetRevision = 1;
+                    setProformaRevision(1);
+                    shouldPersistProformaAndCart = true;
+                  } else if (
+                    editingJobId &&
+                    !isPaidJob &&
+                    !isCancelledJob &&
+                    dialogCart.length > 0 &&
+                    (!currentEditingJob?.items ||
+                      currentEditingJob.items.length === 0 ||
+                      computeCartHash({ items: currentEditingJob.items as any }) !== computeCartHash({ items: dialogCart }))
+                  ) {
+                    shouldPersistProformaAndCart = true;
+                  }
+                }
+
+                if (editingJobId && shouldPersistProformaAndCart) {
+                  const proformaSavePayload: Record<string, any> = {
+                    proformaNumber: targetProformaNum,
+                    proformaRevision: targetRevision ?? 0,
+                    proformaCartHash: cartHash,
+                  };
+                  if (!isPaidJob && !isCancelledJob && dialogCart.length > 0) {
+                    const itemsPayload = dialogCart.map((item) => ({
+                      name: item.name,
+                      nameEn: item.nameEn || item.name,
+                      quantity: item.quantity,
+                      price: item.price,
+                      basePrice: item.basePrice,
+                      serviceId: item.id,
+                      category: item.category,
+                      unit: item.unit || "pcs",
+                    }));
+                    const uniqueCategories = Array.from(
+                      new Set(dialogCart.map((item) => item.category).filter(Boolean))
+                    );
+                    const subtotalVal = dialogCart.reduce(
+                      (sum, item) => sum + safeCeil((item.price || 0) * (item.quantity || 0)),
+                      0
+                    );
+                    const expressRateVal =
+                      serviceSpeed === "express_50" ? 0.5 : serviceSpeed === "express_100" ? 1 : 0;
+                    const surchargeVal = expressRateVal > 0 ? safeCeil(subtotalVal * expressRateVal) : 0;
+                    const manualDiscountVal = showDialogDiscount
+                      ? (subtotalVal + surchargeVal) * (dialogDiscountPercent / 100)
+                      : 0;
+                    const totalDiscountVal = manualDiscountVal + (appliedPromo ? promoDiscountAmount : 0);
+
+                    proformaSavePayload.items = itemsPayload;
+                    proformaSavePayload.totalAmount = dialogTotal;
+                    proformaSavePayload.fee = fee;
+                    proformaSavePayload.discount = totalDiscountVal;
+                    proformaSavePayload.discountPercent = showDialogDiscount ? dialogDiscountPercent : 0;
+                    proformaSavePayload.serviceType = dialogCart[0]?.id || currentEditingJob?.serviceType || "wash_fold";
+                    if (uniqueCategories.length > 0) {
+                      proformaSavePayload.laundryTypes = uniqueCategories;
+                    }
+                  }
+
+                  if (originalJobRef.current && originalJobRef.current.id === editingJobId) {
+                    Object.assign(originalJobRef.current, proformaSavePayload);
+                  }
+
+                  jobStore.updateJobDetails(editingJobId, proformaSavePayload as any).then((confirmed) => {
+                    if (confirmed?.updatedAt && originalJobRef.current && originalJobRef.current.id === editingJobId) {
+                      (originalJobRef.current as any).updatedAt = confirmed.updatedAt;
+                    }
+                  });
+                }
+
+                setProformaPressedSinceLastEdit(true);
+                setDraftCreatedAt(new Date());
+                setIsDraftPreview(true);
+                setShowReceipt(true);
+              }}
+              className={`flex-1 sm:flex-none rounded-xl text-xs font-bold h-9 cursor-pointer shadow-sm ${
+                proformaConfirmModal?.source === "save_changes"
+                  ? "bg-amber-500 hover:bg-amber-600 text-white"
+                  : "bg-sky-600 hover:bg-sky-700 text-white"
+              }`}
+            >
+              {proformaConfirmModal?.source === "save_changes"
+                ? (currentLanguage === "en" ? "Confirm & Inspect New INV" : "ยืนยันและออกใบ INV เวอร์ชันใหม่")
+                : (currentLanguage === "en" ? "Confirm Issue Proforma INV" : "ยืนยันออกใบ Proforma INV")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {showReceipt && receiptPaperSize === "A5" ? (
         dialogReceiptData && (
           <A5ReceiptDialog
@@ -13285,11 +13499,10 @@ function AdminPageContent() {
             activeShop={activeShop}
             currentLanguage={currentLanguage}
             onCloseComplete={() => {
-              const wasDraft = isDraftPreview;
               lastPaidProformaInfoRef.current = null;
               setIsDraftPreview(false);
               setIsPaymentEvent(false);
-              if (!wasDraft && !dialogOpen) {
+              if (!dialogOpen) {
                 resetDialogStates();
               }
             }}
@@ -13329,11 +13542,10 @@ function AdminPageContent() {
             receiptPaperSize={receiptPaperSize}
             currentLanguage={currentLanguage}
             onCloseComplete={() => {
-              const wasDraft = isDraftPreview;
               lastPaidProformaInfoRef.current = null;
               setIsDraftPreview(false);
               setIsPaymentEvent(false);
-              if (!wasDraft && !dialogOpen) {
+              if (!dialogOpen) {
                 resetDialogStates();
               }
             }}

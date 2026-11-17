@@ -92,8 +92,69 @@ export async function GET(request: NextRequest) {
     }, { status: 500 });
   }
 
+function toRoutesApiWaypoint(value: string) {
+  const parts = value.split(",").map((p) => Number(p.trim()));
+  if (parts.length === 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+    return { location: { latLng: { latitude: parts[0], longitude: parts[1] } } };
+  }
+  return { address: value };
+}
+
   try {
-    const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&avoid=tolls&alternatives=true&mode=two_wheeler&departure_time=now&region=th&key=${apiKey}`;
+    // 1. Primary: Google Routes API v2 (true TWO_WHEELER motorcycle routing + alternatives)
+    try {
+      const v2Res = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline",
+        },
+        body: JSON.stringify({
+          origin: toRoutesApiWaypoint(origin),
+          destination: toRoutesApiWaypoint(destination),
+          travelMode: "TWO_WHEELER",
+          routingPreference: "TRAFFIC_AWARE",
+          computeAlternativeRoutes: true,
+          routeModifiers: { avoidTolls: true },
+          languageCode: "th",
+          regionCode: "TH",
+        }),
+      });
+
+      if (v2Res.ok) {
+        const v2Data = await v2Res.json();
+        if (Array.isArray(v2Data?.routes) && v2Data.routes.length > 0) {
+          let shortestV2Route = v2Data.routes[0];
+          let minV2Dist = typeof shortestV2Route?.distanceMeters === "number" ? shortestV2Route.distanceMeters : Infinity;
+
+          for (let i = 1; i < v2Data.routes.length; i++) {
+            const dist = v2Data.routes[i]?.distanceMeters;
+            if (typeof dist === "number" && dist < minV2Dist) {
+              shortestV2Route = v2Data.routes[i];
+              minV2Dist = dist;
+            }
+          }
+
+          if (minV2Dist !== Infinity && shortestV2Route?.polyline?.encodedPolyline) {
+            const distanceKm = Math.round((minV2Dist / 1000) * 10) / 10;
+            const coordinates = decodePolyline(shortestV2Route.polyline.encodedPolyline);
+            return NextResponse.json({
+              distanceKm,
+              coordinates,
+            });
+          }
+        }
+      } else {
+        const errText = await v2Res.text().catch(() => "");
+        console.warn("Google Routes API v2 unavailable, falling back to legacy Directions API:", v2Res.status, errText.slice(0, 200));
+      }
+    } catch (v2Err) {
+      console.warn("Google Routes API v2 error, falling back to legacy Directions API:", v2Err);
+    }
+
+    // 2. Fallback: Legacy Google Directions API (omit departure_time=now so shorter city-center routes remain in alternatives)
+    const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&avoid=tolls&alternatives=true&mode=two_wheeler&region=th&key=${apiKey}`;
 
     const res = await fetch(url);
     const data = await res.json();

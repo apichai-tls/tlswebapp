@@ -3500,64 +3500,9 @@ async function updateJobActionInternal(id: string, updates: any) {
     }
   }
 
-  // Proforma Smart Auto-Bump Backend Guard:
-  // If items, fee, or total amount is updated on an unpaid job that already has a proforma,
-  // and the caller didn't explicitly pass proformaRevision, auto-increment proformaRevision.
-  // This ensures AutoReceiptWorker will auto-generate an updated Proforma matching the new items/amount.
-  if (
-    existingJob &&
-    !isAlreadyShopSettled &&
-    (existingJob.proformaNumber || (existingJob.billImageUrl && existingJob.billImageUrl.includes("proforma-"))) &&
-    (updates as any).proformaRevision === undefined
-  ) {
-    const oldItems = existingJob.itemsJson || "";
-    const newItems = data.itemsJson !== undefined ? (data.itemsJson || "") : oldItems;
-    let isItemsChanged = false;
-    if (data.itemsJson !== undefined && newItems !== oldItems) {
-      try {
-        const oldArr = oldItems ? JSON.parse(oldItems) : [];
-        const newArr = newItems ? JSON.parse(newItems) : [];
-        isItemsChanged = computeCartHash({ items: oldArr }) !== computeCartHash({ items: newArr });
-      } catch {
-        isItemsChanged = true;
-      }
-    }
-
-    const oldFee = Number(existingJob.fee) || 0;
-    const newFee = data.fee !== undefined ? (Number(data.fee) || 0) : oldFee;
-    const isFeeChanged = data.fee !== undefined && Math.abs(newFee - oldFee) > 0.01;
-
-    const oldTotal = Number(existingJob.totalAmount) || 0;
-    const newTotal = data.totalAmount !== undefined ? (Number(data.totalAmount) || 0) : oldTotal;
-    const isTotalChanged = data.totalAmount !== undefined && Math.abs(newTotal - oldTotal) > 0.01;
-
-    // Guard against duplicate rev0 -> rev1 bump when Proforma button saved proformaCartHash ahead of Save Changes:
-    // If existingJob.proformaCartHash already matches the incoming items & fee (while existingJob.itemsJson in DB was still old/empty),
-    // the current proformaRevision already represents this cart state — do NOT bump revision again!
-    let isAlreadyMatchedByProformaHash = false;
-    const existingCartHashStr = (data as any).proformaCartHash || existingJob.proformaCartHash;
-    if (existingCartHashStr) {
-      try {
-        const parsedHash = JSON.parse(existingCartHashStr);
-        const newArr = newItems ? JSON.parse(newItems) : [];
-        const newItemsOnlyHash = JSON.parse(computeCartHash({ items: newArr })).items;
-        const hashItemsMatch = JSON.stringify(parsedHash.items || []) === JSON.stringify(newItemsOnlyHash || []);
-        const hashFeeMatch = parsedHash.fee === undefined || Math.abs(Number(parsedHash.fee) - newFee) <= 0.01;
-        if (hashItemsMatch && hashFeeMatch) {
-          isAlreadyMatchedByProformaHash = true;
-        }
-      } catch {}
-    }
-
-    if ((isItemsChanged || isFeeChanged || isTotalChanged) && !isAlreadyMatchedByProformaHash) {
-      const nextRev = (existingJob.proformaRevision ?? 0) + 1;
-      (data as any).proformaRevision = nextRev;
-      if (!existingJob.proformaNumber && !(data as any).proformaNumber) {
-        (data as any).proformaNumber = id.startsWith("PR-") ? id : `PR-${id}`;
-      }
-      console.log(`[AutoProforma] Auto-bumped proformaRevision for Job ${id} from Rev ${existingJob.proformaRevision ?? 0} to Rev ${nextRev}`);
-    }
-  }
+  // Note: Proforma Revision bumping on item/price changes is now explicitly confirmed
+  // by the staff in the frontend (via the Proforma Receipt button or Save Changes confirmation modal).
+  // Silent backend auto-bumping when proformaRevision is undefined has been removed.
 
   if (updates.serviceType !== undefined) data.serviceType = updates.serviceType;
   if (updates.laundryTypes !== undefined) {
@@ -11403,7 +11348,10 @@ async function buildRecurringJobPayload(params: {
       items: defaultServiceItems,
       remark: jobRemark,
       source,
-      createdBy: authUser.name || authUser.email || 'System',
+      createdBy:
+        source === 'recurring_automation'
+          ? 'System (Auto-Recurring)'
+          : (authUser.name || authUser.email || 'System'),
       legs: {
         pickupOutbound: { scheduledAt: pickupSlot.start, status: 'pending' },
         pickupInbound: { scheduledAt: pickupSlot.start, status: 'pending' },
@@ -11415,86 +11363,100 @@ async function buildRecurringJobPayload(params: {
   };
 }
 
+let activeRecurringAutomationPromise: Promise<any> | null = null;
+
 export async function runRecurringOrdersAutomationAction() {
-  try {
-    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
-    const res = await getRecurringSchedulesAction();
-    const schedules: any[] = (res.schedules as any[]) || [];
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
 
-    const { bkkNow, dayOfWeek: todayDayOfWeek, todayStr } = getBangkokCurrentDateParts();
+  // Deduplicate concurrent calls from multiple open staff browsers
+  if (activeRecurringAutomationPromise) {
+    return activeRecurringAutomationPromise;
+  }
 
-    const dueSchedules = schedules.filter((s: any) => {
-      if (s.status !== "active") return false;
-      if (s.pausedUntil && new Date(s.pausedUntil) > bkkNow) return false;
-      if (!Array.isArray(s.daysOfWeek) || !s.daysOfWeek.includes(todayDayOfWeek)) return false;
-      if (s.lastGeneratedDate === todayStr) return false; // Already created today!
-      return true;
-    });
+  activeRecurringAutomationPromise = (async () => {
+    try {
+      const res = await getRecurringSchedulesAction();
+      const schedules: any[] = (res.schedules as any[]) || [];
 
-    if (dueSchedules.length === 0) {
-      return { success: true, generatedCount: 0, message: "No recurring orders due for today or all already generated." };
-    }
+      const { bkkNow, dayOfWeek: todayDayOfWeek, todayStr } = getBangkokCurrentDateParts();
 
-    const generatedJobs: any[] = [];
-
-    for (const schedule of dueSchedules) {
-      try {
-        const { pickupDate, payload } = await buildRecurringJobPayload({
-          schedule,
-          authUser,
-          source: 'recurring_automation',
-          clientRequestId: `REC_AUTO_${schedule.id}_${todayStr}`,
-        });
-
-        const createdJob = await addJobAction(payload);
-        if (createdJob && createdJob.id) {
-          schedule.lastGeneratedDate = todayStr;
-          schedule.lastJobId = createdJob.id;
-          schedule.totalJobsCreated = (schedule.totalJobsCreated || 0) + 1;
-          generatedJobs.push({
-            scheduleId: schedule.id,
-            customerName: schedule.customerName,
-            jobId: createdJob.id,
-            pickupDate: pickupDate.toISOString(),
-          });
-        }
-      } catch (jobErr: any) {
-        console.error(`[runRecurringOrdersAutomationAction] Error creating job for schedule ${schedule.id}:`, jobErr);
-      }
-    }
-
-    // Save updated schedule timestamps
-    if (generatedJobs.length > 0) {
-      await prisma.setting.upsert({
-        where: { key: RECURRING_ORDERS_SETTING_KEY },
-        update: { value: JSON.stringify(schedules) },
-        create: { key: RECURRING_ORDERS_SETTING_KEY, value: JSON.stringify(schedules) },
+      const dueSchedules = schedules.filter((s: any) => {
+        if (s.status !== "active") return false;
+        if (s.pausedUntil && new Date(s.pausedUntil) > bkkNow) return false;
+        if (!Array.isArray(s.daysOfWeek) || !s.daysOfWeek.includes(todayDayOfWeek)) return false;
+        if (s.lastGeneratedDate === todayStr) return false; // Already created today!
+        return true;
       });
 
-      try {
-        await prisma.activityLog.create({
-          data: {
-            entityId: "RECURRING_AUTOMATION",
-            entityType: "AUTOMATION",
-            action: "AUTO_GENERATE_RECURRING_ORDERS",
-            details: `Auto-generated ${generatedJobs.length} recurring orders for today (${todayStr})`,
-            userId: authUser.id,
-            userName: authUser.name || authUser.email,
-          },
-        });
-      } catch {}
-    }
+      if (dueSchedules.length === 0) {
+        return { success: true, generatedCount: 0, message: "No recurring orders due for today or all already generated." };
+      }
 
-    return {
-      success: true,
-      generatedCount: generatedJobs.length,
-      generatedJobs,
-      schedules,
-    };
-  } catch (err: any) {
-    console.error("[runRecurringOrdersAutomationAction] Error:", err);
-    return { success: false, error: err?.message || "Failed to execute recurring orders automation" };
-  }
+      const generatedJobs: any[] = [];
+
+      for (const schedule of dueSchedules) {
+        try {
+          const { pickupDate, payload } = await buildRecurringJobPayload({
+            schedule,
+            authUser,
+            source: 'recurring_automation',
+            clientRequestId: `REC_AUTO_${schedule.id}_${todayStr}`,
+          });
+
+          const createdJob = await addJobAction(payload);
+          if (createdJob && createdJob.id) {
+            schedule.lastGeneratedDate = todayStr;
+            schedule.lastJobId = createdJob.id;
+            schedule.totalJobsCreated = (schedule.totalJobsCreated || 0) + 1;
+            generatedJobs.push({
+              scheduleId: schedule.id,
+              customerName: schedule.customerName,
+              jobId: createdJob.id,
+              pickupDate: pickupDate.toISOString(),
+            });
+          }
+        } catch (jobErr: any) {
+          console.error(`[runRecurringOrdersAutomationAction] Error creating job for schedule ${schedule.id}:`, jobErr);
+        }
+      }
+
+      // Save updated schedule timestamps
+      if (generatedJobs.length > 0) {
+        await prisma.setting.upsert({
+          where: { key: RECURRING_ORDERS_SETTING_KEY },
+          update: { value: JSON.stringify(schedules) },
+          create: { key: RECURRING_ORDERS_SETTING_KEY, value: JSON.stringify(schedules) },
+        });
+
+        try {
+          await prisma.activityLog.create({
+            data: {
+              entityId: "RECURRING_AUTOMATION",
+              entityType: "AUTOMATION",
+              action: "AUTO_GENERATE_RECURRING_ORDERS",
+              details: `Auto-generated ${generatedJobs.length} recurring orders for today (${todayStr}) (triggered via background check)`,
+              userId: "SYSTEM_AUTO_RECURRING",
+              userName: "System (Auto-Recurring)",
+            },
+          });
+        } catch {}
+      }
+
+      return {
+        success: true,
+        generatedCount: generatedJobs.length,
+        generatedJobs,
+        schedules,
+      };
+    } catch (err: any) {
+      console.error("[runRecurringOrdersAutomationAction] Error:", err);
+      return { success: false, error: err?.message || "Failed to execute recurring orders automation" };
+    } finally {
+      activeRecurringAutomationPromise = null;
+    }
+  })();
+
+  return activeRecurringAutomationPromise;
 }
 
 export async function triggerRecurringOrderNowAction(scheduleId: string) {

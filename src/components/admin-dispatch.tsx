@@ -30,10 +30,12 @@ import {
   ExternalLink,
   CheckCircle2,
   AlertTriangle,
+  FlaskConical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AdminTaskTracker } from "@/components/admin-task-tracker";
+import { AdminDispatchRouteCompare } from "@/components/admin-dispatch-route-compare";
 import { optimizeRiderRoute, calculateEstimatedDistanceKm, getTaskExpressPriorityTier } from "@/lib/route-optimizer";
 
 import { Calendar, dateFnsLocalizer } from 'react-big-calendar';
@@ -182,8 +184,8 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
   const [selectedRiderIds, setSelectedRiderIds] = useState<Set<string>>(new Set());
   const [showCompleted, setShowCompleted] = useState(false);
 
-  // Default to "calendar" (Schedule Calendar on Left, Rider Route Board on Right)
-  const [dispatchTab, setDispatchTab] = useState<"calendar" | "board">("calendar");
+  // Default to "calendar" (Schedule Calendar on Left, Rider Route Board on Right, plus Route Compare Lab)
+  const [dispatchTab, setDispatchTab] = useState<"calendar" | "board" | "compare">("calendar");
   const [showOfflineRiders, setShowOfflineRiders] = useState(false);
   const [boardSortMode, setBoardSortMode] = useState<"optimized" | "time">("optimized");
   const [boardDateScope, setBoardDateScope] = useState<"today" | "all_active">("today");
@@ -1124,6 +1126,24 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                   {todayTaskCount}
                 </span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => setDispatchTab("compare")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  dispatchTab === "compare"
+                    ? "bg-indigo-600 text-white shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <FlaskConical size={14} className={dispatchTab === "compare" ? "text-amber-300" : "text-indigo-500"} />
+                <span>Route Compare</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                  dispatchTab === "compare" ? "bg-white text-indigo-700" : "bg-indigo-100 text-indigo-700"
+                }`}>
+                  Lab
+                </span>
+              </button>
             </div>
 
             <div className="flex items-center gap-2.5">
@@ -1430,6 +1450,21 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
               className="font-sans flex-1"
             />
           </div>
+        ) : dispatchTab === "compare" ? (
+          /* ===================================================================== */
+          /* TAB 3: ROUTE COMPARE LAB (LEGACY VS SMART BRANCH + TIME ROUTE)        */
+          /* ===================================================================== */
+          <AdminDispatchRouteCompare
+            riderColumns={boardColumnsData.riderColumns}
+            shopLocations={shopLocations}
+            getRiderOriginCoords={getRiderOriginCoords}
+            isTaskReadyForRouteOptimization={isTaskReadyForRouteOptimization}
+            onOpenJobDetail={openJobDetail}
+            boardDateScope={boardDateScope}
+            onChangeBoardDateScope={setBoardDateScope}
+            todayTaskCount={todayTaskCount}
+            allActiveTaskCount={allActiveTaskCount}
+          />
         ) : (
           /* ===================================================================== */
           /* TAB 2: RIDER ROUTE BOARD (KANBAN) WITH STICKY/PINNED HEADERS          */

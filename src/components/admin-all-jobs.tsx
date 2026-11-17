@@ -4982,11 +4982,20 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             {/* Row 6: Riders & Timestamp Footer */}
                             <div className="flex items-center justify-between pt-1.5 border-t border-slate-100/80">
                               <div className="flex gap-1 flex-wrap items-center">
-                                {job.createdBy && (
+                                {(job.source as string) === 'recurring_automation' ||
+                                job.createdBy === 'System (Auto-Recurring)' ||
+                                Boolean(job.remark && job.remark.includes('[Auto-Recurring Order]')) ? (
+                                  <span
+                                    className="text-[9px] font-bold text-amber-800 bg-amber-50/90 px-1.5 py-0.5 rounded-md border border-amber-200/80 flex items-center gap-1 shrink-0"
+                                    title="Automatically created by Recurring Order Schedule (ระบบสร้างให้อัตโนมัติ)"
+                                  >
+                                    <Zap size={9} className="text-amber-600" /> Auto-Recurring
+                                  </span>
+                                ) : job.createdBy ? (
                                   <span className="text-[9px] font-bold text-indigo-700 bg-indigo-50/80 px-1.5 py-0.5 rounded-md border border-indigo-200/70 flex items-center gap-1 shrink-0" title={`Created by ${job.createdBy}`}>
                                     <User size={9} className="text-indigo-500" /> {job.createdBy}
                                   </span>
-                                )}
+                                ) : null}
                                 {job.pickupRiderId && <span className="text-[9px] font-bold text-amber-800 bg-amber-100/80 px-1.5 py-0.5 rounded-md border border-amber-200 flex items-center gap-1" title="Pickup Rider Assigned"><Package size={9} /> {(() => { const r = riders.find(r => r.id === job.pickupRiderId); return r?.nickname || r?.name || job.pickupRiderId; })()}</span>}
                                 {job.deliveryRiderId && <span className="text-[9px] font-bold text-teal-800 bg-teal-100/80 px-1.5 py-0.5 rounded-md border border-teal-200 flex items-center gap-1" title="Delivery Rider Assigned"><Truck size={9} /> {(() => { const r = riders.find(r => r.id === job.deliveryRiderId); return r?.nickname || r?.name || job.deliveryRiderId; })()}</span>}
                                 {status === 'delivery' && isRiderDeliveryJob(job) && !bMeta.isRiderDelivered && !bMeta.hasDeliveryPhoto && (

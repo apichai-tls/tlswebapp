@@ -36,6 +36,8 @@ import {
 import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
 import { AdminCouponTemplateModal } from "@/components/admin-coupon-template-modal";
 import { AdminCampaignModal } from "@/components/admin-campaign-modal";
+import { AdminPromoReportModal } from "@/components/admin-promo-report-modal";
+import { BarChart3 } from "lucide-react";
 import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 
@@ -58,6 +60,7 @@ export function AdminMarketingCoupons() {
   const [issueCouponModalOpen, setIssueCouponModalOpen] = useState(false);
   const [couponTemplateModalOpen, setCouponTemplateModalOpen] = useState(false);
   const [campaignModalOpen, setCampaignModalOpen] = useState(false);
+  const [promoReportOpen, setPromoReportOpen] = useState(false);
   const [copiedCouponId, setCopiedCouponId] = useState<string | null>(null);
   const [couponPage, setCouponPage] = useState(1);
   const couponPageSize = 20;
@@ -292,8 +295,17 @@ export function AdminMarketingCoupons() {
           </select>
         </div>
 
-        {/* Action: + Issue Coupon, Templates & Campaigns Buttons */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Action: + Issue Coupon, Promo Report, Templates & Campaigns Buttons */}
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setPromoReportOpen(true)}
+            className="h-9 px-3.5 border-indigo-200/80 bg-indigo-50/40 hover:bg-indigo-100/60 hover:border-indigo-300 text-indigo-800 dark:text-indigo-300 font-bold text-xs rounded-xl gap-1.5 shadow-2xs cursor-pointer"
+          >
+            <BarChart3 size={14} className="text-indigo-600" />
+            <span>Promo Report (รายงานโปรโมชั่น)</span>
+          </Button>
           {canManageCampaigns && (
             <Button
               type="button"
@@ -633,6 +645,14 @@ export function AdminMarketingCoupons() {
         <AdminCampaignModal
           open={campaignModalOpen}
           onOpenChange={setCampaignModalOpen}
+        />
+      )}
+
+      {/* Promotion Report Modal */}
+      {promoReportOpen && (
+        <AdminPromoReportModal
+          open={promoReportOpen}
+          onOpenChange={setPromoReportOpen}
         />
       )}
 

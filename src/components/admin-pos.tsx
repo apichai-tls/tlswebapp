@@ -1252,6 +1252,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [proformaReceiptNumber, setProformaReceiptNumber] = useState<string>("");
   const [proformaRevision, setProformaRevision] = useState<number | null>(null);
   const [lastProformaCartHash, setLastProformaCartHash] = useState<string>("");
+  const [posProformaConfirmModal, setPosProformaConfirmModal] = useState<{
+    open: boolean;
+    isNewRevision: boolean;
+    proformaNumber: string;
+    targetRevision: number;
+    totalAmount: number;
+    itemCount: number;
+  } | null>(null);
   const capturedReceiptUrlsRef = useRef<string[]>([]);
   const [sessionCapturedReceiptUrls, setSessionCapturedReceiptUrls] = useState<string[]>([]);
   const [deliveryScheduledTime, setDeliveryScheduledTime] = useState<string>(() => getTomorrowDateTimeString());
@@ -2740,7 +2748,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   // Force member payment method (credit) for member customers adding non-package items
   useEffect(() => {
-    if (forceMemberPayment || (hasPosNonPackageItems && !appliedPromo && !posPaymentChannel)) {
+    if (forceMemberPayment || (hasPosNonPackageItems && !appliedPromo && !isMemberWalletDisallowedByPromo && !posPaymentChannel)) {
       const isExpired = isWalletExpired(selectedCustomer);
       const hasSufficient = !isExpired && (selectedCustomer?.creditBalance || 0) >= total;
       if (hasSufficient) {
@@ -2752,7 +2760,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         setPosPaymentChannel("");
       }
     }
-  }, [forceMemberPayment, hasPosNonPackageItems, appliedPromo, posPaymentChannel, total, selectedCustomer?.creditBalance, selectedCustomer?.memberExpiryDate, memberWalletChannelName]);
+  }, [forceMemberPayment, hasPosNonPackageItems, appliedPromo, isMemberWalletDisallowedByPromo, posPaymentChannel, total, selectedCustomer?.creditBalance, selectedCustomer?.memberExpiryDate, memberWalletChannelName]);
 
 
 
@@ -6163,7 +6171,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 variant="outline"
                 disabled={cart.length === 0 || isProcessing}
                 onClick={() => {
-    playAudioFeedback("click");
+                  playAudioFeedback("click");
 
                   const isDeliveryCheck = Boolean(deliveryServiceType);
                   const cartHash = computeCartHash({
@@ -6177,71 +6185,45 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     vatRate,
                   });
 
-                  let targetProformaNum = proformaReceiptNumber;
-                  let targetRevision = proformaRevision;
+                  const targetProformaNum = proformaReceiptNumber;
+                  const targetRevision = proformaRevision;
                   const loadedJob = loadedJobId ? jobs.find(j => j.id === loadedJobId) : null;
-                  let shouldPersistPosProforma = false;
+                  const isFirstProforma = !targetProformaNum || targetProformaNum === "DRAFT" || targetRevision === null;
 
-                  if (!targetProformaNum || targetProformaNum === "DRAFT" || targetRevision === null) {
-                    if (loadedJobId) {
-                      // Existing job — generate from job ID
-                      targetProformaNum = generateProformaBaseNumber(loadedJobId);
-                      targetRevision = 0;
-                      setProformaReceiptNumber(targetProformaNum);
-                      setProformaRevision(0);
-                      setLastProformaCartHash(cartHash);
-                      shouldPersistPosProforma = true;
-                    } else {
-                      // New POS job without ID yet — show DRAFT (will be PR-{jobId} after Pay)
-                      targetProformaNum = "DRAFT";
-                      targetRevision = 0;
-                      setProformaReceiptNumber("DRAFT");
-                      setProformaRevision(0);
-                      setLastProformaCartHash(cartHash);
-                    }
-                  } else {
-                    const baseHash = (loadedJob as any)?.proformaCartHash || lastProformaCartHash;
-                    const isCartChanged = Boolean(baseHash ? (cartHash !== baseHash) : false);
-                    if (isCartChanged) {
-                      targetRevision = (proformaRevision !== null ? proformaRevision : 0) + 1;
-                      setProformaRevision(targetRevision);
-                      setLastProformaCartHash(cartHash);
-                      shouldPersistPosProforma = true;
-                    } else if (
-                      loadedJobId &&
-                      !loadedJob?.isShopPaid &&
-                      loadedJob?.status !== "cancel" &&
-                      cart.length > 0 &&
-                      (!loadedJob?.items || loadedJob.items.length === 0)
-                    ) {
-                      shouldPersistPosProforma = true;
-                    }
+                  if (isFirstProforma) {
+                    const previewProformaNum = loadedJobId ? generateProformaBaseNumber(loadedJobId) : "DRAFT";
+                    setPosProformaConfirmModal({
+                      open: true,
+                      isNewRevision: false,
+                      proformaNumber: previewProformaNum,
+                      targetRevision: 0,
+                      totalAmount: total,
+                      itemCount: cart.length,
+                    });
+                    return;
                   }
 
-                  if (loadedJobId && shouldPersistPosProforma && loadedJob?.status !== "cancel") {
-                    const posProformaPayload: Record<string, any> = {
+                  const baseHash = (loadedJob as any)?.proformaCartHash || lastProformaCartHash;
+                  const isCartChanged = Boolean(
+                    !loadedJob?.isShopPaid &&
+                    loadedJob?.status !== "cancel" &&
+                    (baseHash ? (cartHash !== baseHash) : false)
+                  );
+
+                  if (isCartChanged) {
+                    const nextRev = (proformaRevision !== null ? proformaRevision : 0) + 1;
+                    setPosProformaConfirmModal({
+                      open: true,
+                      isNewRevision: true,
                       proformaNumber: targetProformaNum,
-                      proformaRevision: targetRevision ?? 0,
-                      proformaCartHash: cartHash,
-                    };
-                    if (!loadedJob?.isShopPaid && cart.length > 0) {
-                      posProformaPayload.items = cart.map(item => ({
-                        name: item.name,
-                        nameEn: item.nameEn || item.name,
-                        quantity: item.quantity,
-                        price: item.price,
-                        category: item.category,
-                        unit: item.unit || "pcs",
-                        serviceId: item.id,
-                      }));
-                      posProformaPayload.totalAmount = total;
-                      posProformaPayload.fee = isDeliveryCheck ? (parseFloat(localDeliveryPrice) || 0) : 0;
-                      posProformaPayload.discount = manualAdjustment + totalDiscount;
-                      posProformaPayload.discountPercent = discountPercent;
-                    }
-                    jobStore.updateJobDetails(loadedJobId, posProformaPayload as any).catch(() => {});
+                      targetRevision: nextRev,
+                      totalAmount: total,
+                      itemCount: cart.length,
+                    });
+                    return;
                   }
 
+                  // Already has a Proforma INV and cart has NOT changed -> open directly without asking!
                   const clickTime = new Date();
                   setProformaCreatedAt(clickTime);
                   setIsDraftPreview(true);
@@ -7121,6 +7103,164 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           setOnlinePaymentJob(null);
         }}
       />
+
+      {/* POS Proforma INV Confirmation Modal */}
+      <Dialog
+        open={Boolean(posProformaConfirmModal?.open)}
+        onOpenChange={(open) => {
+          if (!open) setPosProformaConfirmModal(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[440px] bg-white border-slate-200 text-slate-900 rounded-2xl p-6 shadow-2xl">
+          <DialogHeader className="space-y-2">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 bg-sky-50 text-sky-600 border border-sky-200">
+                <Eye size={20} />
+              </div>
+              <div>
+                <DialogTitle className="text-base font-bold text-slate-900">
+                  {posProformaConfirmModal?.isNewRevision
+                    ? (currentLanguage === "en" ? "Confirm New Proforma INV Version?" : "ยืนยันการออกใบ Proforma INV เวอร์ชันใหม่?")
+                    : (currentLanguage === "en" ? "Ready to Issue Proforma INV?" : "พร้อมสำหรับการออกใบ Proforma INV แล้วใช่ไหม?")}
+                </DialogTitle>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {posProformaConfirmModal?.isNewRevision
+                    ? (currentLanguage === "en"
+                        ? "Items or pricing have changed since the last Proforma INV. This will generate a new revision."
+                        : "มีการเปลี่ยนแปลงรายการสินค้าหรือยอดเงิน ระบบจะออกใบ Proforma INV เวอร์ชันใหม่")
+                    : (currentLanguage === "en"
+                        ? "Please verify all items and amounts before generating the Proforma INV."
+                        : "กรุณาตรวจสอบรายการสินค้าและยอดเงินให้ครบถ้วนก่อนกดยืนยันออกใบรับเงินชั่วคราว (Proforma INV)")}
+                </p>
+              </div>
+            </div>
+          </DialogHeader>
+
+          {posProformaConfirmModal && (
+            <div className="my-3 rounded-xl bg-slate-50 border border-slate-200/80 p-3.5 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">{currentLanguage === "en" ? "Proforma No." : "เลขที่ใบ Proforma INV"}</span>
+                <span className="font-mono font-bold text-sky-600">
+                  {posProformaConfirmModal.proformaNumber}
+                  {posProformaConfirmModal.targetRevision > 0 ? `-R${posProformaConfirmModal.targetRevision}` : ""}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">{currentLanguage === "en" ? "Laundry Items" : "จำนวนรายการสินค้า"}</span>
+                <span className="font-semibold text-slate-800">
+                  {posProformaConfirmModal.itemCount} {currentLanguage === "en" ? "items" : "รายการ"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between pt-1.5 border-t border-slate-200">
+                <span className="text-slate-700 font-semibold">{currentLanguage === "en" ? "Total Amount" : "ยอดรวมสุทธิ"}</span>
+                <span className="text-sm font-black text-emerald-600">
+                  ฿{posProformaConfirmModal.totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="bg-transparent border-t-0 p-0 m-0 flex gap-2 sm:justify-end pt-1">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setPosProformaConfirmModal(null)}
+              className="flex-1 sm:flex-none rounded-xl border-slate-200 bg-white text-slate-700 hover:bg-slate-100 text-xs font-semibold h-9 cursor-pointer"
+            >
+              {currentLanguage === "en" ? "Cancel / Review Again" : "ยกเลิก / กลับไปตรวจสอบ"}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                setPosProformaConfirmModal(null);
+
+                const isDeliveryCheck = Boolean(deliveryServiceType);
+                const cartHash = computeCartHash({
+                  items: cart.map(it => ({ id: it.id, name: it.name, quantity: it.quantity, price: it.price })),
+                  serviceSpeed,
+                  fee: isDeliveryCheck ? (parseFloat(localDeliveryPrice) || 0) : 0,
+                  discountPercent,
+                  promoCode: appliedPromo?.code || promoCodeInput.trim() || null,
+                  promoDiscount: appliedPromo ? effectivePromoDiscount : 0,
+                  vatType,
+                  vatRate,
+                });
+
+                let targetProformaNum = proformaReceiptNumber;
+                let targetRevision = proformaRevision;
+                const loadedJob = loadedJobId ? jobs.find(j => j.id === loadedJobId) : null;
+                let shouldPersistPosProforma = false;
+
+                if (!targetProformaNum || targetProformaNum === "DRAFT" || targetRevision === null) {
+                  if (loadedJobId) {
+                    targetProformaNum = generateProformaBaseNumber(loadedJobId);
+                    targetRevision = 0;
+                    setProformaReceiptNumber(targetProformaNum);
+                    setProformaRevision(0);
+                    setLastProformaCartHash(cartHash);
+                    shouldPersistPosProforma = true;
+                  } else {
+                    targetProformaNum = "DRAFT";
+                    targetRevision = 0;
+                    setProformaReceiptNumber("DRAFT");
+                    setProformaRevision(0);
+                    setLastProformaCartHash(cartHash);
+                  }
+                } else {
+                  const baseHash = (loadedJob as any)?.proformaCartHash || lastProformaCartHash;
+                  const isCartChanged = Boolean(baseHash ? (cartHash !== baseHash) : false);
+                  if (isCartChanged) {
+                    targetRevision = (proformaRevision !== null ? proformaRevision : 0) + 1;
+                    setProformaRevision(targetRevision);
+                    setLastProformaCartHash(cartHash);
+                    shouldPersistPosProforma = true;
+                  } else if (
+                    loadedJobId &&
+                    !loadedJob?.isShopPaid &&
+                    loadedJob?.status !== "cancel" &&
+                    cart.length > 0 &&
+                    (!loadedJob?.items || loadedJob.items.length === 0)
+                  ) {
+                    shouldPersistPosProforma = true;
+                  }
+                }
+
+                if (loadedJobId && shouldPersistPosProforma && loadedJob?.status !== "cancel") {
+                  const posProformaPayload: Record<string, any> = {
+                    proformaNumber: targetProformaNum,
+                    proformaRevision: targetRevision ?? 0,
+                    proformaCartHash: cartHash,
+                  };
+                  if (!loadedJob?.isShopPaid && cart.length > 0) {
+                    posProformaPayload.items = cart.map(item => ({
+                      name: item.name,
+                      nameEn: item.nameEn || item.name,
+                      quantity: item.quantity,
+                      price: item.price,
+                      category: item.category,
+                      unit: item.unit || "pcs",
+                      serviceId: item.id,
+                    }));
+                    posProformaPayload.totalAmount = total;
+                    posProformaPayload.fee = isDeliveryCheck ? (parseFloat(localDeliveryPrice) || 0) : 0;
+                    posProformaPayload.discount = manualAdjustment + totalDiscount;
+                    posProformaPayload.discountPercent = discountPercent;
+                  }
+                  jobStore.updateJobDetails(loadedJobId, posProformaPayload as any).catch(() => {});
+                }
+
+                const clickTime = new Date();
+                setProformaCreatedAt(clickTime);
+                setIsDraftPreview(true);
+                setShowReceipt(true);
+              }}
+              className="flex-1 sm:flex-none rounded-xl text-xs font-bold h-9 cursor-pointer bg-sky-600 hover:bg-sky-700 text-white shadow-sm"
+            >
+              {currentLanguage === "en" ? "Confirm Issue Proforma INV" : "ยืนยันออกใบ Proforma INV"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {renderActiveShiftDetailsDialog()}
     </div>
