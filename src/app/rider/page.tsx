@@ -1303,15 +1303,14 @@ export default function RiderPage() {
           } catch {}
         }
         const isTerminal = ["delivered", "completed", "cancel"].includes(j.status) || isDeliveredStage || j.legs?.deliveryOutbound?.status === "completed";
-        const isDeliveryReady =
-          j.subStatus === "ready" &&
+        const isDeliveryActive =
           !["tba", "pending", "pickup", "cancel", "return", "topup"].includes(j.status);
         allTasks.push({
           taskId: `${j.id}-delivery`,
           job: j,
           legType: "delivery",
           isCompleted: isTerminal,
-          isActive: isDeliveryReady,
+          isActive: isDeliveryActive,
           scheduledAt: j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()),
           // For history: use actual deliveryOutbound completion time, fallback to job.completedAt, then scheduled times
           completedAt: isTerminal ? (
@@ -1760,7 +1759,10 @@ export default function RiderPage() {
       };
       const nextAdminNotesJson = JSON.stringify(nextAdminNotesObj);
 
-      const nextStatus = (task.job.status as string) === "washed" ? "delivery" : task.job.status;
+      const nextStatus = ["billing", "process", "active", "ready_to_wash", "washed"].includes(task.job.status as string)
+        ? "delivery"
+        : task.job.status;
+      const nextSubStatus = task.job.subStatus !== "ready" ? "ready" : task.job.subStatus;
       const updatedLegs = task.job.legs
         ? {
             ...task.job.legs,
@@ -1775,6 +1777,7 @@ export default function RiderPage() {
         jobId,
         {
           status: nextStatus as any,
+          ...(nextSubStatus !== task.job.subStatus ? { subStatus: nextSubStatus as any } : {}),
           adminNotesJson: nextAdminNotesJson,
           ...(updatedLegs ? { legs: updatedLegs } : {}),
         },
@@ -1803,6 +1806,7 @@ export default function RiderPage() {
           job: {
             ...selectedJob.job,
             status: nextStatus as any,
+            subStatus: nextSubStatus as any,
             adminNotesJson: nextAdminNotesJson,
             ...(updatedLegs ? { legs: updatedLegs } : {}),
           },
@@ -3073,7 +3077,9 @@ export default function RiderPage() {
                               }}
                             >
                               <Camera size={19} className="mr-2 shrink-0" />
-                              Load on Vehicle (ถ่ายรูปขึ้นรถก่อนส่ง)
+                              {selectedJob.job.subStatus !== "ready"
+                                ? "Load on Vehicle & Ready (ถ่ายรูปขึ้นรถ + ปรับ Ready)"
+                                : "Load on Vehicle (ถ่ายรูปขึ้นรถก่อนส่ง)"}
                             </Button>
                           ) : (
                             <Button

@@ -78,8 +78,8 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
   // Job view details modal
   const [selectedJobForView, setSelectedJobForView] = useState<any | null>(null);
 
-  // Active Campaign Selector State (11.11 placed at the very top as default)
-  const [selectedCampaign, setSelectedCampaign] = useState<"order_11_11" | "voucher_campaigns" | "topup_4000_1000" | "order_9_9">("order_11_11");
+  // Active Campaign Selector State (Winter Bedding Set 899 & 11.11 at the top)
+  const [selectedCampaign, setSelectedCampaign] = useState<"winter_bedding_899" | "order_11_11" | "voucher_campaigns" | "topup_4000_1000" | "order_9_9">("winter_bedding_899");
 
   // Wallet Transactions State for Top-Up Campaign
   const [walletTransactions, setWalletTransactions] = useState<any[]>([]);
@@ -1002,8 +1002,9 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                     }}
                     className="text-xs sm:text-sm font-black text-slate-800 dark:text-slate-100 bg-slate-100/80 dark:bg-slate-800 hover:bg-slate-200/60 dark:hover:bg-slate-750 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 outline-none cursor-pointer transition-colors shadow-xs"
                   >
+                    <option value="winter_bedding_899">🛏️ Winter Bedding Set ฿899/Set: โปรซักชุดเครื่องนอน (PROMO-BED-899)</option>
                     <option value="order_11_11">🔥 Order 11.11 Promo: Wash Iron Fold 120฿/Kg (ขั้นต่ำ 4 Kg - WIF120)</option>
-                    <option value="voucher_campaigns">🎟️ Voucher Campaigns: แคมเปญแจกวอยเชอร์ (Promotion Engine & Performance)</option>
+                    <option value="voucher_campaigns">🎟️ Voucher & Promotion Campaigns: แคมเปญโปรโมชั่นทั้งหมด</option>
                     <option value="topup_4000_1000">💳 Topup Promo: แคมเปญเติมเงิน 4,000 แถม 1,000 (05/10 - 09/10/2026)</option>
                     <option value="order_9_9">🏷️ Order Promo: โค้ดส่วนลด 9.9 & วอยเชอร์ออเดอร์ (Order Discounts)</option>
                   </select>
@@ -1013,7 +1014,18 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
 
             {/* Campaign Quick Actions & Period */}
             <div className="flex flex-wrap items-center gap-2 pt-2 md:pt-0 border-t md:border-t-0 border-slate-100 dark:border-slate-800">
-              {selectedCampaign === "voucher_campaigns" ? (
+              {selectedCampaign === "winter_bedding_899" ? (
+                <>
+                  <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
+                    <CalendarDays size={13} className="text-purple-500" />
+                    <span>ระยะเวลาแคมเปญ: <strong className="text-slate-800 dark:text-slate-200">18/11/2026 - 30/11/2026</strong></span>
+                  </div>
+                  <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
+                    <Tag size={13} className="text-indigo-500" />
+                    <span>เมนูโปรฯ: <strong className="text-slate-800 dark:text-slate-200 font-mono">PROMO-BED-899</strong> (฿899/Set)</span>
+                  </div>
+                </>
+              ) : selectedCampaign === "voucher_campaigns" ? (
                 <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
                   <Ticket size={13} className="text-indigo-500" />
                   <span>ระบบแคมเปญโปรโมชั่นอัตโนมัติ & รายงานการใช้วอยเชอร์</span>
@@ -1080,7 +1092,9 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
           {/* ═══════════════════════════════════════════════════════════════════════════ */}
           {/* CONDITIONAL CAMPAIGN DASHBOARD */}
           {/* ═══════════════════════════════════════════════════════════════════════════ */}
-          {selectedCampaign === "voucher_campaigns" ? (
+          {selectedCampaign === "winter_bedding_899" ? (
+            <AdminPromotionReport initialCampaignId="promo_winter_bedding_899_nov26" />
+          ) : selectedCampaign === "voucher_campaigns" ? (
             <AdminPromotionReport />
           ) : selectedCampaign === "topup_4000_1000" ? (
             <div className="space-y-6">

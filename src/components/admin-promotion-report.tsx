@@ -45,12 +45,18 @@ import {
 } from "@/lib/promotions";
 import { useSyncExternalStore } from "react";
 
-export function AdminPromotionReport() {
+export function AdminPromotionReport({ initialCampaignId }: { initialCampaignId?: string } = {}) {
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
   // Filter States
   const [campaigns, setCampaigns] = useState<any[]>([]);
-  const [selectedCampaignId, setSelectedCampaignId] = useState<string>("promo_shoe100_oct26");
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string>(initialCampaignId || "promo_winter_bedding_899_nov26");
+
+  useEffect(() => {
+    if (initialCampaignId) {
+      setSelectedCampaignId(initialCampaignId);
+    }
+  }, [initialCampaignId]);
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [activeTab, setActiveTab] = useState<"redeemed" | "issued">("redeemed");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -330,15 +336,17 @@ export function AdminPromotionReport() {
             </button>
 
             <span className="font-bold text-foreground">
-              {activeCampaign.campaignMode === "INSTANT_DISCOUNT" && activeCampaign.instantRule
-                ? `🎯 ${activeCampaign.instantRule.targetServiceName || "Service"} ≥ ${activeCampaign.instantRule.minQuantity} Kg ➔ ฿${activeCampaign.instantRule.promoUnitPrice ?? activeCampaign.instantRule.discountValue}/Kg (Code: ${activeCampaign.instantRule.promoCode})`
-                : `Min Spend: ฿${activeCampaign.conditions?.minOrderSubtotal?.toLocaleString()} ${activeCampaign.conditions?.excludeDeliveryFee !== false ? "(Excl. delivery / ไม่รวมค่าส่ง)" : "(Incl. delivery / รวมค่าส่ง)"}`}
+              {activeCampaign.campaignMode === "SERVICE_PROMO" && activeCampaign.instantRule
+                ? `🛏️ ${activeCampaign.instantRule.targetServiceName || "Service"} • ฿${activeCampaign.instantRule.promoUnitPrice ?? 899}/Set (SKU: ${activeCampaign.instantRule.targetServiceId || "PROMO-BED-899"})`
+                : activeCampaign.campaignMode === "INSTANT_DISCOUNT" && activeCampaign.instantRule
+                  ? `🎯 ${activeCampaign.instantRule.targetServiceName || "Service"} ≥ ${activeCampaign.instantRule.minQuantity} Kg ➔ ฿${activeCampaign.instantRule.promoUnitPrice ?? activeCampaign.instantRule.discountValue}/Kg (Code: ${activeCampaign.instantRule.promoCode})`
+                  : `Min Spend: ฿${activeCampaign.conditions?.minOrderSubtotal?.toLocaleString()} ${activeCampaign.conditions?.excludeDeliveryFee !== false ? "(Excl. delivery / ไม่รวมค่าส่ง)" : "(Incl. delivery / รวมค่าส่ง)"}`}
             </span>
             <span>•</span>
             <span>
               Period: {activeCampaign.startDate?.slice(0, 10)} to <strong className="text-amber-600 dark:text-amber-400 font-bold">{activeCampaign.endDate?.slice(0, 10)}</strong> <span className="text-[10px] text-muted-foreground">(ระยะเวลาโปรโมชั่น)</span>
             </span>
-            {activeCampaign.campaignMode !== "INSTANT_DISCOUNT" && activeCampaign.rewardCouponExpiryDate && (
+            {activeCampaign.campaignMode !== "INSTANT_DISCOUNT" && activeCampaign.campaignMode !== "SERVICE_PROMO" && activeCampaign.rewardCouponExpiryDate && (
               <>
                 <span>•</span>
                 <span>
@@ -396,7 +404,9 @@ export function AdminPromotionReport() {
           </div>
           <div className="text-2xl font-black text-foreground pt-0.5">
             {reportData.stats.totalIssued}
-            <span className="text-xs font-medium text-muted-foreground ml-1">Vouchers (ใบ)</span>
+            <span className="text-xs font-medium text-muted-foreground ml-1">
+              {activeCampaign?.campaignMode === "SERVICE_PROMO" || activeCampaign?.campaignMode === "INSTANT_DISCOUNT" ? "Orders (บิล)" : "Vouchers (ใบ)"}
+            </span>
           </div>
           <p className="text-[10px] text-muted-foreground">
             Issued to <strong className="text-foreground">{reportData.stats.totalCustomers}</strong> customers <span className="opacity-80">({reportData.stats.totalCustomers} ท่าน)</span>
@@ -414,7 +424,9 @@ export function AdminPromotionReport() {
           </div>
           <div className="text-2xl font-black text-emerald-700 dark:text-emerald-400 pt-0.5">
             {reportData.stats.totalRedeemed}
-            <span className="text-xs font-medium text-emerald-600/70 ml-1">Vouchers (ใบ)</span>
+            <span className="text-xs font-medium text-emerald-600/70 ml-1">
+              {activeCampaign?.campaignMode === "SERVICE_PROMO" || activeCampaign?.campaignMode === "INSTANT_DISCOUNT" ? "Orders (บิล)" : "Vouchers (ใบ)"}
+            </span>
           </div>
           <p className="text-[10px] text-emerald-600 dark:text-emerald-400">
             Returned customers (ลูกค้ากลับมาใช้จริง)
@@ -443,10 +455,18 @@ export function AdminPromotionReport() {
           <div className="flex items-center justify-between text-amber-700 dark:text-amber-400">
             <div>
               <span className="text-[11px] font-bold uppercase tracking-wider block">
-                {activeCampaign?.campaignMode === "INSTANT_DISCOUNT" ? "Total Promo Weight" : "Outstanding"}
+                {activeCampaign?.campaignMode === "SERVICE_PROMO"
+                  ? "Total Sets Sold"
+                  : activeCampaign?.campaignMode === "INSTANT_DISCOUNT"
+                    ? "Total Promo Weight"
+                    : "Outstanding"}
               </span>
               <span className="text-[9px] text-amber-600/80 font-normal">
-                {activeCampaign?.campaignMode === "INSTANT_DISCOUNT" ? "น้ำหนักโปรฯ รวม" : "คงเหลือยังไม่ใช้"}
+                {activeCampaign?.campaignMode === "SERVICE_PROMO"
+                  ? "จำนวนชุดที่ขายได้"
+                  : activeCampaign?.campaignMode === "INSTANT_DISCOUNT"
+                    ? "น้ำหนักโปรฯ รวม"
+                    : "คงเหลือยังไม่ใช้"}
               </span>
             </div>
             <Clock size={16} className="text-amber-500" />
@@ -454,11 +474,15 @@ export function AdminPromotionReport() {
           <div className="text-2xl font-black text-amber-700 dark:text-amber-400 pt-0.5">
             {reportData.stats.activeRemaining}
             <span className="text-xs font-medium text-amber-600/70 ml-1">
-              {activeCampaign?.campaignMode === "INSTANT_DISCOUNT" ? "Kg (กิโลกรัม)" : "Vouchers (ใบ)"}
+              {activeCampaign?.campaignMode === "SERVICE_PROMO"
+                ? "Sets (ชุด)"
+                : activeCampaign?.campaignMode === "INSTANT_DISCOUNT"
+                  ? "Kg (กิโลกรัม)"
+                  : "Vouchers (ใบ)"}
             </span>
           </div>
           <p className="text-[10px] text-amber-600/80">
-            {activeCampaign?.campaignMode === "INSTANT_DISCOUNT"
+            {activeCampaign?.campaignMode === "INSTANT_DISCOUNT" || activeCampaign?.campaignMode === "SERVICE_PROMO"
               ? `Promo Period: ${activeCampaign?.startDate?.slice(0, 10)} - ${activeCampaign?.endDate?.slice(0, 10)}`
               : `Valid until ${activeCampaign?.rewardCouponExpiryDate ? activeCampaign.rewardCouponExpiryDate.slice(0, 10) : "31 Dec 2026"} (ใช้ได้ถึง)`}
           </p>

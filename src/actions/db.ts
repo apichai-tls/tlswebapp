@@ -1897,7 +1897,7 @@ export async function addJobAction(data: any) {
 
       const shouldAutoProforma = Boolean(
         (data as any).autoAssignProforma ||
-        (data.source === 'pos' && Array.isArray(data.items) && data.items.length > 0)
+        ((data.isPaid || data.isShopPaid) && Array.isArray(data.items) && data.items.length > 0)
       );
       const resolvedProformaNumber =
         (data.proformaNumber && data.proformaNumber !== 'DRAFT' ? data.proformaNumber : null) ||
@@ -9444,17 +9444,36 @@ export async function getPromotionReportAction(filters?: {
     const { campaigns: allCampaigns } = await getPromotionCampaignsAction();
     const targetCampaign = allCampaigns.find((c) => c.id === campaignId);
 
-    // Handle INSTANT_DISCOUNT campaigns (e.g. 11.11 Wash Iron Fold 120 THB/Kg) directly from Jobs
-    if (targetCampaign && targetCampaign.campaignMode === "INSTANT_DISCOUNT") {
+    // Handle INSTANT_DISCOUNT & SERVICE_PROMO campaigns directly from Jobs
+    if (
+      targetCampaign &&
+      (targetCampaign.campaignMode === "INSTANT_DISCOUNT" ||
+        (targetCampaign.campaignMode as string) === "SERVICE_PROMO")
+    ) {
+      const isServicePromo = (targetCampaign.campaignMode as string) === "SERVICE_PROMO";
       const promoCode = (targetCampaign.instantRule?.promoCode || targetCampaign.reward?.codePrefix || "PROMO").trim().toUpperCase();
+      const targetSvcId = (targetCampaign.instantRule?.targetServiceId || "").trim();
+      const targetSvcName = (targetCampaign.instantRule?.targetServiceName || "").trim();
+
       const promoJobs = await prisma.job.findMany({
         where: {
           status: { not: "cancel" },
           ...(filters?.branchId && filters.branchId !== "all" ? { branchId: filters.branchId } : {}),
-          remark: {
-            contains: `Promo: ${promoCode}`,
-            mode: "insensitive",
-          },
+          ...(isServicePromo
+            ? {
+                OR: [
+                  ...(targetSvcId ? [{ itemsJson: { contains: targetSvcId, mode: "insensitive" as const } }] : []),
+                  ...(targetSvcName ? [{ itemsJson: { contains: targetSvcName, mode: "insensitive" as const } }] : []),
+                  { itemsJson: { contains: "WINTER BEDDING SET", mode: "insensitive" as const } },
+                  { remark: { contains: promoCode, mode: "insensitive" as const } },
+                ],
+              }
+            : {
+                remark: {
+                  contains: `Promo: ${promoCode}`,
+                  mode: "insensitive",
+                },
+              }),
         },
         include: {
           customer: {
@@ -9487,15 +9506,16 @@ export async function getPromotionReportAction(filters?: {
             if (Array.isArray(parsedItems)) {
               const matched = parsedItems.filter((it: any) => isItemMatchingInstantCampaign(it, targetCampaign));
               jobQty = matched.reduce((sum: number, it: any) => sum + (Number(it.quantity) || 0), 0);
-              itemsSummary = matched.map((it: any) => `${it.name} (${it.quantity} ${it.unit || "Kg"})`).join(", ");
+              itemsSummary = matched.map((it: any) => `${it.name} (${it.quantity} ${it.unit || (isServicePromo ? "set" : "Kg")})`).join(", ");
             }
           } catch {}
         }
+        if (isServicePromo && jobQty <= 0) jobQty = 1;
         totalPromoQuantity += jobQty;
 
         return {
           id: j.id,
-          code: promoCode,
+          code: isServicePromo ? (targetSvcId || promoCode) : promoCode,
           customerId: j.customerId || null,
           customerName: j.customerName || j.customer?.name || "ไม่ระบุชื่อ",
           customerPhone: j.customerPhone || j.customer?.phone || "-",

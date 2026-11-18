@@ -31,11 +31,13 @@ import {
   CheckCircle2,
   AlertTriangle,
   FlaskConical,
+  Bot,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AdminTaskTracker } from "@/components/admin-task-tracker";
 import { AdminDispatchRouteCompare } from "@/components/admin-dispatch-route-compare";
+import { AdminDispatchAutoSim } from "@/components/admin-dispatch-auto-sim";
 import { optimizeRiderRoute, calculateEstimatedDistanceKm, getTaskExpressPriorityTier } from "@/lib/route-optimizer";
 
 import { Calendar, dateFnsLocalizer } from 'react-big-calendar';
@@ -184,8 +186,15 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
   const [selectedRiderIds, setSelectedRiderIds] = useState<Set<string>>(new Set());
   const [showCompleted, setShowCompleted] = useState(false);
 
-  // Default to "calendar" (Schedule Calendar on Left, Rider Route Board on Right, plus Route Compare Lab)
-  const [dispatchTab, setDispatchTab] = useState<"calendar" | "board" | "compare">("calendar");
+  // Default to "calendar" (Schedule Calendar on Left, Rider Route Board on Right, plus Admin-only Lab tabs)
+  const isAdminUser = user?.role === "admin";
+  const [dispatchTab, setDispatchTab] = useState<"calendar" | "board" | "compare" | "auto_sim">("calendar");
+
+  useEffect(() => {
+    if (!isAdminUser && (dispatchTab === "compare" || dispatchTab === "auto_sim")) {
+      setDispatchTab("calendar");
+    }
+  }, [isAdminUser, dispatchTab]);
   const [showOfflineRiders, setShowOfflineRiders] = useState(false);
   const [boardSortMode, setBoardSortMode] = useState<"optimized" | "time">("optimized");
   const [boardDateScope, setBoardDateScope] = useState<"today" | "all_active">("today");
@@ -1127,23 +1136,45 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                 </span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => setDispatchTab("compare")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
-                  dispatchTab === "compare"
-                    ? "bg-indigo-600 text-white shadow-xs"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                <FlaskConical size={14} className={dispatchTab === "compare" ? "text-amber-300" : "text-indigo-500"} />
-                <span>Route Compare</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
-                  dispatchTab === "compare" ? "bg-white text-indigo-700" : "bg-indigo-100 text-indigo-700"
-                }`}>
-                  Lab
-                </span>
-              </button>
+              {isAdminUser && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setDispatchTab("compare")}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                      dispatchTab === "compare"
+                        ? "bg-indigo-600 text-white shadow-xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <FlaskConical size={14} className={dispatchTab === "compare" ? "text-amber-300" : "text-indigo-500"} />
+                    <span>Route Compare</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                      dispatchTab === "compare" ? "bg-white text-indigo-700" : "bg-indigo-100 text-indigo-700"
+                    }`}>
+                      Lab
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDispatchTab("auto_sim")}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                      dispatchTab === "auto_sim"
+                        ? "bg-violet-600 text-white shadow-xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <Bot size={14} className={dispatchTab === "auto_sim" ? "text-amber-300" : "text-violet-600"} />
+                    <span>Auto-Assign Sim</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                      dispatchTab === "auto_sim" ? "bg-white text-violet-700" : "bg-violet-100 text-violet-700"
+                    }`}>
+                      Sim
+                    </span>
+                  </button>
+                </>
+              )}
             </div>
 
             <div className="flex items-center gap-2.5">
@@ -1450,7 +1481,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
               className="font-sans flex-1"
             />
           </div>
-        ) : dispatchTab === "compare" ? (
+        ) : isAdminUser && dispatchTab === "compare" ? (
           /* ===================================================================== */
           /* TAB 3: ROUTE COMPARE LAB (LEGACY VS SMART BRANCH + TIME ROUTE)        */
           /* ===================================================================== */
@@ -1464,6 +1495,20 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
             onChangeBoardDateScope={setBoardDateScope}
             todayTaskCount={todayTaskCount}
             allActiveTaskCount={allActiveTaskCount}
+          />
+        ) : isAdminUser && dispatchTab === "auto_sim" ? (
+          /* ===================================================================== */
+          /* TAB 4: AUTO-ASSIGN SIMULATION LAB (ADMIN ONLY, VIRTUAL SANDBOX)       */
+          /* ===================================================================== */
+          <AdminDispatchAutoSim
+            allJobs={allJobs}
+            riders={filteredRiders}
+            shopLocations={shopLocations}
+            effectiveArea={effectiveArea}
+            isAreaRestricted={isAreaRestricted}
+            allowedBranchIds={allowedBranchIds}
+            getRiderOriginCoords={getRiderOriginCoords}
+            onOpenJobDetail={openJobDetail}
           />
         ) : (
           /* ===================================================================== */
@@ -1506,29 +1551,31 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                 }`}
               >
                 {/* Pinned/Sticky Unassigned Header */}
-                <div className="sticky top-0 px-3.5 py-3 bg-white rounded-t-2xl border-b border-slate-200/80 flex items-center justify-between shrink-0 z-10 shadow-2xs">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <h3 className="text-xs font-black text-slate-900 uppercase tracking-wide">
-                          Unassigned
-                        </h3>
-                        {unassignedExpressCount > 0 && (
-                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded-full text-[9.5px] font-black bg-rose-600 text-white shadow-2xs animate-pulse">
-                            <Zap size={9} className="fill-white" />
-                            {unassignedExpressCount} EXP
-                          </span>
-                        )}
+                <div className="sticky top-0 px-3.5 py-3 bg-white rounded-t-2xl border-b border-slate-200/80 space-y-2 shrink-0 z-10 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <h3 className="text-xs font-black text-slate-900 uppercase tracking-wide">
+                            Unassigned
+                          </h3>
+                          {unassignedExpressCount > 0 && (
+                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded-full text-[9.5px] font-black bg-rose-600 text-white shadow-2xs animate-pulse">
+                              <Zap size={9} className="fill-white" />
+                              {unassignedExpressCount} EXP
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-400 font-medium">
+                          Drag card to a rider column
+                        </p>
                       </div>
-                      <p className="text-[10px] text-slate-400 font-medium">
-                        Drag card to a rider column
-                      </p>
                     </div>
+                    <span className="px-2 py-0.5 rounded-full text-xs font-black bg-amber-100 text-amber-800">
+                      {boardColumnsData.unassignedTasks.length}
+                    </span>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full text-xs font-black bg-amber-100 text-amber-800">
-                    {boardColumnsData.unassignedTasks.length}
-                  </span>
                 </div>
 
                 {/* Scrollable Unassigned Cards */}

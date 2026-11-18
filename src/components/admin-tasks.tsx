@@ -2550,13 +2550,13 @@ export function TaskFormModal({
       }}
       disablePointerDismissal={true}
     >
-      <DialogContent className={`max-h-[94vh] sm:max-h-[90vh] flex flex-col p-3.5 sm:p-6 overflow-hidden ${
+      <DialogContent className={`max-h-[94vh] sm:max-h-[92vh] flex flex-col p-3 sm:p-4 overflow-hidden ${
         initialTask
-          ? "h-[92vh] sm:h-[88vh] sm:max-w-6xl max-w-[96vw] lg:max-w-7xl"
-          : "h-[92vh] sm:h-[82vh] sm:max-w-4xl lg:max-w-5xl max-w-[96vw]"
+          ? "h-[94vh] sm:h-[90vh] w-[96vw] max-w-[96vw] lg:max-w-[1480px]"
+          : "h-[92vh] sm:h-[85vh] w-[95vw] max-w-[95vw] lg:max-w-6xl"
       }`}>
         {/* Header */}
-        <DialogHeader className="shrink-0 pb-2.5 sm:pb-3 border-b border-slate-100">
+        <DialogHeader className="shrink-0 pb-2 border-b border-slate-100">
           <div className="flex items-center justify-between pr-6 gap-2 flex-wrap">
             <div className="flex items-center gap-2.5 min-w-0">
               <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold shrink-0">
@@ -2676,22 +2676,34 @@ export function TaskFormModal({
           )}
         </div>
 
-        {/* Body (Desktop: 2 columns for Create, 3 columns for Edit) */}
-        <div className={`grid grid-cols-1 gap-5 flex-1 min-h-0 py-2 overflow-y-auto lg:overflow-hidden ${
-          initialTask ? "lg:grid-cols-12" : "lg:grid-cols-2"
-        }`}>
-          {/* ─── COLUMN 1: Department, Issue Description, Order Lookup & Customer CRM ─── */}
+        {/* Body (Desktop: 3 columns for Create, 4 columns for Edit & Follow Up — zero vertical scroll) */}
+        <form
+          id="task-form"
+          onSubmit={handleSubmit}
+          className={`grid grid-cols-1 gap-3.5 flex-1 min-h-0 py-2 overflow-y-auto lg:overflow-hidden ${
+            initialTask ? "lg:grid-cols-12" : "lg:grid-cols-12"
+          }`}
+        >
+          {/* ─── COLUMN 1: Department, Title, Description, Item/Channel, Priority/Status ─── */}
           <div className={`${
-            initialTask ? "lg:col-span-4" : "lg:col-span-1"
-          } flex flex-col min-h-0 overflow-y-auto overflow-x-hidden pr-1 space-y-3.5 ${mobileTab === "info" ? "flex" : "hidden lg:flex"}`}>
-            <form id="task-form" onSubmit={handleSubmit} className="space-y-3">
-              {/* Department Selector & Customer Complaint Mode (Auto-Assigns All Staff in Selected Department) */}
+            initialTask ? "lg:col-span-3" : "lg:col-span-4"
+          } flex flex-col min-h-0 overflow-y-auto overflow-x-hidden pr-1 space-y-2 ${mobileTab === "info" ? "flex" : "hidden lg:flex"}`}>
+              {/* Department Selector, CRM Mode & Issue Category Preset */}
               <div className="bg-slate-50/90 border border-slate-200/90 rounded-xl p-2.5 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <Label className="text-[11px] font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                    <Building2 size={12} className="text-indigo-600" />
-                    Department & Issue Type
-                  </Label>
+                {/* Header: Department + Auto-Assigned Count + CRM Toggle */}
+                <div className="flex items-center justify-between gap-1.5">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Label className="text-[10.5px] font-black uppercase tracking-wider text-slate-700 flex items-center gap-1 shrink-0">
+                      <Building2 size={11} className="text-indigo-600" />
+                      Department
+                    </Label>
+                    {selectedDepartment && (
+                      <span className="inline-flex items-center gap-0.5 text-[9.5px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 rounded-md truncate">
+                        <CheckCircle2 size={9.5} className="text-emerald-600 shrink-0" />
+                        {selectedAssignees.length} staff
+                      </span>
+                    )}
+                  </div>
                   <button
                     type="button"
                     disabled={!canEditTaskDetails}
@@ -2699,19 +2711,20 @@ export function TaskFormModal({
                       const nextIsComplaint = taskType !== "complaint" && taskType !== "feedback";
                       setTaskType(nextIsComplaint ? "complaint" : (selectedDepartment.includes("accounting") ? "accounting" : "general"));
                     }}
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-all cursor-pointer flex items-center gap-1 ${
+                    className={`px-2 py-0.5 rounded-md text-[9.5px] font-bold border transition-all cursor-pointer flex items-center gap-1 shrink-0 ${
                       taskType === "complaint" || taskType === "feedback"
                         ? "bg-rose-600 text-white border-rose-600 shadow-2xs"
                         : "bg-white text-rose-700 border-rose-200 hover:bg-rose-50"
                     }`}
+                    title="Toggle Customer Complaint / CRM Mode"
                   >
-                    <Megaphone size={10} />
-                    <span>Customer Complaint / CRM</span>
+                    <Megaphone size={9.5} />
+                    <span>CRM / Complaint</span>
                   </button>
                 </div>
 
-                {/* Department Chips */}
-                <div className="flex flex-wrap gap-1.5">
+                {/* Department Grid (Uniform 2-Column Tiles) */}
+                <div className="grid grid-cols-2 gap-1.5">
                   {effectiveDepartments.map((dept) => {
                     const isSelected = selectedDepartment === dept.key;
                     const memberCount = adminUsers.filter(
@@ -2724,16 +2737,20 @@ export function TaskFormModal({
                         type="button"
                         disabled={!canEditTaskDetails}
                         onClick={() => handleSelectDepartment(dept.key)}
-                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
+                        className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg text-[10.5px] font-bold border transition-all cursor-pointer text-left ${
                           isSelected
                             ? "bg-indigo-600 text-white border-indigo-600 shadow-xs"
                             : "bg-white text-slate-700 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/40"
                         } ${!canEditTaskDetails ? "opacity-60 cursor-not-allowed" : ""}`}
                         title={`Select ${dept.name} (auto-assigns all ${memberCount} employees)`}
                       >
-                        <span>{dept.icon}</span>
-                        <span>{dept.name}</span>
-                        <span className={`text-[9.5px] px-1 rounded ${isSelected ? "bg-indigo-500 text-white" : "bg-slate-100 text-slate-500"}`}>
+                        <span className="flex items-center gap-1 min-w-0">
+                          <span className="shrink-0">{dept.icon}</span>
+                          <span className="truncate">{dept.name}</span>
+                        </span>
+                        <span className={`text-[9px] px-1.5 py-0.2 rounded-md shrink-0 font-extrabold ${
+                          isSelected ? "bg-indigo-500 text-white" : "bg-slate-100 text-slate-500"
+                        }`}>
                           {memberCount}
                         </span>
                       </button>
@@ -2741,57 +2758,60 @@ export function TaskFormModal({
                   })}
                 </div>
 
-                {selectedDepartment && (
-                  <div className="flex items-center justify-between text-[10px] text-emerald-700 bg-emerald-50/90 border border-emerald-200 rounded-lg px-2 py-1 font-semibold">
-                    <span className="flex items-center gap-1">
-                      <CheckCircle2 size={11} className="text-emerald-600 shrink-0" />
-                      All active staff in {getDepartmentLabelByKey(selectedDepartment)} assigned ({selectedAssignees.length} selected)
-                    </span>
-                  </div>
-                )}
-
-                {/* Issue Category Presets */}
-                <div className="space-y-1 pt-1 border-t border-slate-200/70">
+                {/* Issue Category Preset (Clean Dropdown) */}
+                <div className="space-y-1 pt-1.5 border-t border-slate-200/70">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                      Issue Category Preset (Optional)
+                    <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-500">
+                      Issue Category Preset
                     </span>
-                    {issueCategory && (
+                    {issueCategory && canEditTaskDetails && (
                       <button
                         type="button"
                         onClick={() => setIssueCategory("")}
-                        className="text-[10px] text-slate-400 hover:text-rose-600 cursor-pointer"
+                        className="text-[9.5px] font-semibold text-slate-400 hover:text-rose-600 cursor-pointer"
                       >
                         Clear
                       </button>
                     )}
                   </div>
-                  <div className="flex flex-wrap gap-1">
-                    {availableIssuePresets.map((preset) => {
-                      const active = issueCategory === preset.label;
-                      return (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          disabled={!canEditTaskDetails}
-                          onClick={() => handleApplyIssuePreset(preset)}
-                          className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border transition-all cursor-pointer ${
-                            active
-                              ? "bg-amber-500 text-white border-amber-500 shadow-2xs"
-                              : "bg-white text-slate-600 border-slate-200 hover:border-amber-300 hover:bg-amber-50/50"
-                          }`}
-                        >
-                          {preset.label}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <select
+                    value={issueCategory}
+                    disabled={!canEditTaskDetails}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (!val) {
+                        setIssueCategory("");
+                        return;
+                      }
+                      const matched = availableIssuePresets.find((p) => p.label === val);
+                      if (matched) {
+                        handleApplyIssuePreset(matched);
+                      } else {
+                        setIssueCategory(val);
+                      }
+                    }}
+                    className={`w-full h-8 px-2.5 text-[11px] font-semibold rounded-lg border outline-none transition-colors cursor-pointer ${
+                      issueCategory
+                        ? "bg-amber-50/80 border-amber-400 text-amber-900"
+                        : "bg-white border-slate-200 text-slate-700 hover:border-slate-300"
+                    } ${!canEditTaskDetails ? "opacity-60 cursor-not-allowed bg-slate-100" : ""}`}
+                  >
+                    <option value="">— Select issue preset (Optional) —</option>
+                    {issueCategory && !availableIssuePresets.some((p) => p.label === issueCategory) && (
+                      <option value={issueCategory}>{issueCategory}</option>
+                    )}
+                    {availableIssuePresets.map((preset) => (
+                      <option key={preset.id} value={preset.label}>
+                        {preset.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
               {/* Title */}
-              <div className="space-y-1">
-                <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+              <div className="space-y-0.5">
+                <Label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
                   Task Title * {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
                 </Label>
                 <Input
@@ -2805,18 +2825,18 @@ export function TaskFormModal({
                       ? "e.g. Verify transfer slip / Issue Tax Invoice..."
                       : "e.g. Follow up with customer..."
                   }
-                  className={`h-9 text-sm font-semibold ${!canEditTaskDetails ? "bg-slate-100 text-slate-600 cursor-not-allowed border-slate-200" : ""}`}
+                  className={`h-8 text-xs font-semibold ${!canEditTaskDetails ? "bg-slate-100 text-slate-600 cursor-not-allowed border-slate-200" : ""}`}
                   autoFocus={canEditTaskDetails}
                 />
               </div>
 
               {/* Description (Expanded to 2000 chars for full Accounting / Complaint explanation) */}
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <div className="flex items-center justify-between">
-                  <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-                    Issue Description & Instructions {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
+                  <Label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                    Issue Description {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
                   </Label>
-                  <span className={`text-[10px] font-semibold tabular-nums ${description.length >= 1900 ? "text-amber-600 font-bold" : "text-slate-400"}`}>
+                  <span className={`text-[9.5px] font-semibold tabular-nums ${description.length >= 1900 ? "text-amber-600 font-bold" : "text-slate-400"}`}>
                     {description.length}/2000
                   </span>
                 </div>
@@ -2828,7 +2848,7 @@ export function TaskFormModal({
                     if (descriptionTextareaRef.current) {
                       descriptionTextareaRef.current.style.height = "auto";
                       const scrollH = descriptionTextareaRef.current.scrollHeight;
-                      descriptionTextareaRef.current.style.height = `${Math.max(64, Math.min(220, scrollH))}px`;
+                      descriptionTextareaRef.current.style.height = `${Math.max(54, Math.min(130, scrollH))}px`;
                     }
                   }}
                   maxLength={2000}
@@ -2837,8 +2857,8 @@ export function TaskFormModal({
                     availableIssuePresets.find((p) => p.label === issueCategory)?.descriptionHint ||
                     "Describe the issue, accounting details, customer complaint, or exact instructions..."
                   }
-                  rows={3}
-                  className={`w-full text-xs border rounded-lg px-3 py-2 resize-y transition-[border-color,box-shadow] ${
+                  rows={2}
+                  className={`w-full text-xs border rounded-lg px-2.5 py-1.5 resize-y transition-[border-color,box-shadow] ${
                     !canEditTaskDetails
                       ? "bg-slate-100 text-slate-600 cursor-not-allowed border-slate-200"
                       : "border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300"
@@ -2846,90 +2866,10 @@ export function TaskFormModal({
                 />
               </div>
 
-              {/* Optional Affected Item & Contact Channel when Complaint / Feedback / Customer linked */}
-              {(taskType === "complaint" || taskType === "feedback" || linkedCustomer || affectedItem) && (
-                <div className="grid grid-cols-2 gap-2.5 bg-rose-50/40 border border-rose-200/70 rounded-xl p-2.5">
-                  <div className="space-y-1">
-                    <Label className="text-[10px] font-bold uppercase tracking-wider text-rose-800">
-                      Affected Garment / Item
-                    </Label>
-                    <Input
-                      value={affectedItem}
-                      onChange={(e) => setAffectedItem(e.target.value)}
-                      disabled={!canEditTaskDetails}
-                      placeholder="e.g. White Linen Shirt x1"
-                      className="h-8 text-xs bg-white border-rose-200/80"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-[10px] font-bold uppercase tracking-wider text-rose-800">
-                      Customer Channel
-                    </Label>
-                    <select
-                      value={contactChannel}
-                      onChange={(e) => setContactChannel(e.target.value)}
-                      disabled={!canEditTaskDetails}
-                      className="w-full h-8 text-xs font-semibold border border-rose-200/80 rounded-lg px-2 bg-white text-slate-800"
-                    >
-                      <option value="WHATSAPP">💬 WhatsApp</option>
-                      <option value="LINE">🟢 LINE OA</option>
-                      <option value="PHONE">📞 Phone Call</option>
-                      <option value="WALK_IN">🏪 Walk-In / Branch</option>
-                      <option value="EMAIL">✉️ Email</option>
-                    </select>
-                  </div>
-                </div>
-              )}
-
-              {/* Priority & Status */}
-              <div className="grid grid-cols-2 gap-2.5">
-                <div className="space-y-1">
-                  <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-                    Priority {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
-                  </Label>
-                  <select
-                    value={priority}
-                    onChange={(e) => {
-                      const newP = e.target.value as TaskPriority;
-                      setPriority(newP);
-                      if (!initialTask) {
-                        setDueDate(getAutoDueDateString(newP));
-                      }
-                    }}
-                    disabled={!canEditTaskDetails}
-                    className={`w-full h-8.5 text-xs font-medium border rounded-lg px-2 transition-all ${
-                      !canEditTaskDetails
-                        ? "bg-slate-100 text-slate-600 cursor-not-allowed border-slate-200"
-                        : "bg-white border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 cursor-pointer"
-                    }`}
-                  >
-                    {Object.entries(PRIORITY_CONFIG).map(([k, v]) => (
-                      <option key={k} value={k}>{v.icon} {v.label} ({v.dueHint})</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="space-y-1">
-                  <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
-                    Status
-                  </Label>
-                  <select
-                    value={status}
-                    onChange={(e) => setStatus(e.target.value as TaskStatus)}
-                    className="w-full h-8.5 text-xs font-semibold border border-slate-200 rounded-lg px-2 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 bg-white text-slate-800 cursor-pointer"
-                  >
-                    <option value="todo">📋 To Do</option>
-                    <option value="in_progress">⚡ In Progress</option>
-                    <option value="stuck">⚠️ Stuck</option>
-                    <option value="done">✅ Done</option>
-                  </select>
-                </div>
-              </div>
-
               {/* Assign To (Multi-Select Tags / Chips + Auto-complete Dropdown) */}
               <div className="space-y-1 relative" ref={assigneeContainerRef}>
                 <div className="flex items-center justify-between">
-                  <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                  <Label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
                     Assign To {!canEditAssignees && <Lock size={10} className="text-amber-500" />}
                   </Label>
                   {selectedAssignees.length > 0 && (
@@ -2947,7 +2887,7 @@ export function TaskFormModal({
                       assigneeInputRef.current?.focus();
                     }
                   }}
-                  className={`min-h-[38px] p-1.5 flex flex-wrap items-center gap-1.5 rounded-lg border transition-all cursor-text ${
+                  className={`min-h-[34px] max-h-[58px] overflow-y-auto p-1 flex flex-wrap items-center gap-1 rounded-lg border transition-all cursor-text ${
                     !canEditAssignees
                       ? "bg-slate-100 border-slate-200 cursor-not-allowed"
                       : assigneeDropdownOpen
@@ -2958,10 +2898,10 @@ export function TaskFormModal({
                   {selectedAssignees.map((assignee) => (
                     <span
                       key={assignee.id}
-                      className="inline-flex items-center gap-1 bg-indigo-50 border border-indigo-200 text-indigo-800 text-[11px] font-semibold px-2 py-0.5 rounded-md shadow-2xs group"
+                      className="inline-flex items-center gap-1 bg-indigo-50 border border-indigo-200 text-indigo-800 text-[10.5px] font-semibold px-1.5 py-0.5 rounded-md shadow-2xs group"
                     >
-                      <User size={11} className="text-indigo-600 shrink-0" />
-                      <span className="truncate max-w-[130px]">{assignee.name}</span>
+                      <User size={10} className="text-indigo-600 shrink-0" />
+                      <span className="truncate max-w-[115px]">{assignee.name}</span>
                       {assignee.role && (
                         <span className="text-[9px] text-indigo-500 font-normal">
                           ({ROLE_LABELS[assignee.role] || assignee.role})
@@ -2977,14 +2917,14 @@ export function TaskFormModal({
                           className="text-indigo-400 hover:text-red-500 hover:bg-indigo-100/60 p-0.5 rounded transition-colors ml-0.5 cursor-pointer"
                           title={`Remove ${assignee.name}`}
                         >
-                          <X size={11} />
+                          <X size={10} />
                         </button>
                       )}
                     </span>
                   ))}
 
                   {canEditAssignees && (
-                    <div className="flex-1 min-w-[120px] flex items-center">
+                    <div className="flex-1 min-w-[100px] flex items-center">
                       <input
                         ref={assigneeInputRef}
                         type="text"
@@ -3132,17 +3072,17 @@ export function TaskFormModal({
               </div>
 
               {/* Due Date & Order No. / Linked Job ID */}
-              <div className="grid grid-cols-2 gap-2.5">
-                <div className="space-y-1">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-0.5">
                   <div className="flex items-center justify-between">
-                    <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                    <Label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
                       Due Date {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
                     </Label>
                     {canEditTaskDetails && (
                       <button
                         type="button"
                         onClick={() => setDueDate(getAutoDueDateString(priority))}
-                        className="text-[10px] text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer"
+                        className="text-[9.5px] text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer"
                         title="Auto-set due date based on priority"
                       >
                         Auto: {PRIORITY_CONFIG[priority]?.dueHint}
@@ -3154,23 +3094,111 @@ export function TaskFormModal({
                     value={dueDate}
                     onChange={(e) => setDueDate(e.target.value)}
                     disabled={!canEditTaskDetails}
-                    className={`h-8.5 text-xs ${!canEditTaskDetails ? "bg-slate-100 text-slate-500 cursor-not-allowed border-slate-200" : ""}`}
+                    className={`h-8 text-xs ${!canEditTaskDetails ? "bg-slate-100 text-slate-500 cursor-not-allowed border-slate-200" : ""}`}
                   />
                 </div>
 
-                <div className="space-y-1">
-                  <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-                    <Hash size={11} className="text-indigo-600" /> Order No. / Job ID {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
+                <div className="space-y-0.5">
+                  <Label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                    <Hash size={10.5} className="text-indigo-600" /> Order No. / Job ID {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
                   </Label>
                   <Input
                     value={jobId}
                     onChange={(e) => setJobId(e.target.value)}
                     disabled={!canEditTaskDetails}
                     placeholder="e.g. 2026002684 or Bill#"
-                    className={`h-8.5 text-xs font-mono ${!canEditTaskDetails ? "bg-slate-100 text-slate-600 cursor-not-allowed border-slate-200" : ""}`}
+                    className={`h-8 text-xs font-mono ${!canEditTaskDetails ? "bg-slate-100 text-slate-600 cursor-not-allowed border-slate-200" : ""}`}
                   />
                 </div>
               </div>
+
+              {/* Optional Affected Item & Contact Channel when Complaint / Feedback / Customer linked */}
+              {(taskType === "complaint" || taskType === "feedback" || linkedCustomer || affectedItem) && (
+                <div className="grid grid-cols-2 gap-2 bg-rose-50/40 border border-rose-200/70 rounded-xl p-2">
+                  <div className="space-y-0.5">
+                    <Label className="text-[9.5px] font-bold uppercase tracking-wider text-rose-800">
+                      Affected Garment / Item
+                    </Label>
+                    <Input
+                      value={affectedItem}
+                      onChange={(e) => setAffectedItem(e.target.value)}
+                      disabled={!canEditTaskDetails}
+                      placeholder="e.g. White Linen Shirt x1"
+                      className="h-7.5 text-xs bg-white border-rose-200/80"
+                    />
+                  </div>
+                  <div className="space-y-0.5">
+                    <Label className="text-[9.5px] font-bold uppercase tracking-wider text-rose-800">
+                      Customer Channel
+                    </Label>
+                    <select
+                      value={contactChannel}
+                      onChange={(e) => setContactChannel(e.target.value)}
+                      disabled={!canEditTaskDetails}
+                      className="w-full h-7.5 text-xs font-semibold border border-rose-200/80 rounded-lg px-2 bg-white text-slate-800"
+                    >
+                      <option value="WHATSAPP">💬 WhatsApp</option>
+                      <option value="LINE">🟢 LINE OA</option>
+                      <option value="PHONE">📞 Phone Call</option>
+                      <option value="WALK_IN">🏪 Walk-In / Branch</option>
+                      <option value="EMAIL">✉️ Email</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {/* Priority & Status */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-0.5">
+                  <Label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                    Priority {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
+                  </Label>
+                  <select
+                    value={priority}
+                    onChange={(e) => {
+                      const newP = e.target.value as TaskPriority;
+                      setPriority(newP);
+                      if (!initialTask) {
+                        setDueDate(getAutoDueDateString(newP));
+                      }
+                    }}
+                    disabled={!canEditTaskDetails}
+                    className={`w-full h-8 text-xs font-medium border rounded-lg px-2 transition-all ${
+                      !canEditTaskDetails
+                        ? "bg-slate-100 text-slate-600 cursor-not-allowed border-slate-200"
+                        : "bg-white border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 cursor-pointer"
+                    }`}
+                  >
+                    {Object.entries(PRIORITY_CONFIG).map(([k, v]) => (
+                      <option key={k} value={k}>{v.icon} {v.label} ({v.dueHint})</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-0.5">
+                  <Label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-700">
+                    Status
+                  </Label>
+                  <select
+                    value={status}
+                    onChange={(e) => setStatus(e.target.value as TaskStatus)}
+                    className="w-full h-8 text-xs font-semibold border border-slate-200 rounded-lg px-2 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 bg-white text-slate-800 cursor-pointer"
+                  >
+                    <option value="todo">📋 To Do</option>
+                    <option value="in_progress">⚡ In Progress</option>
+                    <option value="stuck">⚠️ Stuck</option>
+                    <option value="done">✅ Done</option>
+                  </select>
+                </div>
+              </div>
+          </div>
+
+          {/* ─── COLUMN 2: Linked Order Lookup & Customer CRM ─── */}
+          <div className={`${
+            initialTask ? "lg:col-span-3" : "lg:col-span-4"
+          } flex flex-col min-h-0 overflow-y-auto overflow-x-hidden pr-1 space-y-2 lg:border-l lg:border-slate-200/80 lg:pl-3.5 ${mobileTab === "info" ? "flex" : "hidden lg:flex"}`}>
+
+              {/* Live Linked Order Preview Card */}
 
               {/* 📸 Linked Order Live Card / Loading State */}
               {loadingJob && (
@@ -3181,7 +3209,7 @@ export function TaskFormModal({
               )}
 
               {Boolean(jobId && jobId.trim().length >= 4 && !loadingJob && linkedJob) && (
-                <div className="bg-indigo-50/60 border border-indigo-200/80 rounded-xl p-2.5 space-y-2">
+                <div className="bg-indigo-50/60 border border-indigo-200/80 rounded-xl p-2 space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-950 truncate">
                       <ShoppingBag size={13} className="text-indigo-600 shrink-0" />
@@ -3225,7 +3253,7 @@ export function TaskFormModal({
                         <span className="text-[10px] text-indigo-600 font-medium">Click to zoom</span>
                       </div>
 
-                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-44 overflow-y-auto p-1.5 bg-white/95 rounded-xl border border-indigo-100/90 shadow-2xs">
+                      <div className="grid grid-cols-4 gap-1.5 max-h-24 overflow-y-auto p-1 bg-white/95 rounded-lg border border-indigo-100/90 shadow-2xs">
                         {jobPhotos.map((photo, idx) => (
                           <button
                             key={idx}
@@ -3260,7 +3288,7 @@ export function TaskFormModal({
               )}
 
               {/* 👤 Customer CRM Integration Section (Search OR Auto-Loaded from Order No.) */}
-              <div className="bg-purple-50/50 border border-purple-200/80 rounded-xl p-2.5 space-y-2">
+              <div className="bg-purple-50/50 border border-purple-200/80 rounded-xl p-2 space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
                   <Label className="text-[10.5px] font-black uppercase tracking-wider text-purple-900 flex items-center gap-1.5">
                     <Users size={12} className="text-purple-600" />
@@ -3328,7 +3356,7 @@ export function TaskFormModal({
                 )}
 
                 {linkedCustomer && !loadingCustomerCrm && (
-                  <div className="bg-white border border-purple-200/80 rounded-lg p-2.5 space-y-2 shadow-2xs">
+                  <div className="bg-white border border-purple-200/80 rounded-lg p-2 space-y-1.5 shadow-2xs">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-1.5">
@@ -3368,7 +3396,7 @@ export function TaskFormModal({
                     </div>
 
                     {/* CRM Metrics Strip */}
-                    <div className="grid grid-cols-3 gap-1.5 text-center bg-slate-50 rounded-lg p-1.5 border border-slate-100">
+                    <div className="grid grid-cols-3 gap-1.5 text-center bg-slate-50 rounded-lg p-1 border border-slate-100">
                       <div>
                         <span className="text-[9px] text-slate-400 font-bold uppercase block">Wallet</span>
                         <span className={`text-[11px] font-black ${Number(linkedCustomer.creditBalance || 0) < 0 ? "text-rose-600" : "text-emerald-700"}`}>
@@ -3395,7 +3423,7 @@ export function TaskFormModal({
                         <span className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider block">
                           Recent Orders (Click to link):
                         </span>
-                        <div className="flex flex-wrap gap-1 max-h-16 overflow-y-auto">
+                        <div className="flex flex-wrap gap-1 max-h-12 overflow-y-auto">
                           {linkedCustomer.recentJobs.slice(0, 6).map((rj: any) => (
                             <button
                               key={rj.id}
@@ -3420,7 +3448,7 @@ export function TaskFormModal({
                         <span className="text-[9.5px] font-bold text-purple-800 uppercase tracking-wider block">
                           Recorded CRM History ({effectiveCustomerTasksHistory.length})
                         </span>
-                        <div className="space-y-1 max-h-28 overflow-y-auto pr-0.5">
+                        <div className="space-y-1 max-h-20 overflow-y-auto pr-0.5">
                           {effectiveCustomerTasksHistory
                             .slice(0, 6)
                             .map((ht) => (
@@ -3450,17 +3478,116 @@ export function TaskFormModal({
                   </div>
                 )}
 
-                <p className="text-[10px] text-purple-800/80 font-medium">
-                  ✓ All tasks, complaints, and feedbacks linked to an order or customer are automatically recorded in Customer CRM.
+                <p className="text-[9.5px] text-purple-800/80 font-medium leading-tight">
+                  ✓ Linked orders & CRM tasks auto-sync to Customer Profile.
                 </p>
               </div>
-            </form>
           </div>
 
-          {/* ─── COLUMN 2: Checklist & Attachments ─── */}
+          {/* ─── COLUMN 3: Attachments & Checklist ─── */}
           <div className={`${
-            initialTask ? "lg:col-span-4" : "lg:col-span-1"
-          } flex flex-col min-h-0 overflow-y-auto pr-1 space-y-3.5 lg:border-l lg:border-slate-200/80 lg:pl-5 ${mobileTab === "checklist" ? "flex" : "hidden lg:flex"}`}>
+            initialTask ? "lg:col-span-3" : "lg:col-span-4"
+          } flex flex-col min-h-0 overflow-y-auto pr-1 space-y-2.5 lg:border-l lg:border-slate-200/80 lg:pl-3.5 ${mobileTab === "checklist" ? "flex" : "hidden lg:flex"}`}>
+            {/* Task Attachments Section with Drag & Drop */}
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (canEditAttachments) setIsDraggingModalFiles(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDraggingModalFiles(false);
+              }}
+              onDrop={async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDraggingModalFiles(false);
+                if (canEditAttachments && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  await processModalFiles(e.dataTransfer.files);
+                }
+              }}
+              className={`space-y-2 pb-2.5 border-b border-slate-100 shrink-0 rounded-xl transition-all ${
+                isDraggingModalFiles ? "bg-indigo-50/70 p-2 border-indigo-300 ring-2 ring-indigo-400 ring-dashed" : ""
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                  <Paperclip size={13} className="text-indigo-600" />
+                  Attachments {attachments.length > 0 && `(${attachments.length})`}
+                </Label>
+                {canEditAttachments && (
+                  <button
+                    type="button"
+                    onClick={() => modalFileInputRef.current?.click()}
+                    disabled={uploading}
+                    className="text-xs text-indigo-600 hover:text-indigo-700 font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    {uploading ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                    Upload File
+                  </button>
+                )}
+                <input
+                  ref={modalFileInputRef}
+                  type="file"
+                  multiple
+                  onChange={handleFileUpload}
+                  className="hidden"
+                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt"
+                />
+              </div>
+
+              {/* Uploaded attachments gallery */}
+              {attachments.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="p-1.5 bg-slate-50/80 border border-slate-200 rounded-xl max-h-32 overflow-y-auto">
+                    <AttachmentsGallery
+                      attachments={attachments}
+                      onDelete={canEditAttachments ? (attId) => setAttachments((prev) => prev.filter((a) => a.id !== attId)) : undefined}
+                      onPreviewImage={onPreviewImage}
+                      imageSize="normal"
+                    />
+                  </div>
+
+                  {canEditAttachments && (
+                    <div
+                      onClick={() => modalFileInputRef.current?.click()}
+                      className={`border border-dashed rounded-lg p-2 text-center cursor-pointer transition-all flex items-center justify-center gap-1.5 text-xs ${
+                        isDraggingModalFiles
+                          ? "border-indigo-500 bg-indigo-100/70 text-indigo-800 font-bold"
+                          : "border-slate-200 hover:border-indigo-300 bg-white hover:bg-slate-50 text-slate-500"
+                      }`}
+                    >
+                      <UploadCloud size={14} className={isDraggingModalFiles ? "text-indigo-600 animate-bounce" : "text-slate-400"} />
+                      <span>{isDraggingModalFiles ? "Drop files to add" : "+ Drag & Drop or click to add more files"}</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                canEditAttachments ? (
+                  <div
+                    onClick={() => modalFileInputRef.current?.click()}
+                    className={`border-2 border-dashed rounded-xl p-2 text-center cursor-pointer transition-all ${
+                      isDraggingModalFiles
+                        ? "border-indigo-500 bg-indigo-50 text-indigo-800 ring-2 ring-indigo-300 scale-[1.01]"
+                        : "border-slate-200 hover:border-indigo-300 bg-slate-50/50 hover:bg-indigo-50/30 text-slate-500"
+                    }`}
+                  >
+                    <UploadCloud size={15} className={`mx-auto mb-0.5 ${isDraggingModalFiles ? "text-indigo-600 animate-bounce" : "text-slate-400"}`} />
+                    <p className="text-xs font-semibold">
+                      {isDraggingModalFiles ? "Drop files to upload immediately" : "Click to upload or Drag & Drop images/files here"}
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Supports PNG, JPG, WebP, PDF, Documents</p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-400 italic p-2 bg-slate-50 rounded-lg border border-slate-100">
+                    No attachments uploaded
+                  </p>
+                )
+              )}
+            </div>
+
             {/* Checklist Section */}
             <div className="space-y-2 flex-1 flex flex-col min-h-0">
               <div className="flex items-center justify-between shrink-0">
@@ -3497,12 +3624,12 @@ export function TaskFormModal({
               )}
 
               {/* Checklist Items list */}
-              <div className="space-y-1.5 bg-slate-50/80 border border-slate-200 rounded-xl p-2 flex-1 min-h-[140px] max-h-[260px] overflow-y-auto">
+              <div className="space-y-1 bg-slate-50/80 border border-slate-200 rounded-xl p-1.5 flex-1 min-h-[100px] max-h-none overflow-y-auto">
                 {checklist.length > 0 ? (
                   checklist.map((item) => (
                     <div
                       key={item.id}
-                      className={`flex items-start justify-between gap-2 p-2 rounded-lg text-xs transition-colors group ${
+                      className={`flex items-start justify-between gap-2 p-1.5 rounded-lg text-xs transition-colors group ${
                         item.completed ? "bg-emerald-50/70 border border-emerald-100 shadow-2xs" : "bg-white border border-slate-200 hover:border-slate-300 shadow-2xs"
                       }`}
                     >
@@ -3574,111 +3701,11 @@ export function TaskFormModal({
                 </div>
               )}
             </div>
-
-            {/* Task Attachments Section with Drag & Drop */}
-            <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (canEditAttachments) setIsDraggingModalFiles(true);
-              }}
-              onDragLeave={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsDraggingModalFiles(false);
-              }}
-              onDrop={async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsDraggingModalFiles(false);
-                if (canEditAttachments && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                  await processModalFiles(e.dataTransfer.files);
-                }
-              }}
-              className={`space-y-2 pt-2.5 border-t border-slate-100 shrink-0 rounded-xl transition-all ${
-                isDraggingModalFiles ? "bg-indigo-50/70 p-2 border-indigo-300 ring-2 ring-indigo-400 ring-dashed" : ""
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <Label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                  <Paperclip size={13} className="text-indigo-600" />
-                  Attachments {attachments.length > 0 && `(${attachments.length})`}
-                </Label>
-                {canEditAttachments && (
-                  <button
-                    type="button"
-                    onClick={() => modalFileInputRef.current?.click()}
-                    disabled={uploading}
-                    className="text-xs text-indigo-600 hover:text-indigo-700 font-bold flex items-center gap-1 cursor-pointer"
-                  >
-                    {uploading ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
-                    Upload File
-                  </button>
-                )}
-                <input
-                  ref={modalFileInputRef}
-                  type="file"
-                  multiple
-                  onChange={handleFileUpload}
-                  className="hidden"
-                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt"
-                />
-              </div>
-
-              {/* Uploaded attachments gallery */}
-              {attachments.length > 0 ? (
-                <div className="space-y-2">
-                  <div className="p-2 bg-slate-50/80 border border-slate-200 rounded-xl max-h-52 overflow-y-auto">
-                    <AttachmentsGallery
-                      attachments={attachments}
-                      onDelete={canEditAttachments ? (attId) => setAttachments((prev) => prev.filter((a) => a.id !== attId)) : undefined}
-                      onPreviewImage={onPreviewImage}
-                      imageSize="normal"
-                    />
-                  </div>
-
-                  {canEditAttachments && (
-                    <div
-                      onClick={() => modalFileInputRef.current?.click()}
-                      className={`border border-dashed rounded-lg p-2 text-center cursor-pointer transition-all flex items-center justify-center gap-1.5 text-xs ${
-                        isDraggingModalFiles
-                          ? "border-indigo-500 bg-indigo-100/70 text-indigo-800 font-bold"
-                          : "border-slate-200 hover:border-indigo-300 bg-white hover:bg-slate-50 text-slate-500"
-                      }`}
-                    >
-                      <UploadCloud size={14} className={isDraggingModalFiles ? "text-indigo-600 animate-bounce" : "text-slate-400"} />
-                      <span>{isDraggingModalFiles ? "Drop files to add" : "+ Drag & Drop or click to add more files"}</span>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                canEditAttachments ? (
-                  <div
-                    onClick={() => modalFileInputRef.current?.click()}
-                    className={`border-2 border-dashed rounded-xl p-3 text-center cursor-pointer transition-all ${
-                      isDraggingModalFiles
-                        ? "border-indigo-500 bg-indigo-50 text-indigo-800 ring-2 ring-indigo-300 scale-[1.01]"
-                        : "border-slate-200 hover:border-indigo-300 bg-slate-50/50 hover:bg-indigo-50/30 text-slate-500"
-                    }`}
-                  >
-                    <UploadCloud size={18} className={`mx-auto mb-1 ${isDraggingModalFiles ? "text-indigo-600 animate-bounce" : "text-slate-400"}`} />
-                    <p className="text-xs font-semibold">
-                      {isDraggingModalFiles ? "Drop files to upload immediately" : "Click to upload or Drag & Drop images/files here"}
-                    </p>
-                    <p className="text-[10px] text-slate-400 mt-0.5">Supports PNG, JPG, WebP, PDF, Documents</p>
-                  </div>
-                ) : (
-                  <p className="text-xs text-slate-400 italic p-2 bg-slate-50 rounded-lg border border-slate-100">
-                    No attachments uploaded
-                  </p>
-                )
-              )}
-            </div>
           </div>
 
-          {/* ─── COLUMN 3: Notes / Chat & Activity Logs (Only for existing tasks) ─── */}
+          {/* ─── COLUMN 4: Notes / Chat & Activity Logs (Only for existing tasks) ─── */}
           {initialTask && (
-            <div className={`lg:col-span-4 flex flex-col min-h-0 lg:border-l lg:border-slate-200/80 lg:pl-5 ${mobileTab === "chat" ? "flex" : "hidden lg:flex"}`}>
+            <div className={`lg:col-span-3 flex flex-col min-h-0 lg:border-l lg:border-slate-200/80 lg:pl-3.5 ${mobileTab === "chat" ? "flex" : "hidden lg:flex"}`}>
               <NotesPanel
                 task={initialTask}
                 currentUserId={currentUserId}
@@ -3689,7 +3716,7 @@ export function TaskFormModal({
               />
             </div>
           )}
-        </div>
+        </form>
 
         {/* Footer */}
         <DialogFooter className="pt-3 border-t border-slate-100 shrink-0 flex items-center justify-between gap-2">

@@ -1434,3 +1434,146 @@ export function optimizeSmartRiderRoute<T>(
   return simulateRouteExecution(start, finalOrderedTasks, smartEvalOptions);
 }
 
+// ============================================================================
+// SMART AUTO-SUGGEST / AUTO-ASSIGN ENGINE
+// Matches unassigned tasks to nearby active riders based on live GPS,
+// existing route proximity, detour km, laundry branch, and SLA safety.
+// ============================================================================
+
+export interface CandidateRiderForAutoAssign<T = any> {
+  riderId: string;
+  riderName: string;
+  riderNickname?: string | null;
+  status: string;
+  area?: string | null;
+  origin: LatLng;
+  hasLiveGps?: boolean;
+  currentTasks: T[];
+  baseEval?: SimulatedRouteEvaluation<T>;
+}
+
+export interface RiderAutoAssignSuggestion {
+  riderId: string;
+  riderName: string;
+  riderNickname?: string | null;
+  detourKm: number;
+  distFromRiderKm: number;
+  distToNearestStopKm: number;
+  insertedStopNumber: number;
+  score: number;
+  reason: string;
+}
+
+export interface SuggestRiderOptions {
+  branches?: RouteBranchInfo[];
+  referenceTime?: Date;
+  maxRadiusKm?: number;
+  maxStopsPerRider?: number;
+  jobArea?: string | null;
+}
+
+export function suggestBestRiderForTask<T extends { taskId?: string; targetCoords?: LatLng | null; legType?: string }>(
+  task: T,
+  candidates: CandidateRiderForAutoAssign<T>[],
+  options: SuggestRiderOptions = {}
+): RiderAutoAssignSuggestion | null {
+  if (!task || !hasNonZeroCoords(task.targetCoords)) return null;
+  if (task.legType === "delivery" && !isDeliveryTaskLaundryReady(task)) return null;
+
+  const maxRadiusKm = options.maxRadiusKm ?? 3.5;
+  const maxStops = options.maxStopsPerRider ?? 10;
+  const refTime = options.referenceTime || new Date();
+  const branches = options.branches || [];
+  const jobAreaUpper = (options.jobArea || "").toUpperCase();
+
+  let best: RiderAutoAssignSuggestion | null = null;
+
+  for (const cand of candidates) {
+    if (!["online", "busy"].includes((cand.status || "").toLowerCase())) continue;
+    if (cand.currentTasks.length >= maxStops) continue;
+    if (jobAreaUpper && cand.area && cand.area.toUpperCase() !== jobAreaUpper) continue;
+
+    const distFromRiderKm = hasNonZeroCoords(cand.origin)
+      ? calculateEstimatedDistanceKm(cand.origin, task.targetCoords)
+      : Infinity;
+
+    let distToNearestStopKm = Infinity;
+    for (const t of cand.currentTasks) {
+      if (hasNonZeroCoords(t.targetCoords)) {
+        const d = calculateEstimatedDistanceKm(t.targetCoords, task.targetCoords);
+        if (d < distToNearestStopKm) distToNearestStopKm = d;
+      }
+    }
+
+    // Fast spatial pre-filter before running route simulation
+    const minDirectDist = Math.min(distFromRiderKm, distToNearestStopKm);
+    if (minDirectDist > maxRadiusKm * 1.4) continue;
+
+    const baseEval =
+      cand.baseEval ||
+      optimizeSmartRiderRoute(cand.origin, cand.currentTasks, {
+        branches,
+        referenceTime: refTime,
+        fallbackOriginCoords: cand.origin,
+        respectStrictTimeWindows: true,
+      });
+
+    const afterEval = optimizeSmartRiderRoute(cand.origin, [...cand.currentTasks, task], {
+      branches,
+      referenceTime: refTime,
+      fallbackOriginCoords: cand.origin,
+      respectStrictTimeWindows: true,
+    });
+
+    const detourKm = Math.max(0, Math.round((afterEval.totalRealDistanceKm - baseEval.totalRealDistanceKm) * 10) / 10);
+    const addedLate = Math.max(0, afterEval.lateStopsCount - baseEval.lateStopsCount);
+    if (addedLate > 0) continue; // Never auto-suggest if it makes existing or new stops late
+
+    const isNearby =
+      distFromRiderKm <= maxRadiusKm ||
+      distToNearestStopKm <= Math.min(2.8, maxRadiusKm) ||
+      detourKm <= maxRadiusKm;
+
+    if (!isNearby) continue;
+
+    const insertedStop =
+      afterEval.stops.find((s) => (s.task as any)?.taskId === task.taskId || s.task === task)?.stopNumber ||
+      afterEval.stops.length;
+
+    const score =
+      detourKm * 1.0 +
+      Math.min(distFromRiderKm, distToNearestStopKm) * 0.35 +
+      cand.currentTasks.length * 0.25;
+
+    let reason = "";
+    if (distToNearestStopKm <= 0.15) {
+      reason = "Same building/condo stop (ตึกเดียวกัน)";
+    } else if (cand.hasLiveGps && distFromRiderKm <= 1.8) {
+      reason = `Near Rider GPS (${distFromRiderKm} km / ใกล้ตัวไรเดอร์)`;
+    } else if (detourKm <= 1.5 && cand.currentTasks.length > 0) {
+      reason = `On current route (+${detourKm} km / ผ่านเส้นทางพอดี)`;
+    } else if (distToNearestStopKm <= 2.5) {
+      reason = `Near stop (${distToNearestStopKm} km / ใกล้จุดแวะในสาย)`;
+    } else {
+      reason = `Nearby zone (+${detourKm} km / โซนใกล้เคียง)`;
+    }
+
+    if (!best || score < best.score) {
+      best = {
+        riderId: cand.riderId,
+        riderName: cand.riderName,
+        riderNickname: cand.riderNickname,
+        detourKm,
+        distFromRiderKm: Number.isFinite(distFromRiderKm) ? distFromRiderKm : 0,
+        distToNearestStopKm: Number.isFinite(distToNearestStopKm) ? distToNearestStopKm : 0,
+        insertedStopNumber: insertedStop,
+        score,
+        reason,
+      };
+    }
+  }
+
+  return best;
+}
+
+

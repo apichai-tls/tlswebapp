@@ -3196,8 +3196,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       let targetProformaNum = proformaReceiptNumber;
       let effectiveRevision = proformaRevision;
 
-      if (!targetProformaNum && loadedJobId) {
-        // Existing job — generate proforma from job ID
+      if (!targetProformaNum && loadedJobId && !isBeamOnlinePre && willBeShopPaid && cart.length > 0) {
+        // Existing job being paid — generate proforma from job ID
         targetProformaNum = generateProformaBaseNumber(loadedJobId);
         effectiveRevision = 0;
         setProformaReceiptNumber(targetProformaNum);
@@ -3469,9 +3469,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           proformaCartHash: targetProformaNum ? (currentCartHash || undefined) : undefined,
         });
 
-        // For new POS jobs: generate proforma from real job ID now that we have it
-        // Guard: Only auto-assign proforma if cart has actual laundry items!
-        if (finalJob && !targetProformaNum && cart.length > 0) {
+        // For new POS jobs: generate proforma from real job ID only if paid (or explicitly generated) with actual items!
+        if (finalJob && !targetProformaNum && isPaidFlag && cart.length > 0) {
           targetProformaNum = (finalJob as any).proformaNumber || generateProformaBaseNumber(finalJob.id);
           effectiveRevision = 0;
           setProformaReceiptNumber(targetProformaNum);
