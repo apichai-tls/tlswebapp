@@ -188,10 +188,10 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
 
   // Default to "calendar" (Schedule Calendar on Left, Rider Route Board on Right, plus Admin-only Lab tabs)
   const isAdminUser = user?.role === "admin";
-  const [dispatchTab, setDispatchTab] = useState<"calendar" | "board" | "compare" | "auto_sim">("calendar");
+  const [dispatchTab, setDispatchTab] = useState<"calendar" | "board" | "compare" | "auto_sim" | "auto_live">("calendar");
 
   useEffect(() => {
-    if (!isAdminUser && (dispatchTab === "compare" || dispatchTab === "auto_sim")) {
+    if (!isAdminUser && (dispatchTab === "compare" || dispatchTab === "auto_sim" || dispatchTab === "auto_live")) {
       setDispatchTab("calendar");
     }
   }, [isAdminUser, dispatchTab]);
@@ -1173,6 +1173,24 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                       Sim
                     </span>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDispatchTab("auto_live")}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                      dispatchTab === "auto_live"
+                        ? "bg-emerald-600 text-white shadow-xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <Sparkles size={14} className={dispatchTab === "auto_live" ? "text-amber-300" : "text-emerald-600"} />
+                    <span>Auto-Assign Live</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                      dispatchTab === "auto_live" ? "bg-white text-emerald-700" : "bg-emerald-100 text-emerald-700"
+                    }`}>
+                      Live
+                    </span>
+                  </button>
                 </>
               )}
             </div>
@@ -1212,7 +1230,8 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
             </div>
           </div>
 
-          {/* Row 2: Rider Filter Strip & Route Optimization Summary */}
+          {/* Row 2: Rider Filter Strip & Route Optimization Summary (hidden in Auto-Assign Sim/Live tabs) */}
+          {dispatchTab !== "auto_sim" && dispatchTab !== "auto_live" && (
           <div className="flex items-center justify-between gap-3 flex-wrap pt-2 border-t border-slate-100">
             <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar py-0.5 flex-1">
               <span className="text-xs font-black uppercase tracking-wider text-slate-500 shrink-0 mr-1 flex items-center gap-1.5">
@@ -1301,6 +1320,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
               </span>
             </button>
           </div>
+          )}
 
           {/* Row 3: Sub-Toolbar for Rider Route Board: Easy Filters & Search */}
           {dispatchTab === "board" && (
@@ -1501,6 +1521,22 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
           /* TAB 4: AUTO-ASSIGN SIMULATION LAB (ADMIN ONLY, VIRTUAL SANDBOX)       */
           /* ===================================================================== */
           <AdminDispatchAutoSim
+            mode="sim"
+            allJobs={allJobs}
+            riders={filteredRiders}
+            shopLocations={shopLocations}
+            effectiveArea={effectiveArea}
+            isAreaRestricted={isAreaRestricted}
+            allowedBranchIds={allowedBranchIds}
+            getRiderOriginCoords={getRiderOriginCoords}
+            onOpenJobDetail={openJobDetail}
+          />
+        ) : isAdminUser && dispatchTab === "auto_live" ? (
+          /* ===================================================================== */
+          /* TAB 5: AUTO-ASSIGN LIVE QUEUE (ADMIN ONLY, READ-ONLY PRODUCTION PULL) */
+          /* ===================================================================== */
+          <AdminDispatchAutoSim
+            mode="live_shadow"
             allJobs={allJobs}
             riders={filteredRiders}
             shopLocations={shopLocations}

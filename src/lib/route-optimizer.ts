@@ -472,6 +472,15 @@ export interface SmartRouteOptions {
    * instead of showing up hours before the customer is ready.
    */
   respectStrictTimeWindows?: boolean;
+  /**
+   * When true, ignore time windows for non-Meetup (Lobby) tasks so routing optimizes purely by distance/zone,
+   * while STILL strictly enforcing scheduled times for Meet up stops.
+   */
+  ignoreNonMeetupTimeWindows?: boolean;
+  /**
+   * When true, ignore laundry source/return branch hubs (Soi 15 / PK) in distance, detour, and scoring.
+   */
+  ignoreBranchRouting?: boolean;
 }
 
 /**
@@ -548,7 +557,7 @@ function getBranchShortLabel(branchId?: string | null, branchName?: string | nul
   return id || "Branch";
 }
 
-function extractTaskJobProcessingBranchId(task: any): string | null {
+export function extractTaskJobProcessingBranchId(task: any): string | null {
   const job = task?.job || task;
   const adminNotesJson = job?.adminNotesJson;
   if (adminNotesJson && typeof adminNotesJson === "string") {
@@ -631,7 +640,9 @@ interface InternalSmartMeta<T> {
 function buildInternalSmartMeta<T>(
   tasks: T[],
   branches: RouteBranchInfo[],
-  referenceTime: Date
+  referenceTime: Date,
+  ignoreNonMeetupTimeWindows = false,
+  ignoreBranchRouting = false
 ): InternalSmartMeta<T>[] {
   const branchMap = new Map<string, RouteBranchInfo>();
   for (const b of branches) {
@@ -667,13 +678,12 @@ function buildInternalSmartMeta<T>(
     const isLaundryReady = legType === "pickup" ? true : isDeliveryTaskLaundryReady(t);
     const handoverMode = extractTaskHandoverMode(t);
     // Core Business Rule:
-    // - Delivery + Ready + Lobby -> can enter & drop off at Lobby anytime early!
-    // - Delivery + Meet up -> must arrive on time!
-    // - Pickup (both Lobby & Meet up) -> must arrive on time (customer may not place bag early)!
-    const canArriveEarlyAnytime =
-      legType === "delivery" && isLaundryReady && handoverMode === "lobby";
+    // - Normally, neither Pickup nor Delivery (even Lobby) should be served hours early.
+    // - When `ignoreNonMeetupTimeWindows` is true, Lobby jobs ignore time windows (route purely by distance/zone),
+    //   while Meet up jobs STILL strictly enforce their scheduled time windows.
+    const canArriveEarlyAnytime = ignoreNonMeetupTimeWindows && handoverMode !== "meetup";
 
-    const sourceBranchId = extractTaskJobProcessingBranchId(t);
+    const sourceBranchId = ignoreBranchRouting ? null : extractTaskJobProcessingBranchId(t);
     const branchObj = sourceBranchId ? branchMap.get(sourceBranchId) : undefined;
     const sourceBranchCoords = hasNonZeroCoords(branchObj?.coords) ? branchObj!.coords! : null;
     const sourceBranchName = branchObj?.name || sourceBranchId || null;
@@ -741,6 +751,8 @@ export function simulateRouteExecution<T>(
   const refTime = options.referenceTime || new Date();
   const branches = options.branches || [];
   const respectStrictWindows = Boolean(options.respectStrictTimeWindows);
+  const ignoreNonMeetupTimeWindows = Boolean(options.ignoreNonMeetupTimeWindows);
+  const ignoreBranchRouting = Boolean(options.ignoreBranchRouting);
 
   if (!orderedTasks || orderedTasks.length === 0) {
     return {
@@ -758,7 +770,7 @@ export function simulateRouteExecution<T>(
     };
   }
 
-  const metas = buildInternalSmartMeta(orderedTasks, branches, refTime);
+  const metas = buildInternalSmartMeta(orderedTasks, branches, refTime, ignoreNonMeetupTimeWindows, ignoreBranchRouting);
 
   // Count how many READY unloaded deliveries exist per branch
   const unloadedCountByBranch = new Map<string, number>();
@@ -909,12 +921,13 @@ export function simulateRouteExecution<T>(
     const driveMinutes = realDist * 2.4;
     const rawArrivalMs = clockMs + (stepLoadMinutes + driveMinutes) * 60_000;
 
-    // For Time-Strict stops (ALL Pickups [including Lobby!] + Delivery Meet up):
-    // When `respectStrictWindows` is enabled, the rider waits/paces departure so they arrive
-    // at `scheduled - 20m` instead of showing up hours before the customer is ready.
+    // For Time-Strict stops (`Pickup` & `Delivery Lobby` -> up to 1 hr early; `Delivery Meet up` -> 20m early):
+    // When `respectStrictWindows` is enabled, the rider paces departure so they arrive
+    // no earlier than `scheduled - 60m` (or `scheduled - 20m` for Delivery Meet up).
     let arrivalMs = rawArrivalMs;
     let waitBeforeStopMinutes = 0;
-    const earliestStrictWindowMs = m.scheduledMs - 20 * 60_000;
+    const earlyAllowanceMins = m.legType === "delivery" && m.handoverMode === "meetup" ? 20 : 60;
+    const earliestStrictWindowMs = m.scheduledMs - earlyAllowanceMins * 60_000;
     if (respectStrictWindows && !m.canArriveEarlyAnytime && rawArrivalMs < earliestStrictWindowMs) {
       waitBeforeStopMinutes = Math.round((earliestStrictWindowMs - rawArrivalMs) / 60_000);
       arrivalMs = earliestStrictWindowMs;
@@ -937,15 +950,20 @@ export function simulateRouteExecution<T>(
     const minutesDiffFromSchedule = Math.round((arrivalMs - m.scheduledMs) / 60_000);
     let slaStatus: "on_time" | "early_ok" | "late" | "too_early" = "on_time";
 
-    if (minutesDiffFromSchedule > 15) {
+    const tooEarlyCutoffMins = m.legType === "delivery" && m.handoverMode === "meetup" ? -35 : -65;
+    if (ignoreNonMeetupTimeWindows && m.handoverMode !== "meetup") {
+      // Time windows disabled for non-Meetup (Lobby) stops: always treat as on_time
+      slaStatus = "on_time";
+      onTimeStopsCount++;
+    } else if (minutesDiffFromSchedule > 15) {
       slaStatus = "late";
       lateStopsCount++;
     } else if (m.canArriveEarlyAnytime) {
       // Delivery + Ready + Lobby: arriving early is 100% valid and desirable!
       slaStatus = minutesDiffFromSchedule < -25 ? "early_ok" : "on_time";
       onTimeStopsCount++;
-    } else if (minutesDiffFromSchedule < -35) {
-      // Pickup (Lobby or Meet up) OR Delivery Meet up: arriving >35m early means customer/bag isn't ready!
+    } else if (minutesDiffFromSchedule < tooEarlyCutoffMins) {
+      // Pickup: arriving >1 hr early means customer/bag may not be ready; Delivery Meet up: >35m early
       slaStatus = "too_early";
       tooEarlyStopsCount++;
     } else {
@@ -1047,16 +1065,20 @@ export function optimizeSmartRiderRoute<T>(
   const start: LatLng = hasNonZeroCoords(origin) ? origin : fallback;
   const refTime = options.referenceTime || new Date();
   const branches = options.branches || [];
+  const ignoreNonMeetupTimeWindows = Boolean(options.ignoreNonMeetupTimeWindows);
+  const ignoreBranchRouting = Boolean(options.ignoreBranchRouting);
   const smartEvalOptions: SmartRouteOptions = {
     ...options,
     respectStrictTimeWindows: options.respectStrictTimeWindows ?? true,
+    ignoreNonMeetupTimeWindows,
+    ignoreBranchRouting,
   };
 
   if (!tasks || tasks.length === 0) {
     return simulateRouteExecution(start, [], smartEvalOptions);
   }
 
-  const allMetas = buildInternalSmartMeta(tasks, branches, refTime);
+  const allMetas = buildInternalSmartMeta(tasks, branches, refTime, ignoreNonMeetupTimeWindows, ignoreBranchRouting);
 
   // Rule 1: Separate out Delivery tasks whose laundry is NOT Ready yet (`wash`, `dry`, `iron`, `billing`)
   const readyRoutableMetas = allMetas.filter((m) => m.isLaundryReady);
@@ -1173,10 +1195,10 @@ export function optimizeSmartRiderRoute<T>(
       const driveMins = stepKm * 2.4;
       const rawArrivalMs = clockMs + (loadMins + driveMins) * 60_000;
 
-      // Time-Strict stops (`Pickup` [Lobby & Meet up] + `Delivery Meet up`) cannot be served
-      // hours early — if visited early, rider must wait until `scheduled - 20m`!
-      // `Delivery (Ready + Lobby)` (`canArriveEarlyAnytime === true`) has 0 wait and can drop off immediately!
-      const earliestStrictMs = cand.scheduledMs - 20 * 60_000;
+      // Time-Strict stops (`Pickup` & `Delivery Lobby` -> up to 1 hr early; `Delivery Meet up` -> 20m early)
+      // cannot be served hours early (e.g. a 16:30 job cannot be done at 10:00)!
+      const candEarlyAllowanceMins = cand.legType === "delivery" && cand.handoverMode === "meetup" ? 20 : 60;
+      const earliestStrictMs = cand.scheduledMs - candEarlyAllowanceMins * 60_000;
       const waitMins =
         !cand.canArriveEarlyAnytime && rawArrivalMs < earliestStrictMs
           ? (earliestStrictMs - rawArrivalMs) / 60_000
@@ -1192,9 +1214,13 @@ export function optimizeSmartRiderRoute<T>(
       // 1) Base physical travel cost (km)
       let score = stepKm;
 
-      // 2) Express priority pull
-      if (cand.expLevel === 2) score -= 14.0;
-      else if (cand.expLevel === 1) score -= 7.5;
+      // 2) Express priority pull (stronger when scheduled time is approaching/due so Express arrives on time)
+      const slackMins = (cand.scheduledMs - rawArrivalMs) / 60_000;
+      if (cand.expLevel === 2) {
+        score -= slackMins <= 75 ? 20.0 : 12.0;
+      } else if (cand.expLevel === 1) {
+        score -= slackMins <= 75 ? 12.0 : 6.5;
+      }
 
       // 3) Same-building / same-condo bundling bonus
       //    Note: Only bundle same-building immediately if the second task is either Early-OK (Delivery Lobby)
@@ -1203,8 +1229,15 @@ export function optimizeSmartRiderRoute<T>(
         score -= 3.2;
       }
 
-      // 4) Branch Hub Synergy + Ready Lobby Early Drop-Off Synergy:
-      if (needsBranch && distToBranch <= 1.5) {
+      // 4) Branch Hub Synergy + Mandatory Start-At-Branch Outbound Sweep + Ready Lobby Early Drop-Off Synergy:
+      const isAlreadyPreloadedDelivery =
+        cand.legType === "delivery" &&
+        !needsBranch &&
+        Boolean(cand.sourceBranchId && visitedBranches.has(cand.sourceBranchId));
+      if (isAlreadyPreloadedDelivery) {
+        // Rider starts at the branch and loads clean laundry first -> Stop #1+ sweeps out loaded deliveries first!
+        score -= orderedValid.length === 0 ? 5.5 : 2.4;
+      } else if (needsBranch && distToBranch <= 1.5) {
         score -= Math.min(2.6, 0.7 + batchAtBranch * 0.45);
       }
       if (cand.canArriveEarlyAnytime && stepKm <= 4.5) {
@@ -1213,13 +1246,23 @@ export function optimizeSmartRiderRoute<T>(
       }
 
       // 5) Handover-Aware Time Alignment:
-      const slackMins = (cand.scheduledMs - rawArrivalMs) / 60_000;
       if (cand.canArriveEarlyAnytime) {
         // Delivery + Ready + Lobby: NO penalty for going early! Only pull harder if deadline is approaching.
         if (slackMins <= 45) {
           const imminentPull = (45 - Math.max(0, slackMins)) * 0.05;
           const overduePull = Math.min(90, Math.max(0, -slackMins)) * 0.12;
           score -= imminentPull + overduePull;
+        }
+        // If this is an Express Lobby delivery scheduled much later than another Express stop, keep earlier Express first
+        if (cand.expLevel > 0) {
+          for (const other of pool) {
+            if (other.taskKey === cand.taskKey) continue;
+            if (other.expLevel < cand.expLevel) continue;
+            const diffMins = (cand.scheduledMs - other.scheduledMs) / 60_000;
+            if (diffMins > 30) {
+              score += (diffMins - 30) * 0.08;
+            }
+          }
         }
       } else {
         // Time-Strict (`Pickup` [Lobby & Meet up] + `Delivery Meet up`):
@@ -1248,11 +1291,10 @@ export function optimizeSmartRiderRoute<T>(
       }
 
       // 6) 1-Step SLA Lookahead Protection:
-      //    Because `departMs` includes `waitMins` if `cand` is a future Time-Strict stop,
-      //    picking a 15:30 Pickup ahead of a 10:15 Pickup makes `etaOtherAfterMs` > 15:36 -> huge penalty!
       let inflictedLatenessKm = 0;
       for (const other of pool) {
         if (other.taskKey === cand.taskKey) continue;
+        if (ignoreNonMeetupTimeWindows && other.handoverMode !== "meetup") continue;
 
         const otherNeedsBranchNow =
           other.legType === "delivery" &&
@@ -1280,8 +1322,9 @@ export function optimizeSmartRiderRoute<T>(
         const addedLateMins = Math.max(0, lateAfterMins - lateNowMins);
 
         if (addedLateMins > 0) {
-          const otherWeight = other.expLevel === 2 ? 0.5 : other.expLevel === 1 ? 0.36 : 0.26;
-          inflictedLatenessKm += Math.min(25.0, addedLateMins * otherWeight);
+          const otherWeight = other.expLevel === 2 ? 1.5 : other.expLevel === 1 ? 1.0 : 0.26;
+          const maxCap = other.expLevel > 0 ? 60.0 : 25.0;
+          inflictedLatenessKm += Math.min(maxCap, addedLateMins * otherWeight);
         }
       }
       score += inflictedLatenessKm;
@@ -1319,7 +1362,8 @@ export function optimizeSmartRiderRoute<T>(
       ? (chosenDistToBranch <= 0.35 ? 3 : 5) + Math.min(5, chosenBatch)
       : 0;
     const chosenRawArrivalMs = clockMs + (chosenLoadMins + chosenStepKm * 2.4) * 60_000;
-    const chosenEarliestStrictMs = bestCandidate.scheduledMs - 20 * 60_000;
+    const chosenEarlyAllowanceMins = bestCandidate.legType === "delivery" && bestCandidate.handoverMode === "meetup" ? 20 : 60;
+    const chosenEarliestStrictMs = bestCandidate.scheduledMs - chosenEarlyAllowanceMins * 60_000;
     const chosenEffectiveArrivalMs = bestCandidate.canArriveEarlyAnytime
       ? chosenRawArrivalMs
       : Math.max(chosenRawArrivalMs, chosenEarliestStrictMs);
@@ -1365,15 +1409,20 @@ export function optimizeSmartRiderRoute<T>(
       else if (meta.expLevel === 1) penalty += idx * 1.4;
 
       // Lateness SLA penalty (arriving >15m past scheduled time)
-      if (st.minutesDiffFromSchedule > 15) {
+      const enforceSlaForStop = !ignoreNonMeetupTimeWindows || meta.handoverMode === "meetup";
+      if (enforceSlaForStop && st.minutesDiffFromSchedule > 15) {
         const overMins = st.minutesDiffFromSchedule - 15;
         penalty += (overMins * 0.28 + (overMins / 30) * (overMins / 30) * 1.8) * expMult;
       }
 
-      // Mild wait penalty for Time-Strict stops (`0.03 / min` << `1.0 / km` so zero zig-zagging,
-      // while encouraging Ready+Lobby deliveries to fill idle morning gaps!)
+      // Mild wait / too-early penalty for Time-Strict stops so a 16:30 Pickup stays in the afternoon!
       if (!meta.canArriveEarlyAnytime && st.waitBeforeStopMinutes > 0) {
-        penalty += st.waitBeforeStopMinutes * 0.03;
+        penalty += st.waitBeforeStopMinutes * 0.035;
+      }
+      if (!meta.canArriveEarlyAnytime && st.slaStatus === "too_early") {
+        const earlyLimit = meta.legType === "delivery" && meta.handoverMode === "meetup" ? 20 : 60;
+        const tooEarlyMins = Math.max(0, -st.minutesDiffFromSchedule - earlyLimit);
+        penalty += tooEarlyMins * 0.045;
       }
     });
 
@@ -1388,6 +1437,50 @@ export function optimizeSmartRiderRoute<T>(
         if (inversionMins > 30) {
           penalty += (inversionMins - 30) * 0.085;
         }
+      }
+    }
+
+    // Enforce Start-At-Branch Delivery First:
+    // If rider starts at a branch (`<= 0.45 km`) and has preloaded clean laundry from that branch,
+    // Stop #1 must deliver from that branch load first (unless Stop #1 is an Express order!).
+    if (seq.length > 1) {
+      const isOriginPreloaded = (m: InternalSmartMeta<T>) =>
+        m.legType === "delivery" &&
+        Boolean(
+          m.sourceBranchCoords &&
+            hasNonZeroCoords(m.sourceBranchCoords) &&
+            calculateEstimatedDistanceKm(start, m.sourceBranchCoords) <= 0.45
+        );
+      const hasOriginPreloadedInSeq = seq.some(isOriginPreloaded);
+      if (hasOriginPreloadedInSeq && !isOriginPreloaded(seq[0]) && seq[0].expLevel === 0) {
+        penalty += 4.5;
+      }
+    }
+
+    // Return-to-Branch Stem Awareness:
+    // Any Pickup laundry still on board at the end of `seq` must return to its `sourceBranchCoords` to be washed.
+    // Sweeping outward on Deliveries and inward toward the return branch on Pickups minimizes return deadhead km!
+    if (sim.stops.length > 0) {
+      const lastCoords = sim.stops[sim.stops.length - 1].targetCoords;
+      if (hasNonZeroCoords(lastCoords)) {
+        const pendingReturnCoords = new Map<string, LatLng>();
+        seq.forEach((m, idx) => {
+          if (m.legType === "pickup" && m.sourceBranchId && m.sourceBranchCoords) {
+            pendingReturnCoords.set(m.sourceBranchId, m.sourceBranchCoords);
+          }
+          // If a later stop visits that branch via `viaBranch` or ends right at it, dirty bags can be dropped there
+          const st = sim.stops[idx];
+          if (st?.viaBranch?.branchId && pendingReturnCoords.has(st.viaBranch.branchId)) {
+            pendingReturnCoords.delete(st.viaBranch.branchId);
+          }
+        });
+        let returnStemKm = 0;
+        let prevRet = lastCoords;
+        for (const retCoords of pendingReturnCoords.values()) {
+          returnStemKm += calculateEstimatedDistanceKm(prevRet, retCoords);
+          prevRet = retCoords;
+        }
+        penalty += returnStemKm * 0.55;
       }
     }
 
@@ -1440,15 +1533,32 @@ export function optimizeSmartRiderRoute<T>(
 // existing route proximity, detour km, laundry branch, and SLA safety.
 // ============================================================================
 
+export function isDedicatedCorporateManTask(task: any): boolean {
+  const customerName = String(task?.job?.customerName || task?.customerName || "").toLowerCase();
+  const targetLoc = String(
+    task?.targetLocation || task?.job?.pickupLocation || task?.job?.dropoffLocation || ""
+  ).toLowerCase();
+  const combined = `${customerName} ${targetLoc}`;
+  return (
+    combined.includes("prime syn") ||
+    combined.includes("prime fitness") ||
+    combined.includes("evolve")
+  );
+}
+
 export interface CandidateRiderForAutoAssign<T = any> {
   riderId: string;
   riderName: string;
   riderNickname?: string | null;
   status: string;
   area?: string | null;
+  homeBranchId?: string | null;
   origin: LatLng;
   hasLiveGps?: boolean;
   currentTasks: T[];
+  totalDayCount?: number;
+  pendingTasksCount?: number;
+  isDedicatedReserveRider?: boolean;
   baseEval?: SimulatedRouteEvaluation<T>;
 }
 
@@ -1469,7 +1579,18 @@ export interface SuggestRiderOptions {
   referenceTime?: Date;
   maxRadiusKm?: number;
   maxStopsPerRider?: number;
+  maxDailyTotalStops?: number;
+  shiftEndHour?: number | null;
   jobArea?: string | null;
+  allowedRiderIds?: string[];
+  excludedRiderIds?: string[];
+  respectStrictTimeWindows?: boolean;
+  strictLateOnlyMeetup?: boolean;
+  ignoreNonMeetupTimeWindows?: boolean;
+  disableWorkloadBalance?: boolean;
+  ignoreBranchRouting?: boolean;
+  ignoreRadiusLimit?: boolean;
+  allowLateIfUnavoidable?: boolean;
 }
 
 export function suggestBestRiderForTask<T extends { taskId?: string; targetCoords?: LatLng | null; legType?: string }>(
@@ -1481,16 +1602,53 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
   if (task.legType === "delivery" && !isDeliveryTaskLaundryReady(task)) return null;
 
   const maxRadiusKm = options.maxRadiusKm ?? 3.5;
+  const ignoreRadiusLimit = Boolean(options.ignoreRadiusLimit);
   const maxStops = options.maxStopsPerRider ?? 10;
+  const maxDailyTotal = options.maxDailyTotalStops ?? Infinity;
+  const shiftEndHour = options.shiftEndHour ?? null;
   const refTime = options.referenceTime || new Date();
   const branches = options.branches || [];
   const jobAreaUpper = (options.jobArea || "").toUpperCase();
+  const taskExpLevel = getExpressLevel(task);
+
+  let shiftCutoffMs: number | null = null;
+  if (shiftEndHour !== null && shiftEndHour > 0) {
+    const cutoff = new Date(refTime);
+    const wholeHour = Math.floor(shiftEndHour);
+    const mins = Math.round((shiftEndHour - wholeHour) * 60);
+    cutoff.setHours(wholeHour, mins, 0, 0);
+    shiftCutoffMs = cutoff.getTime();
+  }
+
+  // Compute minimum dayCount among eligible online riders in the same area for fair workload balancing
+  let minDayCountInArea = Infinity;
+  for (const cand of candidates) {
+    if (options.allowedRiderIds && options.allowedRiderIds.length > 0 && !options.allowedRiderIds.includes(cand.riderId)) {
+      continue;
+    }
+    if (options.excludedRiderIds && options.excludedRiderIds.includes(cand.riderId)) continue;
+    if (!["online", "busy"].includes((cand.status || "").toLowerCase())) continue;
+    if (cand.currentTasks.length >= maxStops) continue;
+    const dc = cand.totalDayCount ?? cand.currentTasks.length;
+    if (dc >= maxDailyTotal) continue;
+    if (jobAreaUpper && cand.area && cand.area.toUpperCase() !== jobAreaUpper) continue;
+    if (dc < minDayCountInArea) minDayCountInArea = dc;
+  }
+  if (!Number.isFinite(minDayCountInArea)) minDayCountInArea = 0;
 
   let best: RiderAutoAssignSuggestion | null = null;
 
   for (const cand of candidates) {
+    if (options.allowedRiderIds && options.allowedRiderIds.length > 0 && !options.allowedRiderIds.includes(cand.riderId)) {
+      continue;
+    }
+    if (options.excludedRiderIds && options.excludedRiderIds.includes(cand.riderId)) {
+      continue;
+    }
     if (!["online", "busy"].includes((cand.status || "").toLowerCase())) continue;
     if (cand.currentTasks.length >= maxStops) continue;
+    const dayCount = cand.totalDayCount ?? cand.currentTasks.length;
+    if (dayCount >= maxDailyTotal) continue;
     if (jobAreaUpper && cand.area && cand.area.toUpperCase() !== jobAreaUpper) continue;
 
     const distFromRiderKm = hasNonZeroCoords(cand.origin)
@@ -1498,16 +1656,32 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
       : Infinity;
 
     let distToNearestStopKm = Infinity;
+    let sumLat = 0;
+    let sumLng = 0;
+    let coordCount = 0;
     for (const t of cand.currentTasks) {
       if (hasNonZeroCoords(t.targetCoords)) {
         const d = calculateEstimatedDistanceKm(t.targetCoords, task.targetCoords);
         if (d < distToNearestStopKm) distToNearestStopKm = d;
+        // Weight first anchor stop x2 so the rider's initial zone (e.g. Sukhumvit) stays anchored
+        const w = coordCount === 0 ? 2 : 1;
+        sumLat += t.targetCoords.lat * w;
+        sumLng += t.targetCoords.lng * w;
+        coordCount += w;
       }
     }
+    const zoneCentroid: LatLng | null =
+      coordCount > 0 ? { lat: sumLat / coordCount, lng: sumLng / coordCount } : null;
+    const distFromZoneCentroidKm = zoneCentroid
+      ? calculateEstimatedDistanceKm(zoneCentroid, task.targetCoords)
+      : distFromRiderKm;
 
-    // Fast spatial pre-filter before running route simulation
-    const minDirectDist = Math.min(distFromRiderKm, distToNearestStopKm);
-    if (minDirectDist > maxRadiusKm * 1.4) continue;
+    // Fast spatial pre-filter before running route simulation (unless fallback/corporate/express override)
+    const minDirectDist =
+      cand.currentTasks.length > 0
+        ? Math.min(distToNearestStopKm, distFromZoneCentroidKm)
+        : distFromRiderKm;
+    if (!ignoreRadiusLimit && minDirectDist > maxRadiusKm * 1.35) continue;
 
     const baseEval =
       cand.baseEval ||
@@ -1516,6 +1690,8 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
         referenceTime: refTime,
         fallbackOriginCoords: cand.origin,
         respectStrictTimeWindows: true,
+        ignoreNonMeetupTimeWindows: options.ignoreNonMeetupTimeWindows,
+        ignoreBranchRouting: options.ignoreBranchRouting,
       });
 
     const afterEval = optimizeSmartRiderRoute(cand.origin, [...cand.currentTasks, task], {
@@ -1523,39 +1699,206 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
       referenceTime: refTime,
       fallbackOriginCoords: cand.origin,
       respectStrictTimeWindows: true,
+      ignoreNonMeetupTimeWindows: options.ignoreNonMeetupTimeWindows,
+      ignoreBranchRouting: options.ignoreBranchRouting,
     });
 
     const detourKm = Math.max(0, Math.round((afterEval.totalRealDistanceKm - baseEval.totalRealDistanceKm) * 10) / 10);
-    const addedLate = Math.max(0, afterEval.lateStopsCount - baseEval.lateStopsCount);
-    if (addedLate > 0) continue; // Never auto-suggest if it makes existing or new stops late
+    const shouldCheckLate = options.respectStrictTimeWindows !== false;
+    const addedSoftLate = Math.max(0, afterEval.lateStopsCount - baseEval.lateStopsCount);
+    const isTaskMatch = (s: SimulatedStopDetail<T>) =>
+      (task.taskId && (s.task as any)?.taskId === task.taskId) || s.task === task;
+    if (shouldCheckLate) {
+      const isProtectedStop = (s: SimulatedStopDetail<T>) =>
+        options.ignoreNonMeetupTimeWindows
+          ? s.slaStatus === "late" && s.handoverMode === "meetup"
+          : options.strictLateOnlyMeetup
+            ? s.slaStatus === "late" && (s.handoverMode === "meetup" || getExpressLevel(s.task) > 0)
+            : s.slaStatus === "late";
+      const addedHardLate = options.strictLateOnlyMeetup
+        ? Math.max(
+            0,
+            afterEval.stops.filter(isProtectedStop).length -
+              baseEval.stops.filter(isProtectedStop).length
+          )
+        : addedSoftLate;
+      const addedExistingHardLate = options.strictLateOnlyMeetup
+        ? Math.max(
+            0,
+            afterEval.stops.filter((s) => !isTaskMatch(s) && isProtectedStop(s)).length -
+              baseEval.stops.filter(isProtectedStop).length
+          )
+        : Math.max(
+            0,
+            afterEval.stops.filter((s) => !isTaskMatch(s) && s.slaStatus === "late").length -
+              baseEval.lateStopsCount
+          );
+
+      if (!options.allowLateIfUnavoidable) {
+        if (addedHardLate > 0) continue; // Hard SLA block: NEVER make Meetup or Express stops late!
+      } else {
+        // Fallback when this task itself is inherently late from all riders: still protect existing Meetup/Express stops!
+        if (addedExistingHardLate > 0) continue;
+      }
+    }
+
+    if (shiftCutoffMs !== null) {
+      const estFinishMs = refTime.getTime() + afterEval.estimatedTotalMinutes * 60_000;
+      const lastStopArrivalMs =
+        afterEval.stops.length > 0
+          ? afterEval.stops[afterEval.stops.length - 1].estimatedArrivalAt.getTime()
+          : estFinishMs;
+      const effectiveFinishMs = Math.max(estFinishMs, lastStopArrivalMs);
+      if (effectiveFinishMs > shiftCutoffMs) continue; // Must finish within shift cutoff (e.g. 18:00 / 18:30)
+    }
 
     const isNearby =
-      distFromRiderKm <= maxRadiusKm ||
-      distToNearestStopKm <= Math.min(2.8, maxRadiusKm) ||
-      detourKm <= maxRadiusKm;
+      ignoreRadiusLimit ||
+      (cand.currentTasks.length === 0
+        ? distFromRiderKm <= maxRadiusKm
+        : distToNearestStopKm <= maxRadiusKm ||
+          distFromZoneCentroidKm <= maxRadiusKm * 1.15 ||
+          (detourKm <= Math.min(2.2, maxRadiusKm * 0.6) && distFromZoneCentroidKm <= maxRadiusKm * 1.4));
 
     if (!isNearby) continue;
 
-    const insertedStop =
-      afterEval.stops.find((s) => (s.task as any)?.taskId === task.taskId || s.task === task)?.stopNumber ||
-      afterEval.stops.length;
+    const insertedStopDetail = afterEval.stops.find(
+      (s) => (s.task as any)?.taskId === task.taskId || s.task === task
+    );
+    const insertedStop = insertedStopDetail?.stopNumber || afterEval.stops.length;
+
+    // Full Branch Cycle Synergy (Outbound Sweep + Inbound Return Laundry Branch):
+    // 1. Delivery: strongly prefer rider starting at / already loading from `taskLaundryBranchId` (0 extra branch stop!)
+    //    and penalize forcing a rider who is sweeping Branch A to detour across town to Branch B.
+    // 2. Pickup: strongly prefer rider whose existing Pickups or Home Branch already return to `taskLaundryBranchId`,
+    //    and penalize splitting a single rider's return Pickups across BOTH Soi 15 and PK!
+    const taskLaundryBranchId = extractTaskJobProcessingBranchId(task) || (task as any)?.job?.branchId || null;
+    let branchSweepBonus = 0;
+    let branchSynergyTag = "";
+    if (!options.ignoreBranchRouting && taskLaundryBranchId) {
+      const branchInfo = branches.find((b) => b.id === taskLaundryBranchId);
+      const branchShort = getBranchShortLabel(taskLaundryBranchId, branchInfo?.name);
+      const riderAtSameBranch = Boolean(
+        (branchInfo &&
+          hasNonZeroCoords(branchInfo.coords) &&
+          hasNonZeroCoords(cand.origin) &&
+          calculateEstimatedDistanceKm(cand.origin, branchInfo.coords) <= 0.65) ||
+          (!cand.hasLiveGps && cand.homeBranchId === taskLaundryBranchId)
+      );
+
+      const deliveryBranchesInStack = new Set<string>();
+      const pickupReturnBranchesInStack = new Set<string>();
+      for (const ct of cand.currentTasks) {
+        const ctBranch = extractTaskJobProcessingBranchId(ct) || (ct as any)?.job?.branchId || null;
+        if (!ctBranch) continue;
+        if ((ct as any)?.legType === "delivery") {
+          deliveryBranchesInStack.add(ctBranch);
+        } else {
+          pickupReturnBranchesInStack.add(ctBranch);
+        }
+      }
+
+      if ((task as any)?.legType === "delivery") {
+        if (riderAtSameBranch && !deliveryBranchesInStack.has(taskLaundryBranchId)) {
+          // Top priority: Rider starts at this branch and still needs their first outbound laundry load!
+          branchSweepBonus -= 4.5;
+          branchSynergyTag = `Start load @ ${branchShort} (เริ่มงานรับผ้าที่สาขา ${branchShort} ออกส่งก่อน)`;
+        } else if (riderAtSameBranch) {
+          branchSweepBonus -= 2.8;
+          branchSynergyTag = `Sweep from ${branchShort} (กวาดผ้าส่งจาก ${branchShort})`;
+        } else if (deliveryBranchesInStack.has(taskLaundryBranchId)) {
+          branchSweepBonus -= 1.8;
+          branchSynergyTag = `Batch load @ ${branchShort} (รวบรับผ้าที่ ${branchShort})`;
+        } else if (pickupReturnBranchesInStack.has(taskLaundryBranchId)) {
+          branchSweepBonus -= 1.0;
+          branchSynergyTag = `Drop & Reload @ ${branchShort} (ส่งผ้าซัก+รับผ้าส่งที่ ${branchShort})`;
+        } else if (deliveryBranchesInStack.size > 0) {
+          // Cross-branch delivery penalty when rider is already sweeping another branch
+          branchSweepBonus += 1.4;
+        }
+      } else {
+        // Pickup leg: check where dirty laundry must return!
+        if (pickupReturnBranchesInStack.has(taskLaundryBranchId)) {
+          branchSweepBonus -= 2.2;
+          branchSynergyTag = `Return batch -> ${branchShort} (ขากลับส่งซัก ${branchShort} รอบเดียว)`;
+        } else if (pickupReturnBranchesInStack.size === 0 && cand.homeBranchId === taskLaundryBranchId) {
+          branchSweepBonus -= 1.5;
+          branchSynergyTag = `Return to home ${branchShort} (ขากลับเข้าสาขา ${branchShort})`;
+        } else if (deliveryBranchesInStack.has(taskLaundryBranchId)) {
+          branchSweepBonus -= 0.9;
+        }
+        if (pickupReturnBranchesInStack.size > 0 && !pickupReturnBranchesInStack.has(taskLaundryBranchId)) {
+          // Avoid forcing one rider to drop dirty bags at BOTH Soi 15 and PK!
+          branchSweepBonus += 2.8;
+        }
+      }
+    }
+
+    const sameBuildingBonus = distToNearestStopKm <= 0.15 ? -3.5 : 0;
+    const idleRiderBonus = dayCount === 0 && cand.currentTasks.length === 0 ? -7.0 : 0;
+    // Zone Cohesion: keep all stops of a rider within their anchored zone (e.g. Sukhumvit stays in Sukhumvit)
+    const zoneCohesionScore =
+      cand.currentTasks.length > 0
+        ? distFromZoneCentroidKm * 0.65 +
+          (distFromZoneCentroidKm <= 2.5 ? -2.2 : 0) +
+          (distFromZoneCentroidKm > maxRadiusKm * 1.35 ? 6.0 : 0)
+        : 0;
+    const excessJobs = Math.max(0, dayCount - minDayCountInArea);
+    // Progressive workload balance: allow +/-1 job for natural clustering, strongly steer jobs to under-loaded riders beyond >= 2 gap
+    const workloadBalancePenalty = options.disableWorkloadBalance
+      ? 0
+      : excessJobs <= 1
+        ? excessJobs * 0.45
+        : excessJobs * 1.45 + (excessJobs - 1) * 1.35;
+    const softLobbyLatePenalty =
+      options.strictLateOnlyMeetup && addedSoftLate > 0 ? addedSoftLate * 1.6 : 0;
+    const manReserveBuffer =
+      cand.isDedicatedReserveRider && (!options.allowedRiderIds || options.allowedRiderIds.length === 0) && dayCount > 0
+        ? 1.2
+        : 0;
+    const expressOnTimePenalty =
+      taskExpLevel > 0 && insertedStopDetail
+        ? Math.max(0, (insertedStopDetail.estimatedArrivalAt.getTime() - refTime.getTime()) / 60_000) * 0.045 +
+          (insertedStop - 1) * 0.7
+        : 0;
+    const unavoidableLatePenalty =
+      options.allowLateIfUnavoidable && insertedStopDetail && insertedStopDetail.minutesDiffFromSchedule > 15
+        ? (insertedStopDetail.minutesDiffFromSchedule - 15) * 0.45
+        : 0;
+
+    const stackCountWeight = options.disableWorkloadBalance ? 0.04 : 0.32;
+    const dayCountWeight = options.disableWorkloadBalance ? 0.02 : 0.28;
 
     const score =
       detourKm * 1.0 +
-      Math.min(distFromRiderKm, distToNearestStopKm) * 0.35 +
-      cand.currentTasks.length * 0.25;
+      Math.min(distFromRiderKm, distToNearestStopKm) * 0.30 +
+      zoneCohesionScore +
+      cand.currentTasks.length * stackCountWeight +
+      dayCount * dayCountWeight +
+      workloadBalancePenalty +
+      branchSweepBonus +
+      sameBuildingBonus +
+      idleRiderBonus +
+      softLobbyLatePenalty +
+      manReserveBuffer +
+      expressOnTimePenalty +
+      unavoidableLatePenalty;
 
     let reason = "";
     if (distToNearestStopKm <= 0.15) {
-      reason = "Same building/condo stop (ตึกเดียวกัน)";
+      reason = "Same building/condo bundle (รวบตึกเดียวกัน +0 กม.)";
+    } else if (taskExpLevel > 0 && insertedStopDetail) {
+      reason = `Express On-Time ETA ${insertedStopDetail.estimatedArrivalAt.toTimeString().slice(0, 5)} (+${detourKm} km)`;
+    } else if (branchSynergyTag && detourKm <= 3.5) {
+      reason = `${branchSynergyTag} • +${detourKm} km`;
     } else if (cand.hasLiveGps && distFromRiderKm <= 1.8) {
-      reason = `Near Rider GPS (${distFromRiderKm} km / ใกล้ตัวไรเดอร์)`;
+      reason = `Near Rider GPS (${distFromRiderKm} km / ใกล้พิกัดล่าสุด)`;
     } else if (detourKm <= 1.5 && cand.currentTasks.length > 0) {
-      reason = `On current route (+${detourKm} km / ผ่านเส้นทางพอดี)`;
+      reason = `On current route (+${detourKm} km / ทางผ่านพอดี)`;
     } else if (distToNearestStopKm <= 2.5) {
-      reason = `Near stop (${distToNearestStopKm} km / ใกล้จุดแวะในสาย)`;
+      reason = `Cluster stop (${distToNearestStopKm} km / กลุ่มโซนเดียวกัน)`;
     } else {
-      reason = `Nearby zone (+${detourKm} km / โซนใกล้เคียง)`;
+      reason = branchSynergyTag || `Optimal zone fit (+${detourKm} km)`;
     }
 
     if (!best || score < best.score) {

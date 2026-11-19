@@ -13114,3 +13114,43 @@ export async function deleteSupplyVendorAction(vendorId: string) {
     return { success: false, error: err?.message || "Failed to delete vendor" };
   }
 }
+
+// ============================================================================
+// DISPATCH AUTO-ASSIGN SIMULATION SHARED STATE (Admin-only, Setting table)
+// ============================================================================
+export async function getDispatchAutoSimStateAction(dateKey: string) {
+  try {
+    const authUser = await assertServerActionAuthorized();
+    if (String(authUser.role || "").toLowerCase() !== "admin") {
+      return { success: false, error: "Forbidden: Admin only" };
+    }
+    const safeKey = `TLS_DISPATCH_AUTO_SIM_V1_${String(dateKey || "").replace(/[^0-9-]/g, "")}`;
+    const setting = await prisma.setting.findUnique({ where: { key: safeKey } });
+    if (!setting?.value) {
+      return { success: true, state: null };
+    }
+    return { success: true, state: JSON.parse(setting.value) };
+  } catch (err: any) {
+    console.error("[getDispatchAutoSimStateAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to load simulation state" };
+  }
+}
+
+export async function saveDispatchAutoSimStateAction(dateKey: string, stateJson: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    if (String(authUser.role || "").toLowerCase() !== "admin") {
+      return { success: false, error: "Forbidden: Admin only" };
+    }
+    const safeKey = `TLS_DISPATCH_AUTO_SIM_V1_${String(dateKey || "").replace(/[^0-9-]/g, "")}`;
+    await prisma.setting.upsert({
+      where: { key: safeKey },
+      update: { value: stateJson },
+      create: { key: safeKey, value: stateJson },
+    });
+    return { success: true };
+  } catch (err: any) {
+    console.error("[saveDispatchAutoSimStateAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to save simulation state" };
+  }
+}
