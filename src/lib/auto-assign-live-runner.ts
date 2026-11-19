@@ -318,7 +318,7 @@ export async function runAutoAssignLiveOnServer(): Promise<{
           if (sched <= bkkTodayEnd) {
             const legDone = isRealLegCompleted(j, "pickup");
             const schedKey = getBangkokDateKey(sched);
-            if (schedKey === todayKey || !legDone) {
+            if (schedKey === todayKey) {
               candidateTodayTasks.push({
                 taskId: `${j.id}-pickup`,
                 jobId: j.id,
@@ -354,7 +354,7 @@ export async function runAutoAssignLiveOnServer(): Promise<{
             const isReady = j.subStatus === "ready" || j.status === "delivery" || j.status === "washed";
             if (sched <= bkkTodayEnd) {
               const schedKey = getBangkokDateKey(sched);
-              if (schedKey === todayKey || (!legDone && isReady)) {
+              if (schedKey === todayKey) {
                 candidateTodayTasks.push({
                   taskId: `${j.id}-delivery`,
                   jobId: j.id,

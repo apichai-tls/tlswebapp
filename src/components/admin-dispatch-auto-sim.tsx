@@ -615,7 +615,7 @@ export function AdminDispatchAutoSim({
               ? new Date(j.scheduledAt)
               : new Date(j.createdAt);
           const schedDayKey = !isNaN(sched.getTime()) ? format(sched, "yyyy-MM-dd") : "";
-          const matchesDate = isSpecificPastOrTargetDate
+          const matchesDate = isLiveShadow || isSpecificPastOrTargetDate
             ? schedDayKey === targetDateKey
             : sched <= todayEnd;
           if (matchesDate) {
@@ -677,7 +677,7 @@ export function AdminDispatchAutoSim({
               ? new Date(j.scheduledAt)
               : new Date(j.createdAt);
           const schedDayKey = !isNaN(sched.getTime()) ? format(sched, "yyyy-MM-dd") : "";
-          const matchesDate = isSpecificPastOrTargetDate
+          const matchesDate = isLiveShadow || isSpecificPastOrTargetDate
             ? schedDayKey === targetDateKey
             : sched <= todayEnd;
           if (matchesDate) {
@@ -2053,7 +2053,9 @@ export function AdminDispatchAutoSim({
       return a.rider.name.localeCompare(b.rider.name);
     });
 
-    const unassigned = hydratedTasks.filter((t) => !assignments[t.taskId]);
+    const unassigned = hydratedTasks.filter(
+      (t) => !assignments[t.taskId] && !(isLiveShadow && t.isCompleted)
+    );
     const assignedCount = hydratedTasks.length - unassigned.length;
     const pickupTotal = hydratedTasks.filter((t) => t.legType === "pickup").length;
     const deliveryTotal = hydratedTasks.filter((t) => t.legType === "delivery").length;
