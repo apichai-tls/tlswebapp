@@ -1,4 +1,4 @@
-import type { LatLng } from "@/lib/store";
+import type { Job, LatLng } from "@/lib/store";
 
 export interface RouteTarget {
   id: string;
@@ -1322,7 +1322,14 @@ export function optimizeSmartRiderRoute<T>(
         const addedLateMins = Math.max(0, lateAfterMins - lateNowMins);
 
         if (addedLateMins > 0) {
-          const otherWeight = other.expLevel === 2 ? 1.5 : other.expLevel === 1 ? 1.0 : 0.26;
+          const otherWeight =
+            other.expLevel === 2
+              ? 1.5
+              : other.expLevel === 1
+                ? 1.0
+                : other.handoverMode === "meetup"
+                  ? 0.45
+                  : 0.26;
           const maxCap = other.expLevel > 0 ? 60.0 : 25.0;
           inflictedLatenessKm += Math.min(maxCap, addedLateMins * otherWeight);
         }
@@ -1591,6 +1598,100 @@ export interface SuggestRiderOptions {
   ignoreBranchRouting?: boolean;
   ignoreRadiusLimit?: boolean;
   allowLateIfUnavoidable?: boolean;
+  useHistoricalPatterns?: boolean;
+  historicalPatternProfile?: HistoricalDispatchProfile | null;
+}
+
+export interface HistoricalDispatchProfile {
+  windowDays: number;
+  analyzedLegsCount: number;
+  customerRiderCounts: Record<string, Record<string, number>>;
+  locationRiderCounts: Record<string, Record<string, number>>;
+  riderHourCounts: Record<string, Record<number, number>>;
+  riderLegCounts: Record<string, { pickup: number; delivery: number }>;
+}
+
+function normalizePatternKey(val?: string | null): string {
+  return String(val || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+export function buildHistoricalDispatchAffinityProfile(
+  jobs: Job[],
+  windowDays = 30
+): HistoricalDispatchProfile {
+  const cutoffMs = Date.now() - Math.max(1, windowDays) * 24 * 60 * 60 * 1000;
+  const customerRiderCounts: Record<string, Record<string, number>> = {};
+  const locationRiderCounts: Record<string, Record<string, number>> = {};
+  const riderHourCounts: Record<string, Record<number, number>> = {};
+  const riderLegCounts: Record<string, { pickup: number; delivery: number }> = {};
+  let analyzedLegsCount = 0;
+
+  const recordLeg = (
+    riderId: string | null | undefined,
+    leg: "pickup" | "delivery",
+    j: Job,
+    schedIso?: Date | string | null
+  ) => {
+    if (!riderId) return;
+    analyzedLegsCount++;
+    if (!riderLegCounts[riderId]) riderLegCounts[riderId] = { pickup: 0, delivery: 0 };
+    riderLegCounts[riderId][leg]++;
+
+    const cKeyId = j.customerId ? `id:${j.customerId}` : "";
+    const cKeyName = j.customerName ? `name:${normalizePatternKey(j.customerName)}` : "";
+    for (const ck of [cKeyId, cKeyName]) {
+      if (!ck) continue;
+      if (!customerRiderCounts[ck]) customerRiderCounts[ck] = {};
+      customerRiderCounts[ck][riderId] = (customerRiderCounts[ck][riderId] || 0) + 1;
+    }
+
+    const rawLoc =
+      leg === "pickup"
+        ? j.pickupLocation || j.dropoffLocation
+        : (j as any).deliveryAddress || j.dropoffLocation || j.pickupLocation;
+    const locKey = normalizePatternKey(rawLoc);
+    if (locKey && locKey.length >= 4 && locKey !== "-") {
+      if (!locationRiderCounts[locKey]) locationRiderCounts[locKey] = {};
+      locationRiderCounts[locKey][riderId] = (locationRiderCounts[locKey][riderId] || 0) + 1;
+    }
+
+    if (schedIso) {
+      const d = new Date(schedIso);
+      if (!isNaN(d.getTime())) {
+        const hr = d.getHours();
+        if (!riderHourCounts[riderId]) riderHourCounts[riderId] = {};
+        riderHourCounts[riderId][hr] = (riderHourCounts[riderId][hr] || 0) + 1;
+      }
+    }
+  };
+
+  for (const j of jobs || []) {
+    if (!j || j.status === "cancel") continue;
+    if ((j.type as string) === "in_store" && !j.deliveryRiderId && !j.pickupRiderId) continue;
+    const createdMs = j.createdAt ? new Date(j.createdAt).getTime() : 0;
+    if (createdMs && createdMs < cutoffMs) continue;
+
+    const pRider = j.pickupRiderId || j.riderId;
+    const dRider = j.deliveryRiderId;
+    if (pRider) {
+      recordLeg(pRider, "pickup", j, j.pickupScheduledAt || j.scheduledAt || j.createdAt);
+    }
+    if (dRider) {
+      recordLeg(dRider, "delivery", j, j.deliveryScheduledAt || j.scheduledAt || j.createdAt);
+    }
+  }
+
+  return {
+    windowDays,
+    analyzedLegsCount,
+    customerRiderCounts,
+    locationRiderCounts,
+    riderHourCounts,
+    riderLegCounts,
+  };
 }
 
 export function suggestBestRiderForTask<T extends { taskId?: string; targetCoords?: LatLng | null; legType?: string }>(
@@ -1869,6 +1970,73 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
     const stackCountWeight = options.disableWorkloadBalance ? 0.04 : 0.32;
     const dayCountWeight = options.disableWorkloadBalance ? 0.02 : 0.28;
 
+    let learnedPatternBonus = 0;
+    let learnedPatternTag = "";
+    if (options.useHistoricalPatterns && options.historicalPatternProfile) {
+      const prof = options.historicalPatternProfile;
+      const tJob = (task as any)?.job;
+      const legType: "pickup" | "delivery" = (task as any)?.legType === "delivery" ? "delivery" : "pickup";
+      const custIdKey = tJob?.customerId ? `id:${tJob.customerId}` : "";
+      const custNameKey = tJob?.customerName ? `name:${normalizePatternKey(tJob.customerName)}` : "";
+      const custCounts =
+        (custIdKey && prof.customerRiderCounts[custIdKey]) ||
+        (custNameKey && prof.customerRiderCounts[custNameKey]) ||
+        null;
+
+      if (custCounts) {
+        const totalCustLegs = Object.values(custCounts).reduce((s, n) => s + n, 0);
+        const riderCustLegs = custCounts[cand.riderId] || 0;
+        if (totalCustLegs >= 2 && riderCustLegs > 0) {
+          const share = riderCustLegs / totalCustLegs;
+          if (share >= 0.25) {
+            learnedPatternBonus -= Math.min(5.5, share * 5.8);
+            learnedPatternTag = `Learned: คุ้นเคยลูกค้า (${Math.round(share * 100)}%)`;
+          }
+        }
+      }
+
+      const rawLoc =
+        (task as any)?.targetLocation ||
+        (legType === "pickup" ? tJob?.pickupLocation : tJob?.deliveryAddress || tJob?.dropoffLocation);
+      const locKey = normalizePatternKey(rawLoc);
+      const locCounts = locKey ? prof.locationRiderCounts[locKey] : null;
+      if (locCounts) {
+        const totalLocLegs = Object.values(locCounts).reduce((s, n) => s + n, 0);
+        const riderLocLegs = locCounts[cand.riderId] || 0;
+        if (totalLocLegs >= 2 && riderLocLegs > 0) {
+          const locShare = riderLocLegs / totalLocLegs;
+          if (locShare >= 0.25) {
+            learnedPatternBonus -= Math.min(3.2, locShare * 3.4);
+            if (!learnedPatternTag) {
+              learnedPatternTag = `Learned: คุ้นเคยสถานที่ (${Math.round(locShare * 100)}%)`;
+            }
+          }
+        }
+      }
+
+      const legStats = prof.riderLegCounts[cand.riderId];
+      if (legStats) {
+        const totalRiderLegs = legStats.pickup + legStats.delivery;
+        if (totalRiderLegs >= 10) {
+          const legShare = legStats[legType] / totalRiderLegs;
+          if (legShare >= 0.54) {
+            learnedPatternBonus -= 0.7;
+          }
+        }
+      }
+
+      const schedIso = (task as any)?.scheduledAtIso || tJob?.pickupScheduledAt || tJob?.deliveryScheduledAt || tJob?.scheduledAt;
+      if (schedIso && prof.riderHourCounts[cand.riderId]) {
+        const hr = new Date(schedIso).getHours();
+        const hrMap = prof.riderHourCounts[cand.riderId];
+        const totalHrLegs = Object.values(hrMap).reduce((s, n) => s + n, 0);
+        const hrCount = hrMap[hr] || 0;
+        if (totalHrLegs >= 10 && hrCount / totalHrLegs >= 0.14) {
+          learnedPatternBonus -= 0.6;
+        }
+      }
+    }
+
     const score =
       detourKm * 1.0 +
       Math.min(distFromRiderKm, distToNearestStopKm) * 0.30 +
@@ -1882,10 +2050,13 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
       softLobbyLatePenalty +
       manReserveBuffer +
       expressOnTimePenalty +
-      unavoidableLatePenalty;
+      unavoidableLatePenalty +
+      learnedPatternBonus;
 
     let reason = "";
-    if (distToNearestStopKm <= 0.15) {
+    if (learnedPatternTag && learnedPatternBonus <= -2.0) {
+      reason = `${learnedPatternTag} • +${detourKm} km`;
+    } else if (distToNearestStopKm <= 0.15) {
       reason = "Same building/condo bundle (รวบตึกเดียวกัน +0 กม.)";
     } else if (taskExpLevel > 0 && insertedStopDetail) {
       reason = `Express On-Time ETA ${insertedStopDetail.estimatedArrivalAt.toTimeString().slice(0, 5)} (+${detourKm} km)`;

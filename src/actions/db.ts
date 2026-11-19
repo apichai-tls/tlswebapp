@@ -2155,6 +2155,11 @@ export async function addJobAction(data: any) {
       actorId: data.actorId,
       actorName: data.actorName,
     });
+    schedulePostCommitTask(() =>
+      import("@/lib/auto-assign-live-runner").then(({ triggerAutoAssignLiveBackground }) =>
+        triggerAutoAssignLiveBackground()
+      )
+    );
     return { ...createdJob, issuedCoupons };
   };
 
@@ -3983,6 +3988,24 @@ async function updateJobActionInternal(id: string, updates: any) {
     );
   }
 
+  if (
+    effectiveChanges.status ||
+    effectiveChanges.subStatus ||
+    effectiveChanges.isPaid ||
+    effectiveChanges.isShopPaid ||
+    effectiveChanges.pickupScheduledAt ||
+    effectiveChanges.deliveryScheduledAt ||
+    effectiveChanges.pickupRiderId ||
+    effectiveChanges.deliveryRiderId ||
+    effectiveChanges.deliveryProofImageUrl
+  ) {
+    schedulePostCommitTask(() =>
+      import("@/lib/auto-assign-live-runner").then(({ triggerAutoAssignLiveBackground }) =>
+        triggerAutoAssignLiveBackground()
+      )
+    );
+  }
+
   return { ...updatedJob, issuedCoupons, followUpWarnings };
 }
 
@@ -4040,6 +4063,13 @@ export async function updateRiderAction(id: string, updates: any) {
     gpsUpdatedAt = await recordRiderGpsTimestamp(id);
   }
   invalidateDbCache('riders');
+  if (data.status !== undefined) {
+    schedulePostCommitTask(() =>
+      import("@/lib/auto-assign-live-runner").then(({ triggerAutoAssignLiveBackground }) =>
+        triggerAutoAssignLiveBackground()
+      )
+    );
+  }
   if (data.isActive !== undefined) {
     try {
       await prisma.adminUser.update({
@@ -13124,12 +13154,31 @@ export async function getDispatchAutoSimStateAction(dateKey: string) {
     if (String(authUser.role || "").toLowerCase() !== "admin") {
       return { success: false, error: "Forbidden: Admin only" };
     }
-    const safeKey = `TLS_DISPATCH_AUTO_SIM_V1_${String(dateKey || "").replace(/[^0-9-]/g, "")}`;
-    const setting = await prisma.setting.findUnique({ where: { key: safeKey } });
-    if (!setting?.value) {
-      return { success: true, state: null };
+    const cleanKey = String(dateKey || "").replace(/[^A-Za-z0-9_-]/g, "");
+    const safeKey = `TLS_DISPATCH_AUTO_SIM_V1_${cleanKey}`;
+    const modeSuffix = cleanKey.includes("LIVE_SHADOW") ? "LIVE_SHADOW" : "SANDBOX";
+    const settingsKey = `TLS_DISPATCH_AUTO_SIM_SETTINGS_${modeSuffix}`;
+
+    const [setting, persistedSettingsRow] = await Promise.all([
+      prisma.setting.findUnique({ where: { key: safeKey } }),
+      prisma.setting.findUnique({ where: { key: settingsKey } }),
+    ]);
+
+    let persistedSettings: any = null;
+    if (persistedSettingsRow?.value) {
+      try {
+        persistedSettings = JSON.parse(persistedSettingsRow.value);
+      } catch {}
     }
-    return { success: true, state: JSON.parse(setting.value) };
+
+    if (!setting?.value) {
+      return { success: true, state: null, persistedSettings };
+    }
+    const parsedState = JSON.parse(setting.value);
+    if (!parsedState.settings && persistedSettings) {
+      parsedState.settings = persistedSettings;
+    }
+    return { success: true, state: parsedState, persistedSettings };
   } catch (err: any) {
     console.error("[getDispatchAutoSimStateAction] Error:", err);
     return { success: false, error: err?.message || "Failed to load simulation state" };
@@ -13142,15 +13191,113 @@ export async function saveDispatchAutoSimStateAction(dateKey: string, stateJson:
     if (String(authUser.role || "").toLowerCase() !== "admin") {
       return { success: false, error: "Forbidden: Admin only" };
     }
-    const safeKey = `TLS_DISPATCH_AUTO_SIM_V1_${String(dateKey || "").replace(/[^0-9-]/g, "")}`;
+    const cleanKey = String(dateKey || "").replace(/[^A-Za-z0-9_-]/g, "");
+    const safeKey = `TLS_DISPATCH_AUTO_SIM_V1_${cleanKey}`;
+    const modeSuffix = cleanKey.includes("LIVE_SHADOW") ? "LIVE_SHADOW" : "SANDBOX";
+    const settingsKey = `TLS_DISPATCH_AUTO_SIM_SETTINGS_${modeSuffix}`;
+
     await prisma.setting.upsert({
       where: { key: safeKey },
       update: { value: stateJson },
       create: { key: safeKey, value: stateJson },
     });
+
+    try {
+      const parsed = JSON.parse(stateJson);
+      if (parsed?.settings) {
+        await prisma.setting.upsert({
+          where: { key: settingsKey },
+          update: { value: JSON.stringify(parsed.settings) },
+          create: { key: settingsKey, value: JSON.stringify(parsed.settings) },
+        });
+      }
+    } catch {}
+
     return { success: true };
   } catch (err: any) {
     console.error("[saveDispatchAutoSimStateAction] Error:", err);
     return { success: false, error: err?.message || "Failed to save simulation state" };
+  }
+}
+
+export interface JobRealAssignmentMeta {
+  jobId: string;
+  createdAtIso: string;
+  pickupAssignedAtIso: string | null;
+  pickupAssignedRiderName: string | null;
+  deliveryAssignedAtIso: string | null;
+  deliveryAssignedRiderName: string | null;
+}
+
+export async function getJobRealAssignmentMetaAction(jobIds: string[]): Promise<{
+  success: boolean;
+  metaByJobId: Record<string, JobRealAssignmentMeta>;
+  error?: string;
+}> {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+    const uniqueIds = Array.from(new Set((jobIds || []).filter(Boolean))).slice(0, 400);
+    if (uniqueIds.length === 0) {
+      return { success: true, metaByJobId: {} };
+    }
+
+    const [jobs, logs] = await Promise.all([
+      prisma.job.findMany({
+        where: { id: { in: uniqueIds } },
+        select: {
+          id: true,
+          createdAt: true,
+          pickupRiderId: true,
+          deliveryRiderId: true,
+          riderId: true,
+        },
+      }),
+      prisma.activityLog.findMany({
+        where: {
+          entityType: "job",
+          entityId: { in: uniqueIds },
+        },
+        orderBy: { createdAt: "asc" },
+        select: {
+          entityId: true,
+          details: true,
+          createdAt: true,
+        },
+      }),
+    ]);
+
+    const metaByJobId: Record<string, JobRealAssignmentMeta> = {};
+    for (const j of jobs) {
+      metaByJobId[j.id] = {
+        jobId: j.id,
+        createdAtIso: j.createdAt.toISOString(),
+        pickupAssignedAtIso: null,
+        pickupAssignedRiderName: null,
+        deliveryAssignedAtIso: null,
+        deliveryAssignedRiderName: null,
+      };
+    }
+
+    for (const log of logs) {
+      const m = metaByJobId[log.entityId];
+      if (!m || !log.details) continue;
+      try {
+        const d = JSON.parse(log.details);
+        const atIso = log.createdAt.toISOString();
+        if ((d.pickupRiderId || d.riderId) && !m.pickupAssignedAtIso) {
+          m.pickupAssignedAtIso = atIso;
+          m.pickupAssignedRiderName = d.pickupRiderName || d.riderName || null;
+        }
+        if (d.deliveryRiderId && !m.deliveryAssignedAtIso) {
+          m.deliveryAssignedAtIso = atIso;
+          m.deliveryAssignedRiderName = d.deliveryRiderName || null;
+        }
+      } catch {}
+    }
+
+    return { success: true, metaByJobId };
+  } catch (err: any) {
+    console.error("[getJobRealAssignmentMetaAction] Error:", err);
+    return { success: false, metaByJobId: {}, error: err?.message };
   }
 }

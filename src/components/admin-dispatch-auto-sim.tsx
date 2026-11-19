@@ -4,13 +4,16 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
 import {
   Bot,
+  CalendarDays,
   CheckCircle2,
   Clock,
   Cloud,
+  Download,
   MapPin,
   Pause,
   Play,
   Plus,
+  Printer,
   RefreshCw,
   SlidersHorizontal,
   Sparkles,
@@ -19,9 +22,10 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { Customer, Job, LatLng, Rider, ShopLocation } from "@/lib/store";
+import { Customer, Job, jobStore, LatLng, Rider, ShopLocation } from "@/lib/store";
 import { useCustomers } from "@/lib/use-customers";
 import {
+  buildHistoricalDispatchAffinityProfile,
   calculateEstimatedDistanceKm,
   extractTaskHandoverMode,
   extractTaskJobProcessingBranchId,
@@ -33,6 +37,8 @@ import {
 } from "@/lib/route-optimizer";
 import {
   getDispatchAutoSimStateAction,
+  getJobRealAssignmentMetaAction,
+  type JobRealAssignmentMeta,
   saveDispatchAutoSimStateAction,
 } from "@/actions/db";
 import { Badge } from "@/components/ui/badge";
@@ -96,6 +102,7 @@ interface SimSettings {
   ignoreNonMeetupTimeWindows?: boolean;
   disableWorkloadBalance?: boolean;
   ignoreBranchRouting?: boolean;
+  useHistoricalPatterns?: boolean;
 }
 
 interface RiderLastLocationRecord {
@@ -130,6 +137,7 @@ const DEFAULT_SETTINGS: SimSettings = {
   ignoreNonMeetupTimeWindows: false,
   disableWorkloadBalance: false,
   ignoreBranchRouting: false,
+  useHistoricalPatterns: false,
 };
 
 function isValidLatLng(coords?: LatLng | null): coords is LatLng {
@@ -158,8 +166,17 @@ function getSimBranchShortLabel(branchId?: string | null): string {
   return "Soi 15";
 }
 
-function getSimClockDate(hourFloat: number): Date {
-  const d = new Date();
+function getSimClockDate(hourFloat: number, dateKey?: string): Date {
+  const d = dateKey && /^\d{4}-\d{2}-\d{2}$/.test(dateKey)
+    ? new Date(`${dateKey}T00:00:00`)
+    : new Date();
+  if (isNaN(d.getTime())) {
+    const fallback = new Date();
+    const h = Math.floor(hourFloat);
+    const m = Math.round((hourFloat - h) * 60);
+    fallback.setHours(h, m, 0, 0);
+    return fallback;
+  }
   const h = Math.floor(hourFloat);
   const m = Math.round((hourFloat - h) * 60);
   d.setHours(h, m, 0, 0);
@@ -400,7 +417,9 @@ export function AdminDispatchAutoSim({
   const customers = useCustomers();
   const isLiveShadow = mode === "live_shadow";
   const todayKey = format(new Date(), "yyyy-MM-dd");
-  const dbStateKey = isLiveShadow ? `${todayKey}_LIVE_SHADOW` : `${todayKey}_SANDBOX`;
+  const [viewLiveDateKey, setViewLiveDateKey] = useState<string>(todayKey);
+  const isLiveArchiveMode = isLiveShadow && viewLiveDateKey !== todayKey;
+  const dbStateKey = isLiveShadow ? `${viewLiveDateKey}_LIVE_SHADOW` : `${todayKey}_SANDBOX`;
 
   const [simState, setSimState] = useState<PersistedSimState>({
     dateKey: todayKey,
@@ -414,6 +433,12 @@ export function AdminDispatchAutoSim({
   const [isAutoAssignRunning, setIsAutoAssignRunning] = useState(false);
   const [isTimePlaying, setIsTimePlaying] = useState(false);
   const [simBatchSize, setSimBatchSize] = useState<number>(35);
+  const [selectedLiveDate, setSelectedLiveDate] = useState<string>(todayKey);
+  const [liveIncludeCompleted, setLiveIncludeCompleted] = useState<boolean>(false);
+  const [isLoadingLiveDate, setIsLoadingLiveDate] = useState<boolean>(false);
+  const [historicalJobsForDate, setHistoricalJobsForDate] = useState<Job[]>([]);
+  const [realMetaByJobId, setRealMetaByJobId] = useState<Record<string, JobRealAssignmentMeta>>({});
+  const fetchedMetaIdsRef = useRef<Set<string>>(new Set());
   const lastSavedJsonRef = useRef<string>("");
 
   // Eligible CRM customers with valid GPS coordinates AND real delivery/pickup address (not '-' or shop address)
@@ -450,19 +475,62 @@ export function AdminDispatchAutoSim({
     });
   }, [customers, effectiveArea]);
 
-  // Build live production queue tasks (used in mode === "live_shadow", never mutates real jobs)
-  const liveProductionTasks = useMemo<SerializedSimTask[]>(() => {
-    if (!isLiveShadow) return [];
-    let jobs = allJobs.filter(
-      (j) => !["cancel", "completed", "delivered", "tba", "pending"].includes(j.status)
+  const isRealLegCompleted = (j: Job, legType: "pickup" | "delivery"): boolean => {
+    if (legType === "pickup") {
+      return [
+        "picked_up",
+        "billing",
+        "process",
+        "active",
+        "ready_to_wash",
+        "washed",
+        "delivery",
+        "completed",
+        "delivered",
+        "cancel",
+      ].includes(j.status);
+    }
+    let isDeliveredStage = false;
+    if (j.status === "delivery" && j.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(j.adminNotesJson);
+        if (
+          parsed?.kanbanStage === "delivered" ||
+          parsed?.isRiderDelivered === true ||
+          Boolean(parsed?.deliveredAt)
+        ) {
+          isDeliveredStage = true;
+        }
+      } catch {}
+    }
+    const hasDeliveryPhoto = Boolean(j.deliveryProofImageUrl && j.deliveryProofImageUrl !== "[]");
+  
+  return (
+      ["delivered", "completed", "cancel"].includes(j.status) ||
+      isDeliveredStage ||
+      hasDeliveryPhoto ||
+      j.legs?.deliveryOutbound?.status === "completed"
     );
+  };
+
+  // Build production queue tasks for a given date (read-only pull, never mutates real jobs)
+  const buildLiveTasksForDate = (
+    jobsSource: Job[],
+    targetDateKey: string,
+    includeCompleted: boolean
+  ): SerializedSimTask[] => {
+    const excludedStatuses = includeCompleted
+      ? ["cancel", "tba", "pending"]
+      : ["cancel", "completed", "delivered", "tba", "pending"];
+    let jobs = jobsSource.filter((j) => !excludedStatuses.includes(j.status));
     if (effectiveArea !== "ALL") {
       jobs = jobs.filter((j) => {
         const branch = shopLocations.find((s) => s.id === j.branchId);
         if (isAreaRestricted && shopLocations.length > 0 && allowedBranchIds) {
           return Boolean(j.branchId && allowedBranchIds.has(j.branchId));
         }
-        return (
+      
+  return (
           (branch?.area || "").toUpperCase() === effectiveArea.toUpperCase() ||
           j.branchId === effectiveArea
         );
@@ -472,9 +540,28 @@ export function AdminDispatchAutoSim({
     const now = new Date();
     const todayEnd = new Date(now);
     todayEnd.setHours(23, 59, 59, 999);
+    const isSpecificPastOrTargetDate = includeCompleted || targetDateKey !== todayKey;
     const result: SerializedSimTask[] = [];
 
+    const isWalkInLocation = (loc?: string | null) => {
+      const l = String(loc || "").trim().toLowerCase();
+      if (!l) return false;
+    
+  return (
+        l.startsWith("walk-in") ||
+        l.startsWith("walk in") ||
+        l.includes("customer pickup at shop") ||
+        l.includes("customer drop-off at shop") ||
+        l.includes("customer dropoff at shop") ||
+        l.includes("self pickup") ||
+        l.includes("self-pickup")
+      );
+    };
+
     for (const j of jobs) {
+      if ((j.type as string) === "in_store" && !j.deliveryRiderId && !j.pickupRiderId) {
+        continue;
+      }
       const rawPLat = Number((j as any).pickupLat ?? j.pickupCoords?.lat ?? (j as any).customer?.lat ?? 0);
       const rawPLng = Number((j as any).pickupLng ?? j.pickupCoords?.lng ?? (j as any).customer?.lng ?? 0);
       const rawDLat = Number((j as any).dropoffLat ?? j.dropoffCoords?.lat ?? (j as any).customer?.lat ?? 0);
@@ -506,8 +593,8 @@ export function AdminDispatchAutoSim({
       const laundryBranchId =
         extractTaskJobProcessingBranchId({ job: j }) || j.branchId || "shop-head";
 
-      // 1. Active Pickup leg
-      if (j.type === "pickup" || j.type === "full_service") {
+      // 1. Pickup leg
+      if ((j.type === "pickup" || j.type === "full_service") && !isWalkInLocation(j.pickupLocation)) {
         const isPickupReady = ["accepted", "pickup"].includes(j.status);
         const isPickupDone = [
           "picked_up",
@@ -520,13 +607,18 @@ export function AdminDispatchAutoSim({
           "completed",
           "cancel",
         ].includes(j.status);
-        if (isPickupReady && !isPickupDone && validP) {
+        const legEligible = includeCompleted ? true : isPickupReady && !isPickupDone;
+        if (legEligible && validP) {
           const sched = j.pickupScheduledAt
             ? new Date(j.pickupScheduledAt)
             : j.scheduledAt
               ? new Date(j.scheduledAt)
               : new Date(j.createdAt);
-          if (sched <= todayEnd) {
+          const schedDayKey = !isNaN(sched.getTime()) ? format(sched, "yyyy-MM-dd") : "";
+          const matchesDate = isSpecificPastOrTargetDate
+            ? schedDayKey === targetDateKey
+            : sched <= todayEnd;
+          if (matchesDate) {
             result.push({
               taskId: `${j.id}-pickup`,
               jobId: j.id,
@@ -548,11 +640,11 @@ export function AdminDispatchAutoSim({
         }
       }
 
-      // 2. Active Delivery leg
+      // 2. Delivery leg
       if (j.type === "delivery" || j.type === "full_service" || Boolean(j.deliveryRiderId)) {
         const isWalkInSelfPickup =
-          ((j.type as string) === "in_store" || j.dropoffLocation === "Customer Pickup at Shop") &&
-          !j.deliveryRiderId;
+          ((j.type as string) === "in_store" && !j.deliveryRiderId) ||
+          isWalkInLocation(j.deliveryAddress || j.dropoffLocation);
         if (isWalkInSelfPickup) continue;
 
         let isDeliveredStage = false;
@@ -576,14 +668,19 @@ export function AdminDispatchAutoSim({
           j.legs?.deliveryOutbound?.status === "completed";
         const isDeliveryReady =
           (["washed", "delivery"].includes(j.status) || j.subStatus === "ready") && !j.isStuck;
+        const legEligible = includeCompleted ? true : isDeliveryReady && !isDeliveryDone;
 
-        if (isDeliveryReady && !isDeliveryDone && validD) {
+        if (legEligible && validD) {
           const sched = j.deliveryScheduledAt
             ? new Date(j.deliveryScheduledAt)
             : j.scheduledAt
               ? new Date(j.scheduledAt)
               : new Date(j.createdAt);
-          if (sched <= todayEnd) {
+          const schedDayKey = !isNaN(sched.getTime()) ? format(sched, "yyyy-MM-dd") : "";
+          const matchesDate = isSpecificPastOrTargetDate
+            ? schedDayKey === targetDateKey
+            : sched <= todayEnd;
+          if (matchesDate) {
             result.push({
               taskId: `${j.id}-delivery`,
               jobId: j.id,
@@ -594,7 +691,11 @@ export function AdminDispatchAutoSim({
               laundryBranchId,
               legType: "delivery",
               handoverMode: extractTaskHandoverMode({ job: j, legType: "delivery" }),
-              isReady: j.subStatus === "ready" || j.status === "delivery" || String(j.status) === "washed",
+              isReady:
+                includeCompleted ||
+                j.subStatus === "ready" ||
+                j.status === "delivery" ||
+                String(j.status) === "washed",
               isCsoPaid: j.isPaid !== false,
               scheduledAtIso: sched.toISOString(),
               targetLocation: j.deliveryAddress || j.dropoffLocation || j.pickupLocation || "-",
@@ -606,8 +707,62 @@ export function AdminDispatchAutoSim({
       }
     }
 
+    result.sort(
+      (a, b) => new Date(a.scheduledAtIso).getTime() - new Date(b.scheduledAtIso).getTime()
+    );
     return result;
-  }, [isLiveShadow, allJobs, effectiveArea, isAreaRestricted, allowedBranchIds, shopLocations]);
+  };
+
+  // Fetch historical jobs whenever selectedLiveDate changes (for Sim date pull & Live today)
+  useEffect(() => {
+    const targetDate = isLiveShadow ? todayKey : selectedLiveDate;
+    if (!targetDate) return;
+    let cancelled = false;
+    const base = new Date(`${targetDate}T00:00:00`);
+    if (isNaN(base.getTime())) return;
+    const start = new Date(base);
+    start.setDate(start.getDate() - 3);
+    const end = new Date(base);
+    end.setDate(end.getDate() + 1);
+    setIsLoadingLiveDate(true);
+    jobStore
+      .fetchHistoricalJobs(start, end)
+      .then((fetched) => {
+        if (!cancelled && Array.isArray(fetched)) {
+          setHistoricalJobsForDate(fetched);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setIsLoadingLiveDate(false);
+      });
+  
+  return () => {
+      cancelled = true;
+    };
+  }, [isLiveShadow, selectedLiveDate, todayKey]);
+
+  const mergedLiveJobs = useMemo<Job[]>(() => {
+    const map = new Map<string, Job>();
+    for (const j of allJobs) map.set(j.id, j);
+    for (const j of historicalJobsForDate) {
+      if (!map.has(j.id)) map.set(j.id, j);
+    }
+    return Array.from(map.values());
+  }, [allJobs, historicalJobsForDate]);
+
+  const liveProductionTasks = useMemo<SerializedSimTask[]>(() => {
+    const targetDate = isLiveShadow ? todayKey : selectedLiveDate;
+    const incComp = isLiveShadow ? false : liveIncludeCompleted;
+    return buildLiveTasksForDate(mergedLiveJobs, targetDate, incComp);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLiveShadow, mergedLiveJobs, selectedLiveDate, todayKey, liveIncludeCompleted, effectiveArea, isAreaRestricted, allowedBranchIds, shopLocations]);
+
+  // Build historical dispatch behavior profile (30D) for Learned Dispatcher Mode checkbox
+  const historicalDispatchProfile = useMemo(() => {
+    const sourceJobs = mergedLiveJobs.length > 0 ? mergedLiveJobs : allJobs;
+    return buildHistoricalDispatchAffinityProfile(sourceJobs, 30);
+  }, [mergedLiveJobs, allJobs]);
 
   const loadFromDb = async () => {
     setSyncStatus("loading");
@@ -637,7 +792,7 @@ export function AdminDispatchAutoSim({
             simTasks: [],
             assignments: {},
             nextSeq: 1,
-            settings: DEFAULT_SETTINGS,
+            settings: { ...DEFAULT_SETTINGS, ...(res.persistedSettings || {}) },
           });
         }
         setSyncStatus("synced");
@@ -657,27 +812,132 @@ export function AdminDispatchAutoSim({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dbStateKey]);
 
-  // Auto-populate live production queue on first open of Live Shadow tab if empty
+  // Auto-Assign Live:
+  // 1) Auto-pull today's jobs on initial open AND new jobs created mid-day into Unassigned Queue
+  // 2) Keep finished legs in place and mark them as DONE when real job status completes
   useEffect(() => {
-    if (!isLiveShadow || !isDbLoaded) return;
-    if (simState.simTasks.length === 0 && liveProductionTasks.length > 0) {
-      setSimState((prev) => ({
+    if (!isLiveShadow || isLiveArchiveMode || !isDbLoaded) return;
+    const todayAllTasks = buildLiveTasksForDate(mergedLiveJobs, todayKey, true);
+    const jobById = new Map<string, Job>();
+    for (const j of mergedLiveJobs) jobById.set(j.id, j);
+
+    setSimState((prev) => {
+      const existingIds = new Set(prev.simTasks.map((t) => t.taskId));
+      const newTasksToAppend: SerializedSimTask[] = [];
+      const nextCompleted = { ...(prev.completedTaskTimes || {}) };
+      let changed = false;
+
+      // Sync readiness, CSO paid status, and DONE status on existing tasks from live jobs
+      const updatedExistingTasks = prev.simTasks.map((t) => {
+        const realJob = jobById.get(t.jobId);
+        if (!realJob) return t;
+        let nextTask = t;
+        if (t.legType === "delivery") {
+          const liveReady =
+            realJob.subStatus === "ready" ||
+            realJob.status === "delivery" ||
+            String(realJob.status) === "washed" ||
+            isRealLegCompleted(realJob, "delivery");
+          const livePaid = realJob.isPaid !== false;
+          if (Boolean(t.isReady) !== liveReady || Boolean(t.isCsoPaid) !== livePaid) {
+            nextTask = { ...t, isReady: liveReady, isCsoPaid: livePaid };
+            changed = true;
+          }
+        }
+        if (isRealLegCompleted(realJob, t.legType) && !nextCompleted[t.taskId]) {
+          const doneDt = realJob.completedAt
+            ? new Date(realJob.completedAt)
+            : realJob.updatedAt
+              ? new Date(realJob.updatedAt)
+              : new Date();
+          nextCompleted[t.taskId] = !isNaN(doneDt.getTime()) ? format(doneDt, "HH:mm") : "Done";
+          changed = true;
+        }
+        return nextTask;
+      });
+
+      // Append today's active/new jobs (or all today's jobs on initial empty state)
+      for (const t of todayAllTasks) {
+        if (existingIds.has(t.taskId)) continue;
+        const realJob = jobById.get(t.jobId);
+        const legDone = realJob ? isRealLegCompleted(realJob, t.legType) : false;
+        if (prev.simTasks.length === 0 || !legDone) {
+          newTasksToAppend.push(t);
+          if (legDone && !nextCompleted[t.taskId]) {
+            const doneDt = realJob?.completedAt
+              ? new Date(realJob.completedAt)
+              : realJob?.updatedAt
+                ? new Date(realJob.updatedAt)
+                : new Date();
+            nextCompleted[t.taskId] = !isNaN(doneDt.getTime()) ? format(doneDt, "HH:mm") : "Done";
+          }
+          changed = true;
+        }
+      }
+
+      if (!changed) return prev;
+      return {
         ...prev,
-        simTasks: liveProductionTasks,
-        assignments: {},
-        simClockHour: 10,
-        completedTaskTimes: {},
-        riderLastLocations: {},
-        rejectedRiderIdsByTask: {},
-        nextSeq: liveProductionTasks.length + 1,
-      }));
-    }
+        simTasks: [...updatedExistingTasks, ...newTasksToAppend],
+        completedTaskTimes: nextCompleted,
+        nextSeq: Math.max(prev.nextSeq || 1, updatedExistingTasks.length + newTasksToAppend.length + 1),
+      };
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLiveShadow, isDbLoaded, liveProductionTasks.length]);
+  }, [isLiveShadow, isDbLoaded, mergedLiveJobs, todayKey, effectiveArea, isAreaRestricted, allowedBranchIds, shopLocations]);
+
+  // Auto-Assign Live: automatically start Auto-Assign whenever at least 1 rider is online and runnable unassigned tasks exist
+  useEffect(() => {
+    if (!isLiveShadow || isLiveArchiveMode || !isDbLoaded || isAutoAssignRunning) return;
+    const hasOnlineRider = riders.some((r) => {
+      const override = simState.riderOnlineOverrides?.[r.id];
+      return override !== undefined
+        ? override
+        : (r.status || "").toLowerCase() === "online";
+    });
+    if (!hasOnlineRider) return;
+    const hasRunnableUnassigned = simState.simTasks.some((t) => {
+      if (simState.assignments[t.taskId]) return false;
+      if (simState.completedTaskTimes?.[t.taskId]) return false;
+      return t.legType === "delivery" ? t.isReady && t.isCsoPaid : t.isReady;
+    });
+    if (hasRunnableUnassigned) {
+      setIsAutoAssignRunning(true);
+    }
+  }, [
+    isLiveShadow,
+    isDbLoaded,
+    isAutoAssignRunning,
+    riders,
+    simState.riderOnlineOverrides,
+    simState.simTasks,
+    simState.assignments,
+    simState.completedTaskTimes,
+  ]);
+
+  // Fetch real job creation & storefront assignment timestamps from ActivityLog
+  useEffect(() => {
+    const missingIds = Array.from(
+      new Set(
+        simState.simTasks
+          .map((t) => t.jobId)
+          .filter((id) => Boolean(id) && !fetchedMetaIdsRef.current.has(id))
+      )
+    );
+    if (missingIds.length === 0) return;
+    missingIds.forEach((id) => fetchedMetaIdsRef.current.add(id));
+    getJobRealAssignmentMetaAction(missingIds)
+      .then((res) => {
+        if (res?.success && res.metaByJobId) {
+          setRealMetaByJobId((prev) => ({ ...prev, ...res.metaByJobId }));
+        }
+      })
+      .catch(() => {});
+  }, [simState.simTasks]);
 
   // Save simulation state to shared DB Setting table
   useEffect(() => {
-    if (!isDbLoaded) return;
+    if (!isDbLoaded || isLiveArchiveMode) return;
     const payload: PersistedSimState = {
       ...simState,
       dateKey: todayKey,
@@ -734,7 +994,8 @@ export function AdminDispatchAutoSim({
       }
     }, 350);
 
-    return () => clearTimeout(timer);
+  
+  return () => clearTimeout(timer);
   }, [simState, isDbLoaded, todayKey]);
 
   const settings = simState.settings;
@@ -803,7 +1064,8 @@ export function AdminDispatchAutoSim({
     const compMap = currentState.completedTaskTimes || {};
     const lastLocMap = currentState.riderLastLocations || {};
     const curHour = currentState.simClockHour ?? 10;
-    const simClockRef = getSimClockDate(curHour);
+    const activeDateKey = isLiveShadow ? selectedLiveDate : todayKey;
+    const simClockRef = getSimClockDate(curHour, activeDateKey);
 
     const tasks = currentState.simTasks
       .map((s) => hydrateSimTask(s, compMap[s.taskId]))
@@ -948,6 +1210,10 @@ export function AdminDispatchAutoSim({
         ignoreBranchRouting: Boolean(currentState.settings.ignoreBranchRouting),
         ignoreRadiusLimit: ignoreRadius,
         allowLateIfUnavoidable,
+        useHistoricalPatterns: Boolean(currentState.settings.useHistoricalPatterns),
+        historicalPatternProfile: currentState.settings.useHistoricalPatterns
+          ? historicalDispatchProfile
+          : null,
       });
     };
 
@@ -1206,25 +1472,60 @@ export function AdminDispatchAutoSim({
       });
     }, 150);
 
-    return () => clearInterval(timer);
+  
+  return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAutoAssignRunning, riders, shopLocations]);
 
-  // Sync Live Production Queue (for mode === "live_shadow", read-only pull from allJobs)
-  const handleSyncLiveQueue = () => {
+  // Sync Live Production Queue by selected date (for mode === "live_shadow", read-only pull into Unassigned)
+  const handleSyncLiveQueue = async () => {
     setIsAutoAssignRunning(false);
     setIsTimePlaying(false);
-    setSimState((prev) => ({
-      ...prev,
-      simTasks: liveProductionTasks,
-      assignments: {},
-      simClockHour: 10,
-      completedTaskTimes: {},
-      riderLastLocations: {},
-      rejectedRiderIdsByTask: {},
-      nextSeq: liveProductionTasks.length + 1,
-    }));
-    toast.success(`ดึงคิวงานจริงจาก Production จำนวน ${liveProductionTasks.length} งานเข้า Unassigned เรียบร้อย (โหมดดูอย่างเดียว ไม่ส่งงานจริง)`);
+    setIsLoadingLiveDate(true);
+    try {
+      const base = new Date(`${selectedLiveDate}T00:00:00`);
+      let fetched: Job[] = [];
+      if (!isNaN(base.getTime())) {
+        const start = new Date(base);
+        start.setDate(start.getDate() - 3);
+        const end = new Date(base);
+        end.setDate(end.getDate() + 1);
+        fetched = (await jobStore.fetchHistoricalJobs(start, end)) || [];
+        setHistoricalJobsForDate(fetched);
+      }
+      const map = new Map<string, Job>();
+      for (const j of allJobs) map.set(j.id, j);
+      for (const j of fetched) {
+        if (!map.has(j.id)) map.set(j.id, j);
+      }
+      const tasks = buildLiveTasksForDate(
+        Array.from(map.values()),
+        selectedLiveDate,
+        liveIncludeCompleted
+      );
+      setSimState((prev) => ({
+        ...prev,
+        simTasks: tasks,
+        assignments: {},
+        simClockHour: 10,
+        completedTaskTimes: {},
+        riderLastLocations: {},
+        rejectedRiderIdsByTask: {},
+        nextSeq: tasks.length + 1,
+      }));
+      const displayDate = selectedLiveDate.split("-").reverse().join("/");
+      if (tasks.length === 0) {
+        toast.info(`ไม่พบคิวงานในวันที่ ${displayDate} สำหรับโซนที่เลือก`);
+      } else {
+        toast.success(
+          `ดึงคิวงานวันที่ ${displayDate} จำนวน ${tasks.length} งาน มากองที่ Unassigned Queue เรียบร้อย (ไม่ส่งงานจริง)`
+        );
+      }
+    } catch (err: any) {
+      toast.error(`ดึงคิวงานไม่สำเร็จ: ${err?.message || "Unknown error"}`);
+    } finally {
+      setIsLoadingLiveDate(false);
+    }
   };
 
   // 1. Start Simulation: Generate selected number of random CRM jobs (mixed Pickup & Delivery) into Unassigned
@@ -1312,7 +1613,7 @@ export function AdminDispatchAutoSim({
     setSimState((prev) => {
       const currentPlayHour = prev.simClockHour ?? 10;
       const targetHour = Math.min(20, currentPlayHour + 1);
-      const scheduledDate = getSimClockDate(targetHour);
+      const scheduledDate = getSimClockDate(targetHour, isLiveShadow ? selectedLiveDate : todayKey);
       const task = createRandomSimTask(
         prev.nextSeq,
         eligibleCrmPool,
@@ -1347,7 +1648,11 @@ export function AdminDispatchAutoSim({
       rejectedRiderIdsByTask: {},
       nextSeq: 1,
     }));
-    toast.success("เคลียร์งาน Simulation ทั้งหมดเรียบร้อยแล้ว");
+    toast.success(
+      isLiveShadow
+        ? "เคลียร์คิวงานในหน้า Auto-Assign Live เรียบร้อยแล้ว"
+        : "เคลียร์งาน Simulation ทั้งหมดเรียบร้อยแล้ว"
+    );
   };
 
   // Cancel an assigned job -> return it to Unassigned and exclude the cancelled rider from re-assignment
@@ -1386,8 +1691,9 @@ export function AdminDispatchAutoSim({
     const curHour = currentState.simClockHour ?? 10;
     if (curHour >= 20) return currentState;
     const nextHour = Math.min(20, curHour + 1);
-    const prevClockDate = getSimClockDate(curHour);
-    const nextClockDate = getSimClockDate(nextHour);
+    const activeDateKey = isLiveShadow ? selectedLiveDate : todayKey;
+    const prevClockDate = getSimClockDate(curHour, activeDateKey);
+    const nextClockDate = getSimClockDate(nextHour, activeDateKey);
 
     const compMap = { ...(currentState.completedTaskTimes || {}) };
     const lastLocMap = { ...(currentState.riderLastLocations || {}) };
@@ -1458,7 +1764,8 @@ export function AdminDispatchAutoSim({
         return advanceSimulationOneHour(prev);
       });
     }, 1800);
-    return () => clearInterval(timer);
+  
+  return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTimePlaying, riders, shopLocations]);
 
@@ -1534,6 +1841,10 @@ export function AdminDispatchAutoSim({
       ignoreNonMeetupTimeWindows: Boolean(nextState.settings.ignoreNonMeetupTimeWindows),
       disableWorkloadBalance: Boolean(nextState.settings.disableWorkloadBalance),
       ignoreBranchRouting: Boolean(nextState.settings.ignoreBranchRouting),
+      useHistoricalPatterns: Boolean(nextState.settings.useHistoricalPatterns),
+      historicalPatternProfile: nextState.settings.useHistoricalPatterns
+        ? historicalDispatchProfile
+        : null,
     };
     const suggestion =
       suggestBestRiderForTask(task, cleanCandidates, baseOpts) ||
@@ -1627,8 +1938,8 @@ export function AdminDispatchAutoSim({
       coords: s.coords,
       area: s.area,
     }));
-    const simClockRef = new Date();
-    simClockRef.setHours(10, 0, 0, 0);
+    const activeDateKey = isLiveShadow ? selectedLiveDate : todayKey;
+    const simClockRef = getSimClockDate(simClockHour, activeDateKey);
 
     const cols = riders.map((rider) => {
       const stackEntries: Array<{ task: SimTaskItem; record: SimAssignmentRecord }> = [];
@@ -1652,7 +1963,7 @@ export function AdminDispatchAutoSim({
       const origin = lastLoc?.coords || riderBranchObj?.coords || getRiderOriginCoords(rider);
       const activeEval = optimizeSmartRiderRoute(origin, readyUncompletedTasks, {
         branches: branchInfos,
-        referenceTime: getSimClockDate(simClockHour),
+        referenceTime: getSimClockDate(simClockHour, activeDateKey),
         fallbackOriginCoords: origin,
         respectStrictTimeWindows: settings.respectStrictTimeWindows,
         ignoreNonMeetupTimeWindows: Boolean(settings.ignoreNonMeetupTimeWindows),
@@ -1760,6 +2071,225 @@ export function AdminDispatchAutoSim({
     };
   }, [riders, hydratedTasks, assignments, riderOnlineOverrides, riderBranchOverrides, riderLastLocations, simClockHour, shopLocations, getRiderOriginCoords, settings.respectStrictTimeWindows, settings.ignoreNonMeetupTimeWindows, settings.ignoreBranchRouting]);
 
+
+  const buildExportRows = () => {
+    const activeDate = isLiveShadow ? viewLiveDateKey : selectedLiveDate || todayKey;
+    return hydratedTasks.map((t) => {
+      const assignRec = assignments[t.taskId];
+      const meta = realMetaByJobId[t.job.id];
+      const createdIso =
+        meta?.createdAtIso || (t.job.createdAt ? new Date(t.job.createdAt).toISOString() : "");
+      const storefrontAssignedIso =
+        t.legType === "delivery" ? meta?.deliveryAssignedAtIso : meta?.pickupAssignedAtIso;
+      const storefrontRider =
+        t.legType === "delivery" ? meta?.deliveryAssignedRiderName : meta?.pickupAssignedRiderName;
+      const assignedRiderObj = assignRec ? riders.find((r) => r.id === assignRec.simRiderId) : null;
+      const autoRiderLabel = assignedRiderObj
+        ? assignedRiderObj.nickname || assignedRiderObj.name
+        : assignRec?.simRiderId || "Unassigned";
+      const doneAtLabel = simState.completedTaskTimes?.[t.taskId];
+      return {
+        date: activeDate,
+        jobId: t.job.id,
+        leg: t.legType === "pickup" ? "Pickup" : "Delivery",
+        handover: t.handoverMode === "meetup" ? "Meet up" : "Lobby",
+        customer: t.job.customerName || "-",
+        location: t.targetLocation || "-",
+        branch: t.laundryBranchLabel || "-",
+        scheduledAt: format(t.scheduledAt, "dd/MM/yyyy HH:mm"),
+        createdAt: createdIso ? format(new Date(createdIso), "dd/MM/yyyy HH:mm") : "-",
+        storefrontAssignedAt: storefrontAssignedIso
+          ? format(new Date(storefrontAssignedIso), "dd/MM/yyyy HH:mm")
+          : "-",
+        storefrontRider: storefrontRider || "-",
+        autoAssignRider: autoRiderLabel,
+        autoAssignTime: assignRec?.assignedAt
+          ? format(new Date(assignRec.assignedAt), "HH:mm:ss")
+          : "-",
+        detourKm: assignRec ? String(assignRec.detourKm ?? 0) : "-",
+        reason: assignRec?.reason || "-",
+        status: t.isCompleted ? `Done (${doneAtLabel || "-"})` : assignRec ? "Assigned" : "Unassigned",
+      };
+    });
+  };
+
+  const handleExportLiveCsv = () => {
+    const rows = buildExportRows();
+    if (rows.length === 0) {
+      toast.info("ยังไม่มีข้อมูลคิวงานสำหรับ Export");
+      return;
+    }
+    const headers = [
+      "Date",
+      "Job ID",
+      "Leg",
+      "Handover",
+      "Customer",
+      "Location",
+      "Branch",
+      "Scheduled Time",
+      "Created At",
+      "Storefront Assigned At",
+      "Storefront Rider",
+      "Auto-Assign Rider",
+      "Auto-Assign Time",
+      "Detour Km",
+      "Reason",
+      "Status",
+    ];
+    const escCsv = (v: string) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csvLines = [
+      headers.map(escCsv).join(","),
+      ...rows.map((r) =>
+        [
+          r.date,
+          `#${r.jobId}`,
+          r.leg,
+          r.handover,
+          r.customer,
+          r.location,
+          r.branch,
+          r.scheduledAt,
+          r.createdAt,
+          r.storefrontAssignedAt,
+          r.storefrontRider,
+          r.autoAssignRider,
+          r.autoAssignTime,
+          r.detourKm,
+          r.reason,
+          r.status,
+        ]
+          .map(escCsv)
+          .join(",")
+      ),
+    ];
+    const blob = new Blob(["\uFEFF" + csvLines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const activeDate = isLiveShadow ? viewLiveDateKey : selectedLiveDate || todayKey;
+    a.href = url;
+    a.download = `auto-assign-report-${activeDate}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Export CSV วันที่ ${activeDate} (${rows.length} รายการ) เรียบร้อย`);
+  };
+
+  const handleExportLivePdf = () => {
+    const rows = buildExportRows();
+    if (rows.length === 0) {
+      toast.info("ยังไม่มีข้อมูลคิวงานสำหรับ Export Report");
+      return;
+    }
+    const activeDate = isLiveShadow ? viewLiveDateKey : selectedLiveDate || todayKey;
+    const esc = (s: any) =>
+      String(s ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    const doneCount = hydratedTasks.filter((t) => t.isCompleted).length;
+    const totalKm = simRiderColumns.reduce((s, c) => s + (c.totalDistanceKm || 0), 0);
+
+    const riderSummaryRows = simRiderColumns
+      .filter((c) => c.stackEntries.length > 0 || c.isSimOnline)
+      .map(
+        (c, i) => `
+        <tr>
+          <td style="text-align:center;">${i + 1}</td>
+          <td><strong>${esc(c.rider.nickname || c.rider.name)}</strong></td>
+          <td>${esc(c.riderHomeBranchLabel)}</td>
+          <td style="text-align:center;">${c.isSimOnline ? "Online" : "Offline"}</td>
+          <td class="num">${c.stackEntries.length}</td>
+          <td class="num">${c.pickupCount}</td>
+          <td class="num">${c.deliveryCount}</td>
+          <td class="num">${c.completedCount}</td>
+          <td class="num">${(c.totalDistanceKm || 0).toFixed(1)} km</td>
+          <td class="num">${c.estFinishTime ? esc(format(c.estFinishTime, "HH:mm")) : "–"}</td>
+        </tr>`
+      )
+      .join("");
+
+    const taskDetailRows = rows
+      .map(
+        (r, i) => `
+        <tr>
+          <td style="text-align:center;">${i + 1}</td>
+          <td style="font-weight:700;">#${esc(r.jobId)}</td>
+          <td>${esc(r.leg)}</td>
+          <td>${esc(r.handover)}</td>
+          <td><strong>${esc(r.customer)}</strong><br/><span style="color:#64748b;font-size:9px;">${esc(r.location)}</span></td>
+          <td class="num">${esc(r.scheduledAt.slice(11))}</td>
+          <td class="num">${esc(r.createdAt)}</td>
+          <td>${r.storefrontAssignedAt !== "-" ? `<strong>${esc(r.storefrontAssignedAt.slice(11))}</strong> (${esc(r.storefrontRider)})` : "–"}</td>
+          <td><strong>${esc(r.autoAssignRider)}</strong>${r.autoAssignTime !== "-" ? `<br/><span style="color:#64748b;font-size:9px;">@${esc(r.autoAssignTime)}</span>` : ""}</td>
+          <td class="num">${r.detourKm !== "-" ? `+${esc(r.detourKm)} km` : "–"}</td>
+          <td>${esc(r.status)}</td>
+        </tr>`
+      )
+      .join("");
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>auto-assign-report-${esc(activeDate)}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Noto+Sans+Thai:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { font-family: 'Inter', 'Noto Sans Thai', sans-serif; color: #0f172a; margin: 0; font-size: 10px; line-height: 1.4; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 10px; }
+    .title { font-size: 17px; font-weight: 800; margin: 0; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 12px; }
+    .kpi { border: 1px solid #e2e8f0; border-top: 3px solid #4f46e5; border-radius: 8px; padding: 7px 10px; }
+    .kpi-l { font-size: 8.5px; color: #64748b; font-weight: 700; text-transform: uppercase; }
+    .kpi-v { font-size: 14px; font-weight: 800; margin-top: 2px; font-variant-numeric: tabular-nums; }
+    .sec { font-size: 11px; font-weight: 700; margin: 12px 0 6px; padding-left: 8px; border-left: 3px solid #4f46e5; }
+    table { width: 100%; border-collapse: collapse; border: 1px solid #e2e8f0; margin-bottom: 10px; }
+    th, td { border-bottom: 1px solid #e2e8f0; padding: 5px 6px; text-align: left; vertical-align: middle; }
+    th { background: #f8fafc; font-size: 8.5px; font-weight: 700; text-transform: uppercase; color: #475569; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1 class="title">Auto-Assign Live Dispatch Report</h1>
+      <div style="color:#475569;margin-top:2px;">Date: <strong>${esc(activeDate)}</strong> • Mode: ${isLiveShadow ? "Live Shadow" : "Simulation"}</div>
+    </div>
+    <div style="text-align:right;color:#475569;">Printed: ${esc(format(new Date(), "dd/MM/yyyy HH:mm"))}</div>
+  </div>
+  <div class="kpi-grid">
+    <div class="kpi"><div class="kpi-l">Total Tasks</div><div class="kpi-v">${kpis.totalSimulatedJobs}</div></div>
+    <div class="kpi" style="border-top-color:#7c3aed;"><div class="kpi-l">Auto-Assigned</div><div class="kpi-v">${kpis.assignedCount}</div></div>
+    <div class="kpi" style="border-top-color:#d97706;"><div class="kpi-l">Unassigned</div><div class="kpi-v">${kpis.unassignedCount}</div></div>
+    <div class="kpi" style="border-top-color:#059669;"><div class="kpi-l">Completed (Done)</div><div class="kpi-v">${doneCount}</div></div>
+    <div class="kpi" style="border-top-color:#0284c7;"><div class="kpi-l">Est. Total Route</div><div class="kpi-v">${totalKm.toFixed(1)} km</div></div>
+  </div>
+  <div class="sec">1. Rider Dispatch Summary</div>
+  <table>
+    <thead><tr><th style="text-align:center;">#</th><th>Rider</th><th>Branch</th><th style="text-align:center;">Status</th><th class="num">Total</th><th class="num">Pickup</th><th class="num">Delivery</th><th class="num">Done</th><th class="num">Distance</th><th class="num">Est. Finish</th></tr></thead>
+    <tbody>${riderSummaryRows}</tbody>
+  </table>
+  <div class="sec">2. Detailed Task &amp; Storefront Comparison</div>
+  <table>
+    <thead><tr><th style="text-align:center;">#</th><th>Job ID</th><th>Leg</th><th>Handover</th><th>Customer / Location</th><th class="num">Sched.</th><th class="num">Created At</th><th>Storefront Assign</th><th>Auto-Assign</th><th class="num">Detour</th><th>Status</th></tr></thead>
+    <tbody>${taskDetailRows}</tbody>
+  </table>
+  <script>window.onload = function(){ setTimeout(function(){ window.print(); }, 400); };</script>
+</body>
+</html>`;
+
+    const win = window.open("", "_blank");
+    if (!win) {
+      toast.error("Pop-up ถูกบล็อก กรุณาอนุญาต Pop-up เพื่อพิมพ์ Report");
+      return;
+    }
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+  };
+
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-slate-50/70 overflow-hidden">
       {/* Top Simulation Control Bar */}
@@ -1814,18 +2344,97 @@ export function AdminDispatchAutoSim({
 
           <div className="flex flex-wrap items-center gap-2">
             {isLiveShadow ? (
-              <Button
-                type="button"
-                size="sm"
-                onClick={handleSyncLiveQueue}
-                className="h-8 text-xs font-bold gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-xs"
-                title="ดึงคิวงานจริงล่าสุดจาก Production เข้า Unassigned ใหม่ (ไม่แก้ไขงานจริง)"
-              >
-                <RefreshCw size={13} />
-                ดึงคิวงานจริงใหม่ ({liveProductionTasks.length})
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 h-8 shadow-2xs">
+                  <CalendarDays size={13} className="text-indigo-600 shrink-0" />
+                  <span className="text-[11px] font-bold text-slate-500">ดูข้อมูลวันที่:</span>
+                  <input
+                    type="date"
+                    value={viewLiveDateKey}
+                    max={todayKey}
+                    onChange={(e) => {
+                      const next = e.target.value || todayKey;
+                      setViewLiveDateKey(next);
+                    }}
+                    className="bg-transparent text-xs font-black text-slate-800 focus:outline-none cursor-pointer"
+                    title="เลือกดูประวัติ Auto-Assign Live ย้อนหลังตามวันที่"
+                  />
+                  {isLiveArchiveMode && (
+                    <button
+                      type="button"
+                      onClick={() => setViewLiveDateKey(todayKey)}
+                      className="ml-1 px-2 py-0.5 rounded-md bg-indigo-600 text-white text-[10px] font-bold hover:bg-indigo-700 cursor-pointer"
+                    >
+                      กลับวันนี้
+                    </button>
+                  )}
+                </div>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleExportLiveCsv}
+                  disabled={hydratedTasks.length === 0}
+                  className="h-8 text-xs font-bold gap-1.5 rounded-xl border-emerald-200 bg-emerald-50/70 text-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                >
+                  <Download size={13} />
+                  Export CSV
+                </Button>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleExportLivePdf}
+                  disabled={hydratedTasks.length === 0}
+                  className="h-8 text-xs font-bold gap-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white cursor-pointer shadow-xs"
+                >
+                  <Printer size={13} />
+                  Export Report
+                </Button>
+              </div>
             ) : (
               <>
+                <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50/60 p-1 shadow-xs">
+                  <div className="flex items-center gap-1.5 rounded-lg bg-white border border-emerald-200/80 px-2 h-7">
+                    <CalendarDays size={13} className="text-emerald-600 shrink-0" />
+                    <input
+                      type="date"
+                      value={selectedLiveDate}
+                      onChange={(e) => {
+                        const nextDate = e.target.value || todayKey;
+                        setSelectedLiveDate(nextDate);
+                        setLiveIncludeCompleted(nextDate !== todayKey);
+                      }}
+                      className="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer"
+                      title="เลือกวันที่ที่ต้องการดึงคิวงานมากองที่ Unassigned Queue"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLiveIncludeCompleted((v) => !v)}
+                    className={`h-7 px-2 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer whitespace-nowrap ${
+                      liveIncludeCompleted
+                        ? "bg-amber-100 text-amber-800 border-amber-300"
+                        : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                    }`}
+                    title="สลับระหว่างดึงเฉพาะงานค้าง หรือรวมงานที่เสร็จแล้วของวันที่เลือกด้วย"
+                  >
+                    {liveIncludeCompleted ? "รวมงานเสร็จแล้ว" : "เฉพาะงานค้าง"}
+                  </button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={isLoadingLiveDate}
+                    onClick={handleSyncLiveQueue}
+                    className="h-7 text-xs font-bold gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-xs"
+                    title="ดึงคิวงานจากวันที่เลือกมากองรวมกันที่ Unassigned Queue (ไม่แก้ไขงานจริง)"
+                  >
+                    <RefreshCw size={12.5} className={isLoadingLiveDate ? "animate-spin" : ""} />
+                    ดึงเข้า Unassigned ({liveProductionTasks.length})
+                  </Button>
+                </div>
+
                 <div className="inline-flex items-center rounded-xl border border-indigo-200 bg-indigo-50/70 p-0.5 shadow-xs">
                   <select
                     value={simBatchSize}
@@ -1862,40 +2471,36 @@ export function AdminDispatchAutoSim({
                   <Plus size={13} />
                   เพิ่มงานรับ (+1 สุ่มลูกค้า)
                 </Button>
-              </>
-            )}
 
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => setIsAutoAssignRunning((prev) => !prev)}
-              disabled={!isAutoAssignRunning && unassignedTasks.length === 0}
-              className={`h-8 text-xs font-bold gap-1.5 rounded-xl cursor-pointer shadow-xs ${
-                isAutoAssignRunning
-                  ? "bg-amber-500 hover:bg-amber-600 text-white"
-                  : "bg-violet-600 hover:bg-violet-700 text-white"
-              }`}
-            >
-              {isAutoAssignRunning ? <Pause size={13} /> : <Sparkles size={13} />}
-              {isAutoAssignRunning
-                ? "หยุด Auto Assign"
-                : `Auto Assign (${unassignedTasks.length})`}
-            </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => setIsAutoAssignRunning((prev) => !prev)}
+                  disabled={!isAutoAssignRunning && unassignedTasks.length === 0}
+                  className={`h-8 text-xs font-bold gap-1.5 rounded-xl cursor-pointer shadow-xs ${
+                    isAutoAssignRunning
+                      ? "bg-amber-500 hover:bg-amber-600 text-white"
+                      : "bg-violet-600 hover:bg-violet-700 text-white"
+                  }`}
+                >
+                  {isAutoAssignRunning ? <Pause size={13} /> : <Sparkles size={13} />}
+                  {isAutoAssignRunning
+                    ? "หยุด Auto Assign"
+                    : `Auto Assign (${unassignedTasks.length})`}
+                </Button>
 
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={handleStepOne}
-              disabled={unassignedTasks.length === 0 || isAutoAssignRunning}
-              className="h-8 text-xs font-bold gap-1.5 rounded-xl border-indigo-200 text-indigo-700 hover:bg-indigo-50 cursor-pointer"
-            >
-              <StepForward size={13} />
-              Step (+1)
-            </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleStepOne}
+                  disabled={unassignedTasks.length === 0 || isAutoAssignRunning}
+                  className="h-8 text-xs font-bold gap-1.5 rounded-xl border-indigo-200 text-indigo-700 hover:bg-indigo-50 cursor-pointer"
+                >
+                  <StepForward size={13} />
+                  Step (+1)
+                </Button>
 
-            {!isLiveShadow && (
-              <>
                 <Button
                   type="button"
                   size="sm"
@@ -1916,67 +2521,68 @@ export function AdminDispatchAutoSim({
                   onClick={handleClearAllJobs}
                   disabled={hydratedTasks.length === 0}
                   className="h-8 text-xs font-bold gap-1.5 rounded-xl border-rose-200 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                  title="เคลียร์งานทั้งหมดออกจากคิว Unassigned และ Rider ในหน้านี้"
                 >
                   <Trash2 size={13} />
                   เคลียร์งาน
                 </Button>
-              </>
-            )}
 
-            {/* Simulation Clock Controls (+1 Hr / Play Time) */}
-            <div className="inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50/70 p-0.5 shadow-xs">
-              <span className="px-2 text-xs font-black text-emerald-800 inline-flex items-center gap-1">
-                <Clock size={12} />
-                {formatSimClockHour(simClockHour)}
-              </span>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => setIsTimePlaying((p) => !p)}
-                disabled={hydratedTasks.length === 0 || simClockHour >= 20}
-                className={`h-7 text-[11px] font-bold gap-1 rounded-lg cursor-pointer ${
-                  isTimePlaying
-                    ? "bg-amber-500 hover:bg-amber-600 text-white"
-                    : "bg-emerald-600 hover:bg-emerald-700 text-white"
-                }`}
-              >
-                {isTimePlaying ? <Pause size={11} /> : <Play size={11} />}
-                {isTimePlaying ? "Pause" : "Play Time"}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={handleNextHour}
-                disabled={hydratedTasks.length === 0 || simClockHour >= 20 || isTimePlaying}
-                className="h-7 text-[11px] font-bold gap-1 rounded-lg border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-100 cursor-pointer"
-              >
-                +1 Hr
-              </Button>
-              {simClockHour > 10 && (
+                {/* Simulation Clock Controls (+1 Hr / Play Time) */}
+                <div className="inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50/70 p-0.5 shadow-xs">
+                  <span className="px-2 text-xs font-black text-emerald-800 inline-flex items-center gap-1">
+                    <Clock size={12} />
+                    {formatSimClockHour(simClockHour)}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => setIsTimePlaying((p) => !p)}
+                    disabled={hydratedTasks.length === 0 || simClockHour >= 20}
+                    className={`h-7 text-[11px] font-bold gap-1 rounded-lg cursor-pointer ${
+                      isTimePlaying
+                        ? "bg-amber-500 hover:bg-amber-600 text-white"
+                        : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                    }`}
+                  >
+                    {isTimePlaying ? <Pause size={11} /> : <Play size={11} />}
+                    {isTimePlaying ? "Pause" : "Play Time"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={handleNextHour}
+                    disabled={hydratedTasks.length === 0 || simClockHour >= 20 || isTimePlaying}
+                    className="h-7 text-[11px] font-bold gap-1 rounded-lg border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                  >
+                    +1 Hr
+                  </Button>
+                  {simClockHour > 10 && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleResetClock}
+                      className="h-7 px-1.5 text-[11px] font-bold text-slate-600 hover:text-slate-900 cursor-pointer"
+                      title="รีเซ็ตเวลาเป็น 10:00"
+                    >
+                      10:00
+                    </Button>
+                  )}
+                </div>
+
                 <Button
                   type="button"
                   size="sm"
-                  variant="ghost"
-                  onClick={handleResetClock}
-                  className="h-7 px-1.5 text-[11px] font-bold text-slate-600 hover:text-slate-900 cursor-pointer"
-                  title="รีเซ็ตเวลาเป็น 10:00"
+                  variant="outline"
+                  onClick={loadFromDb}
+                  className="h-8 w-8 p-0 rounded-xl border-slate-200 text-slate-600 hover:bg-slate-50 cursor-pointer"
+                  title="รีเฟรชข้อมูลจาก DB"
                 >
-                  10:00
+                  <RefreshCw size={13} className={syncStatus === "loading" ? "animate-spin" : ""} />
                 </Button>
-              )}
-            </div>
-
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={loadFromDb}
-              className="h-8 w-8 p-0 rounded-xl border-slate-200 text-slate-600 hover:bg-slate-50 cursor-pointer"
-              title="รีเฟรชข้อมูลจาก DB"
-            >
-              <RefreshCw size={13} className={syncStatus === "loading" ? "animate-spin" : ""} />
-            </Button>
+              </>
+            )}
           </div>
         </div>
 
@@ -1997,6 +2603,23 @@ export function AdminDispatchAutoSim({
                 className="rounded border-slate-300 text-violet-600 focus:ring-violet-500"
               />
               <span>ห้ามแทรกจนงาน Meet up สาย</span>
+            </label>
+
+            <label
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg cursor-pointer select-none font-bold border transition-colors ${
+                settings.useHistoricalPatterns
+                  ? "bg-indigo-100 text-indigo-900 border-indigo-300 shadow-2xs"
+                  : "bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200/70"
+              }`}
+              title={`ใช้พฤติกรรมการจ่ายงานจริงย้อนหลัง 30 วัน (${historicalDispatchProfile.analyzedLegsCount.toLocaleString()} เที่ยวงาน)`}
+            >
+              <input
+                type="checkbox"
+                checked={Boolean(settings.useHistoricalPatterns)}
+                onChange={(e) => updateSetting("useHistoricalPatterns", e.target.checked)}
+                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span>เรียนรู้จากสถิติจริง ({historicalDispatchProfile.analyzedLegsCount})</span>
             </label>
 
             <button
@@ -2242,6 +2865,32 @@ export function AdminDispatchAutoSim({
                         </span>
                       )}
                     </div>
+                    {(() => {
+                      const meta = realMetaByJobId[task.job.id];
+                      const createdIso = meta?.createdAtIso || (task.job.createdAt ? new Date(task.job.createdAt).toISOString() : null);
+                      const assignedIso = task.legType === "delivery" ? meta?.deliveryAssignedAtIso : meta?.pickupAssignedAtIso;
+                      const assignedRider = task.legType === "delivery" ? meta?.deliveryAssignedRiderName : meta?.pickupAssignedRiderName;
+                      if (!createdIso && !assignedIso) return null;
+                    
+  return (
+                        <div className="flex flex-wrap items-center justify-between gap-1 text-[9.5px] text-slate-500 bg-white/70 rounded-lg px-1.5 py-0.5 border border-slate-200/70">
+                          {createdIso && (
+                            <span>สร้าง: <strong className="text-slate-700">{format(new Date(createdIso), "dd/MM HH:mm")}</strong></span>
+                          )}
+                          <span>
+                            หน้าร้านจ่าย:{" "}
+                            {assignedIso ? (
+                              <strong className="text-indigo-700">
+                                {format(new Date(assignedIso), "HH:mm")}
+                                {assignedRider ? ` (${assignedRider.split(" ")[0]})` : ""}
+                              </strong>
+                            ) : (
+                              <span className="text-slate-400">ยังไม่จ่าย</span>
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })()}
                     <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-[10px] text-slate-500">
                       <span className="inline-flex items-center gap-1">
                         <Clock size={10} />
@@ -2286,7 +2935,8 @@ export function AdminDispatchAutoSim({
           {simRiderColumns.map((col) => {
             const isSimOnline = isSimRiderOnline(col.rider);
 
-            return (
+          
+  return (
               <div
                 key={col.rider.id}
                 className={`w-[315px] h-full min-h-0 shrink-0 flex flex-col rounded-2xl border bg-white shadow-2xs transition-opacity ${
@@ -2457,7 +3107,8 @@ export function AdminDispatchAutoSim({
                       ).length;
                       let runnableIdx = -1;
 
-                      return (
+                    
+  return (
                         <>
                           {/* Mandatory Step 0: Every Rider with jobs MUST Start at their Home Branch picking up laundry first! */}
                           {!settings.ignoreBranchRouting && (
@@ -2507,7 +3158,8 @@ export function AdminDispatchAutoSim({
                               }
                             }
 
-                            return (
+                          
+  return (
                               <React.Fragment key={task.taskId}>
                                 {showBranchLoadBanner && (
                                   <div className="rounded-xl border border-indigo-300 bg-gradient-to-r from-indigo-50 to-sky-50 px-3 py-2 flex items-center justify-between shadow-2xs">
@@ -2611,6 +3263,33 @@ export function AdminDispatchAutoSim({
                                     : `🏭 คืนผ้าที่: ${task.laundryBranchLabel}`}
                                 </span>
                               </div>
+
+                              {(() => {
+                                const meta = realMetaByJobId[task.job.id];
+                                const createdIso = meta?.createdAtIso || (task.job.createdAt ? new Date(task.job.createdAt).toISOString() : null);
+                                const assignedIso = task.legType === "delivery" ? meta?.deliveryAssignedAtIso : meta?.pickupAssignedAtIso;
+                                const assignedRider = task.legType === "delivery" ? meta?.deliveryAssignedRiderName : meta?.pickupAssignedRiderName;
+                                if (!createdIso && !assignedIso) return null;
+                              
+  return (
+                                  <div className="flex flex-wrap items-center justify-between gap-1 text-[9.5px] text-slate-500 bg-white/70 rounded-lg px-1.5 py-0.5 border border-slate-200/70">
+                                    {createdIso && (
+                                      <span>สร้าง: <strong className="text-slate-700">{format(new Date(createdIso), "dd/MM HH:mm")}</strong></span>
+                                    )}
+                                    <span>
+                                      หน้าร้านจ่าย:{" "}
+                                      {assignedIso ? (
+                                        <strong className="text-indigo-700">
+                                          {format(new Date(assignedIso), "HH:mm")}
+                                          {assignedRider ? ` (${assignedRider.split(" ")[0]})` : ""}
+                                        </strong>
+                                      ) : (
+                                        <span className="text-slate-400">ยังไม่จ่าย</span>
+                                      )}
+                                    </span>
+                                  </div>
+                                );
+                              })()}
 
                               <div className="pt-1.5 border-t border-slate-100 space-y-1 text-[10px]">
                                 <div className="flex items-center justify-between text-slate-500 gap-1">
