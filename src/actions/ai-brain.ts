@@ -21,7 +21,9 @@ import {
 import { collectBusinessStudyCorpus } from "@/lib/ai-brain/business-learner";
 import {
   loadModelRoutingConfig,
+  loadResolvedGeminiApiKey,
   saveModelRoutingConfig,
+  saveStoredGeminiApiKey,
 } from "@/lib/ai-brain/model-routing";
 import type { AiModelRoutingConfig } from "@/lib/ai-brain/model-options";
 import {
@@ -99,7 +101,77 @@ async function assertAiBrainAuthorized(requireWrite: boolean = false) {
   return user;
 }
 
+let aiBrainSchemaEnsured = false;
+
+async function ensureAiBrainSchemaReady() {
+  if (aiBrainSchemaEnsured) return;
+  // Strictly additive DDL: creates only the 3 isolated AiBrain tables if missing
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "AiBrainMemory" (
+      "id" TEXT NOT NULL,
+      "category" TEXT NOT NULL,
+      "title" TEXT NOT NULL,
+      "content" TEXT NOT NULL,
+      "tags" TEXT,
+      "source" TEXT NOT NULL DEFAULT 'admin_taught',
+      "confidence" DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+      "isActive" BOOLEAN NOT NULL DEFAULT true,
+      "createdById" TEXT,
+      "createdByName" TEXT,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "AiBrainMemory_pkey" PRIMARY KEY ("id")
+    );
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "AiBrainRun" (
+      "id" TEXT NOT NULL,
+      "windowDays" INTEGER NOT NULL DEFAULT 7,
+      "status" TEXT NOT NULL DEFAULT 'completed',
+      "modelUsed" TEXT NOT NULL DEFAULT 'deterministic-telemetry',
+      "executiveSummary" TEXT NOT NULL,
+      "metricsJson" TEXT NOT NULL,
+      "insightsCount" INTEGER NOT NULL DEFAULT 0,
+      "triggeredById" TEXT,
+      "triggeredByName" TEXT,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "AiBrainRun_pkey" PRIMARY KEY ("id")
+    );
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "AiBrainInsight" (
+      "id" TEXT NOT NULL,
+      "runId" TEXT,
+      "category" TEXT NOT NULL,
+      "severity" TEXT NOT NULL DEFAULT 'warning',
+      "title" TEXT NOT NULL,
+      "summary" TEXT NOT NULL,
+      "rootCause" TEXT,
+      "recommendation" TEXT NOT NULL,
+      "impactEstimate" TEXT,
+      "evidenceJson" TEXT,
+      "status" TEXT NOT NULL DEFAULT 'new',
+      "adminFeedback" TEXT,
+      "reviewedById" TEXT,
+      "reviewedByName" TEXT,
+      "reviewedAt" TIMESTAMP(3),
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "AiBrainInsight_pkey" PRIMARY KEY ("id"),
+      CONSTRAINT "AiBrainInsight_runId_fkey" FOREIGN KEY ("runId") REFERENCES "AiBrainRun"("id") ON DELETE SET NULL ON UPDATE CASCADE
+    );
+  `);
+  await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AiBrainMemory_category_idx" ON "AiBrainMemory"("category");`);
+  await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AiBrainMemory_isActive_idx" ON "AiBrainMemory"("isActive");`);
+  await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AiBrainMemory_source_idx" ON "AiBrainMemory"("source");`);
+  await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AiBrainRun_createdAt_idx" ON "AiBrainRun"("createdAt");`);
+  await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AiBrainInsight_runId_idx" ON "AiBrainInsight"("runId");`);
+  await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AiBrainInsight_status_idx" ON "AiBrainInsight"("status");`);
+  aiBrainSchemaEnsured = true;
+}
+
 async function ensureDefaultMemoriesSeeded() {
+  await ensureAiBrainSchemaReady();
   const count = await prisma.aiBrainMemory.count();
   if (count > 0) return;
 
@@ -149,6 +221,7 @@ export async function getAiBrainDashboardAction(windowDays: number = 7): Promise
       insights,
       memories,
       modelRouting,
+      resolvedKey,
       tgConfig,
       tgEnv,
       tgHistory,
@@ -167,17 +240,22 @@ export async function getAiBrainDashboardAction(windowDays: number = 7): Promise
         take: 100,
       }),
       loadModelRoutingConfig(),
+      loadResolvedGeminiApiKey(),
       loadTelegramAlertConfig(),
       discoverTelegramEnvironment(),
       getTelegramAlertHistory(),
     ]);
 
     const tgPreview = await evaluateOrderDelayAlerts(tgConfig);
+    const baseGemini = getGeminiConfigStatus();
 
     return {
       success: true,
       data: {
-        geminiStatus: getGeminiConfigStatus(),
+        geminiStatus: {
+          configured: Boolean(resolvedKey.apiKey),
+          model: modelRouting.study || baseGemini.model,
+        },
         modelRouting,
         liveTelemetry,
         runs: runs as AiBrainRunItem[],
@@ -261,16 +339,26 @@ export async function runTelegramDelayAlertNowAction(force: boolean = true): Pro
 }
 
 export async function saveAiModelRoutingAction(
-  config: Partial<AiModelRoutingConfig>
+  config: Partial<AiModelRoutingConfig> & { geminiApiKey?: string }
 ): Promise<{
   success: boolean;
   data?: AiModelRoutingConfig;
+  geminiConfigured?: boolean;
   error?: string;
 }> {
   try {
     await assertAiBrainAuthorized(true);
-    const saved = await saveModelRoutingConfig(config);
-    return { success: true, data: saved };
+    const { geminiApiKey, ...routingFields } = config;
+    const saved = await saveModelRoutingConfig(routingFields);
+    if (typeof geminiApiKey === "string" && geminiApiKey.trim()) {
+      await saveStoredGeminiApiKey(geminiApiKey.trim());
+    }
+    const resolved = await loadResolvedGeminiApiKey();
+    return {
+      success: true,
+      data: saved,
+      geminiConfigured: Boolean(resolved.apiKey),
+    };
   } catch (error: any) {
     console.error("saveAiModelRoutingAction failed:", error);
     return { success: false, error: error.message || "Failed to save model routing" };
@@ -323,8 +411,8 @@ export async function runAiBrainScanAction(windowDays: number = 7): Promise<{
     let usedGemini = false;
     let fallbackReason: string | null = null;
 
-    const geminiStatus = getGeminiConfigStatus();
-    if (geminiStatus.configured) {
+    const resolvedKey = await loadResolvedGeminiApiKey();
+    if (resolvedKey.apiKey) {
       try {
         const routing = await loadModelRoutingConfig();
         const aiResult = await analyzeOperationsWithGemini({
@@ -340,6 +428,7 @@ export async function runAiBrainScanAction(windowDays: number = 7): Promise<{
           previousMetrics,
           modelOverride: routing.ops_scan,
           fallbackModel: routing.fallback,
+          apiKeyOverride: resolvedKey.apiKey,
         });
 
         if (aiResult && aiResult.insights.length > 0) {
@@ -634,11 +723,11 @@ export async function runBusinessStudyAction(windowDays: number = 30): Promise<{
       activityActions: corpus.operationsAudit.topActivityActions.reduce((s, a) => s + a.count, 0),
     };
 
-    const geminiStatus = getGeminiConfigStatus();
-    if (!geminiStatus.configured) {
+    const resolvedKey = await loadResolvedGeminiApiKey();
+    if (!resolvedKey.apiKey) {
       return {
         success: false,
-        error: "GEMINI_API_KEY is not configured in .env — cannot run Business Study.",
+        error: "Gemini API key is not configured yet — click 'Models' in the top right to paste your Gemini API key.",
       };
     }
 
@@ -654,6 +743,7 @@ export async function runBusinessStudyAction(windowDays: number = 30): Promise<{
       })),
       modelOverride: routing.study,
       fallbackModel: routing.fallback,
+      apiKeyOverride: resolvedKey.apiKey,
     });
 
     if (!studyResult) {
@@ -739,13 +829,17 @@ export async function learnFromTextSampleAction(params: {
       return { success: false, error: "Please paste at least 20 characters of conversation or notes." };
     }
 
+    await ensureAiBrainSchemaReady();
     const existingMemories = await prisma.aiBrainMemory.findMany({
       where: { isActive: true },
       orderBy: { updatedAt: "desc" },
       take: 60,
     });
 
-    const routing = await loadModelRoutingConfig();
+    const [routing, resolvedKey] = await Promise.all([
+      loadModelRoutingConfig(),
+      loadResolvedGeminiApiKey(),
+    ]);
     const result = await learnFromTextSampleWithGemini({
       sourceType: params.sourceType,
       title: params.title?.trim(),
@@ -759,6 +853,7 @@ export async function learnFromTextSampleAction(params: {
       })),
       modelOverride: routing.extract,
       fallbackModel: routing.fallback,
+      apiKeyOverride: resolvedKey.apiKey || undefined,
     });
 
     if (!result) {
@@ -863,7 +958,8 @@ export async function askAiBrainAction(params: {
     const question = params.question.trim();
     if (!question) return { success: false, error: "Please enter a question" };
 
-    const [telemetry, activeMemories, recentInsights] = await Promise.all([
+    await ensureAiBrainSchemaReady();
+    const [telemetry, activeMemories, recentInsights, resolvedKey] = await Promise.all([
       collectOperationalTelemetry(params.windowDays || 7),
       prisma.aiBrainMemory.findMany({
         where: { isActive: true },
@@ -874,10 +970,10 @@ export async function askAiBrainAction(params: {
         orderBy: { createdAt: "desc" },
         take: 15,
       }),
+      loadResolvedGeminiApiKey(),
     ]);
 
-    const geminiStatus = getGeminiConfigStatus();
-    if (geminiStatus.configured) {
+    if (resolvedKey.apiKey) {
       try {
         const routing = await loadModelRoutingConfig();
         const res = await askAiBrainWithGemini({
@@ -901,6 +997,7 @@ export async function askAiBrainAction(params: {
           mode: params.mode || "learning",
           modelOverride: routing.chat,
           fallbackModel: routing.fallback,
+          apiKeyOverride: resolvedKey.apiKey,
         });
         if (res) {
           return {

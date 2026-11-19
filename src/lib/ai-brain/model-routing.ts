@@ -6,6 +6,37 @@ import {
 } from "./model-options";
 
 const SETTING_KEY = "ai_brain_model_routing";
+const GEMINI_KEY_SETTING = "ai_brain_gemini_api_key_v1";
+
+export async function loadResolvedGeminiApiKey(): Promise<{
+  apiKey: string;
+  source: "env" | "db" | "none";
+}> {
+  const envKey = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "").trim();
+  if (envKey) return { apiKey: envKey, source: "env" };
+  try {
+    const row = await prisma.setting.findUnique({
+      where: { key: GEMINI_KEY_SETTING },
+      select: { value: true },
+    });
+    const dbKey = (row?.value || "").trim();
+    if (dbKey) return { apiKey: dbKey, source: "db" };
+  } catch {}
+  return { apiKey: "", source: "none" };
+}
+
+export async function saveStoredGeminiApiKey(apiKey: string): Promise<void> {
+  const clean = apiKey.trim();
+  if (!clean) {
+    await prisma.setting.deleteMany({ where: { key: GEMINI_KEY_SETTING } });
+    return;
+  }
+  await prisma.setting.upsert({
+    where: { key: GEMINI_KEY_SETTING },
+    create: { key: GEMINI_KEY_SETTING, value: clean },
+    update: { value: clean },
+  });
+}
 
 const ALLOWED_MODEL_IDS = new Set(AVAILABLE_AI_MODELS.map((m) => m.id));
 

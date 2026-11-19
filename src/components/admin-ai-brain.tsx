@@ -157,6 +157,7 @@ export function AdminAiBrain() {
   });
   const [modelRouting, setModelRouting] = useState<AiModelRoutingConfig>(RECOMMENDED_MODEL_ROUTING);
   const [routingDraft, setRoutingDraft] = useState<AiModelRoutingConfig>(RECOMMENDED_MODEL_ROUTING);
+  const [geminiApiKeyInput, setGeminiApiKeyInput] = useState("");
   const [routingPanelOpen, setRoutingPanelOpen] = useState(false);
   const [savingRouting, setSavingRouting] = useState(false);
 
@@ -277,11 +278,18 @@ export function AdminAiBrain() {
   const handleSaveModelRouting = async () => {
     setSavingRouting(true);
     try {
-      const res = await saveAiModelRoutingAction(routingDraft);
+      const res = await saveAiModelRoutingAction({
+        ...routingDraft,
+        ...(geminiApiKeyInput.trim() ? { geminiApiKey: geminiApiKeyInput.trim() } : {}),
+      });
       if (res.success && res.data) {
         setModelRouting(res.data);
         setRoutingDraft(res.data);
-        toast.success("AI Model Routing saved! New tasks will use your selected models immediately.");
+        if (res.geminiConfigured) {
+          setGeminiStatus({ configured: true, model: res.data.study });
+        }
+        setGeminiApiKeyInput("");
+        toast.success("AI Model Routing & Gemini connection saved!");
         setRoutingPanelOpen(false);
       } else {
         toast.error(res.error || "Failed to save model routing");
@@ -879,6 +887,26 @@ export function AdminAiBrain() {
             >
               ✕ Close
             </button>
+          </div>
+
+          <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="flex-1 min-w-[200px]">
+              <div className="text-xs font-black text-emerald-950">
+                Gemini API Key {geminiStatus.configured ? "(Connected ✓)" : "(Required for Live AI)"}
+              </div>
+              <div className="text-[11px] text-emerald-900/75">
+                {geminiStatus.configured
+                  ? "Already configured. Leave blank to keep your existing key, or paste a new key to update."
+                  : "Paste your Google AI Studio / Gemini API key here to activate Gemini 4 Neon & Hydrogen on this server."}
+              </div>
+            </div>
+            <Input
+              type="password"
+              value={geminiApiKeyInput}
+              onChange={(e) => setGeminiApiKeyInput(e.target.value)}
+              placeholder={geminiStatus.configured ? "•••••••••••••••• (keep existing)" : "Paste Gemini API Key..."}
+              className="h-9 text-xs bg-white font-mono sm:w-80"
+            />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">

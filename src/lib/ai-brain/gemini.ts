@@ -78,8 +78,16 @@ export function getGeminiConfigStatus() {
   };
 }
 
-function createGeminiClient(modelOverride?: string): { client: GoogleGenAI; model: string } | null {
-  const apiKey = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "").trim();
+function createGeminiClient(
+  modelOverride?: string,
+  apiKeyOverride?: string
+): { client: GoogleGenAI; model: string } | null {
+  const apiKey = (
+    apiKeyOverride ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    ""
+  ).trim();
   if (!apiKey) return null;
   const model = (modelOverride || process.env.GEMINI_MODEL || "gemini-4-neon").trim();
   return {
@@ -215,8 +223,9 @@ export async function analyzeOperationsWithGemini(params: {
   previousMetrics?: Record<string, any> | null;
   modelOverride?: string;
   fallbackModel?: string;
+  apiKeyOverride?: string;
 }): Promise<GeminiScanResult | null> {
-  const conn = createGeminiClient(params.modelOverride);
+  const conn = createGeminiClient(params.modelOverride, params.apiKeyOverride);
   if (!conn) return null;
 
   const { client, model } = conn;
@@ -422,8 +431,9 @@ export async function studyBusinessWithGemini(params: {
   existingMemories: BrainMemoryInput[];
   modelOverride?: string;
   fallbackModel?: string;
+  apiKeyOverride?: string;
 }): Promise<GeminiBusinessStudyResult | null> {
-  const conn = createGeminiClient(params.modelOverride);
+  const conn = createGeminiClient(params.modelOverride, params.apiKeyOverride);
   if (!conn) return null;
 
   const { client, model } = conn;
@@ -519,8 +529,9 @@ export async function learnFromTextSampleWithGemini(params: {
   existingMemories: BrainMemoryInput[];
   modelOverride?: string;
   fallbackModel?: string;
+  apiKeyOverride?: string;
 }): Promise<GeminiTextLearningResult | null> {
-  const conn = createGeminiClient(params.modelOverride);
+  const conn = createGeminiClient(params.modelOverride, params.apiKeyOverride);
   if (!conn) return null;
 
   const { client, model } = conn;
@@ -584,8 +595,9 @@ export async function askAiBrainWithGemini(params: {
   mode?: "learning" | "ops";
   modelOverride?: string;
   fallbackModel?: string;
+  apiKeyOverride?: string;
 }): Promise<{ answer: string; modelUsed: string } | null> {
-  const conn = createGeminiClient(params.modelOverride);
+  const conn = createGeminiClient(params.modelOverride, params.apiKeyOverride);
   if (!conn) return null;
 
   const { client, model } = conn;
