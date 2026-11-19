@@ -84,6 +84,7 @@ const AdminBuildingReport = dynamic(() => import("@/components/admin-building-re
 const AdminMarketing = dynamic(() => import("@/components/admin-marketing").then((m) => m.AdminMarketing), { ssr: false, loading: TabLoadingFallback });
 const AdminTopSpenders = dynamic(() => import("@/components/admin-top-spenders").then((m) => m.AdminTopSpenders), { ssr: false, loading: TabLoadingFallback });
 const AdminTasks = dynamic(() => import("@/components/admin-tasks").then((m) => m.AdminTasks), { ssr: false, loading: TabLoadingFallback });
+const AdminAiBrain = dynamic(() => import("@/components/admin-ai-brain").then((m) => m.AdminAiBrain), { ssr: false, loading: TabLoadingFallback });
 const AdminSuppliesOrders = dynamic(() => import("@/components/admin-supplies-orders").then((m) => m.AdminSuppliesOrders), { ssr: false, loading: TabLoadingFallback });
 const AdminSocialInbox = dynamic(() => import("@/components/admin-social-inbox").then((m) => m.AdminSocialInbox), { ssr: false, loading: TabLoadingFallback });
 const AdminFeeCalculator = dynamic(() => import("@/components/admin-fee-calculator"), { ssr: false, loading: TabLoadingFallback });
@@ -178,6 +179,7 @@ import {
   ChevronDown,
   Columns,
   Image as ImageIcon,
+  Brain,
 } from "lucide-react";
 
 import Link from "next/link";
@@ -329,7 +331,12 @@ function AdminPageContent() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox" | "item-check">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox" | "item-check" | "ai-brain">("dashboard");
+  const canAccessAiBrain = Boolean(
+    user?.role === "admin" ||
+    user?.role === "superadmin" ||
+    user?.department === "management"
+  );
   const [showChecklistModal, setShowChecklistModal] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -382,7 +389,7 @@ function AdminPageContent() {
     const searchParams = new URLSearchParams(window.location.search);
     const tabParam = searchParams.get("tab");
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "petty-cash", "building-report", "marketing", "top-spenders", "tasks", "supplies", "inbox", "item-check"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "petty-cash", "building-report", "marketing", "top-spenders", "tasks", "supplies", "inbox", "item-check", "ai-brain"];
     const targetTab = (tabParam && validTabs.includes(tabParam)) ? tabParam : hash;
 
     if (validTabs.includes(targetTab)) {
@@ -434,7 +441,7 @@ function AdminPageContent() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox" | "item-check") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox" | "item-check" | "ai-brain") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -6356,6 +6363,31 @@ function AdminPageContent() {
                   <ClipboardCheck size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "tasks" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
                   {!isSidebarCollapsed && <span className="truncate">Tasks</span>}
                 </motion.a>
+
+                {canAccessAiBrain && (
+                  <motion.a
+                    href="#ai-brain"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("ai-brain"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "ai-brain"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="AI Operations Brain"
+                  >
+                    {activeTab === "ai-brain" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <Brain size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "ai-brain" ? "text-indigo-600" : "text-indigo-400 group-hover:text-indigo-700"}`} />
+                    {!isSidebarCollapsed && (
+                      <span className="truncate flex items-center gap-1.5">
+                        <span>AI Brain</span>
+                        <span className="text-[9px] font-black uppercase bg-indigo-100 text-indigo-700 px-1.5 py-0.2 rounded-full">AI</span>
+                      </span>
+                    )}
+                  </motion.a>
+                )}
               </div>
             )}
 
@@ -6923,6 +6955,22 @@ function AdminPageContent() {
                       <ClipboardCheck size={17} className={activeTab === "tasks" ? "text-indigo-600" : "text-slate-400"} />
                       <span>Tasks</span>
                     </a>
+                    {canAccessAiBrain && (
+                      <a
+                        href="#ai-brain"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleTabChange("ai-brain");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                          activeTab === "ai-brain" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                        }`}
+                      >
+                        <Brain size={17} className={activeTab === "ai-brain" ? "text-indigo-600" : "text-indigo-400"} />
+                        <span>AI Brain</span>
+                      </a>
+                    )}
                   </div>
 
                   {/* Sales & CRM */}
@@ -13060,6 +13108,7 @@ function AdminPageContent() {
           {activeTab === "top-spenders" && hasAccess("top-spenders") && <AdminTopSpenders onViewJob={stableHandleEditFullJob} />}
 
           {activeTab === "tasks" && hasAccess("tasks") && <AdminTasks />}
+          {activeTab === "ai-brain" && canAccessAiBrain && <AdminAiBrain />}
 
           {activeTab === "item-check" && (
             systemSettings.enableItemCountQc !== "false" ? (
