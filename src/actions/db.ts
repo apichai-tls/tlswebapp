@@ -13124,7 +13124,7 @@ export async function getDispatchAutoSimStateAction(dateKey: string) {
     if (String(authUser.role || "").toLowerCase() !== "admin") {
       return { success: false, error: "Forbidden: Admin only" };
     }
-    const safeKey = `TLS_DISPATCH_AUTO_SIM_V1_${String(dateKey || "").replace(/[^0-9-]/g, "")}`;
+    const safeKey = `TLS_DISPATCH_AUTO_SIM_V1_${String(dateKey || "").replace(/[^0-9A-Za-z_-]/g, "")}`;
     const setting = await prisma.setting.findUnique({ where: { key: safeKey } });
     if (!setting?.value) {
       return { success: true, state: null };
@@ -13142,7 +13142,7 @@ export async function saveDispatchAutoSimStateAction(dateKey: string, stateJson:
     if (String(authUser.role || "").toLowerCase() !== "admin") {
       return { success: false, error: "Forbidden: Admin only" };
     }
-    const safeKey = `TLS_DISPATCH_AUTO_SIM_V1_${String(dateKey || "").replace(/[^0-9-]/g, "")}`;
+    const safeKey = `TLS_DISPATCH_AUTO_SIM_V1_${String(dateKey || "").replace(/[^0-9A-Za-z_-]/g, "")}`;
     await prisma.setting.upsert({
       where: { key: safeKey },
       update: { value: stateJson },

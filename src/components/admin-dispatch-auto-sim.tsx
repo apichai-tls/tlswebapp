@@ -1227,6 +1227,21 @@ export function AdminDispatchAutoSim({
     toast.success(`ดึงคิวงานจริงจาก Production จำนวน ${liveProductionTasks.length} งานเข้า Unassigned เรียบร้อย (โหมดดูอย่างเดียว ไม่ส่งงานจริง)`);
   };
 
+  // Clear only the shadow assignments in Live Queue (returns all jobs to Unassigned without touching real jobs)
+  const handleClearLiveAssignments = () => {
+    setIsAutoAssignRunning(false);
+    setIsTimePlaying(false);
+    setSimState((prev) => ({
+      ...prev,
+      assignments: {},
+      simClockHour: 10,
+      completedTaskTimes: {},
+      riderLastLocations: {},
+      rejectedRiderIdsByTask: {},
+    }));
+    toast.success("เคลียร์งานที่จัดใน Auto-Assign Live Queue กลับไป Unassigned เรียบร้อยแล้ว");
+  };
+
   // 1. Start Simulation: Generate selected number of random CRM jobs (mixed Pickup & Delivery) into Unassigned
   const handleStartSimulation = () => {
     if (eligibleCrmPool.length === 0) {
@@ -1894,7 +1909,7 @@ export function AdminDispatchAutoSim({
               Step (+1)
             </Button>
 
-            {!isLiveShadow && (
+            {!isLiveShadow ? (
               <>
                 <Button
                   type="button"
@@ -1921,6 +1936,19 @@ export function AdminDispatchAutoSim({
                   เคลียร์งาน
                 </Button>
               </>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={handleClearLiveAssignments}
+                disabled={Object.keys(assignments).length === 0}
+                className="h-8 text-xs font-bold gap-1.5 rounded-xl border-rose-200 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                title="เคลียร์งานที่จัดในคอลัมน์ Rider กลับไป Unassigned (ไม่กระทบงานจริง)"
+              >
+                <Trash2 size={13} />
+                เคลียร์งานที่จัด
+              </Button>
             )}
 
             {/* Simulation Clock Controls (+1 Hr / Play Time) */}
