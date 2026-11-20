@@ -720,3 +720,66 @@ model PettyCashTransaction {
   @@index([transactionDate])
 }
 
+model AiBrainMemory {
+  id            String   @id @default(uuid())
+  category      String   // "workflow" | "sop" | "department" | "branch" | "customer_pattern" | "pricing" | "correction"
+  title         String
+  content       String   @db.Text
+  tags          String?  // comma-separated tags
+  source        String   @default("admin_taught") // "admin_taught" | "ai_learned" | "feedback_corrected"
+  confidence    Float    @default(1.0)
+  isActive      Boolean  @default(true)
+  createdById   String?
+  createdByName String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([category])
+  @@index([isActive])
+  @@index([source])
+}
+
+model AiBrainRun {
+  id               String           @id @default(uuid())
+  windowDays       Int              @default(7)
+  status           String           @default("completed") // "completed" | "failed"
+  modelUsed        String           @default("deterministic-telemetry")
+  executiveSummary String           @db.Text
+  metricsJson      String           @db.Text
+  insightsCount    Int              @default(0)
+  triggeredById    String?
+  triggeredByName  String?
+  createdAt        DateTime         @default(now())
+  insights         AiBrainInsight[]
+
+  @@index([createdAt])
+}
+
+model AiBrainInsight {
+  id             String      @id @default(uuid())
+  runId          String?
+  run            AiBrainRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  category       String      // "bottleneck" | "sla_delay" | "department" | "rider" | "billing" | "complaint_pattern" | "workflow_improvement"
+  severity       String      @default("warning") // "critical" | "warning" | "opportunity" | "info"
+  title          String
+  summary        String      @db.Text
+  rootCause      String?     @db.Text
+  recommendation String      @db.Text
+  impactEstimate String?
+  evidenceJson   String?     @db.Text // JSON: { jobIds?: string[], taskIds?: string[], departments?: string[], metrics?: Record<string, any> }
+  status         String      @default("new") // "new" | "approved" | "implemented" | "dismissed"
+  adminFeedback  String?     @db.Text
+  reviewedById   String?
+  reviewedByName String?
+  reviewedAt     DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([runId])
+  @@index([status])
+  @@index([severity])
+  @@index([category])
+  @@index([createdAt])
+}
+
+
