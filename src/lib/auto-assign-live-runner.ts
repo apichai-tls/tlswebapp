@@ -1,8 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import { publishOrderEvent } from "@/lib/realtime-bus";
 import {
+  BkkRiderZone,
   buildHistoricalDispatchAffinityProfile,
+  calculateEstimatedDistanceKm,
   CandidateRiderForAutoAssign,
+  classifyBkkTaskZone,
   extractTaskHandoverMode,
   extractTaskJobProcessingBranchId,
   isDedicatedCorporateManTask,
@@ -21,20 +24,22 @@ interface ServerSimSettings {
   respectStrictTimeWindows: boolean;
   ignoreNonMeetupTimeWindows?: boolean;
   disableWorkloadBalance?: boolean;
+  balanceCommission?: boolean;
   ignoreBranchRouting?: boolean;
   useHistoricalPatterns?: boolean;
 }
 
 const DEFAULT_SERVER_SIM_SETTINGS: ServerSimSettings = {
-  maxRadiusKm: 4.5,
+  maxRadiusKm: 6,
   maxActiveStops: 10,
-  maxDailyJobs: 35,
-  shiftEndHour: 18.5,
+  maxDailyJobs: 40,
+  shiftEndHour: null,
   respectStrictTimeWindows: true,
   ignoreNonMeetupTimeWindows: false,
-  disableWorkloadBalance: false,
+  disableWorkloadBalance: true,
+  balanceCommission: false,
   ignoreBranchRouting: false,
-  useHistoricalPatterns: false,
+  useHistoricalPatterns: true,
 };
 
 interface SerializedServerSimTask {
@@ -73,6 +78,7 @@ interface ServerPersistedSimState {
   assignments: Record<string, ServerSimAssignmentRecord>;
   riderOnlineOverrides?: Record<string, boolean>;
   riderBranchOverrides?: Record<string, string>;
+  riderZoneOverrides?: Record<string, BkkRiderZone>;
   simClockHour?: number;
   completedTaskTimes?: Record<string, string>;
   riderLastLocations?: Record<string, any>;
@@ -383,10 +389,44 @@ export async function runAutoAssignLiveOnServer(): Promise<{
       let markedDone = 0;
       const existingIds = new Set(state.simTasks.map((t) => t.taskId));
       const completedTimes = { ...(state.completedTaskTimes || {}) };
+      const candidateTaskById = new Map<string, SerializedServerSimTask>();
+      for (const ct of candidateTodayTasks) candidateTaskById.set(ct.taskId, ct);
 
       for (const t of state.simTasks) {
         const realJob = jobMap.get(t.jobId);
         if (!realJob) continue;
+        const freshTask = candidateTaskById.get(t.taskId);
+        const latestSchedRaw =
+          t.legType === "delivery"
+            ? realJob.deliveryScheduledAt || realJob.scheduledAt
+            : realJob.pickupScheduledAt || realJob.scheduledAt;
+        const latestSchedDate = latestSchedRaw ? new Date(latestSchedRaw) : null;
+        const latestSchedIso =
+          freshTask?.scheduledAtIso ||
+          (latestSchedDate && !isNaN(latestSchedDate.getTime())
+            ? latestSchedDate.toISOString()
+            : t.scheduledAtIso);
+        if (t.scheduledAtIso !== latestSchedIso) {
+          t.scheduledAtIso = latestSchedIso;
+          changed = true;
+        }
+        if (freshTask?.serviceSpeed && t.serviceSpeed !== freshTask.serviceSpeed) {
+          t.serviceSpeed = freshTask.serviceSpeed;
+          changed = true;
+        }
+        if (freshTask?.handoverMode && t.handoverMode !== freshTask.handoverMode) {
+          t.handoverMode = freshTask.handoverMode;
+          changed = true;
+        }
+        if (freshTask?.laundryBranchId && t.laundryBranchId !== freshTask.laundryBranchId) {
+          t.laundryBranchId = freshTask.laundryBranchId;
+          changed = true;
+        }
+        if (freshTask?.targetLocation && t.targetLocation !== freshTask.targetLocation) {
+          t.targetLocation = freshTask.targetLocation;
+          changed = true;
+        }
+
         if (t.legType === "delivery") {
           const liveReady =
             realJob.subStatus === "ready" ||
@@ -400,6 +440,14 @@ export async function runAutoAssignLiveOnServer(): Promise<{
           }
           if (Boolean(t.isCsoPaid) !== livePaid) {
             t.isCsoPaid = livePaid;
+            changed = true;
+          }
+        } else {
+          const livePickupReady =
+            ["accepted", "pickup"].includes(realJob.status) ||
+            isRealLegCompleted(realJob, "pickup");
+          if (Boolean(t.isReady) !== livePickupReady) {
+            t.isReady = livePickupReady;
             changed = true;
           }
         }
@@ -474,10 +522,13 @@ export async function runAutoAssignLiveOnServer(): Promise<{
 
         const buildCandidates = (): CandidateRiderForAutoAssign<any>[] => {
           return onlineRiders.map((r) => {
+            const nn = ((r as any).nickname || r.name || "").toLowerCase();
+            const defaultBranch =
+              nn === "jub" || nn.startsWith("jub ") || nn === "toei" || nn.startsWith("toei ")
+                ? "SHOP-MOGWZ0X0"
+                : (r as any).branchId || "shop-head";
             const homeBranchId =
-              state.riderBranchOverrides?.[r.id] ||
-              (r as any).branchId ||
-              "shop-head";
+              state.riderBranchOverrides?.[r.id] || defaultBranch;
             const branchObj = shops.find((s) => s.id === homeBranchId);
             const origin: LatLng =
               r.currentLat && r.currentLng && r.currentLat !== 0 && r.currentLng !== 0
@@ -502,6 +553,7 @@ export async function runAutoAssignLiveOnServer(): Promise<{
               status: "online",
               homeBranchId,
               area: branchObj?.area || undefined,
+              assignedBkkZone: state.riderZoneOverrides?.[r.id] || "AUTO",
               origin,
               hasLiveGps: Boolean(r.currentLat && r.currentLng),
               currentTasks,
@@ -566,6 +618,81 @@ export async function runAutoAssignLiveOnServer(): Promise<{
             changed = true;
           }
         }
+
+        // Wave 5: Pre-stage Not Ready / Blocked unassigned tasks at the bottom of the best matching rider's route
+        const blockedUnassigned = hydratedForOpt.filter(
+          (t) => !assignments[t.taskId] && !t.isCompleted && !(t.legType === "delivery" ? t.isReady && t.isCsoPaid : t.isReady)
+        );
+        for (const bTask of blockedUnassigned) {
+          const cands = buildCandidates();
+          const isManDedicated = isDedicatedCorporateManTask(bTask);
+          const jobBranch = shops.find((s) => s.id === bTask.branchId);
+          const jobAreaUpper = (jobBranch?.area || "").toUpperCase();
+
+          let bestCand: CandidateRiderForAutoAssign<any> | null = null;
+          let bestStagingScore = Infinity;
+          let bestDistKm = 0;
+
+          for (const cand of cands) {
+            if (isManDedicated && !manIds.includes(cand.riderId)) continue;
+            if ((state.rejectedRiderIdsByTask?.[bTask.taskId] || []).includes(cand.riderId)) continue;
+            const dayCount = cand.totalDayCount ?? 0;
+            if (dayCount >= state.settings.maxDailyJobs) continue;
+            if (jobAreaUpper && cand.area && cand.area.toUpperCase() !== jobAreaUpper) continue;
+
+            const distOrigin = calculateEstimatedDistanceKm(cand.origin, bTask.targetCoords);
+            let minStopDist = distOrigin;
+            let sameLaundryBranchCount = 0;
+            for (const st of cand.currentTasks || []) {
+              if (st.laundryBranchId === bTask.laundryBranchId) sameLaundryBranchCount++;
+              const d = calculateEstimatedDistanceKm(st.targetCoords, bTask.targetCoords);
+              if (d < minStopDist) minStopDist = d;
+            }
+
+            const bTaskZone = classifyBkkTaskZone(bTask);
+            const candAssignedZone = cand.assignedBkkZone || "AUTO";
+            const bkkZoneBonus =
+              bTaskZone && candAssignedZone === bTaskZone
+                ? -6.5
+                : bTaskZone && candAssignedZone !== "AUTO" && candAssignedZone !== bTaskZone
+                  ? 9.0
+                  : 0;
+
+            let stagingScore =
+              minStopDist * 0.4 +
+              bkkZoneBonus +
+              dayCount * (state.settings.disableWorkloadBalance ? 0.05 : 0.65);
+            if (dayCount === 0) stagingScore -= 8.0;
+            if (!state.settings.ignoreBranchRouting) {
+              if (cand.homeBranchId === bTask.laundryBranchId) stagingScore -= 3.5;
+              else if (sameLaundryBranchCount > 0) stagingScore -= 2.0;
+            }
+
+            if (stagingScore < bestStagingScore) {
+              bestStagingScore = stagingScore;
+              bestCand = cand;
+              bestDistKm = Math.round(minStopDist * 10) / 10;
+            }
+          }
+
+          if (bestCand) {
+            const laundryBranchObj = shops.find((s) => s.id === bTask.laundryBranchId);
+            assignments[bTask.taskId] = {
+              taskId: bTask.taskId,
+              jobId: bTask.jobId,
+              legType: bTask.legType,
+              simRiderId: bestCand.riderId,
+              assignedAt: now.toISOString(),
+              reason: `⏳ Pre-staged @ ${laundryBranchObj?.name || bTask.laundryBranchId} (รอ Ready / CSO Paid • โซนห่าง ${bestDistKm} km)`,
+              detourKm: 0,
+              distFromRiderKm: bestDistKm,
+              insertedStopNumber: (bestCand.totalDayCount ?? 0) + 1,
+            };
+            newlyAssigned++;
+            changed = true;
+          }
+        }
+
         state.assignments = assignments;
       }
 

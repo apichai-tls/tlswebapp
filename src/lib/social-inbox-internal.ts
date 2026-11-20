@@ -348,6 +348,10 @@ export async function recordInboundSocialMessageInternal(input: {
     conversations.unshift(conv);
 
     await saveRawSocialInboxStore(conversations, messages);
+    try {
+      const { publishOrderEvent } = await import('@/lib/realtime-bus');
+      await publishOrderEvent({ type: 'social.updated', jobId: '__SOCIAL__', updatedAt: new Date() });
+    } catch {}
 
     return {
       success: true,
@@ -458,6 +462,10 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
     conversations.unshift(conv);
 
     await saveRawSocialInboxStore(conversations, messages);
+    try {
+      const { publishOrderEvent } = await import('@/lib/realtime-bus');
+      await publishOrderEvent({ type: 'social.updated', jobId: '__SOCIAL__', updatedAt: new Date() });
+    } catch {}
     return { success: true, conversation: conv, message: outboundMsg };
   } catch (err: any) {
     console.warn('[recordOutboundSocialMessageFromSystemInternal] Non-fatal error:', err);

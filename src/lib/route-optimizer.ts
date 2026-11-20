@@ -1223,10 +1223,9 @@ export function optimizeSmartRiderRoute<T>(
       }
 
       // 3) Same-building / same-condo bundling bonus
-      //    Note: Only bundle same-building immediately if the second task is either Early-OK (Delivery Lobby)
-      //    OR within ~35 mins of its scheduled time (so we don't try to pick up a 17:00 Pickup at 10:00!).
-      if (isSameSpot && (cand.canArriveEarlyAnytime || waitMins <= 35)) {
-        score -= 3.2;
+      //    Bundle all ready jobs at the same building consecutively (within 45m wait window)!
+      if (isSameSpot && (cand.canArriveEarlyAnytime || waitMins <= 45)) {
+        score -= 8.0;
       }
 
       // 4) Branch Hub Synergy + Mandatory Start-At-Branch Outbound Sweep + Ready Lobby Early Drop-Off Synergy:
@@ -1243,6 +1242,35 @@ export function optimizeSmartRiderRoute<T>(
       if (cand.canArriveEarlyAnytime && stepKm <= 4.5) {
         // Ready + Lobby nearby: encourage clearing it along the current zone right away!
         score -= 1.5;
+      }
+
+      // 4B) Bidirectional Branch Corridor En-Route Pull (Soi 15 <-> PK, <= 2.5 km detour):
+      //     If rider still needs to visit a remote branch B (e.g. PK) to load deliveries, pull any
+      //     already-loaded Home delivery OR Pickup returning to B along the corridor (wait <= 25m) BEFORE going to B!
+      if (!ignoreBranchRouting && !needsBranch && cand.targetCoords && (cand.canArriveEarlyAnytime || waitMins <= 25)) {
+        for (const u of unvisited) {
+          if (
+            u.legType === "delivery" &&
+            u.isLaundryReady &&
+            !u.isLoadedAtStart &&
+            u.sourceBranchId &&
+            u.sourceBranchCoords &&
+            !visitedBranches.has(u.sourceBranchId)
+          ) {
+            const distToRemoteHub = calculateEstimatedDistanceKm(currentPos, u.sourceBranchCoords);
+            if (distToRemoteHub >= 1.5) {
+              const cDetour = computeCorridorDetourKm(currentPos, cand.targetCoords, u.sourceBranchCoords);
+              if (cDetour <= 2.5) {
+                const isReturnToThatHub = cand.legType === "pickup" && cand.sourceBranchId === u.sourceBranchId;
+                const isPreloadedDelivery = cand.legType === "delivery";
+                if (isReturnToThatHub || isPreloadedDelivery) {
+                  score -= 3.2;
+                  break;
+                }
+              }
+            }
+          }
+        }
       }
 
       // 5) Handover-Aware Time Alignment:
@@ -1274,14 +1302,26 @@ export function optimizeSmartRiderRoute<T>(
           const imminentPull = (50 - Math.max(0, slackMins)) * 0.075;
           const overdueMins = Math.max(0, -slackMins);
           const overduePull = Math.min(90, overdueMins) * 0.15;
-          const expUrgencyMult = cand.expLevel === 2 ? 1.6 : cand.expLevel === 1 ? 1.3 : 1.0;
+          const expUrgencyMult =
+            cand.expLevel === 2
+              ? 1.8
+              : cand.expLevel === 1
+                ? 1.4
+                : cand.handoverMode === "meetup"
+                  ? 1.6
+                  : 0.7;
           score -= (imminentPull + overduePull) * expUrgencyMult;
+          if (cand.handoverMode === "meetup" && slackMins <= 45) {
+            score -= 2.8;
+          }
         }
 
         // Pairwise schedule-inversion cost against earlier-scheduled Time-Strict stops
         for (const other of pool) {
           if (other.taskKey === cand.taskKey) continue;
           if (cand.expLevel > other.expLevel) continue;
+          // Meet up stops can go ahead of Standard Lobby stops to protect Meet up SLA
+          if (cand.handoverMode === "meetup" && other.handoverMode !== "meetup" && other.expLevel === 0) continue;
           // Only compare against stops that actually have an earlier deadline
           const diffMins = (cand.scheduledMs - other.scheduledMs) / 60_000;
           if (diffMins > 30) {
@@ -1322,15 +1362,16 @@ export function optimizeSmartRiderRoute<T>(
         const addedLateMins = Math.max(0, lateAfterMins - lateNowMins);
 
         if (addedLateMins > 0) {
+          const isProtectedOther = other.expLevel > 0 || other.handoverMode === "meetup";
           const otherWeight =
             other.expLevel === 2
-              ? 1.5
+              ? 1.8
               : other.expLevel === 1
-                ? 1.0
+                ? 1.3
                 : other.handoverMode === "meetup"
-                  ? 0.45
-                  : 0.26;
-          const maxCap = other.expLevel > 0 ? 60.0 : 25.0;
+                  ? 1.6
+                  : 0.10;
+          const maxCap = isProtectedOther ? 60.0 : 12.0;
           inflictedLatenessKm += Math.min(maxCap, addedLateMins * otherWeight);
         }
       }
@@ -1416,10 +1457,23 @@ export function optimizeSmartRiderRoute<T>(
       else if (meta.expLevel === 1) penalty += idx * 1.4;
 
       // Lateness SLA penalty (arriving >15m past scheduled time)
+      // Strongly protect Meet up & Express stops so a Standard Lobby stop is always placed AFTER them rather than making them late!
       const enforceSlaForStop = !ignoreNonMeetupTimeWindows || meta.handoverMode === "meetup";
       if (enforceSlaForStop && st.minutesDiffFromSchedule > 15) {
         const overMins = st.minutesDiffFromSchedule - 15;
-        penalty += (overMins * 0.28 + (overMins / 30) * (overMins / 30) * 1.8) * expMult;
+        const isProtected = meta.expLevel > 0 || meta.handoverMode === "meetup";
+        // Discrete step-function penalty for crossing into `late` on a protected stop so we NEVER
+        // sacrifice an on-time Express/Meetup stop just to shave a few minutes off an already-late stop!
+        const discreteLateStep = isProtected ? (meta.expLevel > 0 ? 45.0 : 35.0) : 0;
+        const slaWeight =
+          meta.expLevel === 2
+            ? 3.5
+            : meta.expLevel === 1
+              ? 2.5
+              : meta.handoverMode === "meetup"
+                ? 2.2
+                : 0.20;
+        penalty += discreteLateStep + (overMins * 0.28 + (overMins / 30) * (overMins / 30) * 1.8) * slaWeight;
       }
 
       // Mild wait / too-early penalty for Time-Strict stops so a 16:30 Pickup stays in the afternoon!
@@ -1439,6 +1493,7 @@ export function optimizeSmartRiderRoute<T>(
       if (seq[i].canArriveEarlyAnytime) continue;
       for (let j = i + 1; j < seq.length; j++) {
         if (seq[i].expLevel > seq[j].expLevel) continue;
+        if (seq[i].handoverMode === "meetup" && seq[j].handoverMode !== "meetup" && seq[j].expLevel === 0) continue;
         if (seq[j].canArriveEarlyAnytime) continue;
         const inversionMins = (seq[i].scheduledMs - seq[j].scheduledMs) / 60_000;
         if (inversionMins > 30) {
@@ -1553,6 +1608,87 @@ export function isDedicatedCorporateManTask(task: any): boolean {
   );
 }
 
+export type BkkRiderZone = "AUTO" | "SUKHUMVIT" | "SATHORN" | "RATCHADA";
+
+export function getBkkZoneLabel(zone?: BkkRiderZone | null): string {
+  if (zone === "SUKHUMVIT") return "สุขุมวิท-บางนา";
+  if (zone === "SATHORN") return "สาทร-CentralWorld";
+  if (zone === "RATCHADA") return "รัชดา-เพชรบุรี-ประตูน้ำ";
+  return "Auto (ทุกโซน)";
+}
+
+/**
+ * Classifies a BKK task into one of 3 directional zones relative to Sukhumvit Soi 15 (13.743, 100.560):
+ * - SUKHUMVIT: Soi 15 heading East/Right along Sukhumvit -> Thonglor -> On Nut -> Bangna / Phattanakarn
+ * - SATHORN: Soi 15 heading West/Left -> Nana/Ploenchit -> CentralWorld -> Wireless/Langsuan -> Silom/Sathorn/Rama 3
+ * - RATCHADA: Heading North -> Phetchaburi / Pratunam / Rama 9 / Ratchada / Huai Khwang / Lat Phrao / Vibhavadi
+ */
+export function classifyBkkTaskZone(task: any): Exclude<BkkRiderZone, "AUTO"> | null {
+  const branchId = String(task?.job?.branchId || task?.branchId || "").toLowerCase();
+  if (branchId.includes("molcj2x8") || branchId.includes("pty")) return null; // Pattaya
+
+  const loc = String(
+    task?.targetLocation ||
+      task?.job?.pickupLocation ||
+      task?.job?.dropoffLocation ||
+      task?.job?.deliveryAddress ||
+      ""
+  ).toLowerCase();
+  const cust = String(task?.job?.customerName || task?.customerName || "").toLowerCase();
+  const text = `${loc} ${cust}`;
+
+  const coords: LatLng | null = task?.targetCoords || task?.coords || null;
+  // Anything clearly North of Phetchaburi / Rama 9 (lat >= 13.758, e.g. Ekkamai-Ramintra / Lat Phrao / Ratchada / Huai Khwang) is RATCHADA
+  if (hasNonZeroCoords(coords) && coords.lat >= 13.758) {
+    return "RATCHADA";
+  }
+
+  if (
+    /ratchada|ratchadaphisek|รัชดา|phetchaburi|petchburi|เพชรบุรี|pratunam|ประตูน้ำ|rama\s*9|rama\s*ix|พระราม\s*9|huai\s*khwang|huaikhwang|ห้วยขวาง|sutthisan|สุทธิสาร|lat\s*phrao|ladprao|ลาดพร้าว|ramintra|ram\s*indra|รามอินทรา|pradit\s*manutham|ประดิษฐ์มนูธรรม|เลียบด่วน|nawamin|นวมินทร์|kaset|เกษตร|wang\s*thonglang|วังทองหลาง|chokchai|โชคชัย|vibhavadi|วิภาวดี|dindaeng|din\s*daeng|ดินแดง|makkasan|มักกะสัน|phaya\s*thai|phayathai|พญาไท|ratchathewi|ราชเทวี|victory\s*monument|อนุสาวรีย์|ari\b|อารีย์|chatuchak|จตุจักร/i.test(
+      text
+    )
+  ) {
+    return "RATCHADA";
+  }
+
+  if (
+    /sathorn|sathon|สาทร|silom|สีลม|central\s*world|centralworld|เซ็นทรัลเวิลด์|ratchadamri|rajdamri|ราชดำริ|langsuan|หลังสวน|wireless|witthayu|วิทยุ|ploenchit|phloen\s*chit|เพลินจิต|chidlom|ชิดลม|siam\b|สยาม|lumpini|ลุมพินี|rama\s*3|rama\s*iii|พระราม\s*3|rama\s*4|rama\s*iv|พระราม\s*4|charoen\s*krung|charoenkrung|เจริญกรุง|surawong|สุรวงศ์|naradhiwas|นราธิวาส|sala\s*daeng|ศาลาแดง|yen\s*akart|เย็นอากาศ|baan\s*suan\s*maak|kimpton|sindhorn|okura|waldorf|st\.\s*regis|anantara\s*siam|dusit\s*suites/i.test(
+      text
+    )
+  ) {
+    return "SATHORN";
+  }
+
+  if (
+    /thonglor|thong\s*lo|ทองหล่อ|ekkamai|เอกมัย|phrom\s*phong|พร้อมพงษ์|phra\s*khanong|พระโขนง|on\s*nut|onnut|อ่อนนุช|bang\s*na|bangna|บางนา|punnawithi|ปุณณวิถี|udom\s*suk|อุดมสุข|bang\s*chak|บางจาก|bearing|แบริ่ง|lasalle|ลาซาล|phattanakarn|pattanakarn|พัฒนาการ|srinakarin|ศรีนครินทร์|emsphere|emquartier|emporium|samala|novotel\s*living.*legacy|sukhumvit\s*(?:1[5-9]|[2-9]\d|10\d)/i.test(
+      text
+    )
+  ) {
+    return "SUKHUMVIT";
+  }
+
+  if (hasNonZeroCoords(coords)) {
+    // Pattaya bounding check
+    if (coords.lat < 13.3) return null;
+    // Far East Phattanakarn/Srinakarin/On Nut/Bangna stays SUKHUMVIT even if lat is slightly around 13.74
+    if (coords.lng >= 100.595 && coords.lat <= 13.752) {
+      return "SUKHUMVIT";
+    }
+    // North of Soi 15 (Phetchaburi / Pratunam / Rama 9 / Ratchada)
+    if (coords.lat >= 13.7485) {
+      return "RATCHADA";
+    }
+    // Left / West of Soi 15 (lng < 100.558 -> Nana West, Ploenchit, CentralWorld, Wireless, Silom, Sathorn)
+    if (coords.lng < 100.558) {
+      return "SATHORN";
+    }
+    // Right / East of Soi 15 (lng >= 100.558 -> Sukhumvit 15..Bangna)
+    return "SUKHUMVIT";
+  }
+
+  return "SUKHUMVIT";
+}
+
 export interface CandidateRiderForAutoAssign<T = any> {
   riderId: string;
   riderName: string;
@@ -1560,10 +1696,12 @@ export interface CandidateRiderForAutoAssign<T = any> {
   status: string;
   area?: string | null;
   homeBranchId?: string | null;
+  assignedBkkZone?: BkkRiderZone | null;
   origin: LatLng;
   hasLiveGps?: boolean;
   currentTasks: T[];
   totalDayCount?: number;
+  totalCommissionBaht?: number;
   pendingTasksCount?: number;
   isDedicatedReserveRider?: boolean;
   baseEval?: SimulatedRouteEvaluation<T>;
@@ -1595,9 +1733,13 @@ export interface SuggestRiderOptions {
   strictLateOnlyMeetup?: boolean;
   ignoreNonMeetupTimeWindows?: boolean;
   disableWorkloadBalance?: boolean;
+  balanceCommission?: boolean;
+  taskCommissionBaht?: number;
   ignoreBranchRouting?: boolean;
   ignoreRadiusLimit?: boolean;
   allowLateIfUnavoidable?: boolean;
+  taskBkkZone?: Exclude<BkkRiderZone, "AUTO"> | null;
+  allowCrossZoneFallback?: boolean;
   useHistoricalPatterns?: boolean;
   historicalPatternProfile?: HistoricalDispatchProfile | null;
 }
@@ -1607,6 +1749,7 @@ export interface HistoricalDispatchProfile {
   analyzedLegsCount: number;
   customerRiderCounts: Record<string, Record<string, number>>;
   locationRiderCounts: Record<string, Record<string, number>>;
+  sameDayLocationPairCounts: Record<string, Record<string, number>>;
   riderHourCounts: Record<string, Record<number, number>>;
   riderLegCounts: Record<string, { pickup: number; delivery: number }>;
 }
@@ -1615,7 +1758,9 @@ function normalizePatternKey(val?: string | null): string {
   return String(val || "")
     .trim()
     .toLowerCase()
-    .replace(/\s+/g, " ");
+    .replace(/\((?:room|ห้อง|unit|fl|floor)[^)]*\)/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function buildHistoricalDispatchAffinityProfile(
@@ -1625,6 +1770,8 @@ export function buildHistoricalDispatchAffinityProfile(
   const cutoffMs = Date.now() - Math.max(1, windowDays) * 24 * 60 * 60 * 1000;
   const customerRiderCounts: Record<string, Record<string, number>> = {};
   const locationRiderCounts: Record<string, Record<string, number>> = {};
+  const sameDayLocationPairCounts: Record<string, Record<string, number>> = {};
+  const dailyRiderLocations = new Map<string, Set<string>>();
   const riderHourCounts: Record<string, Record<number, number>> = {};
   const riderLegCounts: Record<string, { pickup: number; delivery: number }> = {};
   let analyzedLegsCount = 0;
@@ -1656,6 +1803,18 @@ export function buildHistoricalDispatchAffinityProfile(
     if (locKey && locKey.length >= 4 && locKey !== "-") {
       if (!locationRiderCounts[locKey]) locationRiderCounts[locKey] = {};
       locationRiderCounts[locKey][riderId] = (locationRiderCounts[locKey][riderId] || 0) + 1;
+
+      const refDt = schedIso ? new Date(schedIso) : j.createdAt ? new Date(j.createdAt) : null;
+      if (refDt && !isNaN(refDt.getTime())) {
+        const dayKey = `${refDt.getFullYear()}-${String(refDt.getMonth() + 1).padStart(2, "0")}-${String(refDt.getDate()).padStart(2, "0")}`;
+        const bucketKey = `${dayKey}::${riderId}`;
+        let locSet = dailyRiderLocations.get(bucketKey);
+        if (!locSet) {
+          locSet = new Set<string>();
+          dailyRiderLocations.set(bucketKey, locSet);
+        }
+        locSet.add(locKey);
+      }
     }
 
     if (schedIso) {
@@ -1684,14 +1843,64 @@ export function buildHistoricalDispatchAffinityProfile(
     }
   }
 
+  // Build same-day co-dispatched location pair frequency (which buildings/hotels were historically assigned to the SAME rider on the SAME day)
+  for (const locSet of dailyRiderLocations.values()) {
+    const locs = Array.from(locSet);
+    if (locs.length < 2) continue;
+    for (let i = 0; i < locs.length; i++) {
+      const a = locs[i];
+      if (!sameDayLocationPairCounts[a]) sameDayLocationPairCounts[a] = {};
+      for (let k = 0; k < locs.length; k++) {
+        if (i === k) continue;
+        const b = locs[k];
+        sameDayLocationPairCounts[a][b] = (sameDayLocationPairCounts[a][b] || 0) + 1;
+      }
+    }
+  }
+
   return {
     windowDays,
     analyzedLegsCount,
     customerRiderCounts,
     locationRiderCounts,
+    sameDayLocationPairCounts,
     riderHourCounts,
     riderLegCounts,
   };
+}
+
+function extractBaseBuildingName(task: any): string {
+  const raw = String(
+    task?.targetLocation ||
+      task?.job?.pickupLocation ||
+      task?.job?.dropoffLocation ||
+      task?.job?.deliveryAddress ||
+      ""
+  ).toLowerCase();
+  return raw
+    .replace(/\((?:room|ห้อง|unit|fl|floor)[^)]*\)/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function isSameBuildingTask(taskA: any, taskB: any): boolean {
+  if (!taskA || !taskB) return false;
+  if (hasNonZeroCoords(taskA.targetCoords) && hasNonZeroCoords(taskB.targetCoords)) {
+    if (calculateEstimatedDistanceKm(taskA.targetCoords, taskB.targetCoords) <= 0.15) {
+      return true;
+    }
+  }
+  const nameA = extractBaseBuildingName(taskA);
+  const nameB = extractBaseBuildingName(taskB);
+  return Boolean(nameA.length >= 6 && nameB.length >= 6 && nameA === nameB);
+}
+
+function computeCorridorDetourKm(originCoords: LatLng, stopCoords: LatLng, destCoords: LatLng): number {
+  const direct = calculateEstimatedDistanceKm(originCoords, destCoords);
+  const viaStop =
+    calculateEstimatedDistanceKm(originCoords, stopCoords) +
+    calculateEstimatedDistanceKm(stopCoords, destCoords);
+  return Math.max(0, Math.round((viaStop - direct) * 10) / 10);
 }
 
 export function suggestBestRiderForTask<T extends { taskId?: string; targetCoords?: LatLng | null; legType?: string }>(
@@ -1711,6 +1920,17 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
   const branches = options.branches || [];
   const jobAreaUpper = (options.jobArea || "").toUpperCase();
   const taskExpLevel = getExpressLevel(task);
+  const effectiveTaskZone = options.taskBkkZone ?? classifyBkkTaskZone(task);
+  const hasDedicatedZoneRiderInPool = Boolean(
+    effectiveTaskZone &&
+      candidates.some(
+        (c) =>
+          c.assignedBkkZone === effectiveTaskZone &&
+          ["online", "busy"].includes((c.status || "").toLowerCase()) &&
+          (c.totalDayCount ?? c.currentTasks.length) < maxDailyTotal &&
+          !(options.excludedRiderIds && options.excludedRiderIds.includes(c.riderId))
+      )
+  );
 
   let shiftCutoffMs: number | null = null;
   if (shiftEndHour !== null && shiftEndHour > 0) {
@@ -1721,8 +1941,9 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
     shiftCutoffMs = cutoff.getTime();
   }
 
-  // Compute minimum dayCount among eligible online riders in the same area for fair workload balancing
+  // Compute minimum dayCount & minimum commission among eligible online riders in the same area
   let minDayCountInArea = Infinity;
+  let minCommissionInArea = Infinity;
   for (const cand of candidates) {
     if (options.allowedRiderIds && options.allowedRiderIds.length > 0 && !options.allowedRiderIds.includes(cand.riderId)) {
       continue;
@@ -1734,8 +1955,11 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
     if (dc >= maxDailyTotal) continue;
     if (jobAreaUpper && cand.area && cand.area.toUpperCase() !== jobAreaUpper) continue;
     if (dc < minDayCountInArea) minDayCountInArea = dc;
+    const comm = cand.totalCommissionBaht ?? 0;
+    if (comm < minCommissionInArea) minCommissionInArea = comm;
   }
   if (!Number.isFinite(minDayCountInArea)) minDayCountInArea = 0;
+  if (!Number.isFinite(minCommissionInArea)) minCommissionInArea = 0;
 
   let best: RiderAutoAssignSuggestion | null = null;
 
@@ -1752,15 +1976,29 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
     if (dayCount >= maxDailyTotal) continue;
     if (jobAreaUpper && cand.area && cand.area.toUpperCase() !== jobAreaUpper) continue;
 
+    // BKK Explicit Rider Zone Enforcement (Sukhumvit->Bangna / Sathorn-CW / Ratchada-Pratunam):
+    const candZone = cand.assignedBkkZone || "AUTO";
+    const isExactZoneMatch = Boolean(effectiveTaskZone && candZone === effectiveTaskZone);
+    const isExplicitZoneMismatch = Boolean(
+      effectiveTaskZone && candZone !== "AUTO" && candZone !== effectiveTaskZone
+    );
+    if (isExplicitZoneMismatch && !options.allowCrossZoneFallback) {
+      continue; // Rider is locked to a different BKK zone!
+    }
+
     const distFromRiderKm = hasNonZeroCoords(cand.origin)
       ? calculateEstimatedDistanceKm(cand.origin, task.targetCoords)
       : Infinity;
 
     let distToNearestStopKm = Infinity;
+    let hasSameBuildingStop = false;
     let sumLat = 0;
     let sumLng = 0;
     let coordCount = 0;
     for (const t of cand.currentTasks) {
+      if (isSameBuildingTask(t, task)) {
+        hasSameBuildingStop = true;
+      }
       if (hasNonZeroCoords(t.targetCoords)) {
         const d = calculateEstimatedDistanceKm(t.targetCoords, task.targetCoords);
         if (d < distToNearestStopKm) distToNearestStopKm = d;
@@ -1777,12 +2015,50 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
       ? calculateEstimatedDistanceKm(zoneCentroid, task.targetCoords)
       : distFromRiderKm;
 
-    // Fast spatial pre-filter before running route simulation (unless fallback/corporate/express override)
+    // Bidirectional Branch Corridor Check (Soi 15 <-> PK, <= 2.5 km corridor detour):
+    // Allows a rider heading from Home Branch -> Remote Branch (or vice-versa) to carry morning
+    // Home deliveries or Pickups returning to that Remote Branch along the way!
+    const taskLaundryBranchIdForCorridor =
+      extractTaskJobProcessingBranchId(task) || (task as any)?.job?.branchId || null;
+    let isCorridorEnRoute = false;
+    let corridorBonus = 0;
+    let corridorTag = "";
+    if (!options.ignoreBranchRouting && hasNonZeroCoords(cand.origin) && taskLaundryBranchIdForCorridor) {
+      for (const ct of cand.currentTasks) {
+        if ((ct as any)?.legType !== "delivery") continue;
+        const ctBranchId = extractTaskJobProcessingBranchId(ct) || (ct as any)?.job?.branchId || null;
+        if (!ctBranchId || ctBranchId === cand.homeBranchId) continue;
+        const remoteBranch = branches.find((b) => b.id === ctBranchId);
+        if (!remoteBranch || !hasNonZeroCoords(remoteBranch.coords)) continue;
+        const distOriginToRemote = calculateEstimatedDistanceKm(cand.origin, remoteBranch.coords);
+        if (distOriginToRemote < 1.5) continue;
+
+        const cDetour = computeCorridorDetourKm(cand.origin, task.targetCoords, remoteBranch.coords);
+        if (cDetour <= 2.5) {
+          const remoteShort = getBranchShortLabel(ctBranchId, remoteBranch.name);
+          if ((task as any)?.legType === "delivery" && taskLaundryBranchIdForCorridor === cand.homeBranchId) {
+            isCorridorEnRoute = true;
+            corridorBonus = -3.2;
+            corridorTag = `ติดส่งระหว่างทางไป ${remoteShort} (+${cDetour} km)`;
+            break;
+          }
+          if ((task as any)?.legType === "pickup" && taskLaundryBranchIdForCorridor === ctBranchId) {
+            isCorridorEnRoute = true;
+            corridorBonus = -3.4;
+            corridorTag = `แวะรับส่งซัก ${remoteShort} ระหว่างทางไปโหลดผ้า (+${cDetour} km)`;
+            break;
+          }
+        }
+      }
+    }
+
+    // Fast spatial pre-filter before running route simulation (unless fallback/corporate/express/corridor/same-zone override)
     const minDirectDist =
       cand.currentTasks.length > 0
         ? Math.min(distToNearestStopKm, distFromZoneCentroidKm)
         : distFromRiderKm;
-    if (!ignoreRadiusLimit && minDirectDist > maxRadiusKm * 1.35) continue;
+    const effectiveRadiusForZone = isExactZoneMatch ? Math.max(maxRadiusKm * 2.8, 16) : maxRadiusKm;
+    if (!ignoreRadiusLimit && !isCorridorEnRoute && !hasSameBuildingStop && minDirectDist > effectiveRadiusForZone * 1.35) continue;
 
     const baseEval =
       cand.baseEval ||
@@ -1855,6 +2131,9 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
 
     const isNearby =
       ignoreRadiusLimit ||
+      isCorridorEnRoute ||
+      hasSameBuildingStop ||
+      isExactZoneMatch ||
       (cand.currentTasks.length === 0
         ? distFromRiderKm <= maxRadiusKm
         : distToNearestStopKm <= maxRadiusKm ||
@@ -1935,22 +2214,32 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
       }
     }
 
-    const sameBuildingBonus = distToNearestStopKm <= 0.15 ? -3.5 : 0;
+    const sameBuildingBonus = hasSameBuildingStop ? -12.0 : 0;
     const idleRiderBonus = dayCount === 0 && cand.currentTasks.length === 0 ? -7.0 : 0;
     // Zone Cohesion: keep all stops of a rider within their anchored zone (e.g. Sukhumvit stays in Sukhumvit)
-    const zoneCohesionScore =
+    const rawZoneCohesionScore =
       cand.currentTasks.length > 0
         ? distFromZoneCentroidKm * 0.65 +
           (distFromZoneCentroidKm <= 2.5 ? -2.2 : 0) +
           (distFromZoneCentroidKm > maxRadiusKm * 1.35 ? 6.0 : 0)
         : 0;
+    const zoneCohesionScore = isCorridorEnRoute ? Math.min(0, rawZoneCohesionScore) : rawZoneCohesionScore;
     const excessJobs = Math.max(0, dayCount - minDayCountInArea);
     // Progressive workload balance: allow +/-1 job for natural clustering, strongly steer jobs to under-loaded riders beyond >= 2 gap
-    const workloadBalancePenalty = options.disableWorkloadBalance
+    // Never penalize same-building bundling so ready jobs at the same hotel/condo always go together!
+    const workloadBalancePenalty = options.disableWorkloadBalance || hasSameBuildingStop
       ? 0
       : excessJobs <= 1
         ? excessJobs * 0.45
         : excessJobs * 1.45 + (excessJobs - 1) * 1.35;
+    // Commission Balance (target spread <= 50 THB across riders in same area):
+    const candComm = cand.totalCommissionBaht ?? 0;
+    const excessComm = Math.max(0, candComm - minCommissionInArea);
+    const commissionBalancePenalty = options.balanceCommission
+      ? excessComm <= 50
+        ? excessComm * 0.04
+        : 50 * 0.04 + (excessComm - 50) * 0.18
+      : 0;
     const softLobbyLatePenalty =
       options.strictLateOnlyMeetup && addedSoftLate > 0 ? addedSoftLate * 1.6 : 0;
     const manReserveBuffer =
@@ -2014,6 +2303,29 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
         }
       }
 
+      // Same-day co-dispatched location grouping: if this rider already has a task today at Building B,
+      // and historical data shows Building A + Building B were assigned to the same rider on the same day!
+      if (locKey && prof.sameDayLocationPairCounts?.[locKey] && cand.currentTasks.length > 0) {
+        const pairMap = prof.sameDayLocationPairCounts[locKey];
+        let totalCoDays = 0;
+        for (const ct of cand.currentTasks) {
+          const ctJob = (ct as any)?.job;
+          const ctLocRaw =
+            (ct as any)?.targetLocation ||
+            ctJob?.pickupLocation ||
+            ctJob?.deliveryAddress ||
+            ctJob?.dropoffLocation;
+          const ctLocKey = normalizePatternKey(ctLocRaw);
+          if (ctLocKey && pairMap[ctLocKey]) {
+            totalCoDays += pairMap[ctLocKey];
+          }
+        }
+        if (totalCoDays > 0) {
+          learnedPatternBonus -= Math.min(4.8, 2.2 + totalCoDays * 1.1);
+          learnedPatternTag = `Learned: สถิติรวบคู่เส้นทางวันเดียวกัน (${totalCoDays}x)`;
+        }
+      }
+
       const legStats = prof.riderLegCounts[cand.riderId];
       if (legStats) {
         const totalRiderLegs = legStats.pickup + legStats.delivery;
@@ -2037,14 +2349,24 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
       }
     }
 
+    const bkkZoneAssignmentBonus = isExactZoneMatch
+      ? -9.5
+      : isExplicitZoneMismatch
+        ? 18.0
+        : hasDedicatedZoneRiderInPool
+          ? 14.0
+          : 0;
     const score =
       detourKm * 1.0 +
       Math.min(distFromRiderKm, distToNearestStopKm) * 0.30 +
       zoneCohesionScore +
+      bkkZoneAssignmentBonus +
       cand.currentTasks.length * stackCountWeight +
       dayCount * dayCountWeight +
       workloadBalancePenalty +
+      commissionBalancePenalty +
       branchSweepBonus +
+      corridorBonus +
       sameBuildingBonus +
       idleRiderBonus +
       softLobbyLatePenalty +
@@ -2054,7 +2376,13 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
       learnedPatternBonus;
 
     let reason = "";
-    if (learnedPatternTag && learnedPatternBonus <= -2.0) {
+    if (hasSameBuildingStop) {
+      reason = "Same building/condo bundle (รวบตึกเดียวกันไปพร้อมกัน)";
+    } else if (isExactZoneMatch && effectiveTaskZone) {
+      reason = `Zone ${getBkkZoneLabel(effectiveTaskZone)} (+${detourKm} km)`;
+    } else if (corridorTag) {
+      reason = corridorTag;
+    } else if (learnedPatternTag && learnedPatternBonus <= -2.0) {
       reason = `${learnedPatternTag} • +${detourKm} km`;
     } else if (distToNearestStopKm <= 0.15) {
       reason = "Same building/condo bundle (รวบตึกเดียวกัน +0 กม.)";

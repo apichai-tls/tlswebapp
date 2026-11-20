@@ -9,6 +9,7 @@ import {
   Clock,
   Cloud,
   Download,
+  ExternalLink,
   MapPin,
   Pause,
   Play,
@@ -23,13 +24,18 @@ import {
   Zap,
 } from "lucide-react";
 import { Customer, Job, jobStore, LatLng, Rider, ShopLocation } from "@/lib/store";
+import { calculateRiderCommission } from "@/lib/utils";
 import { useCustomers } from "@/lib/use-customers";
 import {
+  BkkRiderZone,
   buildHistoricalDispatchAffinityProfile,
   calculateEstimatedDistanceKm,
+  classifyBkkTaskZone,
   extractTaskHandoverMode,
   extractTaskJobProcessingBranchId,
+  getBkkZoneLabel,
   isDedicatedCorporateManTask,
+  isSameBuildingTask,
   optimizeSmartRiderRoute,
   suggestBestRiderForTask,
   CandidateRiderForAutoAssign,
@@ -59,6 +65,7 @@ export interface SimTaskItem {
   isReady: boolean;
   isCsoPaid: boolean;
   isCompleted: boolean;
+  commissionBaht: number;
 }
 
 interface SerializedSimTask {
@@ -77,6 +84,7 @@ interface SerializedSimTask {
   targetLocation: string;
   targetCoords: LatLng;
   serviceSpeed: "standard" | "express_50" | "express_100";
+  commissionBaht?: number;
 }
 
 export interface SimAssignmentRecord {
@@ -101,6 +109,7 @@ interface SimSettings {
   respectStrictTimeWindows: boolean;
   ignoreNonMeetupTimeWindows?: boolean;
   disableWorkloadBalance?: boolean;
+  balanceCommission?: boolean;
   ignoreBranchRouting?: boolean;
   useHistoricalPatterns?: boolean;
 }
@@ -119,6 +128,7 @@ interface PersistedSimState {
   assignments: Record<string, SimAssignmentRecord>;
   riderOnlineOverrides?: Record<string, boolean>;
   riderBranchOverrides?: Record<string, string>;
+  riderZoneOverrides?: Record<string, BkkRiderZone>;
   simClockHour?: number;
   completedTaskTimes?: Record<string, string>;
   riderLastLocations?: Record<string, RiderLastLocationRecord>;
@@ -129,15 +139,16 @@ interface PersistedSimState {
 }
 
 const DEFAULT_SETTINGS: SimSettings = {
-  maxRadiusKm: 4.5,
+  maxRadiusKm: 6,
   maxActiveStops: 10,
-  maxDailyJobs: 35,
-  shiftEndHour: 18.5,
+  maxDailyJobs: 40,
+  shiftEndHour: null,
   respectStrictTimeWindows: true,
   ignoreNonMeetupTimeWindows: false,
-  disableWorkloadBalance: false,
+  disableWorkloadBalance: true,
+  balanceCommission: false,
   ignoreBranchRouting: false,
-  useHistoricalPatterns: false,
+  useHistoricalPatterns: true,
 };
 
 function isValidLatLng(coords?: LatLng | null): coords is LatLng {
@@ -241,6 +252,7 @@ function hydrateSimTask(s: SerializedSimTask, completedAtStr?: string): SimTaskI
     isReady,
     isCsoPaid,
     isCompleted: Boolean(completedAtStr),
+    commissionBaht: typeof s.commissionBaht === "number" ? s.commissionBaht : 0,
   };
 }
 
@@ -374,6 +386,22 @@ function createRandomSimTask(
     laundryBranchId = Math.random() < 0.55 ? "shop-head" : "SHOP-MOGWZ0X0";
   }
 
+  const originShop = shopLocations.find((s) => s.id === laundryBranchId) || shopLocations.find((s) => s.id === branchId);
+  const simDistKm =
+    originShop && isValidLatLng(originShop.coords) && isValidLatLng({ lat, lng })
+      ? calculateEstimatedDistanceKm(originShop.coords, { lat, lng })
+      : 2;
+  const commRes = calculateRiderCommission({
+    customer: cust,
+    isPickup: legType === "pickup",
+    pickupDist: simDistKm,
+    isDelivery: legType === "delivery",
+    deliveryDist: simDistKm,
+    isVIP: Boolean(cust.isVIP),
+    noRiderCommission: Boolean(originShop?.noCommission),
+  });
+  const commissionBaht = legType === "pickup" ? commRes.pickupCommission : commRes.deliveryCommission;
+
   const jobId = `SIM-${String(seq).padStart(3, "0")}`;
   return {
     taskId: `${jobId}-${legType}`,
@@ -391,6 +419,7 @@ function createRandomSimTask(
     targetLocation: address,
     targetCoords: { lat, lng },
     serviceSpeed,
+    commissionBaht,
   };
 }
 
@@ -776,6 +805,7 @@ export function AdminDispatchAutoSim({
             assignments: res.state.assignments || {},
             riderOnlineOverrides: res.state.riderOnlineOverrides || {},
             riderBranchOverrides: res.state.riderBranchOverrides || {},
+            riderZoneOverrides: res.state.riderZoneOverrides || {},
             simClockHour: typeof res.state.simClockHour === "number" ? res.state.simClockHour : 10,
             completedTaskTimes: res.state.completedTaskTimes || {},
             riderLastLocations: res.state.riderLastLocations || {},
@@ -818,6 +848,8 @@ export function AdminDispatchAutoSim({
   useEffect(() => {
     if (!isLiveShadow || isLiveArchiveMode || !isDbLoaded) return;
     const todayAllTasks = buildLiveTasksForDate(mergedLiveJobs, todayKey, true);
+    const freshTaskById = new Map<string, SerializedSimTask>();
+    for (const ft of todayAllTasks) freshTaskById.set(ft.taskId, ft);
     const jobById = new Map<string, Job>();
     for (const j of mergedLiveJobs) jobById.set(j.id, j);
 
@@ -827,11 +859,46 @@ export function AdminDispatchAutoSim({
       const nextCompleted = { ...(prev.completedTaskTimes || {}) };
       let changed = false;
 
-      // Sync readiness, CSO paid status, and DONE status on existing tasks from live jobs
+      // Sync readiness, CSO paid status, scheduled time, speed, handover mode, and DONE status on existing tasks from live jobs
       const updatedExistingTasks = prev.simTasks.map((t) => {
         const realJob = jobById.get(t.jobId);
         if (!realJob) return t;
+        const freshTask = freshTaskById.get(t.taskId);
         let nextTask = t;
+
+        const latestSchedRaw =
+          t.legType === "delivery"
+            ? realJob.deliveryScheduledAt || realJob.scheduledAt
+            : realJob.pickupScheduledAt || realJob.scheduledAt;
+        const latestSchedDate = latestSchedRaw ? new Date(latestSchedRaw) : null;
+        const latestSchedIso =
+          freshTask?.scheduledAtIso ||
+          (latestSchedDate && !isNaN(latestSchedDate.getTime())
+            ? latestSchedDate.toISOString()
+            : t.scheduledAtIso);
+        const latestSpeed = freshTask?.serviceSpeed || t.serviceSpeed;
+        const latestHandover = freshTask?.handoverMode || t.handoverMode;
+        const latestLaundryBranch = freshTask?.laundryBranchId || t.laundryBranchId;
+        const latestTargetLocation = freshTask?.targetLocation || t.targetLocation;
+
+        if (
+          nextTask.scheduledAtIso !== latestSchedIso ||
+          nextTask.serviceSpeed !== latestSpeed ||
+          nextTask.handoverMode !== latestHandover ||
+          nextTask.laundryBranchId !== latestLaundryBranch ||
+          nextTask.targetLocation !== latestTargetLocation
+        ) {
+          nextTask = {
+            ...nextTask,
+            scheduledAtIso: latestSchedIso,
+            serviceSpeed: latestSpeed,
+            handoverMode: latestHandover,
+            laundryBranchId: latestLaundryBranch,
+            targetLocation: latestTargetLocation,
+          };
+          changed = true;
+        }
+
         if (t.legType === "delivery") {
           const liveReady =
             realJob.subStatus === "ready" ||
@@ -839,8 +906,16 @@ export function AdminDispatchAutoSim({
             String(realJob.status) === "washed" ||
             isRealLegCompleted(realJob, "delivery");
           const livePaid = realJob.isPaid !== false;
-          if (Boolean(t.isReady) !== liveReady || Boolean(t.isCsoPaid) !== livePaid) {
-            nextTask = { ...t, isReady: liveReady, isCsoPaid: livePaid };
+          if (Boolean(nextTask.isReady) !== liveReady || Boolean(nextTask.isCsoPaid) !== livePaid) {
+            nextTask = { ...nextTask, isReady: liveReady, isCsoPaid: livePaid };
+            changed = true;
+          }
+        } else {
+          const livePickupReady =
+            ["accepted", "pickup"].includes(realJob.status) ||
+            isRealLegCompleted(realJob, "pickup");
+          if (Boolean(nextTask.isReady) !== livePickupReady) {
+            nextTask = { ...nextTask, isReady: livePickupReady };
             changed = true;
           }
         }
@@ -886,7 +961,7 @@ export function AdminDispatchAutoSim({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLiveShadow, isDbLoaded, mergedLiveJobs, todayKey, effectiveArea, isAreaRestricted, allowedBranchIds, shopLocations]);
 
-  // Auto-Assign Live: automatically start Auto-Assign whenever at least 1 rider is online and runnable unassigned tasks exist
+  // Auto-Assign Live: automatically start Auto-Assign whenever at least 1 rider is online and unassigned tasks exist (including Wave 5 Not Ready pre-staging)
   useEffect(() => {
     if (!isLiveShadow || isLiveArchiveMode || !isDbLoaded || isAutoAssignRunning) return;
     const hasOnlineRider = riders.some((r) => {
@@ -896,12 +971,12 @@ export function AdminDispatchAutoSim({
         : (r.status || "").toLowerCase() === "online";
     });
     if (!hasOnlineRider) return;
-    const hasRunnableUnassigned = simState.simTasks.some((t) => {
+    const hasUnassignedTask = simState.simTasks.some((t) => {
       if (simState.assignments[t.taskId]) return false;
       if (simState.completedTaskTimes?.[t.taskId]) return false;
-      return t.legType === "delivery" ? t.isReady && t.isCsoPaid : t.isReady;
+      return true;
     });
-    if (hasRunnableUnassigned) {
+    if (hasUnassignedTask) {
       setIsAutoAssignRunning(true);
     }
   }, [
@@ -949,6 +1024,7 @@ export function AdminDispatchAutoSim({
       assignments: payload.assignments,
       riderOnlineOverrides: payload.riderOnlineOverrides || {},
       riderBranchOverrides: payload.riderBranchOverrides || {},
+      riderZoneOverrides: payload.riderZoneOverrides || {},
       simClockHour: payload.simClockHour ?? 10,
       completedTaskTimes: payload.completedTaskTimes || {},
       riderLastLocations: payload.riderLastLocations || {},
@@ -965,6 +1041,7 @@ export function AdminDispatchAutoSim({
           assignments: p.assignments,
           riderOnlineOverrides: p.riderOnlineOverrides || {},
           riderBranchOverrides: p.riderBranchOverrides || {},
+          riderZoneOverrides: p.riderZoneOverrides || {},
           simClockHour: p.simClockHour ?? 10,
           completedTaskTimes: p.completedTaskTimes || {},
           riderLastLocations: p.riderLastLocations || {},
@@ -1002,6 +1079,7 @@ export function AdminDispatchAutoSim({
   const assignments = simState.assignments;
   const riderOnlineOverrides = simState.riderOnlineOverrides || {};
   const riderBranchOverrides = simState.riderBranchOverrides || {};
+  const riderZoneOverrides = simState.riderZoneOverrides || {};
   const simClockHour = simState.simClockHour ?? 10;
   const completedTaskTimes = simState.completedTaskTimes || {};
   const riderLastLocations = simState.riderLastLocations || {};
@@ -1010,7 +1088,12 @@ export function AdminDispatchAutoSim({
     rider: Rider,
     overrides: Record<string, string> = riderBranchOverrides
   ): string => {
-    return overrides[rider.id] || rider.branchId || "shop-head";
+    if (overrides[rider.id]) return overrides[rider.id];
+    const nn = (rider.nickname || rider.name || "").toLowerCase();
+    if (nn === "jub" || nn.startsWith("jub ") || nn === "toei" || nn.startsWith("toei ")) {
+      return "SHOP-MOGWZ0X0";
+    }
+    return rider.branchId || "shop-head";
   };
 
   const setSimRiderBranch = (riderId: string, nextBranchId: string) => {
@@ -1019,6 +1102,23 @@ export function AdminDispatchAutoSim({
       riderBranchOverrides: {
         ...(prev.riderBranchOverrides || {}),
         [riderId]: nextBranchId,
+      },
+    }));
+  };
+
+  const getSimRiderZone = (
+    riderId: string,
+    overrides: Record<string, BkkRiderZone> = riderZoneOverrides
+  ): BkkRiderZone => {
+    return overrides[riderId] || "AUTO";
+  };
+
+  const setSimRiderZone = (riderId: string, nextZone: BkkRiderZone) => {
+    setSimState((prev) => ({
+      ...prev,
+      riderZoneOverrides: {
+        ...(prev.riderZoneOverrides || {}),
+        [riderId]: nextZone,
       },
     }));
   };
@@ -1042,12 +1142,40 @@ export function AdminDispatchAutoSim({
     });
   };
 
+  const computeSimTaskCommission = (s: SerializedSimTask, hydrated: SimTaskItem): number => {
+    const cust = customers.find((c) => c.id === s.customerId);
+    const realJob = mergedLiveJobs.find((j) => j.id === s.jobId);
+    const bShop = shopLocations.find((b) => b.id === hydrated.laundryBranchId) || shopLocations[0];
+    const dKm =
+      bShop && isValidLatLng(bShop.coords) && isValidLatLng(hydrated.targetCoords)
+        ? calculateEstimatedDistanceKm(bShop.coords, hydrated.targetCoords)
+        : 2;
+    const jobNoComm =
+      Boolean((realJob as any)?.noRiderCommission) ||
+      /no\s*rider\s*comm/i.test(String(realJob?.remark || ""));
+    const commRes = calculateRiderCommission({
+      customer: cust,
+      isPickup: hydrated.legType === "pickup",
+      pickupDist: dKm,
+      isDelivery: hydrated.legType === "delivery",
+      deliveryDist: dKm,
+      isVIP: Boolean(cust?.isVIP),
+      noRiderCommission: Boolean(bShop?.noCommission) || jobNoComm,
+    });
+    return hydrated.legType === "pickup" ? commRes.pickupCommission : commRes.deliveryCommission;
+  };
+
   const hydratedTasks = useMemo(
     () =>
       simState.simTasks
-        .map((s) => hydrateSimTask(s, completedTaskTimes[s.taskId]))
+        .map((s) => {
+          const hydrated = hydrateSimTask(s, completedTaskTimes[s.taskId]);
+          hydrated.commissionBaht = computeSimTaskCommission(s, hydrated);
+          return hydrated;
+        })
         .sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime()),
-    [simState.simTasks, completedTaskTimes]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [simState.simTasks, completedTaskTimes, shopLocations, customers, mergedLiveJobs, isLiveShadow]
   );
 
   const isSimTaskRunnable = (t: SimTaskItem): boolean =>
@@ -1068,7 +1196,13 @@ export function AdminDispatchAutoSim({
     const simClockRef = getSimClockDate(curHour, activeDateKey);
 
     const tasks = currentState.simTasks
-      .map((s) => hydrateSimTask(s, compMap[s.taskId]))
+      .map((s) => {
+        const hydrated = hydrateSimTask(s, compMap[s.taskId]);
+        if (!isLiveShadow) {
+          hydrated.commissionBaht = computeSimTaskCommission(s, hydrated);
+        }
+        return hydrated;
+      })
       .sort((a, b) => {
         const tierA = a.expressInfo?.isExpress ? (a.expressInfo.is100 ? 2 : 1) : 0;
         const tierB = b.expressInfo?.isExpress ? (b.expressInfo.is100 ? 2 : 1) : 0;
@@ -1102,6 +1236,7 @@ export function AdminDispatchAutoSim({
         const effBranchId = getSimRiderBranchId(r, currentState.riderBranchOverrides || {});
         const riderBranch = shopLocations.find((s) => s.id === effBranchId) || null;
         const origin = lastLocMap[r.id]?.coords || riderBranch?.coords || getRiderOriginCoords(r);
+        const totalCommissionBaht = fullStack.reduce((sum, t) => sum + (t.commissionBaht || 0), 0);
         return {
           riderId: r.id,
           riderName: r.name,
@@ -1109,10 +1244,12 @@ export function AdminDispatchAutoSim({
           status: "online",
           area: riderBranch?.area || null,
           homeBranchId: effBranchId,
+          assignedBkkZone: getSimRiderZone(r.id, currentState.riderZoneOverrides || {}),
           origin,
           hasLiveGps: Boolean(lastLocMap[r.id]?.coords),
           currentTasks: remainingRunnable,
           totalDayCount: fullStack.length,
+          totalCommissionBaht,
           pendingTasksCount: pendingBlocked.length,
           isDedicatedReserveRider: isManRiderObj(r),
           baseEval: optimizeSmartRiderRoute(origin, remainingRunnable, {
@@ -1187,12 +1324,14 @@ export function AdminDispatchAutoSim({
       task: SimTaskItem,
       poolCandidates: CandidateRiderForAutoAssign<SimTaskItem>[],
       ignoreRadius = false,
-      allowLateIfUnavoidable = false
+      allowLateIfUnavoidable = false,
+      allowCrossZoneFallback = false
     ): RiderAutoAssignSuggestion | null => {
       const jobBranch = task.job.branchId
         ? shopLocations.find((s) => s.id === task.job.branchId)
         : null;
       const isManDedicated = isDedicatedCorporateManTask(task);
+      const taskBkkZone = classifyBkkTaskZone(task);
       return suggestBestRiderForTask(task, poolCandidates, {
         branches: branchInfos,
         referenceTime: simClockRef,
@@ -1207,9 +1346,13 @@ export function AdminDispatchAutoSim({
         strictLateOnlyMeetup: true,
         ignoreNonMeetupTimeWindows: Boolean(currentState.settings.ignoreNonMeetupTimeWindows),
         disableWorkloadBalance: Boolean(currentState.settings.disableWorkloadBalance),
+        balanceCommission: Boolean(currentState.settings.balanceCommission),
+        taskCommissionBaht: task.commissionBaht,
         ignoreBranchRouting: Boolean(currentState.settings.ignoreBranchRouting),
         ignoreRadiusLimit: ignoreRadius,
         allowLateIfUnavoidable,
+        taskBkkZone,
+        allowCrossZoneFallback,
         useHistoricalPatterns: Boolean(currentState.settings.useHistoricalPatterns),
         historicalPatternProfile: currentState.settings.useHistoricalPatterns
           ? historicalDispatchProfile
@@ -1280,6 +1423,7 @@ export function AdminDispatchAutoSim({
     }
 
     // WAVE 3B: Zero-Idle Online Rider Seeding (Fallback if a branch had fewer Deliveries than Riders)
+    // Prefer seeding idle riders with buildings NOT already owned by another active rider so same-building jobs bundle together!
     const idleCandidates = candidates.filter(
       (c) =>
         (c.totalDayCount ?? 0) === 0 &&
@@ -1287,38 +1431,57 @@ export function AdminDispatchAutoSim({
     );
     if (idleCandidates.length > 0 && runnableUnassigned.length > 0) {
       const nonCorpRunnable = runnableUnassigned.filter((t) => !isDedicatedCorporateManTask(t));
-      for (const ignoreRad of [false, true]) {
-        let bestSeedTask: SimTaskItem | null = null;
-        let bestSeedSug: RiderAutoAssignSuggestion | null = null;
-        for (const t of nonCorpRunnable) {
-          const sug = evalTask(t, idleCandidates, ignoreRad);
-          if (sug && (!bestSeedSug || sug.score < bestSeedSug.score)) {
-            bestSeedSug = sug;
-            bestSeedTask = t;
+      const isBuildingClaimedByActiveRider = (task: SimTaskItem) =>
+        candidates.some(
+          (c) =>
+            c.currentTasks.length > 0 &&
+            c.currentTasks.some((ct) => isSameBuildingTask(ct, task))
+        );
+      const unclaimedBuildingTasks = nonCorpRunnable.filter((t) => !isBuildingClaimedByActiveRider(t));
+      const seedPools = unclaimedBuildingTasks.length > 0 ? [unclaimedBuildingTasks, nonCorpRunnable] : [nonCorpRunnable];
+
+      for (const seedPool of seedPools) {
+        for (const ignoreRad of [false, true]) {
+          let bestSeedTask: SimTaskItem | null = null;
+          let bestSeedSug: RiderAutoAssignSuggestion | null = null;
+          for (const t of seedPool) {
+            const sug = evalTask(t, idleCandidates, ignoreRad);
+            if (sug && (!bestSeedSug || sug.score < bestSeedSug.score)) {
+              bestSeedSug = sug;
+              bestSeedTask = t;
+            }
           }
-        }
-        if (bestSeedTask && bestSeedSug) {
-          return commitAssignment(bestSeedTask, bestSeedSug, "Initial Branch Seed");
+          if (bestSeedTask && bestSeedSug) {
+            return commitAssignment(bestSeedTask, bestSeedSug, "Initial Branch Seed");
+          }
         }
       }
     }
 
-    // WAVE 4: Standard Runnable Jobs
-    const standardRunnable = runnableUnassigned.filter((t) => !isDedicatedCorporateManTask(t));
+    // WAVE 4: Standard Runnable Jobs (when balanceCommission is ON, assign highest-commission jobs first [LPT] to keep <= 50 THB spread)
+    const rawStandardRunnable = runnableUnassigned.filter((t) => !isDedicatedCorporateManTask(t));
+    const standardRunnable = currentState.settings.balanceCommission
+      ? [...rawStandardRunnable].sort((a, b) => (b.commissionBaht || 0) - (a.commissionBaht || 0))
+      : rawStandardRunnable;
     if (standardRunnable.length > 0) {
-      // 4A: Lock in Ultra-High Synergy Bundles first (Same-Condo <= 0.15km or balanced Home-Branch Sweep)
+      // 4A: Lock in Ultra-High Synergy Bundles first (Same-Building/Condo <= 0.15km or balanced Home-Branch Sweep)
       let bestSynergyTask: SimTaskItem | null = null;
       let bestSynergySug: RiderAutoAssignSuggestion | null = null;
       for (const t of standardRunnable) {
         const sug = evalTask(t, candidates, false);
         if (!sug) continue;
-        const isSameCondo = sug.distToNearestStopKm <= 0.15;
         const wonCand = candidates.find((c) => c.riderId === sug.riderId);
+        const isSameCondo =
+          sug.distToNearestStopKm <= 0.15 ||
+          Boolean(wonCand?.currentTasks.some((ct) => isSameBuildingTask(ct, t)));
         const areaCands = candidates.filter((c) => !wonCand?.area || !c.area || c.area === wonCand.area);
         const minAreaCount = areaCands.length > 0 ? Math.min(...areaCands.map((c) => c.totalDayCount ?? 0)) : 0;
+        const minAreaComm = areaCands.length > 0 ? Math.min(...areaCands.map((c) => c.totalCommissionBaht ?? 0)) : 0;
         const withinBalance =
-          Boolean(currentState.settings.disableWorkloadBalance) ||
-          (wonCand?.totalDayCount ?? 0) - minAreaCount <= 2;
+          (Boolean(currentState.settings.disableWorkloadBalance) ||
+            (wonCand?.totalDayCount ?? 0) - minAreaCount <= 2) &&
+          (!currentState.settings.balanceCommission ||
+            (wonCand?.totalCommissionBaht ?? 0) - minAreaComm <= 50);
         if ((isSameCondo || (sug.score <= -1.2 && withinBalance)) && (!bestSynergySug || sug.score < bestSynergySug.score)) {
           bestSynergySug = sug;
           bestSynergyTask = t;
@@ -1328,9 +1491,11 @@ export function AdminDispatchAutoSim({
         return commitAssignment(bestSynergyTask, bestSynergySug);
       }
 
-      // 4B: Chronological Best-Fit within maxRadiusKm
+      // 4B: Chronological Best-Fit within Zone / maxRadiusKm (strict SLA first, then unavoidable-late within same Zone)
       for (const t of standardRunnable) {
-        const sug = evalTask(t, candidates, false);
+        const sug =
+          evalTask(t, candidates, false, false, false) ||
+          evalTask(t, candidates, false, true, false);
         if (sug) return commitAssignment(t, sug);
       }
 
@@ -1338,7 +1503,11 @@ export function AdminDispatchAutoSim({
       let bestFallbackTask: SimTaskItem | null = null;
       let bestFallbackSug: RiderAutoAssignSuggestion | null = null;
       for (const t of standardRunnable) {
-        const sug = evalTask(t, candidates, true, false) || evalTask(t, candidates, true, true);
+        const sug =
+          evalTask(t, candidates, true, false, false) ||
+          evalTask(t, candidates, true, true, false) ||
+          evalTask(t, candidates, true, false, true) ||
+          evalTask(t, candidates, true, true, true);
         if (sug && (!bestFallbackSug || sug.score < bestFallbackSug.score)) {
           bestFallbackSug = sug;
           bestFallbackTask = t;
@@ -1422,7 +1591,25 @@ export function AdminDispatchAutoSim({
             ? 0
             : excessJobs * 2.0;
 
-          let stagingScore = minStopDist * 0.35 + zoneCohesionPenalty + dayCount * (currentState.settings.disableWorkloadBalance ? 0.05 : 0.45) + balancePenalty;
+          const minCommInArea =
+            areaEligible.length > 0 ? Math.min(...areaEligible.map((c) => c.totalCommissionBaht ?? 0)) : 0;
+          const excessComm = Math.max(0, (cand.totalCommissionBaht ?? 0) - minCommInArea);
+          const commPenalty = currentState.settings.balanceCommission
+            ? excessComm <= 50
+              ? excessComm * 0.04
+              : 50 * 0.04 + (excessComm - 50) * 0.18
+            : 0;
+
+          const bTaskZone = classifyBkkTaskZone(bTask);
+          const candAssignedZone = cand.assignedBkkZone || "AUTO";
+          const bkkZoneBonus =
+            bTaskZone && candAssignedZone === bTaskZone
+              ? -6.5
+              : bTaskZone && candAssignedZone !== "AUTO" && candAssignedZone !== bTaskZone
+                ? 9.0
+                : 0;
+
+          let stagingScore = minStopDist * 0.35 + zoneCohesionPenalty + bkkZoneBonus + dayCount * (currentState.settings.disableWorkloadBalance ? 0.05 : 0.45) + balancePenalty + commPenalty;
           if (dayCount === 0) stagingScore -= 8.0;
           if (!currentState.settings.ignoreBranchRouting) {
             if (cand.homeBranchId === bTask.laundryBranchId) stagingScore -= 3.5;
@@ -1528,19 +1715,20 @@ export function AdminDispatchAutoSim({
     }
   };
 
-  // Clear only the shadow assignments in Live Queue (returns all jobs to Unassigned without touching real jobs)
+  // Clear only the shadow assignments in Live Queue (purges any stale SIM- tasks & resets assignments for fresh auto-assign)
   const handleClearLiveAssignments = () => {
     setIsAutoAssignRunning(false);
     setIsTimePlaying(false);
     setSimState((prev) => ({
       ...prev,
+      simTasks: prev.simTasks.filter((t) => !String(t.jobId || "").startsWith("SIM-")),
       assignments: {},
       simClockHour: 10,
       completedTaskTimes: {},
       riderLastLocations: {},
       rejectedRiderIdsByTask: {},
     }));
-    toast.success("เคลียร์งานที่จัดใน Auto-Assign Live Queue กลับไป Unassigned เรียบร้อยแล้ว");
+    toast.success("เคลียร์งานที่จัดใน Auto-Assign Live Queue เรียบร้อยแล้ว (กำลังจัดสายใหม่...)");
   };
 
   // 1. Start Simulation: Generate selected number of random CRM jobs (mixed Pickup & Delivery) into Unassigned
@@ -2032,6 +2220,24 @@ export function AdminDispatchAutoSim({
         : "BKK";
       const isSimOnline = isSimRiderOnline(rider, riderOnlineOverrides);
 
+      const fallbackAllEval =
+        !activeEval.googleMapsUrl && activeTasks.length > 0
+          ? optimizeSmartRiderRoute(
+              riderBranchObj?.coords || getRiderOriginCoords(rider),
+              activeTasks,
+              {
+                branches: branchInfos,
+                referenceTime: getSimClockDate(simClockHour, activeDateKey),
+                fallbackOriginCoords: origin,
+                respectStrictTimeWindows: settings.respectStrictTimeWindows,
+                ignoreNonMeetupTimeWindows: Boolean(settings.ignoreNonMeetupTimeWindows),
+                ignoreBranchRouting: Boolean(settings.ignoreBranchRouting),
+              }
+            )
+          : null;
+
+      const totalCommissionBaht = activeTasks.reduce((sum, t) => sum + (t.commissionBaht || 0), 0);
+
       return {
         rider,
         riderHomeBranchId,
@@ -2045,7 +2251,9 @@ export function AdminDispatchAutoSim({
         stackEntries,
         pickupCount,
         deliveryCount,
+        totalCommissionBaht,
         totalDistanceKm: activeEval.totalRealDistanceKm,
+        googleMapsUrl: activeEval.googleMapsUrl || fallbackAllEval?.googleMapsUrl || "",
         estFinishTime,
       };
     });
@@ -2409,6 +2617,21 @@ export function AdminDispatchAutoSim({
                   <Printer size={13} />
                   Export Report
                 </Button>
+
+                {!isLiveArchiveMode && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={handleClearLiveAssignments}
+                    disabled={hydratedTasks.length === 0}
+                    className="h-8 text-xs font-bold gap-1.5 rounded-xl border-rose-200 bg-rose-50/70 text-rose-700 hover:bg-rose-100 cursor-pointer"
+                    title="เคลียร์งานที่จัด (และล้างงาน SIM ค้าง) เพื่อจัดสายให้ Rider ทุกคนใหม่ (ไม่กระทบงานจริง)"
+                  >
+                    <Trash2 size={13} />
+                    เคลียร์งานที่จัด
+                  </Button>
+                )}
               </div>
             ) : (
               <>
@@ -2518,48 +2741,54 @@ export function AdminDispatchAutoSim({
                   Step (+1)
                 </Button>
 
-                {!isLiveShadow ? (
-                  <>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={handleAllPaidAndReady}
-                      disabled={hydratedTasks.length === 0}
-                      className="h-8 text-xs font-bold gap-1.5 rounded-xl border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer"
-                      title="ตั้งค่าทุกงานให้เป็น Ready และ CSO Paid เพื่อทดสอบ Routing อย่างเดียว"
-                    >
-                      <CheckCircle2 size={13} />
-                      All Paid, All Ready
-                    </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleAllPaidAndReady}
+                  disabled={hydratedTasks.length === 0}
+                  className="h-8 text-xs font-bold gap-1.5 rounded-xl border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer"
+                  title="ตั้งค่าทุกงานให้เป็น Ready และ CSO Paid เพื่อทดสอบ Routing อย่างเดียว"
+                >
+                  <CheckCircle2 size={13} />
+                  All Paid, All Ready
+                </Button>
 
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={handleClearAllJobs}
-                      disabled={hydratedTasks.length === 0}
-                      className="h-8 text-xs font-bold gap-1.5 rounded-xl border-rose-200 text-rose-600 hover:bg-rose-50 cursor-pointer"
-                      title="เคลียร์งานทั้งหมดออกจากคิว Unassigned และ Rider ในหน้านี้"
-                    >
-                      <Trash2 size={13} />
-                      เคลียร์งาน
-                    </Button>
-                  </>
-                ) : (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={handleClearLiveAssignments}
-                    disabled={Object.keys(assignments).length === 0}
-                    className="h-8 text-xs font-bold gap-1.5 rounded-xl border-rose-200 text-rose-600 hover:bg-rose-50 cursor-pointer"
-                    title="เคลียร์งานที่จัดในคอลัมน์ Rider กลับไป Unassigned (ไม่กระทบงานจริง)"
-                  >
-                    <Trash2 size={13} />
-                    เคลียร์งานที่จัด
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleClearAllJobs}
+                  disabled={hydratedTasks.length === 0}
+                  className="h-8 text-xs font-bold gap-1.5 rounded-xl border-rose-200 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                  title="เคลียร์งานทั้งหมดออกจากคิว Unassigned และ Rider ในหน้านี้"
+                >
+                  <Trash2 size={13} />
+                  เคลียร์งาน
+                </Button>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleExportLiveCsv}
+                  disabled={hydratedTasks.length === 0}
+                  className="h-8 text-xs font-bold gap-1.5 rounded-xl border-emerald-200 bg-emerald-50/70 text-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                >
+                  <Download size={13} />
+                  Export CSV
+                </Button>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleExportLivePdf}
+                  disabled={hydratedTasks.length === 0}
+                  className="h-8 text-xs font-bold gap-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white cursor-pointer shadow-xs"
+                >
+                  <Printer size={13} />
+                  Export Report
+                </Button>
 
                 {/* Simulation Clock Controls (+1 Hr / Play Time) */}
                 <div className="inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50/70 p-0.5 shadow-xs">
@@ -2701,6 +2930,16 @@ export function AdminDispatchAutoSim({
                   : "เอาการเฉลี่ยงานออก"}
               </span>
             </button>
+
+            <label className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg cursor-pointer select-none font-bold border transition-colors bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100">
+              <input
+                type="checkbox"
+                checked={Boolean(settings.balanceCommission)}
+                onChange={(e) => updateSetting("balanceCommission", e.target.checked)}
+                className="rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500"
+              />
+              <span>💰 เฉลี่ยค่าคอม (±50฿)</span>
+            </label>
 
             <button
               type="button"
@@ -3027,17 +3266,22 @@ export function AdminDispatchAutoSim({
                     </div>
 
                     <div className="text-right shrink-0 flex flex-col items-end gap-0.5">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-black ${
-                          col.stackEntries.length >= settings.maxDailyJobs
-                            ? "bg-rose-100 text-rose-700"
-                            : col.stackEntries.length >= settings.maxDailyJobs - 5
-                              ? "bg-amber-100 text-amber-800"
-                              : "bg-indigo-100 text-indigo-800"
-                        }`}
-                      >
-                        {col.stackEntries.length}/{settings.maxDailyJobs}
-                      </span>
+                      <div className="flex items-center gap-1">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-black bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          ฿{col.totalCommissionBaht.toLocaleString()}
+                        </span>
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-black ${
+                            col.stackEntries.length >= settings.maxDailyJobs
+                              ? "bg-rose-100 text-rose-700"
+                              : col.stackEntries.length >= settings.maxDailyJobs - 5
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-indigo-100 text-indigo-800"
+                          }`}
+                        >
+                          {col.stackEntries.length}/{settings.maxDailyJobs}
+                        </span>
+                      </div>
                       {col.estFinishTime && (
                         <span
                           className={`text-[9.5px] font-bold ${
@@ -3090,6 +3334,23 @@ export function AdminDispatchAutoSim({
                           </option>
                         ))}
                       </select>
+                      {col.areaCode === "BKK" && (
+                        <select
+                          value={getSimRiderZone(col.rider.id)}
+                          onChange={(e) => setSimRiderZone(col.rider.id, e.target.value as BkkRiderZone)}
+                          className={`border rounded px-1 py-0.2 text-[10px] font-black cursor-pointer focus:outline-none ${
+                            getSimRiderZone(col.rider.id) === "AUTO"
+                              ? "bg-slate-50 border-slate-200 text-slate-600"
+                              : "bg-amber-50 border-amber-300 text-amber-800"
+                          }`}
+                          title="เลือก Zone วิ่งของ Rider ในกรุงเทพฯ (สุขุมวิท->บางนา / สาทร-CW / รัชดา-เพชรบุรี-ประตูน้ำ)"
+                        >
+                          <option value="AUTO">Zone: Auto</option>
+                          <option value="SUKHUMVIT">Zone: สุขุมวิท</option>
+                          <option value="SATHORN">Zone: สาทร</option>
+                          <option value="RATCHADA">Zone: รัชดา</option>
+                        </select>
+                      )}
                     </div>
                     <span
                       className="text-slate-600 truncate"
@@ -3101,7 +3362,21 @@ export function AdminDispatchAutoSim({
                     >
                       📍 {col.lastLoc ? `${col.lastLoc.locationName} (${col.lastLoc.atTimeStr})` : `สาขา ${col.riderHomeBranchLabel}`}
                     </span>
-                    <span className="font-bold text-slate-700 shrink-0">{col.totalDistanceKm} km</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="font-bold text-slate-700">{col.totalDistanceKm} km</span>
+                      {col.googleMapsUrl && (
+                        <a
+                          href={col.googleMapsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-[9.5px] font-black transition-colors"
+                          title="เปิด Google Maps ดูเส้นทางทั้งหมดของ Rider คนนี้"
+                        >
+                          <ExternalLink size={9.5} />
+                          Maps
+                        </a>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -3295,6 +3570,9 @@ export function AdminDispatchAutoSim({
                                   {task.legType === "delivery"
                                     ? `📦 ผ้าอยู่: ${task.laundryBranchLabel}`
                                     : `🏭 คืนผ้าที่: ${task.laundryBranchLabel}`}
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">
+                                  +฿{task.commissionBaht}
                                 </span>
                               </div>
 

@@ -40,6 +40,7 @@ import {
   Crown,
   RotateCcw,
   UserPlus,
+  Type,
 } from 'lucide-react';
 import AdminFeeCalculator, { type CalculatorOrderPayload } from '@/components/admin-fee-calculator';
 import { AdminCustomerDialog } from '@/components/admin-customer-dialog';
@@ -85,6 +86,7 @@ import {
   sendSocialMessageAction,
   recordInboundSocialMessageAction,
   updateSocialConversationAction,
+  markAllSocialConversationsAsReadAction,
   deleteSocialConversationAction,
   saveSocialChannelConfigAction,
   pollLiveChannelUpdatesAction,
@@ -157,6 +159,85 @@ export function AdminSocialInbox({
   const [liveConnected, setLiveConnected] = useState(true);
   const [lastLiveSyncAt, setLastLiveSyncAt] = useState<string>('');
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [markingAllRead, setMarkingAllRead] = useState(false);
+
+  // Font Size Preference (S / M / L / XL, persisted in localStorage)
+  type ChatFontSizeKey = 'sm' | 'md' | 'lg' | 'xl';
+  const [chatFontSize, setChatFontSize] = useState<ChatFontSizeKey>('lg');
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem('tls_social_chat_font_size') as ChatFontSizeKey | null;
+      if (saved && (saved === 'sm' || saved === 'md' || saved === 'lg' || saved === 'xl')) {
+        setChatFontSize(saved);
+      }
+    } catch {}
+  }, []);
+
+  const handleChangeChatFontSize = useCallback((size: ChatFontSizeKey) => {
+    setChatFontSize(size);
+    try {
+      window.localStorage.setItem('tls_social_chat_font_size', size);
+    } catch {}
+  }, []);
+
+  const fontScale = useMemo(() => {
+    const map: Record<
+      ChatFontSizeKey,
+      {
+        convName: string;
+        convPreview: string;
+        convMeta: string;
+        headerTitle: string;
+        headerMeta: string;
+        msgText: string;
+        msgMeta: string;
+        input: string;
+      }
+    > = {
+      sm: {
+        convName: 'text-xs',
+        convPreview: 'text-[11px]',
+        convMeta: 'text-[10px]',
+        headerTitle: 'text-sm',
+        headerMeta: 'text-[11px]',
+        msgText: 'text-[12.5px] leading-relaxed',
+        msgMeta: 'text-[10px]',
+        input: 'text-xs',
+      },
+      md: {
+        convName: 'text-[13px]',
+        convPreview: 'text-xs',
+        convMeta: 'text-[10.5px]',
+        headerTitle: 'text-[15px]',
+        headerMeta: 'text-xs',
+        msgText: 'text-[13.5px] leading-relaxed',
+        msgMeta: 'text-[11px]',
+        input: 'text-[13px]',
+      },
+      lg: {
+        convName: 'text-sm',
+        convPreview: 'text-[13px]',
+        convMeta: 'text-[11px]',
+        headerTitle: 'text-base',
+        headerMeta: 'text-xs',
+        msgText: 'text-[15px] leading-relaxed',
+        msgMeta: 'text-[11.5px]',
+        input: 'text-sm',
+      },
+      xl: {
+        convName: 'text-[15px]',
+        convPreview: 'text-sm',
+        convMeta: 'text-xs',
+        headerTitle: 'text-lg',
+        headerMeta: 'text-[13px]',
+        msgText: 'text-[17px] leading-relaxed',
+        msgMeta: 'text-xs',
+        input: 'text-[15px]',
+      },
+    };
+    return map[chatFontSize];
+  }, [chatFontSize]);
 
   // Filters & Selection
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
@@ -390,73 +471,101 @@ export function AdminSocialInbox({
     loadInbox();
   }, []);
 
-  // REAL-TIME LIVE POLLING LOOP (Every 3.5 seconds — works like native chat apps!)
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      if (typeof document !== 'undefined' && document.hidden) return;
-      try {
-        const res = await pollLiveChannelUpdatesAction();
-        if (res.success && res.conversations && res.messages) {
-          setLiveConnected(true);
-          setLastLiveSyncAt(
-            new Date().toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-            })
-          );
+  const isSyncingLiveRef = useRef(false);
 
-          const newInboundMsgs = res.messages.filter((m) => m.direction === 'inbound');
-          let latestInboundConvId: string | null = null;
-          if (
-            prevInboundMsgCountRef.current !== null &&
-            newInboundMsgs.length > prevInboundMsgCountRef.current
-          ) {
-            const latestInbound = newInboundMsgs[newInboundMsgs.length - 1];
-            playNotificationChime();
-            if (latestInbound) {
-              latestInboundConvId = latestInbound.conversationId;
-              recentlyReadConvIdsRef.current.delete(latestInbound.conversationId);
-              const chLabel =
-                SOCIAL_CHANNEL_META[latestInbound.channel]?.shortLabel || latestInbound.channel;
-              toast.success(
-                `💬 New ${chLabel} message from ${latestInbound.senderName}: "${latestInbound.text.slice(
-                  0,
-                  60
-                )}"`
-              );
-            }
+  const syncLiveInboxNow = useCallback(async () => {
+    if (isSyncingLiveRef.current) return;
+    isSyncingLiveRef.current = true;
+    try {
+      const res = await pollLiveChannelUpdatesAction();
+      if (res.success && res.conversations && res.messages) {
+        setLiveConnected(true);
+        setLastLiveSyncAt(
+          new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          })
+        );
+
+        const newInboundMsgs = res.messages.filter((m) => m.direction === 'inbound');
+        let latestInboundConvId: string | null = null;
+        if (
+          prevInboundMsgCountRef.current !== null &&
+          newInboundMsgs.length > prevInboundMsgCountRef.current
+        ) {
+          const latestInbound = newInboundMsgs[newInboundMsgs.length - 1];
+          playNotificationChime();
+          if (latestInbound) {
+            latestInboundConvId = latestInbound.conversationId;
+            recentlyReadConvIdsRef.current.delete(latestInbound.conversationId);
+            const chLabel =
+              SOCIAL_CHANNEL_META[latestInbound.channel]?.shortLabel || latestInbound.channel;
+            toast.success(
+              `💬 New ${chLabel} message from ${latestInbound.senderName}: "${latestInbound.text.slice(
+                0,
+                60
+              )}"`
+            );
           }
-          prevInboundMsgCountRef.current = newInboundMsgs.length;
-
-          const nowMs = Date.now();
-          const mergedConversations = res.conversations.map((c) => {
-            const readAt = recentlyReadConvIdsRef.current.get(c.id);
-            const isRecentlyRead = Boolean(readAt && nowMs - readAt < 10000);
-            const isCurrentlyOpen = c.id === selectedConvIdRef.current;
-            if (
-              c.unreadCount > 0 &&
-              (isRecentlyRead || (isCurrentlyOpen && c.id !== latestInboundConvId))
-            ) {
-              return { ...c, unreadCount: 0 };
-            }
-            return c;
-          });
-
-          setConversations(mergedConversations);
-          setMessages((prev) => {
-            const inFlightOptimistic = prev.filter((m) => m.id.startsWith('optimistic_'));
-            if (inFlightOptimistic.length === 0) return res.messages;
-            return [...res.messages, ...inFlightOptimistic];
-          });
         }
-      } catch {
-        setLiveConnected(false);
-      }
-    }, 3500);
+        prevInboundMsgCountRef.current = newInboundMsgs.length;
 
-    return () => clearInterval(interval);
+        const nowMs = Date.now();
+        const mergedConversations = res.conversations.map((c) => {
+          const readAt = recentlyReadConvIdsRef.current.get(c.id);
+          const isRecentlyRead = Boolean(readAt && nowMs - readAt < 10000);
+          const isCurrentlyOpen = c.id === selectedConvIdRef.current;
+          if (
+            c.unreadCount > 0 &&
+            (isRecentlyRead || (isCurrentlyOpen && c.id !== latestInboundConvId))
+          ) {
+            return { ...c, unreadCount: 0 };
+          }
+          return c;
+        });
+
+        setConversations(mergedConversations);
+        setMessages((prev) => {
+          const inFlightOptimistic = prev.filter((m) => m.id.startsWith('optimistic_'));
+          if (inFlightOptimistic.length === 0) return res.messages;
+          return [...res.messages, ...inFlightOptimistic];
+        });
+      }
+    } catch {
+      setLiveConnected(false);
+    } finally {
+      isSyncingLiveRef.current = false;
+    }
   }, [playNotificationChime]);
+
+  // REAL-TIME SYNC: Instant SSE Push + Tab Focus Sync + Smart Fallback Polling (8s)
+  useEffect(() => {
+    const handleSseSocialUpdate = () => {
+      syncLiveInboxNow();
+    };
+    const handleVisibilityOrFocus = () => {
+      if (typeof document === 'undefined' || !document.hidden) {
+        syncLiveInboxNow();
+      }
+    };
+
+    window.addEventListener('tls-social-updated', handleSseSocialUpdate);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      syncLiveInboxNow();
+    }, 8000);
+
+    return () => {
+      window.removeEventListener('tls-social-updated', handleSseSocialUpdate);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      clearInterval(interval);
+    };
+  }, [syncLiveInboxNow]);
 
   // Active Conversation & Messages
   const activeConversation = useMemo(
@@ -513,6 +622,43 @@ export function AdminSocialInbox({
     },
     [markConversationAsRead]
   );
+
+  const handleMarkAllRead = useCallback(async () => {
+    const targetChannel = channelFilter;
+    const nowMs = Date.now();
+    const targetUnreadIds = conversations
+      .filter((c) => (targetChannel === 'all' || c.channel === targetChannel) && (c.unreadCount || 0) > 0)
+      .map((c) => c.id);
+    if (targetUnreadIds.length === 0) return;
+
+    setMarkingAllRead(true);
+    targetUnreadIds.forEach((id) => recentlyReadConvIdsRef.current.set(id, nowMs));
+    setConversations((prev) =>
+      prev.map((c) =>
+        (targetChannel === 'all' || c.channel === targetChannel) && (c.unreadCount || 0) > 0
+          ? { ...c, unreadCount: 0 }
+          : c
+      )
+    );
+
+    try {
+      const res = await markAllSocialConversationsAsReadAction(targetChannel);
+      if (res.success && res.conversations) {
+        setConversations(res.conversations);
+        const label =
+          targetChannel === 'all'
+            ? 'all channels'
+            : SOCIAL_CHANNEL_META[targetChannel]?.shortLabel || targetChannel;
+        toast.success(`Marked ${res.clearedCount || targetUnreadIds.length} chat(s) as read in ${label}`);
+      } else {
+        toast.error(res.error || 'Failed to mark all as read');
+      }
+    } catch {
+      toast.error('Failed to mark all as read');
+    } finally {
+      setMarkingAllRead(false);
+    }
+  }, [channelFilter, conversations]);
 
   // Mark conversation as read when selected or when new unread arrives on the open conversation
   useEffect(() => {
@@ -1674,6 +1820,28 @@ export function AdminSocialInbox({
               )}
             </Button>
 
+            {/* Chat Font Size Switcher (S / M / L / XL) */}
+            <div
+              className="inline-flex items-center gap-0.5 h-8 px-1 bg-black/25 border border-white/15 rounded-xl"
+              title="Adjust Chat Font Size"
+            >
+              <Type size={12} className="text-emerald-300 mx-1 shrink-0" />
+              {(['sm', 'md', 'lg', 'xl'] as const).map((sz) => (
+                <button
+                  key={sz}
+                  type="button"
+                  onClick={() => handleChangeChatFontSize(sz)}
+                  className={`px-1.5 py-0.5 rounded-lg text-[10px] font-black uppercase transition-all cursor-pointer ${
+                    chatFontSize === sz
+                      ? 'bg-emerald-500 text-slate-950 shadow-2xs'
+                      : 'text-emerald-100/75 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  {sz === 'sm' ? 'S' : sz === 'md' ? 'M' : sz === 'lg' ? 'L' : 'XL'}
+                </button>
+              ))}
+            </div>
+
             <Button
               size="sm"
               variant="outline"
@@ -1824,28 +1992,56 @@ export function AdminSocialInbox({
               )}
             </div>
 
-            <div className="grid grid-cols-4 gap-1 p-1 bg-slate-200/60 rounded-xl">
-              {(
-                [
-                  { id: 'all', label: 'All' },
-                  { id: 'unread', label: `Unread (${stats.unreadTotal})` },
-                  { id: 'open', label: 'Open' },
-                  { id: 'resolved', label: 'Resolved' },
-                ] as const
-              ).map((st) => (
-                <button
-                  key={st.id}
-                  type="button"
-                  onClick={() => setStatusFilter(st.id)}
-                  className={`py-1 px-1.5 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer whitespace-nowrap truncate ${
-                    statusFilter === st.id
-                      ? 'bg-slate-900 text-white shadow-2xs'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                  }`}
-                >
-                  {st.label}
-                </button>
-              ))}
+            <div className="flex items-center gap-1.5">
+              <div className="grid grid-cols-4 gap-1 p-1 bg-slate-200/60 rounded-xl flex-1 min-w-0">
+                {(
+                  [
+                    { id: 'all', label: 'All' },
+                    { id: 'unread', label: `Unread (${stats.unreadTotal})` },
+                    { id: 'open', label: 'Open' },
+                    { id: 'resolved', label: 'Resolved' },
+                  ] as const
+                ).map((st) => (
+                  <button
+                    key={st.id}
+                    type="button"
+                    onClick={() => setStatusFilter(st.id)}
+                    className={`py-1 px-1.5 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer whitespace-nowrap truncate ${
+                      statusFilter === st.id
+                        ? 'bg-slate-900 text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                    }`}
+                  >
+                    {st.label}
+                  </button>
+                ))}
+              </div>
+              {(() => {
+                const channelUnreadCount =
+                  channelFilter === 'all'
+                    ? stats.unreadTotal
+                    : stats.unreadByChannel[channelFilter] || 0;
+                return (
+                  <button
+                    type="button"
+                    onClick={handleMarkAllRead}
+                    disabled={channelUnreadCount === 0 || markingAllRead}
+                    title={
+                      channelFilter === 'all'
+                        ? 'Mark all conversations in All Channels as read'
+                        : `Mark all ${SOCIAL_CHANNEL_META[channelFilter]?.shortLabel || channelFilter} conversations as read`
+                    }
+                    className={`shrink-0 inline-flex items-center gap-1 px-2 py-1.5 rounded-xl text-[10px] font-extrabold border transition-all whitespace-nowrap ${
+                      channelUnreadCount > 0 && !markingAllRead
+                        ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200 cursor-pointer shadow-2xs'
+                        : 'bg-slate-100 text-slate-400 border-slate-200/80 cursor-not-allowed'
+                    }`}
+                  >
+                    <CheckCheck size={12} />
+                    <span>Read All{channelUnreadCount > 0 ? ` (${channelUnreadCount})` : ''}</span>
+                  </button>
+                );
+              })()}
             </div>
           </div>
 
@@ -1927,7 +2123,7 @@ export function AdminSocialInbox({
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-1.5">
                           <p
-                            className={`text-xs truncate ${
+                            className={`${fontScale.convName} truncate ${
                               conv.unreadCount > 0
                                 ? 'font-black text-slate-950'
                                 : 'font-bold text-slate-800'
@@ -1935,7 +2131,7 @@ export function AdminSocialInbox({
                           >
                             {conv.contactName}
                           </p>
-                          <span className="text-[10px] font-medium text-slate-400 shrink-0">
+                          <span className={`${fontScale.convMeta} font-medium text-slate-400 shrink-0`}>
                             {(() => {
                               if (
                                 conv.lastMessageText ===
@@ -1964,7 +2160,7 @@ export function AdminSocialInbox({
 
                         {/* Message Preview Line */}
                         <p
-                          className={`text-[11px] truncate mt-0.5 ${
+                          className={`${fontScale.convPreview} truncate mt-0.5 ${
                             conv.unreadCount > 0
                               ? 'font-bold text-slate-900'
                               : 'text-slate-500'
@@ -2076,7 +2272,7 @@ export function AdminSocialInbox({
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <h3 className="text-sm font-black text-slate-900 truncate max-w-[180px] sm:max-w-[240px]">
+                      <h3 className={`${fontScale.headerTitle} font-black text-slate-900 truncate max-w-[180px] sm:max-w-[260px]`}>
                         {activeConversation.contactName}
                       </h3>
                       <span
@@ -2099,7 +2295,7 @@ export function AdminSocialInbox({
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2.5 text-[10px] text-slate-500 mt-0.5 truncate">
+                    <div className={`flex items-center gap-2.5 ${fontScale.headerMeta} text-slate-500 mt-0.5 truncate`}>
                       {(() => {
                         const headerPhone =
                           getDisplayPhone(activeConversation.contactPhone) ||
@@ -2315,12 +2511,12 @@ export function AdminSocialInbox({
                         >
                           {/* Sender & Timestamp Header */}
                           <div className="flex items-center gap-1.5 mb-1 px-1">
-                            <span className="text-[10px] font-bold text-slate-600">
+                            <span className={`${fontScale.msgMeta} font-bold text-slate-600`}>
                               {isOutbound
                                 ? msg.senderName || 'That Laundry Shop'
                                 : msg.senderName || activeConversation.contactName}
                             </span>
-                            <span className="text-[10px] text-slate-400">
+                            <span className={`${fontScale.msgMeta} text-slate-400`}>
                               {msgDateObj.toLocaleTimeString([], {
                                 hour: '2-digit',
                                 minute: '2-digit',
@@ -2387,7 +2583,7 @@ export function AdminSocialInbox({
                               </div>
                             )}
 
-                            {msg.text && <div className="text-[12.5px] leading-relaxed">{msg.text}</div>}
+                            {msg.text && <div className={fontScale.msgText}>{msg.text}</div>}
 
                             {/* Clean Responsive Photo Grid for Image Attachments */}
                             {imageAttachments.length > 0 && (
@@ -2668,7 +2864,7 @@ export function AdminSocialInbox({
                     placeholder={`Message ${activeConversation.contactName} via ${
                       SOCIAL_CHANNEL_META[activeConversation.channel].shortLabel
                     }... (Enter to send • Ctrl+V to paste photo)`}
-                    className="flex-1 min-h-[38px] max-h-24 rounded-xl border border-slate-200 bg-slate-50/90 focus:bg-white px-3 py-2 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none"
+                    className={`flex-1 min-h-[38px] max-h-24 rounded-xl border border-slate-200 bg-slate-50/90 focus:bg-white px-3 py-2 ${fontScale.input} text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none`}
                   />
 
                   {activeConversation.channel === 'whatsapp' && waQrState?.status !== 'connected' && (

@@ -2480,12 +2480,27 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
     }
     // Only search by customerPhone if it contains valid phone digits (at least 8 digits).
     // Placeholders like "--", "-", "N/A" must NEVER match other jobs!
+    // When customerId is known, only match unlinked/legacy jobs (customerId null/empty) by phone
+    // so shared contact numbers (e.g. corporate subsidiaries) never cross-contaminate another customer's jobs.
     if (rawDigits.length >= 8) {
+      const phoneOr: any[] = [];
       if (customerPhone && customerPhone.trim()) {
-        orConditions.push({ customerPhone: customerPhone.trim() });
+        phoneOr.push({ customerPhone: customerPhone.trim() });
       }
       if (last9 && last9.length >= 8) {
-        orConditions.push({ customerPhone: { contains: last9 } });
+        phoneOr.push({ customerPhone: { contains: last9 } });
+      }
+      if (phoneOr.length > 0) {
+        if (customerId) {
+          orConditions.push({
+            AND: [
+              { OR: [{ customerId: null }, { customerId: '' }] },
+              { OR: phoneOr },
+            ],
+          });
+        } else {
+          orConditions.push(...phoneOr);
+        }
       }
     }
 

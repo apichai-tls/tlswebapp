@@ -2720,8 +2720,8 @@ export default function RiderPage() {
 
               <>
                 <DialogHeader className="p-3 bg-white border-b border-slate-100 sticky top-0 z-10 shrink-0">
-                  <div className="flex items-start justify-between">
-                    <div className="pr-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1 pr-1">
                       <DialogTitle className="text-lg font-black text-slate-900 leading-tight flex items-center gap-1.5 flex-wrap">
                         {selectedJob.job.customerName || "Customer Guest"}
                         {customerIsVip && <span className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold flex items-center gap-1"><Crown size={12} className="fill-amber-500 text-amber-500"/> VIP</span>}
@@ -2780,12 +2780,19 @@ export default function RiderPage() {
                         </a>
                       </div>
                     </div>
-                    <div className="flex flex-col items-end gap-2 shrink-0">
-                      <Button variant="ghost" className="h-8 w-8 p-0 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500" onClick={() => setSelectedJob(null)}>
+                    <div className="flex flex-col items-end gap-1.5 shrink-0 max-w-[46%]">
+                      <Button variant="ghost" className="h-8 w-8 p-0 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 shrink-0" onClick={() => setSelectedJob(null)}>
                         <X size={18} />
                       </Button>
-                      <div className="flex flex-col items-end gap-1.5">
-                        <div className="flex items-center gap-1">
+                      <div className="flex flex-col items-end gap-1 w-full">
+                        <div className="flex flex-wrap items-center justify-end gap-1">
+                          <Badge
+                            variant="outline"
+                            className={`gap-1 text-[11px] py-0.5 px-1.5 whitespace-nowrap ${legType === 'pickup' ? 'bg-amber-100 text-amber-700 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'}`}
+                          >
+                            {legType === 'pickup' ? <Package size={12} /> : <Truck size={12} />}
+                            {legType.toUpperCase()}
+                          </Badge>
                           {(() => {
                             const isPaidEffective = isJobFullyPaid(selectedJob.job) || Boolean(selectedJob.job.isPaid);
                             const isCash = selectedJob.job.paymentChannel === "Cash / COD" || (selectedJob.job.paymentMethod || "").toLowerCase() === "cash";
@@ -2793,22 +2800,15 @@ export default function RiderPage() {
                               return (
                                 <Badge
                                   variant="outline"
-                                  className="gap-1.5 text-xs py-1 px-2 bg-red-50 text-red-600 border-red-200 animate-in fade-in duration-200"
+                                  className="gap-1 text-[11px] py-0.5 px-1.5 bg-red-50 text-red-600 border-red-200 whitespace-nowrap animate-in fade-in duration-200"
                                 >
-                                  <Banknote size={14} className="text-red-500" />
+                                  <Banknote size={12} className="text-red-500 shrink-0" />
                                   เก็บเงินสด{selectedJob.job.totalAmount ? ` ฿${Math.round(selectedJob.job.totalAmount).toLocaleString()}` : ""}
                                 </Badge>
                               );
                             }
                             return null;
                           })()}
-                          <Badge
-                            variant="outline"
-                            className={`gap-1.5 text-xs py-1 px-2 ${legType === 'pickup' ? 'bg-amber-100 text-amber-700 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'}`}
-                          >
-                            {legType === 'pickup' ? <Package size={14} /> : <Truck size={14} />}
-                            {legType.toUpperCase()}
-                          </Badge>
                         </div>
                         {showCommission && (
                           <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-100">

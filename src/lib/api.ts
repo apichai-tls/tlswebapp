@@ -715,6 +715,13 @@ export function startRealtimeConnection(forceReconnect = false) {
           }
         }
 
+        if (payload.type === 'social.updated') {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('tls-social-updated', { detail: payload }));
+          }
+          return;
+        }
+
         if (payload.type === 'customer.updated') {
           api.reconcileDelta().catch(() => {});
           return;

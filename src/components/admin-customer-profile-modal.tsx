@@ -363,7 +363,8 @@ export function AdminCustomerProfileModal({
     dbJobs.forEach(j => jobMap.set(j.id, j));
 
     jobs.filter(j => {
-      if (j.customerId && j.customerId === customer.id) return true;
+      // If job already has an explicit customerId, strictly match by customerId (never cross-match via shared phone/name)
+      if (j.customerId) return j.customerId === customer.id;
       if (hasValidPhone && j.customerPhone === customer.phone) return true;
       if (!hasValidPhone && j.customerName && j.customerName.trim().toLowerCase() === cName) return true;
       return false;

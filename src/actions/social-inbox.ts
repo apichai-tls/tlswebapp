@@ -1859,6 +1859,50 @@ export async function updateSocialConversationAction(input: {
 }
 
 /**
+ * Mark all unread conversations in the selected channel (or all channels) as read
+ */
+export async function markAllSocialConversationsAsReadAction(
+  channel: SocialChannel | 'all' = 'all'
+) {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+
+    const { conversations, messages } = await loadRawInboxStore();
+    const nowIso = new Date().toISOString();
+    let clearedCount = 0;
+
+    const updatedConversations = conversations.map((c) => {
+      const matchesChannel = channel === 'all' || c.channel === channel;
+      if (matchesChannel && (c.unreadCount || 0) > 0) {
+        clearedCount++;
+        return { ...c, unreadCount: 0, updatedAt: nowIso };
+      }
+      return c;
+    });
+
+    if (clearedCount === 0) {
+      return { success: true, clearedCount: 0, conversations: normalizeAndSortConversations(conversations, messages).conversations };
+    }
+
+    const norm = normalizeAndSortConversations(updatedConversations, messages);
+    await saveInboxStore(norm.conversations, norm.messages);
+    try {
+      const { publishOrderEvent } = await import('@/lib/realtime-bus');
+      await publishOrderEvent({ type: 'social.updated', jobId: '__SOCIAL__', updatedAt: new Date() });
+    } catch {}
+
+    return {
+      success: true,
+      clearedCount,
+      conversations: norm.conversations,
+    };
+  } catch (err: any) {
+    console.error('[markAllSocialConversationsAsReadAction] Error:', err);
+    return { success: false, error: err?.message || 'Failed to mark all conversations as read' };
+  }
+}
+
+/**
  * Delete a conversation thread and its messages
  */
 export async function deleteSocialConversationAction(conversationId: string) {

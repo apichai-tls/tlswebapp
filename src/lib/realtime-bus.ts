@@ -5,7 +5,7 @@ import { dbCache, invalidateDbCache, primeJobCache, primeCustomerCache, getOrFet
 
 export interface RealtimeOrderEvent {
   eventId: string;
-  type: 'job.created' | 'job.updated' | 'customer.updated' | 'shift.updated';
+  type: 'job.created' | 'job.updated' | 'customer.updated' | 'shift.updated' | 'social.updated';
   jobId?: string;
   customerId?: string;
   revision: number; // epoch ms of updatedAt
@@ -320,7 +320,7 @@ export function getBufferedOrderEventsSince(sinceRevisionMs: number): RealtimeOr
  * Automatically updates local revision micro-cache and broadcasts across all Cloud Run instances via PostgreSQL NOTIFY.
  */
 export async function publishOrderEvent(params: {
-  type?: 'job.created' | 'job.updated' | 'customer.updated' | 'shift.updated';
+  type?: 'job.created' | 'job.updated' | 'customer.updated' | 'shift.updated' | 'social.updated';
   job?: any;
   jobId?: string;
   customerId?: string;
@@ -351,6 +351,8 @@ export async function publishOrderEvent(params: {
       } else {
         invalidateDbCache('customers');
       }
+    } else if (params.type === 'social.updated') {
+      // Social inbox updates do not affect jobs/customers caches
     } else {
       invalidateDbCache('jobs');
     }
