@@ -332,6 +332,12 @@ function AdminPageContent() {
   }, [services]);
 
   const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks" | "supplies" | "inbox" | "item-check" | "ai-brain">("dashboard");
+  const [hasOpenedInbox, setHasOpenedInbox] = useState(false);
+  useEffect(() => {
+    if (activeTab === "inbox" && !hasOpenedInbox) {
+      setHasOpenedInbox(true);
+    }
+  }, [activeTab, hasOpenedInbox]);
   const canAccessAiBrain = Boolean(
     user?.role === "admin" ||
     user?.role === "superadmin" ||
@@ -4043,18 +4049,10 @@ function AdminPageContent() {
 
     const validPickupDate = getValidDateOrNull(pickupScheduledTime);
     const validDeliveryDate = getValidDateOrNull(deliveryScheduledTime);
-    let finalBagImageUrls: string[] = [];
-    let finalBillImageUrls: string[] = [];
-    let finalPickupProofUrls: string[] = [];
-    let finalDeliveryProofUrls: string[] = [];
+    const finalBagImageUrls: string[] = [...bagImageUrls];
+    const finalBillImageUrls: string[] = [...billImageUrls];
     const targetEditingJobId = editingJobId;
     const isEditMode = !!targetEditingJobId;
-
-    // Trigger upload promises concurrently
-    const bagUploadPromise = uploaderRef.current ? uploaderRef.current.startUpload() : Promise.resolve(finalBagImageUrls);
-    const billUploadPromise = billUploaderRef.current ? billUploaderRef.current.startUpload() : Promise.resolve(finalBillImageUrls);
-    const pickupUploadPromise = (isAdmin && pickupUploaderRef.current) ? pickupUploaderRef.current.startUpload() : Promise.resolve(pickupProofImageUrls);
-    const deliveryUploadPromise = (isAdmin && deliveryUploaderRef.current) ? deliveryUploaderRef.current.startUpload() : Promise.resolve(deliveryProofImageUrls);
 
     const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
     const customRemarks = Array.from(new Set(oldRemarks.filter(r => 
@@ -4443,6 +4441,12 @@ function AdminPageContent() {
 
     const isSplitChildJob = Boolean(editingJobId && existingJob && isSplitDeliveryChildJob(existingJob));
     const isNoChargePrepaidJob = Boolean(isRewashJob || isSplitChildJob);
+
+    // Trigger upload promises concurrently ONLY AFTER all early-return validation & Proforma confirmation modal checks pass
+    const bagUploadPromise = uploaderRef.current ? uploaderRef.current.startUpload() : Promise.resolve(finalBagImageUrls);
+    const billUploadPromise = billUploaderRef.current ? billUploaderRef.current.startUpload() : Promise.resolve(finalBillImageUrls);
+    const pickupUploadPromise = (isAdmin && pickupUploaderRef.current) ? pickupUploaderRef.current.startUpload() : Promise.resolve(pickupProofImageUrls);
+    const deliveryUploadPromise = (isAdmin && deliveryUploaderRef.current) ? deliveryUploaderRef.current.startUpload() : Promise.resolve(deliveryProofImageUrls);
 
     const newJobData: any = {
 
@@ -4918,22 +4922,43 @@ function AdminPageContent() {
           }
         }
 
+        const stripQuery = (u: string) => String(u || "").split("?")[0];
+        const hasBaseUrl = (list: string[], url: string) => {
+          const targetBase = stripQuery(url);
+          return list.some(item => stripQuery(item) === targetBase);
+        };
+
         if (JSON.stringify(safeBagUrls) !== JSON.stringify(origBagImageUrls)) {
           payload.bagImageUrl = (safeBagUrls.length > 0 ? JSON.stringify(safeBagUrls) : null) as any;
+          if (canDeleteLaundryBags && origBagImageUrls.some(u => !hasBaseUrl(safeBagUrls, u))) {
+            (payload as any).isExplicitImageDelete = true;
+          }
         }
         const isItemsOrAmountChanged = Boolean(payload.items || payload.totalAmount !== undefined);
         if (isPayment || (isItemsOrAmountChanged && existingJob?.isPaid)) {
           safeBillUrls = safeBillUrls.filter(u => typeof u === "string" && !u.includes(`receipt-${targetEditingJobId}`) && !u.includes("/receipt-"));
           payload.billImageUrl = (safeBillUrls.length > 0 ? JSON.stringify(safeBillUrls) : null) as any;
+          if (isAdmin && origBillImageUrls.some(u => !u.includes(`receipt-${targetEditingJobId}`) && !u.includes("/receipt-") && !hasBaseUrl(safeBillUrls, u))) {
+            (payload as any).isExplicitImageDelete = true;
+          }
         } else if (JSON.stringify(safeBillUrls) !== JSON.stringify(origBillImageUrls)) {
           payload.billImageUrl = (safeBillUrls.length > 0 ? JSON.stringify(safeBillUrls) : null) as any;
+          if (isAdmin && origBillImageUrls.some(u => !hasBaseUrl(safeBillUrls, u))) {
+            (payload as any).isExplicitImageDelete = true;
+          }
         }
         if (JSON.stringify(safePickupUrls) !== JSON.stringify(origPickupProofImageUrls)) {
           payload.pickupProofImageUrl = (safePickupUrls.length > 0 ? JSON.stringify(safePickupUrls) : null) as any;
+          if (isAdmin && origPickupProofImageUrls.some(u => !hasBaseUrl(safePickupUrls, u))) {
+            (payload as any).isExplicitImageDelete = true;
+          }
         }
         if (JSON.stringify(safeDeliveryUrls) !== JSON.stringify(origDeliveryProofImageUrls)) {
           payload.deliveryProofImageUrl = (safeDeliveryUrls.length > 0 ? JSON.stringify(safeDeliveryUrls) : null) as any;
           payload.proofImageUrl = (safeDeliveryUrls.length > 0 ? JSON.stringify(safeDeliveryUrls) : null) as any;
+          if (isAdmin && origDeliveryProofImageUrls.some(u => !hasBaseUrl(safeDeliveryUrls, u))) {
+            (payload as any).isExplicitImageDelete = true;
+          }
         }
 
         // [AUTO-PROFORMA] Capture proforma ONLY IF:
@@ -5177,7 +5202,12 @@ function AdminPageContent() {
                     if (editingJobIdRef.current === targetEditingJobId) {
                       setBillImageUrls(prev => {
                         const filtered = prev.filter(u => isBillUrlBelongingToJob(u, targetEditingJobId) && !u.includes(`proforma-${cleanBase}-rev${finalRevision}.png`));
-                        return sortBills(Array.from(new Set([capturedUrl, ...filtered])));
+                        const next = sortBills(Array.from(new Set([capturedUrl, ...filtered])));
+                        setOrigBillImageUrls(next);
+                        if (originalJobRef.current) {
+                          (originalJobRef.current as any).billImageUrl = JSON.stringify(next);
+                        }
+                        return next;
                       });
                     }
                 }
@@ -5253,7 +5283,14 @@ function AdminPageContent() {
               }
 
               if (editingJobIdRef.current === targetEditingJobId) {
-                setBillImageUrls(prev => prev.includes(recUrl) ? prev : [...prev, recUrl]);
+                setBillImageUrls(prev => {
+                  const next = prev.includes(recUrl) ? prev : [...prev, recUrl];
+                  setOrigBillImageUrls(next);
+                  if (originalJobRef.current) {
+                    (originalJobRef.current as any).billImageUrl = JSON.stringify(next);
+                  }
+                  return next;
+                });
               }
             } catch (e) {
               console.warn("[AutoReceipt] Background existing-job receipt capture failed:", e);
@@ -13142,19 +13179,21 @@ function AdminPageContent() {
             <AdminSuppliesOrders currentUser={user} shops={shopLocations} jobs={jobs} />
           )}
 
-          {activeTab === "inbox" && hasAccess("inbox") && (
-            <AdminSocialInbox
-              currentUser={user}
-              customers={customers}
-              jobs={jobs}
-              shops={shopLocations}
-              onEditJob={stableHandleEditFullJob}
-              onCreateJobForCustomer={(cust) => {
-                stableHandleCreateNewJob();
-              }}
-              onCreateOrderFromCalculator={handleCreateOrderFromCalculator}
-              onNavigateToPois={() => handleTabChange("pois")}
-            />
+          {(hasOpenedInbox || activeTab === "inbox") && hasAccess("inbox") && (
+            <div className={activeTab === "inbox" ? "flex-1 flex flex-col min-h-0 h-full" : "hidden"}>
+              <AdminSocialInbox
+                currentUser={user}
+                customers={customers}
+                jobs={jobs}
+                shops={shopLocations}
+                onEditJob={stableHandleEditFullJob}
+                onCreateJobForCustomer={(cust) => {
+                  stableHandleCreateNewJob();
+                }}
+                onCreateOrderFromCalculator={handleCreateOrderFromCalculator}
+                onNavigateToPois={() => handleTabChange("pois")}
+              />
+            </div>
           )}
 
           {/* Fallback for no access to current tab */}
@@ -13576,7 +13615,12 @@ function AdminPageContent() {
                   }
                   return u !== newUrl;
                 });
-                return [newUrl, ...filtered];
+                const next = [newUrl, ...filtered];
+                setOrigBillImageUrls(next);
+                if (originalJobRef.current && editingJobIdRef.current === currentEditId) {
+                  (originalJobRef.current as any).billImageUrl = JSON.stringify(next);
+                }
+                return next;
               });
             }}
           />
@@ -13619,7 +13663,12 @@ function AdminPageContent() {
                   }
                   return u !== newUrl;
                 });
-                return [newUrl, ...filtered];
+                const next = [newUrl, ...filtered];
+                setOrigBillImageUrls(next);
+                if (originalJobRef.current && editingJobIdRef.current === currentEditId) {
+                  (originalJobRef.current as any).billImageUrl = JSON.stringify(next);
+                }
+                return next;
               });
             }}
           />

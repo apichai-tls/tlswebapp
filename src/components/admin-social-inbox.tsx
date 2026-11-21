@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore, useDeferredValue } from 'react';
 import {
   MessageSquare,
   Send,
@@ -82,6 +82,7 @@ import {
 import {
   getSocialInboxFastAction,
   getSocialInboxDataAction,
+  getConversationMessagesAction,
   createWhatsAppChatAction,
   createMultiChannelChatAction,
   sendSocialMessageAction,
@@ -245,7 +246,66 @@ export function AdminSocialInbox({
   const [channelFilter, setChannelFilter] = useState<'all' | SocialChannel>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'unread' | 'open' | 'resolved'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [showRightPanel, setShowRightPanel] = useState(true);
+  const [visibleConvCount, setVisibleConvCount] = useState(50);
+  const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null);
+  const loadedFullThreadsRef = useRef<Set<string>>(new Set());
+  const prefetchingThreadsRef = useRef<Set<string>>(new Set());
+
+  // Reset sidebar window when filters or search change
+  useEffect(() => {
+    setVisibleConvCount(50);
+  }, [channelFilter, statusFilter, deferredSearchQuery]);
+
+  // 0ms Instant Hydrate from localStorage (conversations + latest 80 messages)
+  // so opening Omnichannel paints immediately with zero spinner AND instant recent chat history
+  useEffect(() => {
+    try {
+      const rawConvs = window.localStorage.getItem('tls_social_conv_cache_v1');
+      if (rawConvs) {
+        const cached = JSON.parse(rawConvs);
+        if (Array.isArray(cached) && cached.length > 0) {
+          setConversations((prev) => (prev.length === 0 ? cached : prev));
+          setLoading(false);
+        }
+      }
+      const rawMsgs = window.localStorage.getItem('tls_social_msg_cache_v1');
+      if (rawMsgs) {
+        const cachedMsgs = JSON.parse(rawMsgs);
+        if (Array.isArray(cachedMsgs) && cachedMsgs.length > 0) {
+          setMessages((prev) => (prev.length === 0 ? cachedMsgs : prev));
+        }
+      }
+    } catch {}
+  }, []);
+
+  // Debounced background save of top 120 conversations + latest 80 messages to localStorage
+  useEffect(() => {
+    if (conversations.length === 0) return;
+    const timer = setTimeout(() => {
+      try {
+        window.localStorage.setItem(
+          'tls_social_conv_cache_v1',
+          JSON.stringify(conversations.slice(0, 120))
+        );
+      } catch {}
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [conversations]);
+
+  useEffect(() => {
+    if (messages.length === 0) return;
+    const timer = setTimeout(() => {
+      try {
+        window.localStorage.setItem(
+          'tls_social_msg_cache_v1',
+          JSON.stringify(messages.slice(-80))
+        );
+      } catch {}
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [messages]);
 
   // Native App Composer State
   const [composerText, setComposerText] = useState('');
@@ -463,7 +523,17 @@ export function AdminSocialInbox({
           }
 
           setConversations(res.conversations || []);
-          setMessages(nextMsgs);
+          setMessages((prev) => {
+            if (prev.length === 0) return nextMsgs;
+            const byId = new Map<string, SocialMessage>();
+            for (const m of prev) byId.set(m.id, m);
+            for (const m of nextMsgs) byId.set(m.id, m);
+            return Array.from(byId.values()).sort(
+              (a, b) =>
+                new Date(a.createdAt || 0).getTime() -
+                new Date(b.createdAt || 0).getTime()
+            );
+          });
           if (res.config) setConfig(res.config);
           setLiveConnected(true);
           setLastLiveSyncAt(
@@ -754,8 +824,15 @@ export function AdminSocialInbox({
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }, [messages, selectedConvId]);
 
+  const prevScrolledConvIdRef = useRef<string | null>(null);
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!selectedConvId) return;
+    const isThreadSwitch = prevScrolledConvIdRef.current !== selectedConvId;
+    prevScrolledConvIdRef.current = selectedConvId;
+    // Instant jump when switching threads (0ms like WhatsApp Desktop), smooth only for live new messages
+    messagesEndRef.current?.scrollIntoView({
+      behavior: isThreadSwitch ? 'instant' : 'smooth',
+    });
   }, [activeMessages.length, selectedConvId]);
 
   // Mark conversation as read helper (optimistic 0ms UI update + server persistence)
@@ -787,12 +864,81 @@ export function AdminSocialInbox({
       .catch(() => {});
   }, []);
 
+  // Silent hover prefetch: preloads full thread history ~150ms BEFORE user clicks for 0ms open!
+  const prefetchConversationMessages = useCallback((convId: string) => {
+    if (
+      !convId ||
+      loadedFullThreadsRef.current.has(convId) ||
+      prefetchingThreadsRef.current.has(convId)
+    ) {
+      return;
+    }
+    prefetchingThreadsRef.current.add(convId);
+    getConversationMessagesAction(convId)
+      .then((res) => {
+        loadedFullThreadsRef.current.add(convId);
+        if (res?.success && Array.isArray(res.messages) && res.messages.length > 0) {
+          setMessages((prev) => {
+            const byId = new Map<string, SocialMessage>();
+            for (const m of prev) byId.set(m.id, m);
+            let added = false;
+            for (const m of res.messages!) {
+              if (!byId.has(m.id)) added = true;
+              byId.set(m.id, m);
+            }
+            if (!added) return prev;
+            return Array.from(byId.values()).sort(
+              (a, b) =>
+                new Date(a.createdAt || 0).getTime() -
+                new Date(b.createdAt || 0).getTime()
+            );
+          });
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        prefetchingThreadsRef.current.delete(convId);
+      });
+  }, []);
+
   const handleSelectConversation = useCallback(
     (conv: SocialConversation) => {
       selectedConvIdRef.current = conv.id;
       setSelectedConvId(conv.id);
       if (conv.unreadCount > 0) {
         markConversationAsRead(conv.id);
+      }
+      // On-demand full thread history fetch (~5KB from server hot RAM cache)
+      // If already prefetched on hover, this is a 0ms no-op!
+      if (!loadedFullThreadsRef.current.has(conv.id)) {
+        setLoadingThreadId(conv.id);
+        prefetchingThreadsRef.current.add(conv.id);
+        getConversationMessagesAction(conv.id)
+          .then((res) => {
+            loadedFullThreadsRef.current.add(conv.id);
+            if (res?.success && Array.isArray(res.messages) && res.messages.length > 0) {
+              setMessages((prev) => {
+                const byId = new Map<string, SocialMessage>();
+                for (const m of prev) byId.set(m.id, m);
+                let added = false;
+                for (const m of res.messages!) {
+                  if (!byId.has(m.id)) added = true;
+                  byId.set(m.id, m);
+                }
+                if (!added) return prev;
+                return Array.from(byId.values()).sort(
+                  (a, b) =>
+                    new Date(a.createdAt || 0).getTime() -
+                    new Date(b.createdAt || 0).getTime()
+                );
+              });
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            prefetchingThreadsRef.current.delete(conv.id);
+            setLoadingThreadId((curr) => (curr === conv.id ? null : curr));
+          });
       }
     },
     [markConversationAsRead]
@@ -977,8 +1123,8 @@ export function AdminSocialInbox({
       if (statusFilter === 'open' && c.status !== 'open') return false;
       if (statusFilter === 'resolved' && c.status !== 'resolved') return false;
 
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
+      if (deferredSearchQuery.trim()) {
+        const q = deferredSearchQuery.toLowerCase().trim();
         const matchName = c.contactName?.toLowerCase().includes(q);
         const matchCust = c.customerName?.toLowerCase().includes(q);
         const matchPhone = c.contactPhone?.toLowerCase().includes(q);
@@ -998,7 +1144,7 @@ export function AdminSocialInbox({
       if (aUnread !== bUnread) return bUnread - aUnread;
       return new Date(b.lastMessageAt || 0).getTime() - new Date(a.lastMessageAt || 0).getTime();
     });
-  }, [conversations, channelFilter, statusFilter, searchQuery]);
+  }, [conversations, channelFilter, statusFilter, deferredSearchQuery]);
 
   // Open Official LINE OA Manager (chat.line.biz) in a Docked Companion Window & copy customer name for instant lookup
   const openLineOfficialChatCompanion = (contactName?: string) => {
@@ -1020,45 +1166,208 @@ export function AdminSocialInbox({
   };
 
   // Helper to return a phone string only if it contains real digits (hides '-' or '--' placeholders)
-  const getDisplayPhone = (raw?: string | null): string => {
+  const getDisplayPhone = useCallback((raw?: string | null): string => {
     if (!raw) return '';
     const cleaned = String(raw).trim();
     return /\d{6,}/.test(cleaned) ? cleaned : '';
-  };
+  }, []);
 
-  // Linked CRM Customer & Jobs for the Right Panel
+  // Windowed visible conversations (cuts DOM nodes ~20x from 1,000 cards to 50 initial cards)
+  const visibleConversations = useMemo(
+    () => filteredConversations.slice(0, visibleConvCount),
+    [filteredConversations, visibleConvCount]
+  );
+
+  const handleSidebarScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      if (visibleConvCount >= filteredConversations.length) return;
+      const el = e.currentTarget;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 220) {
+        setVisibleConvCount((prev) => Math.min(prev + 50, filteredConversations.length));
+      }
+    },
+    [visibleConvCount, filteredConversations.length]
+  );
+
+  // Memoized sidebar rows — completely isolated from composerText keystrokes for 0ms typing lag!
+  const memoizedConversationRows = useMemo(() => {
+    const now = new Date();
+    const nowY = now.getFullYear();
+    const nowM = now.getMonth();
+    const nowD = now.getDate();
+
+    return visibleConversations.map((conv) => {
+      const isSelected = conv.id === selectedConvId;
+      const chColors = getChannelColorClasses(conv.channel);
+      const validPhone = getDisplayPhone(conv.contactPhone);
+
+      let timeLabel = '';
+      if (
+        conv.lastMessageText === 'Connected via LINE Official Account (@thatlaundryshop)' ||
+        conv.lastMessageAt === '2026-01-01T00:00:00.000Z'
+      ) {
+        timeLabel = 'Follower';
+      } else {
+        const d = new Date(conv.lastMessageAt);
+        if (!isNaN(d.getTime())) {
+          const isToday =
+            d.getFullYear() === nowY && d.getMonth() === nowM && d.getDate() === nowD;
+          timeLabel = isToday
+            ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        }
+      }
+
+      return (
+        <div
+          key={conv.id}
+          onClick={() => handleSelectConversation(conv)}
+          onMouseEnter={() => prefetchConversationMessages(conv.id)}
+          className={`px-3 py-2.5 cursor-pointer transition-colors hover:bg-slate-50/90 relative ${
+            isSelected
+              ? 'bg-emerald-50/70 border-l-[3px] border-l-emerald-600'
+              : conv.unreadCount > 0
+              ? 'bg-sky-50/40'
+              : ''
+          }`}
+        >
+          <div className="flex items-start gap-2.5">
+            {/* Avatar + Channel Micro-Badge */}
+            <div className="relative shrink-0 mt-0.5">
+              {conv.contactAvatar ? (
+                <img
+                  src={conv.contactAvatar}
+                  alt={conv.contactName}
+                  loading="lazy"
+                  decoding="async"
+                  className="w-10 h-10 rounded-full object-cover border border-slate-200 shadow-2xs"
+                />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-700 to-slate-900 text-white font-black text-xs flex items-center justify-center shadow-2xs">
+                  {(conv.contactName || 'C').slice(0, 2).toUpperCase()}
+                </div>
+              )}
+              <span
+                className={`absolute -bottom-0.5 -right-0.5 px-1.5 py-0.2 rounded-full text-[8px] font-black uppercase shadow-xs ring-1 ring-white ${chColors.badge}`}
+              >
+                {conv.channel === 'whatsapp'
+                  ? 'WA'
+                  : conv.channel === 'line'
+                  ? 'LINE'
+                  : conv.channel === 'facebook'
+                  ? 'FB'
+                  : conv.channel === 'instagram'
+                  ? 'IG'
+                  : 'TG'}
+              </span>
+            </div>
+
+            {/* Name, Preview & Compact Metadata */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-1.5">
+                <p
+                  className={`${fontScale.convName} truncate ${
+                    conv.unreadCount > 0
+                      ? 'font-black text-slate-950'
+                      : 'font-bold text-slate-800'
+                  }`}
+                >
+                  {conv.contactName}
+                </p>
+                <span className={`${fontScale.convMeta} font-medium text-slate-400 shrink-0`}>
+                  {timeLabel}
+                </span>
+              </div>
+
+              {/* Message Preview Line */}
+              <p
+                className={`${fontScale.convPreview} truncate mt-0.5 ${
+                  conv.unreadCount > 0 ? 'font-bold text-slate-900' : 'text-slate-500'
+                }`}
+              >
+                {conv.lastMessageDirection === 'outbound' && (
+                  <span className="text-emerald-600 font-bold mr-1">✓✓ You:</span>
+                )}
+                {conv.lastMessageText}
+              </p>
+
+              {/* Compact Bottom Row: Valid Phone + CRM Badge + Unread Count */}
+              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                {validPhone && (
+                  <span className="text-[10px] text-emerald-700 font-bold truncate max-w-[125px]">
+                    {validPhone}
+                  </span>
+                )}
+                {conv.customerId && (
+                  <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
+                    {conv.customerMemberId ? `#${conv.customerMemberId}` : 'CRM'}
+                  </span>
+                )}
+                {conv.status === 'resolved' && (
+                  <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-slate-100 text-slate-500">
+                    Resolved
+                  </span>
+                )}
+                {conv.unreadCount > 0 && (
+                  <span className="ml-auto px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black">
+                    {conv.unreadCount}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    });
+  }, [visibleConversations, selectedConvId, fontScale, getDisplayPhone, handleSelectConversation, prefetchConversationMessages]);
+
+  // Pre-indexed O(1) CRM Customer lookup maps (eliminates 4x O(N) scans on every thread switch!)
+  const customerIndex = useMemo(() => {
+    const byId = new Map<string, any>();
+    const byLineId = new Map<string, any>();
+    const byPhone = new Map<string, any>();
+    const byName = new Map<string, any>();
+    for (const c of allCustomers) {
+      if (c.id) byId.set(c.id, c);
+      const lid = (c.lineId || '').trim();
+      if (lid && !byLineId.has(lid)) byLineId.set(lid, c);
+      const pk = normalizePhoneKey(c.phone);
+      if (pk.length >= 8 && !byPhone.has(pk)) byPhone.set(pk, c);
+      const nm = c.name?.trim().toLowerCase();
+      if (nm && nm.length >= 2 && !byName.has(nm)) byName.set(nm, c);
+      const nick = c.nickName?.trim().toLowerCase();
+      if (nick && nick.length >= 2 && !byName.has(nick)) byName.set(nick, c);
+    }
+    return { byId, byLineId, byPhone, byName };
+  }, [allCustomers]);
+
+  // Linked CRM Customer & Jobs for the Right Panel — O(1) instant lookup
   const linkedCustomer = useMemo(() => {
     if (!activeConversation) return null;
     if (activeConversation.customerId) {
-      const found = allCustomers.find((c) => c.id === activeConversation.customerId);
+      const found = customerIndex.byId.get(activeConversation.customerId);
       if (found) return found;
     }
     if (activeConversation.channel === 'line' && activeConversation.externalContactId) {
-      const byLineId = allCustomers.find(
-        (c) => (c.lineId || '').trim() === activeConversation.externalContactId.trim()
-      );
+      const byLineId = customerIndex.byLineId.get(activeConversation.externalContactId.trim());
       if (byLineId) return byLineId;
     }
     const pk = normalizePhoneKey(
       activeConversation.contactPhone || activeConversation.externalContactId
     );
     if (pk.length >= 8) {
-      const byPhone = allCustomers.find((c) => normalizePhoneKey(c.phone) === pk);
+      const byPhone = customerIndex.byPhone.get(pk);
       if (byPhone) return byPhone;
     }
     if (activeConversation.contactName) {
       const normName = activeConversation.contactName.trim().toLowerCase();
       if (normName.length >= 2 && normName !== 'line user') {
-        const byName = allCustomers.find(
-          (c) =>
-            c.name?.trim().toLowerCase() === normName ||
-            c.nickName?.trim().toLowerCase() === normName
-        );
+        const byName = customerIndex.byName.get(normName);
         if (byName) return byName;
       }
     }
     return null;
-  }, [activeConversation, allCustomers]);
+  }, [activeConversation, customerIndex]);
 
   // Sync VIP tier & saved customer address into Mini Distance Cal when switching chat/customer
   useEffect(() => {
@@ -1312,6 +1621,226 @@ export function AdminSocialInbox({
     }
   };
 
+    // Also memoize active chat message bubbles isolated from composerText keystrokes for 0ms typing!
+  const memoizedMessageBubbles = useMemo(() => {
+    if (!activeConversation || activeMessages.length === 0) return null;
+    return activeMessages.map((msg, msgIdx) => {
+      const isOutbound = msg.direction === 'outbound';
+      const msgDateObj = new Date(msg.createdAt);
+      const prevDateObj =
+        msgIdx > 0 ? new Date(activeMessages[msgIdx - 1].createdAt) : null;
+      const showDateDivider =
+        !prevDateObj ||
+        msgDateObj.toDateString() !== prevDateObj.toDateString();
+
+      const imageAttachments = (msg.attachments || []).filter(
+        (a) => a.type === 'image' && a.url
+      );
+      const fileAttachments = (msg.attachments || []).filter(
+        (a) => a.type !== 'image' && a.url
+      );
+
+      return (
+        <React.Fragment key={msg.id}>
+          {showDateDivider && !isNaN(msgDateObj.getTime()) && (
+            <div className="flex items-center justify-center my-2">
+              <span className="px-3 py-0.5 rounded-full bg-slate-900/8 text-slate-600 text-[10px] font-bold tracking-wide shadow-2xs backdrop-blur-xs">
+                {msgDateObj.toLocaleDateString([], {
+                  weekday: 'short',
+                  month: 'short',
+                  day: 'numeric',
+                })}
+              </span>
+            </div>
+          )}
+
+          <div
+            className={`group flex flex-col ${
+              isOutbound ? 'items-end' : 'items-start'
+            }`}
+          >
+            {/* Sender & Timestamp Header */}
+            <div className="flex items-center gap-1.5 mb-1 px-1">
+              <span className={`${fontScale.msgMeta} font-bold text-slate-600`}>
+                {isOutbound
+                  ? msg.senderName || 'That Laundry Shop'
+                  : msg.senderName || activeConversation.contactName}
+              </span>
+              <span className={`${fontScale.msgMeta} text-slate-400`}>
+                {msgDateObj.toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </span>
+
+              {/* Hover Quick Actions: Reply & Copy */}
+              <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 ml-1">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setReplyingTo({
+                      messageId: msg.id,
+                      senderName: isOutbound
+                        ? msg.senderName || 'Staff'
+                        : activeConversation.contactName,
+                      text: msg.text,
+                    })
+                  }
+                  className="p-0.5 rounded hover:bg-slate-200/80 text-slate-500 hover:text-slate-800 cursor-pointer"
+                  title="Reply to this message"
+                >
+                  <Reply size={11} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(msg.text || '');
+                    toast.success('Copied message text');
+                  }}
+                  className="p-0.5 rounded hover:bg-slate-200/80 text-slate-500 hover:text-slate-800 cursor-pointer"
+                  title="Copy message text"
+                >
+                  <Copy size={10} />
+                </button>
+              </div>
+            </div>
+
+            {/* Message Bubble — High-Contrast Official LINE OA / WhatsApp Styling */}
+            <div
+              className={`max-w-[85%] sm:max-w-[74%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed shadow-xs whitespace-pre-wrap break-words ${
+                isOutbound
+                  ? activeConversation.channel === 'whatsapp'
+                    ? 'bg-[#d9fdd3] text-slate-900 border border-emerald-300/70 rounded-tr-xs'
+                    : activeConversation.channel === 'line'
+                    ? 'bg-[#e5f9ed] text-slate-900 border border-[#a8e6c1] rounded-tr-xs'
+                    : 'bg-indigo-600 text-white rounded-tr-xs'
+                  : 'bg-white text-slate-900 border border-slate-200/90 rounded-tl-xs'
+              }`}
+            >
+              {/* Quoted Reply Block if present */}
+              {msg.replyTo && (
+                <div
+                  className={`mb-2 px-2.5 py-1.5 rounded-lg border-l-4 text-[10px] ${
+                    isOutbound &&
+                    activeConversation.channel !== 'whatsapp' &&
+                    activeConversation.channel !== 'line'
+                      ? 'bg-black/15 border-white/70 text-white/90'
+                      : 'bg-white/70 border-emerald-500 text-slate-600'
+                  }`}
+                >
+                  <p className="font-black">{msg.replyTo.senderName}</p>
+                  <p className="truncate opacity-90">{msg.replyTo.text}</p>
+                </div>
+              )}
+
+              {msg.text && <div className={fontScale.msgText}>{msg.text}</div>}
+
+              {/* Clean Responsive Photo Grid for Image Attachments */}
+              {imageAttachments.length > 0 && (
+                <div
+                  className={`${msg.text ? 'mt-2.5' : ''} ${
+                    imageAttachments.length >= 2
+                      ? 'grid grid-cols-2 gap-1.5 max-w-md'
+                      : 'inline-block'
+                  }`}
+                >
+                  {imageAttachments.map((att, idx) => (
+                    <div
+                      key={idx}
+                      onClick={() => setLightboxImageUrl(att.url || null)}
+                      className="relative group/img cursor-pointer overflow-hidden rounded-xl border border-black/10 bg-slate-100 shadow-2xs"
+                    >
+                      <img
+                        src={att.url}
+                        alt={att.name || 'Attachment'}
+                        loading="lazy"
+                        decoding="async"
+                        className={
+                          imageAttachments.length >= 2
+                            ? 'w-full h-40 sm:h-44 object-cover transition-transform duration-200 group-hover/img:scale-[1.03]'
+                            : 'max-h-60 w-auto object-cover transition-transform duration-200 group-hover/img:scale-[1.02]'
+                        }
+                      />
+                      <span className="absolute bottom-1.5 right-1.5 bg-slate-900/75 backdrop-blur-xs text-white text-[9px] font-bold px-2 py-0.5 rounded-md opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center gap-1">
+                        <Eye size={10} /> View Full
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Other Non-Image File Attachments */}
+              {fileAttachments.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {fileAttachments.map((att, idx) => (
+                    <a
+                      key={idx}
+                      href={att.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 text-[11px] font-bold underline"
+                    >
+                      <Paperclip size={12} />
+                      <span>{att.name || 'Download Attachment'}</span>
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {isOutbound && (
+              <div className="flex items-center gap-1 mt-1 px-1 text-[9px] text-slate-500 font-semibold">
+                <CheckCheck size={11} className="text-emerald-600" />
+                <span>
+                  {msg.deliveryMethod === 'line_api'
+                    ? 'Delivered Live via LINE OA API'
+                    : msg.deliveryMethod === 'whatsapp_cloud_api'
+                    ? 'Delivered Live via WhatsApp Cloud API'
+                    : msg.deliveryMethod === 'whatsapp_gateway_api'
+                    ? 'Delivered Live via WhatsApp Gateway'
+                    : msg.deliveryMethod === 'meta_graph_api'
+                    ? 'Delivered Live via Meta Graph API'
+                    : msg.deliveryMethod === 'telegram_bot_api'
+                    ? 'Delivered Live via Telegram Bot API'
+                    : msg.deliveryMethod === 'whatsapp_web_bridge'
+                    ? 'Sent • WhatsApp Bridge Active'
+                    : 'Delivered'}
+                </span>
+              </div>
+            )}
+          </div>
+        </React.Fragment>
+      );
+    });
+  }, [activeMessages, activeConversation?.id, activeConversation?.channel, activeConversation?.contactName, fontScale]);
+
+  // Pre-indexed O(1) Jobs lookup maps (eliminates linear scan over all jobs on every thread switch!)
+  const jobsIndex = useMemo(() => {
+    const byCustomerId = new Map<string, any[]>();
+    const byPhone = new Map<string, any[]>();
+    const byName = new Map<string, any[]>();
+    for (const j of jobs) {
+      if (j.customerId) {
+        const arr = byCustomerId.get(j.customerId);
+        if (arr) arr.push(j);
+        else byCustomerId.set(j.customerId, [j]);
+      }
+      const pk = normalizePhoneKey(j.customerPhone);
+      if (pk.length >= 8) {
+        const arr = byPhone.get(pk);
+        if (arr) arr.push(j);
+        else byPhone.set(pk, [j]);
+      }
+      const nm = j.customerName?.trim().toLowerCase();
+      if (nm && nm.length >= 3 && nm !== 'line user') {
+        const arr = byName.get(nm);
+        if (arr) arr.push(j);
+        else byName.set(nm, [j]);
+      }
+    }
+    return { byCustomerId, byPhone, byName };
+  }, [jobs]);
+
   const customerJobs = useMemo(() => {
     if (!activeConversation) return [];
     const custId = linkedCustomer?.id || activeConversation.customerId;
@@ -1329,18 +1858,23 @@ export function AdminSocialInbox({
         activeConversation.externalContactId
     );
 
-    const matched = jobs.filter((j) => {
-      if (custId && j.customerId === custId) return true;
-      if (pk.length >= 8 && normalizePhoneKey(j.customerPhone) === pk) return true;
-      if (
-        custNameNorm.length >= 3 &&
-        custNameNorm !== 'line user' &&
-        j.customerName?.trim().toLowerCase() === custNameNorm
-      ) {
-        return true;
+    const matchedMap = new Map<string, any>();
+    if (custId) {
+      for (const j of jobsIndex.byCustomerId.get(custId) || []) {
+        matchedMap.set(String(j.id), j);
       }
-      return false;
-    });
+    }
+    if (pk.length >= 8) {
+      for (const j of jobsIndex.byPhone.get(pk) || []) {
+        matchedMap.set(String(j.id), j);
+      }
+    }
+    if (custNameNorm.length >= 3 && custNameNorm !== 'line user') {
+      for (const j of jobsIndex.byName.get(custNameNorm) || []) {
+        matchedMap.set(String(j.id), j);
+      }
+    }
+    const matched = Array.from(matchedMap.values());
 
     const seenIds = new Set(matched.map((j) => String(j.id)));
     const synthesizedFromChat: any[] = [];
@@ -2234,9 +2768,12 @@ export function AdminSocialInbox({
             })()}
           </div>
 
-          {/* Conversations Scroll List */}
-          <div className="flex-1 overflow-y-auto divide-y divide-slate-100 custom-scrollbar">
-            {loading ? (
+          {/* Conversations Scroll List (Windowed + Memoized for 0ms typing & instant render) */}
+          <div
+            onScroll={handleSidebarScroll}
+            className="flex-1 overflow-y-auto divide-y divide-slate-100 custom-scrollbar"
+          >
+            {loading && conversations.length === 0 ? (
               <div className="p-8 text-center text-xs text-slate-400 space-y-2">
                 <RefreshCw size={20} className="animate-spin mx-auto text-emerald-600" />
                 <p>Connecting to live social channels...</p>
@@ -2262,133 +2799,24 @@ export function AdminSocialInbox({
                 </Button>
               </div>
             ) : (
-              filteredConversations.map((conv) => {
-                const isSelected = conv.id === selectedConvId;
-                const chColors = getChannelColorClasses(conv.channel);
-                const validPhone = getDisplayPhone(conv.contactPhone);
-
-                return (
-                  <div
-                    key={conv.id}
-                    onClick={() => handleSelectConversation(conv)}
-                    className={`px-3 py-2.5 cursor-pointer transition-all hover:bg-slate-50/90 relative ${
-                      isSelected
-                        ? 'bg-emerald-50/70 border-l-[3px] border-l-emerald-600'
-                        : conv.unreadCount > 0
-                        ? 'bg-sky-50/40'
-                        : ''
-                    }`}
-                  >
-                    <div className="flex items-start gap-2.5">
-                      {/* Avatar + Channel Micro-Badge */}
-                      <div className="relative shrink-0 mt-0.5">
-                        {conv.contactAvatar ? (
-                          <img
-                            src={conv.contactAvatar}
-                            alt={conv.contactName}
-                            className="w-10 h-10 rounded-full object-cover border border-slate-200 shadow-2xs"
-                          />
-                        ) : (
-                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-700 to-slate-900 text-white font-black text-xs flex items-center justify-center shadow-2xs">
-                            {(conv.contactName || 'C').slice(0, 2).toUpperCase()}
-                          </div>
-                        )}
-                        <span
-                          className={`absolute -bottom-0.5 -right-0.5 px-1.5 py-0.2 rounded-full text-[8px] font-black uppercase shadow-xs ring-1 ring-white ${chColors.badge}`}
-                        >
-                          {conv.channel === 'whatsapp'
-                            ? 'WA'
-                            : conv.channel === 'line'
-                            ? 'LINE'
-                            : conv.channel === 'facebook'
-                            ? 'FB'
-                            : conv.channel === 'instagram'
-                            ? 'IG'
-                            : 'TG'}
-                        </span>
-                      </div>
-
-                      {/* Name, Preview & Compact Metadata */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-1.5">
-                          <p
-                            className={`${fontScale.convName} truncate ${
-                              conv.unreadCount > 0
-                                ? 'font-black text-slate-950'
-                                : 'font-bold text-slate-800'
-                            }`}
-                          >
-                            {conv.contactName}
-                          </p>
-                          <span className={`${fontScale.convMeta} font-medium text-slate-400 shrink-0`}>
-                            {(() => {
-                              if (
-                                conv.lastMessageText ===
-                                  'Connected via LINE Official Account (@thatlaundryshop)' ||
-                                conv.lastMessageAt === '2026-01-01T00:00:00.000Z'
-                              ) {
-                                return 'Follower';
-                              }
-                              const d = new Date(conv.lastMessageAt);
-                              if (isNaN(d.getTime())) return '';
-                              const now = new Date();
-                              const isToday =
-                                d.getFullYear() === now.getFullYear() &&
-                                d.getMonth() === now.getMonth() &&
-                                d.getDate() === now.getDate();
-                              if (isToday) {
-                                return d.toLocaleTimeString([], {
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                });
-                              }
-                              return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-                            })()}
-                          </span>
-                        </div>
-
-                        {/* Message Preview Line */}
-                        <p
-                          className={`${fontScale.convPreview} truncate mt-0.5 ${
-                            conv.unreadCount > 0
-                              ? 'font-bold text-slate-900'
-                              : 'text-slate-500'
-                          }`}
-                        >
-                          {conv.lastMessageDirection === 'outbound' && (
-                            <span className="text-emerald-600 font-bold mr-1">✓✓ You:</span>
-                          )}
-                          {conv.lastMessageText}
-                        </p>
-
-                        {/* Compact Bottom Row: Valid Phone + CRM Badge + Unread Count */}
-                        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                          {validPhone && (
-                            <span className="text-[10px] text-emerald-700 font-bold truncate max-w-[125px]">
-                              {validPhone}
-                            </span>
-                          )}
-                          {conv.customerId && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
-                              {conv.customerMemberId ? `#${conv.customerMemberId}` : 'CRM'}
-                            </span>
-                          )}
-                          {conv.status === 'resolved' && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-slate-100 text-slate-500">
-                              Resolved
-                            </span>
-                          )}
-                          {conv.unreadCount > 0 && (
-                            <span className="ml-auto px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black">
-                              {conv.unreadCount}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
+              <>
+                {memoizedConversationRows}
+                {visibleConvCount < filteredConversations.length && (
+                  <div className="p-3 text-center bg-slate-50/70">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setVisibleConvCount((prev) =>
+                          Math.min(prev + 100, filteredConversations.length)
+                        )
+                      }
+                      className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-[11px] font-bold text-slate-700 shadow-2xs transition-colors"
+                    >
+                      Load more ({filteredConversations.length - visibleConvCount} remaining)
+                    </button>
                   </div>
-                );
-              })
+                )}
+              </>
             )}
           </div>
         </div>
@@ -2651,6 +3079,14 @@ export function AdminSocialInbox({
                 }`}
               >
                 {activeMessages.length === 0 ? (
+                  loadingThreadId === activeConversation.id ? (
+                    <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500 space-y-2.5 max-w-md mx-auto">
+                      <RefreshCw size={22} className="animate-spin text-emerald-600" />
+                      <p className="text-xs font-bold text-slate-600">
+                        Loading chat history with {activeConversation.contactName}...
+                      </p>
+                    </div>
+                  ) : (
                   <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500 space-y-3 max-w-md mx-auto">
                     <div className="w-12 h-12 rounded-2xl bg-white shadow-2xs border border-slate-200/80 flex items-center justify-center text-slate-400">
                       <MessageCircle size={24} />
@@ -2684,193 +3120,9 @@ export function AdminSocialInbox({
                       </p>
                     )}
                   </div>
+                  )
                 ) : (
-                  activeMessages.map((msg, msgIdx) => {
-                    const isOutbound = msg.direction === 'outbound';
-                    const msgDateObj = new Date(msg.createdAt);
-                    const prevDateObj =
-                      msgIdx > 0 ? new Date(activeMessages[msgIdx - 1].createdAt) : null;
-                    const showDateDivider =
-                      !prevDateObj ||
-                      msgDateObj.toDateString() !== prevDateObj.toDateString();
-
-                    const imageAttachments = (msg.attachments || []).filter(
-                      (a) => a.type === 'image' && a.url
-                    );
-                    const fileAttachments = (msg.attachments || []).filter(
-                      (a) => a.type !== 'image' && a.url
-                    );
-
-                    return (
-                      <React.Fragment key={msg.id}>
-                        {showDateDivider && !isNaN(msgDateObj.getTime()) && (
-                          <div className="flex items-center justify-center my-2">
-                            <span className="px-3 py-0.5 rounded-full bg-slate-900/8 text-slate-600 text-[10px] font-bold tracking-wide shadow-2xs backdrop-blur-xs">
-                              {msgDateObj.toLocaleDateString([], {
-                                weekday: 'short',
-                                month: 'short',
-                                day: 'numeric',
-                              })}
-                            </span>
-                          </div>
-                        )}
-
-                        <div
-                          className={`group flex flex-col ${
-                            isOutbound ? 'items-end' : 'items-start'
-                          }`}
-                        >
-                          {/* Sender & Timestamp Header */}
-                          <div className="flex items-center gap-1.5 mb-1 px-1">
-                            <span className={`${fontScale.msgMeta} font-bold text-slate-600`}>
-                              {isOutbound
-                                ? msg.senderName || 'That Laundry Shop'
-                                : msg.senderName || activeConversation.contactName}
-                            </span>
-                            <span className={`${fontScale.msgMeta} text-slate-400`}>
-                              {msgDateObj.toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
-                            </span>
-
-                            {/* Hover Quick Actions: Reply & Copy */}
-                            <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 ml-1">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setReplyingTo({
-                                    messageId: msg.id,
-                                    senderName: isOutbound
-                                      ? msg.senderName || 'Staff'
-                                      : activeConversation.contactName,
-                                    text: msg.text,
-                                  })
-                                }
-                                className="p-0.5 rounded hover:bg-slate-200/80 text-slate-500 hover:text-slate-800 cursor-pointer"
-                                title="Reply to this message"
-                              >
-                                <Reply size={11} />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  navigator.clipboard.writeText(msg.text || '');
-                                  toast.success('Copied message text');
-                                }}
-                                className="p-0.5 rounded hover:bg-slate-200/80 text-slate-500 hover:text-slate-800 cursor-pointer"
-                                title="Copy message text"
-                              >
-                                <Copy size={10} />
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* Message Bubble — High-Contrast Official LINE OA / WhatsApp Styling */}
-                          <div
-                            className={`max-w-[85%] sm:max-w-[74%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed shadow-xs whitespace-pre-wrap break-words ${
-                              isOutbound
-                                ? activeConversation.channel === 'whatsapp'
-                                  ? 'bg-[#d9fdd3] text-slate-900 border border-emerald-300/70 rounded-tr-xs'
-                                  : activeConversation.channel === 'line'
-                                  ? 'bg-[#e5f9ed] text-slate-900 border border-[#a8e6c1] rounded-tr-xs'
-                                  : 'bg-indigo-600 text-white rounded-tr-xs'
-                                : 'bg-white text-slate-900 border border-slate-200/90 rounded-tl-xs'
-                            }`}
-                          >
-                            {/* Quoted Reply Block if present */}
-                            {msg.replyTo && (
-                              <div
-                                className={`mb-2 px-2.5 py-1.5 rounded-lg border-l-4 text-[10px] ${
-                                  isOutbound &&
-                                  activeConversation.channel !== 'whatsapp' &&
-                                  activeConversation.channel !== 'line'
-                                    ? 'bg-black/15 border-white/70 text-white/90'
-                                    : 'bg-white/70 border-emerald-500 text-slate-600'
-                                }`}
-                              >
-                                <p className="font-black">{msg.replyTo.senderName}</p>
-                                <p className="truncate opacity-90">{msg.replyTo.text}</p>
-                              </div>
-                            )}
-
-                            {msg.text && <div className={fontScale.msgText}>{msg.text}</div>}
-
-                            {/* Clean Responsive Photo Grid for Image Attachments */}
-                            {imageAttachments.length > 0 && (
-                              <div
-                                className={`${msg.text ? 'mt-2.5' : ''} ${
-                                  imageAttachments.length >= 2
-                                    ? 'grid grid-cols-2 gap-1.5 max-w-md'
-                                    : 'inline-block'
-                                }`}
-                              >
-                                {imageAttachments.map((att, idx) => (
-                                  <div
-                                    key={idx}
-                                    onClick={() => setLightboxImageUrl(att.url || null)}
-                                    className="relative group/img cursor-pointer overflow-hidden rounded-xl border border-black/10 bg-slate-100 shadow-2xs"
-                                  >
-                                    <img
-                                      src={att.url}
-                                      alt={att.name || 'Attachment'}
-                                      className={
-                                        imageAttachments.length >= 2
-                                          ? 'w-full h-40 sm:h-44 object-cover transition-transform duration-200 group-hover/img:scale-[1.03]'
-                                          : 'max-h-60 w-auto object-cover transition-transform duration-200 group-hover/img:scale-[1.02]'
-                                      }
-                                    />
-                                    <span className="absolute bottom-1.5 right-1.5 bg-slate-900/75 backdrop-blur-xs text-white text-[9px] font-bold px-2 py-0.5 rounded-md opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center gap-1">
-                                      <Eye size={10} /> View Full
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-
-                            {/* Other Non-Image File Attachments */}
-                            {fileAttachments.length > 0 && (
-                              <div className="mt-2 space-y-1">
-                                {fileAttachments.map((att, idx) => (
-                                  <a
-                                    key={idx}
-                                    href={att.url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 text-[11px] font-bold underline"
-                                  >
-                                    <Paperclip size={12} />
-                                    <span>{att.name || 'Download Attachment'}</span>
-                                  </a>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-
-                          {isOutbound && (
-                            <div className="flex items-center gap-1 mt-1 px-1 text-[9px] text-slate-500 font-semibold">
-                              <CheckCheck size={11} className="text-emerald-600" />
-                              <span>
-                                {msg.deliveryMethod === 'line_api'
-                                  ? 'Delivered Live via LINE OA API'
-                                  : msg.deliveryMethod === 'whatsapp_cloud_api'
-                                  ? 'Delivered Live via WhatsApp Cloud API'
-                                  : msg.deliveryMethod === 'whatsapp_gateway_api'
-                                  ? 'Delivered Live via WhatsApp Gateway'
-                                  : msg.deliveryMethod === 'meta_graph_api'
-                                  ? 'Delivered Live via Meta Graph API'
-                                  : msg.deliveryMethod === 'telegram_bot_api'
-                                  ? 'Delivered Live via Telegram Bot API'
-                                  : msg.deliveryMethod === 'whatsapp_web_bridge'
-                                  ? 'Sent • WhatsApp Bridge Active'
-                                  : 'Delivered'}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </React.Fragment>
-                    );
-                  })
+                  memoizedMessageBubbles
                 )}
                 <div ref={messagesEndRef} />
               </div>

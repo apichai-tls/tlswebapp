@@ -26,7 +26,31 @@ interface SocialStoreMemoryCache {
 const globalForSocialCache = globalThis as unknown as {
   __tlsSocialStoreCache?: SocialStoreMemoryCache | null;
   __tlsSocialReadWatermarks?: Map<string, number>;
+  __tlsSocialLastVersionCheckAt?: number;
 };
+
+export async function getSocialStoreVersion(forceDb = false): Promise<string> {
+  const cached = globalForSocialCache.__tlsSocialStoreCache;
+  const lastCheck = globalForSocialCache.__tlsSocialLastVersionCheckAt || 0;
+  if (!forceDb && cached && cached.version && Date.now() - lastCheck < 1500) {
+    return cached.version;
+  }
+  try {
+    const row = await prisma.setting.findUnique({
+      where: { key: SOCIAL_VERSION_KEY },
+      select: { value: true },
+    });
+    globalForSocialCache.__tlsSocialLastVersionCheckAt = Date.now();
+    return row?.value?.trim() || '0';
+  } catch {
+    return cached?.version || '0';
+  }
+}
+
+export function invalidateSocialStoreCache(): void {
+  globalForSocialCache.__tlsSocialStoreCache = null;
+  globalForSocialCache.__tlsSocialLastVersionCheckAt = 0;
+}
 
 function getReadWatermarks(): Map<string, number> {
   if (!globalForSocialCache.__tlsSocialReadWatermarks) {
@@ -70,22 +94,6 @@ export function applyReadWatermarks(conversations: SocialConversation[]): Social
     }
     return c;
   });
-}
-
-export async function getSocialStoreVersion(): Promise<string> {
-  try {
-    const row = await prisma.setting.findUnique({
-      where: { key: SOCIAL_VERSION_KEY },
-      select: { value: true },
-    });
-    return row?.value?.trim() || '0';
-  } catch {
-    return globalForSocialCache.__tlsSocialStoreCache?.version || '0';
-  }
-}
-
-export function invalidateSocialStoreCache(): void {
-  globalForSocialCache.__tlsSocialStoreCache = null;
 }
 
 export function getDefaultSocialChannelConfig(): SocialChannelConfig {
