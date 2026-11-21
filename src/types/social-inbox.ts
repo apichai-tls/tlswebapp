@@ -67,6 +67,7 @@ export interface SocialConversation {
   branchName?: string | null;
   status: 'open' | 'pending' | 'resolved';
   unreadCount: number;
+  lastReadAt?: string;
   assignedStaffId?: string | null;
   assignedStaffName?: string | null;
   tags?: string[];

@@ -22,6 +22,7 @@ interface GlobalWhatsAppSingleton {
   state: WhatsAppQrState;
   startingPromise: Promise<WhatsAppQrState> | null;
   sentMessageIds: Set<string>;
+  lastInboundKeys: Map<string, any>;
   autoStartChecked: boolean;
   replacedByAnotherInstance: boolean;
   resolvedAuthDir: string | null;
@@ -55,6 +56,7 @@ function getSingleton(): GlobalWhatsAppSingleton {
       },
       startingPromise: null,
       sentMessageIds: new Set<string>(),
+      lastInboundKeys: new Map<string, any>(),
       autoStartChecked: false,
       replacedByAnotherInstance: false,
       resolvedAuthDir: null,
@@ -580,6 +582,13 @@ export async function startWhatsAppQrConnection(
             } = await import('@/lib/social-inbox-internal');
 
             if (!fromMe) {
+              if (m.key?.id && m.key?.remoteJid) {
+                s.lastInboundKeys.set(phoneDigits, m.key);
+                if (s.lastInboundKeys.size > 400) {
+                  const oldest = s.lastInboundKeys.keys().next().value;
+                  if (oldest) s.lastInboundKeys.delete(oldest);
+                }
+              }
               await recordInboundSocialMessageInternal({
                 channel: 'whatsapp',
                 externalContactId: phoneDigits,
@@ -603,6 +612,50 @@ export async function startWhatsAppQrConnection(
           }
         } catch (err) {
           console.warn('[WhatsApp QR Bridge] messages.upsert handler error:', err);
+        }
+      });
+
+      // 2-WAY READ SYNC: Clear unread badges immediately when staff read/clear chats on WhatsApp phone or Web!
+      const syncClearedWhatsAppChats = async (chatList: any[]) => {
+        try {
+          if (!Array.isArray(chatList) || chatList.length === 0) return;
+          const readPhones: string[] = [];
+          for (const ch of chatList) {
+            const jid = String(ch?.id || '');
+            if (!jid || jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) {
+              continue;
+            }
+            const cleared =
+              ch?.unreadCount === 0 ||
+              ch?.markedAsUnread === false ||
+              (typeof ch?.unreadCount === 'number' && ch.unreadCount <= 0);
+            if (cleared) {
+              const digits = extractPhoneDigitsFromJid(jid, ch?.pnJid || ch?.lidJid);
+              if (digits && digits.length >= 6) {
+                readPhones.push(digits);
+              }
+            }
+          }
+          if (readPhones.length > 0) {
+            const { syncExternalReadStatesInternal } = await import('@/lib/social-inbox-internal');
+            await syncExternalReadStatesInternal('whatsapp', readPhones);
+          }
+        } catch (err) {
+          console.warn('[WhatsApp QR Bridge] read-state sync error:', err);
+        }
+      };
+
+      sock.ev.on('chats.update', async (updates: any[]) => {
+        await syncClearedWhatsAppChats(updates);
+      });
+
+      sock.ev.on('chats.upsert', async (chats: any[]) => {
+        await syncClearedWhatsAppChats(chats);
+      });
+
+      sock.ev.on('messaging-history.set', async (payload: any) => {
+        if (Array.isArray(payload?.chats) && payload.chats.length > 0) {
+          await syncClearedWhatsAppChats(payload.chats);
         }
       });
 
@@ -761,5 +814,27 @@ export async function sendDirectWhatsAppQrMessage(params: {
   } catch (err: any) {
     console.warn('[WhatsApp QR Bridge] Send error:', err);
     return { ok: false, error: err?.message || 'WhatsApp direct send failed' };
+  }
+}
+
+/**
+ * 2-way read sync: when staff read a WhatsApp chat in our Omnichannel Hub,
+ * send the read receipt back to the linked WhatsApp device so both stay in sync.
+ */
+export async function markWhatsAppChatReadOnDevice(phoneOrExtId?: string | null): Promise<void> {
+  try {
+    const s = getSingleton();
+    if (!s.sock || s.state.status !== 'connected' || !phoneOrExtId) return;
+    const digits = String(phoneOrExtId).replace(/\D/g, '');
+    if (digits.length < 7) return;
+
+    const lastKey = s.lastInboundKeys.get(digits);
+    if (lastKey && typeof s.sock.readMessages === 'function') {
+      await s.sock.readMessages([lastKey]);
+      s.lastInboundKeys.delete(digits);
+    }
+  } catch (err) {
+    // Non-fatal: never block UI if read-receipt push fails
+    console.warn('[WhatsApp QR Bridge] markWhatsAppChatReadOnDevice error:', err);
   }
 }

@@ -640,7 +640,17 @@ function stopFallbackPolling() {
   consecutiveFallbackPolls = 0;
 }
 
-export function startRealtimeConnection(forceReconnect = false) {
+let reconnectingGraceTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttemptCount = 0;
+
+function clearReconnectingGraceTimer() {
+  if (reconnectingGraceTimer) {
+    clearTimeout(reconnectingGraceTimer);
+    reconnectingGraceTimer = null;
+  }
+}
+
+export function startRealtimeConnection(forceReconnect = false, silentRotate = false) {
   if (typeof window === 'undefined' || typeof EventSource === 'undefined') return;
 
   const authUser = getClientAuthUser();
@@ -677,13 +687,17 @@ export function startRealtimeConnection(forceReconnect = false) {
   if (lastServerSyncMs > 0) params.set('since', String(lastServerSyncMs - 2000));
 
   const streamUrl = `/api/events/stream${params.toString() ? `?${params.toString()}` : ''}`;
-  setConnectionStatus(realtimeState.lastSyncAt ? 'reconnecting' : 'connecting');
+  if (!silentRotate) {
+    setConnectionStatus(realtimeState.lastSyncAt ? 'reconnecting' : 'connecting');
+  }
 
   try {
     const es = new EventSource(streamUrl, { withCredentials: true });
     eventSourceInstance = es;
 
     es.onopen = () => {
+      clearReconnectingGraceTimer();
+      reconnectAttemptCount = 0;
       const wasReconnecting =
         realtimeState.connectionStatus === 'reconnecting' ||
         realtimeState.connectionStatus === 'fallback_polling' ||
@@ -697,8 +711,21 @@ export function startRealtimeConnection(forceReconnect = false) {
     };
 
     es.addEventListener('connected', () => {
+      clearReconnectingGraceTimer();
+      reconnectAttemptCount = 0;
       setConnectionStatus('connected');
       stopFallbackPolling();
+    });
+
+    // Seamless pre-timeout rotation from server (before Cloud Run's 300s limit) — zero "Reconnecting..." flash!
+    es.addEventListener('rotate', () => {
+      try {
+        es.close();
+      } catch {}
+      if (eventSourceInstance === es) {
+        eventSourceInstance = null;
+      }
+      startRealtimeConnection(true, true);
     });
 
     es.addEventListener('order-update', (evt: MessageEvent) => {
@@ -764,14 +791,30 @@ export function startRealtimeConnection(forceReconnect = false) {
     });
 
     es.onerror = () => {
-      setConnectionStatus(navigator.onLine === false ? 'disconnected' : 'reconnecting');
-      startFallbackPolling();
+      if (navigator.onLine === false) {
+        clearReconnectingGraceTimer();
+        setConnectionStatus('disconnected');
+      } else if (!reconnectingGraceTimer && realtimeState.connectionStatus === 'connected') {
+        // 3.5s grace period so brief Cloud Run / Wi-Fi hiccups recover invisibly without flashing "Reconnecting..."
+        reconnectingGraceTimer = setTimeout(() => {
+          reconnectingGraceTimer = null;
+          if (!eventSourceInstance || eventSourceInstance.readyState !== EventSource.OPEN) {
+            setConnectionStatus(navigator.onLine === false ? 'disconnected' : 'reconnecting');
+            startFallbackPolling();
+          }
+        }, 3500);
+      } else if (realtimeState.connectionStatus !== 'connected') {
+        startFallbackPolling();
+      }
+
       if (es.readyState === EventSource.CLOSED) {
         if (!reconnectTimer) {
+          const delayMs = Math.min(10_000, 1000 * Math.pow(2, Math.min(reconnectAttemptCount, 3)));
+          reconnectAttemptCount++;
           reconnectTimer = setTimeout(() => {
             reconnectTimer = null;
-            startRealtimeConnection(true);
-          }, 2500);
+            startRealtimeConnection(true, true);
+          }, delayMs);
         }
       }
     };
@@ -1881,13 +1924,13 @@ export const api = {
         const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
         const existingUrls = JSON.parse(existingJob.billImageUrl);
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
-          const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole', 'isAutoReceiptWorker', 'systemActorName'].includes(k));
+          const isExplicitImageDelete = Boolean((cleanUpdates as any).isExplicitImageDelete);
           const incomingHasReceipt = incomingUrls.some((u: string) => typeof u === 'string' && (u.includes('/receipt-') || u.includes('receipt-')));
           const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid !== undefined || cleanUpdates.isPaid !== undefined || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined || cleanUpdates.walletBalanceAfter !== undefined);
           let baseExisting = (incomingHasReceipt || isRebillingOrPaying)
             ? existingUrls.filter((u: string) => typeof u === 'string' && !u.includes('/receipt-') && !u.includes('receipt-'))
             : existingUrls;
-          if (!isMediaOnly) {
+          if (isExplicitImageDelete) {
             baseExisting = baseExisting.filter((u: string) => typeof u === 'string' && (u.includes('proforma-') || u.includes('receipt-')));
           }
           const merged = deduplicateAndSortBillUrls([...baseExisting, ...incomingUrls]);
@@ -1934,7 +1977,7 @@ export const api = {
     // Track pending field keys so concurrent refreshes (including paid-state transitions) do not overwrite unconfirmed drafts
     const dirtySet = pendingFieldEdits.get(id) || new Set<string>();
     for (const k of Object.keys(cleanUpdates)) {
-      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName'].includes(k)) {
+      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName', 'isExplicitImageDelete'].includes(k)) {
         dirtySet.add(k);
       }
     }
@@ -2072,7 +2115,7 @@ export const api = {
 
     const dirtySet = pendingFieldEdits.get(id) || new Set<string>();
     for (const k of Object.keys(cleanUpdates)) {
-      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName'].includes(k)) {
+      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName', 'isExplicitImageDelete'].includes(k)) {
         dirtySet.add(k);
       }
     }
@@ -2130,13 +2173,13 @@ export const api = {
         const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
         const existingUrls = JSON.parse(existingJob.billImageUrl);
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
-          const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole', 'isAutoReceiptWorker', 'systemActorName'].includes(k));
+          const isExplicitImageDelete = Boolean((cleanUpdates as any).isExplicitImageDelete);
           const incomingHasReceipt = incomingUrls.some((u: string) => typeof u === 'string' && (u.includes('/receipt-') || u.includes('receipt-')));
           const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid !== undefined || cleanUpdates.isPaid !== undefined || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined || cleanUpdates.walletBalanceAfter !== undefined);
           let baseExisting = (incomingHasReceipt || isRebillingOrPaying)
             ? existingUrls.filter((u: string) => typeof u === 'string' && !u.includes('/receipt-') && !u.includes('receipt-'))
             : existingUrls;
-          if (!isMediaOnly) {
+          if (isExplicitImageDelete) {
             baseExisting = baseExisting.filter((u: string) => typeof u === 'string' && (u.includes('proforma-') || u.includes('receipt-')));
           }
           const merged = deduplicateAndSortBillUrls([...baseExisting, ...incomingUrls]);

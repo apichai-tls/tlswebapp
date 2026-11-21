@@ -24,6 +24,14 @@ export interface RealtimeOrderEvent {
   changedFields?: string[];
   actorId?: string | null;
   actorName?: string | null;
+  socialPayload?: {
+    kind: 'message' | 'read' | 'read_all';
+    conversation?: any;
+    message?: any;
+    readConversationIds?: string[];
+    channel?: string;
+    version?: string;
+  };
   instanceId: string;
 }
 
@@ -340,6 +348,7 @@ export async function publishOrderEvent(params: {
   actorId?: string | null;
   actorName?: string | null;
   customer?: any;
+  socialPayload?: RealtimeOrderEvent['socialPayload'];
 }) {
   try {
     const rawJob = params.job;
@@ -387,6 +396,14 @@ export async function publishOrderEvent(params: {
       changedFields: params.changedFields,
       actorId: params.actorId || null,
       actorName: params.actorName || null,
+      ...(params.socialPayload
+        ? {
+            socialPayload:
+              JSON.stringify(params.socialPayload).length <= 5500
+                ? params.socialPayload
+                : { kind: params.socialPayload.kind, version: params.socialPayload.version },
+          }
+        : {}),
       instanceId: bus.instanceId,
     };
 

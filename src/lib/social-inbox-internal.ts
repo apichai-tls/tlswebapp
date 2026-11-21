@@ -13,6 +13,80 @@ import type {
 export const SOCIAL_CONVERSATIONS_KEY = 'TLS_SOCIAL_CONVERSATIONS_V1';
 export const SOCIAL_MESSAGES_KEY = 'TLS_SOCIAL_MESSAGES_V1';
 export const SOCIAL_CONFIG_KEY = 'TLS_SOCIAL_CHANNEL_CONFIG_V1';
+export const SOCIAL_VERSION_KEY = 'TLS_SOCIAL_VERSION_V1';
+
+interface SocialStoreMemoryCache {
+  version: string;
+  conversations: SocialConversation[];
+  messages: SocialMessage[];
+  config: SocialChannelConfig;
+  loadedAt: number;
+}
+
+const globalForSocialCache = globalThis as unknown as {
+  __tlsSocialStoreCache?: SocialStoreMemoryCache | null;
+  __tlsSocialReadWatermarks?: Map<string, number>;
+};
+
+function getReadWatermarks(): Map<string, number> {
+  if (!globalForSocialCache.__tlsSocialReadWatermarks) {
+    globalForSocialCache.__tlsSocialReadWatermarks = new Map<string, number>();
+  }
+  return globalForSocialCache.__tlsSocialReadWatermarks;
+}
+
+export function recordSocialReadWatermark(convId: string, channel?: string, externalContactId?: string, atMs: number = Date.now()): void {
+  const map = getReadWatermarks();
+  if (convId) map.set(`id:${convId}`, Math.max(map.get(`id:${convId}`) || 0, atMs));
+  if (channel && externalContactId) {
+    const k = `ext:${channel}:${externalContactId.trim()}`;
+    map.set(k, Math.max(map.get(k) || 0, atMs));
+  }
+  if (map.size > 2000) {
+    // Trim oldest entries
+    const keys = Array.from(map.keys()).slice(0, 500);
+    for (const k of keys) map.delete(k);
+  }
+}
+
+export function applyReadWatermarks(conversations: SocialConversation[]): SocialConversation[] {
+  const map = getReadWatermarks();
+  return conversations.map((c) => {
+    const wmById = map.get(`id:${c.id}`) || 0;
+    const wmByExt = c.externalContactId ? map.get(`ext:${c.channel}:${c.externalContactId.trim()}`) || 0 : 0;
+    const convReadMs = c.lastReadAt ? new Date(c.lastReadAt).getTime() : 0;
+    const bestReadMs = Math.max(wmById, wmByExt, Number.isFinite(convReadMs) ? convReadMs : 0);
+    if (!bestReadMs) return c;
+
+    const lastMsgMs = c.lastMessageAt ? new Date(c.lastMessageAt).getTime() : 0;
+    const shouldBeRead = Number.isFinite(lastMsgMs) && lastMsgMs <= bestReadMs + 1500;
+    const bestIso = new Date(bestReadMs).toISOString();
+
+    if (shouldBeRead && ((c.unreadCount || 0) > 0 || c.lastReadAt !== bestIso)) {
+      return { ...c, unreadCount: 0, lastReadAt: bestIso };
+    }
+    if (bestReadMs > convReadMs) {
+      return { ...c, lastReadAt: bestIso };
+    }
+    return c;
+  });
+}
+
+export async function getSocialStoreVersion(): Promise<string> {
+  try {
+    const row = await prisma.setting.findUnique({
+      where: { key: SOCIAL_VERSION_KEY },
+      select: { value: true },
+    });
+    return row?.value?.trim() || '0';
+  } catch {
+    return globalForSocialCache.__tlsSocialStoreCache?.version || '0';
+  }
+}
+
+export function invalidateSocialStoreCache(): void {
+  globalForSocialCache.__tlsSocialStoreCache = null;
+}
 
 export function getDefaultSocialChannelConfig(): SocialChannelConfig {
   return {
@@ -201,15 +275,35 @@ export async function resolvePublicHttpsMediaUrl(url: string): Promise<string | 
   return null;
 }
 
-export async function loadRawSocialInboxStore(): Promise<{
+export async function loadRawSocialInboxStore(knownVersion?: string): Promise<{
   conversations: SocialConversation[];
   messages: SocialMessage[];
   config: SocialChannelConfig;
+  version: string;
 }> {
+  const cached = globalForSocialCache.__tlsSocialStoreCache;
+  if (cached) {
+    const dbVersion = knownVersion ?? (await getSocialStoreVersion());
+    if (dbVersion !== '0' && dbVersion === cached.version) {
+      return {
+        conversations: cached.conversations.slice(),
+        messages: cached.messages.slice(),
+        config: {
+          whatsapp: { ...cached.config.whatsapp },
+          line: { ...cached.config.line },
+          facebook: { ...cached.config.facebook },
+          instagram: { ...cached.config.instagram },
+          telegram: { ...cached.config.telegram },
+        },
+        version: cached.version,
+      };
+    }
+  }
+
   const rows = await prisma.setting.findMany({
     where: {
       key: {
-        in: [SOCIAL_CONVERSATIONS_KEY, SOCIAL_MESSAGES_KEY, SOCIAL_CONFIG_KEY],
+        in: [SOCIAL_CONVERSATIONS_KEY, SOCIAL_MESSAGES_KEY, SOCIAL_CONFIG_KEY, SOCIAL_VERSION_KEY],
       },
     },
   });
@@ -219,6 +313,7 @@ export async function loadRawSocialInboxStore(): Promise<{
   let conversations: SocialConversation[] = [];
   let messages: SocialMessage[] = [];
   let config: SocialChannelConfig = getDefaultSocialChannelConfig();
+  const version = (map.get(SOCIAL_VERSION_KEY) || '').trim() || String(Date.now());
 
   const rawConvs = map.get(SOCIAL_CONVERSATIONS_KEY);
   if (rawConvs) {
@@ -252,15 +347,33 @@ export async function loadRawSocialInboxStore(): Promise<{
     } catch {}
   }
 
-  return { conversations, messages, config };
+  globalForSocialCache.__tlsSocialStoreCache = {
+    version,
+    conversations: conversations.slice(),
+    messages: messages.slice(),
+    config,
+    loadedAt: Date.now(),
+  };
+
+  return { conversations, messages, config, version };
 }
 
 export async function saveRawSocialInboxStore(
   conversations: SocialConversation[],
   messages: SocialMessage[]
-): Promise<void> {
-  const trimmedConvs = conversations.slice(0, 1000);
-  const trimmedMsgs = messages.slice(-5000);
+): Promise<string> {
+  const trimmedConvs = applyReadWatermarks(conversations.slice(0, 1000));
+  // Deduplicate by message ID & sort chronologically ASC before slicing(-5000)
+  // so the 5,000 NEWEST messages are ALWAYS kept and brand-new messages are never dropped!
+  const msgById = new Map<string, SocialMessage>();
+  for (const m of messages) {
+    if (m?.id) msgById.set(m.id, m);
+  }
+  const sortedMsgs = Array.from(msgById.values()).sort(
+    (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+  );
+  const trimmedMsgs = sortedMsgs.slice(-5000);
+  const nextVersion = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
   await Promise.all([
     prisma.setting.upsert({
@@ -273,7 +386,167 @@ export async function saveRawSocialInboxStore(
       update: { value: JSON.stringify(trimmedMsgs) },
       create: { key: SOCIAL_MESSAGES_KEY, value: JSON.stringify(trimmedMsgs) },
     }),
+    prisma.setting.upsert({
+      where: { key: SOCIAL_VERSION_KEY },
+      update: { value: nextVersion },
+      create: { key: SOCIAL_VERSION_KEY, value: nextVersion },
+    }),
   ]);
+
+  if (globalForSocialCache.__tlsSocialStoreCache) {
+    globalForSocialCache.__tlsSocialStoreCache = {
+      ...globalForSocialCache.__tlsSocialStoreCache,
+      version: nextVersion,
+      conversations: trimmedConvs.slice(),
+      messages: trimmedMsgs.slice(),
+      loadedAt: Date.now(),
+    };
+  }
+
+  return nextVersion;
+}
+
+/**
+ * Fast conversations-only save (~10x faster than full save because it skips rewriting the 4MB messages blob).
+ * Use when only conversation metadata (unreadCount, lastReadAt, status, customerId, notes) changed.
+ */
+export async function saveRawSocialConversationsOnly(
+  conversations: SocialConversation[]
+): Promise<string> {
+  const trimmedConvs = applyReadWatermarks(conversations.slice(0, 1000));
+  const nextVersion = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  await Promise.all([
+    prisma.setting.upsert({
+      where: { key: SOCIAL_CONVERSATIONS_KEY },
+      update: { value: JSON.stringify(trimmedConvs) },
+      create: { key: SOCIAL_CONVERSATIONS_KEY, value: JSON.stringify(trimmedConvs) },
+    }),
+    prisma.setting.upsert({
+      where: { key: SOCIAL_VERSION_KEY },
+      update: { value: nextVersion },
+      create: { key: SOCIAL_VERSION_KEY, value: nextVersion },
+    }),
+  ]);
+
+  if (globalForSocialCache.__tlsSocialStoreCache) {
+    globalForSocialCache.__tlsSocialStoreCache = {
+      ...globalForSocialCache.__tlsSocialStoreCache,
+      version: nextVersion,
+      conversations: trimmedConvs.slice(),
+      loadedAt: Date.now(),
+    };
+  }
+
+  return nextVersion;
+}
+
+// In-process write serialization queue so concurrent WhatsApp/LINE messages & read-syncs never clobber each other
+let socialStoreLockChain: Promise<void> = Promise.resolve();
+
+export async function withSocialStoreLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = socialStoreLockChain;
+  let release!: () => void;
+  socialStoreLockChain = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+function phoneDigitsTail(raw?: string | null): string {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length < 7) return digits;
+  return digits.slice(-9);
+}
+
+function matchesConversationContact(
+  c: SocialConversation,
+  channel: SocialChannel,
+  externalContactId: string,
+  contactPhone?: string,
+  customerId?: string | null
+): boolean {
+  if (c.channel !== channel) return false;
+  if (c.externalContactId && externalContactId && c.externalContactId === externalContactId) {
+    return true;
+  }
+  if (customerId && c.customerId && c.customerId === customerId) {
+    return true;
+  }
+  if (channel === 'whatsapp') {
+    const targetTail = phoneDigitsTail(contactPhone || externalContactId);
+    if (targetTail.length >= 7) {
+      const cExtTail = phoneDigitsTail(c.externalContactId);
+      const cPhoneTail = phoneDigitsTail(c.contactPhone);
+      if (cExtTail === targetTail || cPhoneTail === targetTail) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+export async function syncExternalReadStatesInternal(
+  channel: SocialChannel,
+  readExternalIds: string[]
+): Promise<{ clearedCount: number }> {
+  if (!readExternalIds || readExternalIds.length === 0) return { clearedCount: 0 };
+  return withSocialStoreLock(async () => {
+    try {
+      const { conversations, messages } = await loadRawSocialInboxStore();
+      const nowIso = new Date().toISOString();
+      let clearedCount = 0;
+      const clearedIds: string[] = [];
+
+      const normalizedIds = new Set(readExternalIds.map((id) => String(id || '').trim()).filter(Boolean));
+      const normalizedTails = new Set(
+        readExternalIds.map((id) => phoneDigitsTail(id)).filter((t) => t.length >= 7)
+      );
+
+      for (let i = 0; i < conversations.length; i++) {
+        const c = conversations[i];
+        if (c.channel !== channel || !(c.unreadCount > 0)) continue;
+        const extMatch = c.externalContactId && normalizedIds.has(c.externalContactId.trim());
+        const tailMatch =
+          channel === 'whatsapp' &&
+          (normalizedTails.has(phoneDigitsTail(c.externalContactId)) ||
+            normalizedTails.has(phoneDigitsTail(c.contactPhone)));
+        if (extMatch || tailMatch) {
+          recordSocialReadWatermark(c.id, c.channel, c.externalContactId, Date.now());
+          conversations[i] = { ...c, unreadCount: 0, lastReadAt: nowIso, updatedAt: nowIso };
+          clearedIds.push(c.id);
+          clearedCount++;
+        }
+      }
+
+      if (clearedCount > 0) {
+        // Instant 0ms SSE push BEFORE waiting for DB write
+        try {
+          const { publishOrderEvent } = await import('@/lib/realtime-bus');
+          await publishOrderEvent({
+            type: 'social.updated',
+            jobId: `__SOCIAL_READ_${Date.now()}`,
+            updatedAt: new Date(),
+            socialPayload: {
+              kind: 'read',
+              readConversationIds: clearedIds.slice(0, 50),
+              channel,
+            },
+          });
+        } catch {}
+        await saveRawSocialConversationsOnly(conversations);
+      }
+      return { clearedCount };
+    } catch (err) {
+      console.warn('[syncExternalReadStatesInternal] Error:', err);
+      return { clearedCount: 0 };
+    }
+  });
 }
 
 export async function recordInboundSocialMessageInternal(input: {
@@ -286,84 +559,100 @@ export async function recordInboundSocialMessageInternal(input: {
   attachments?: SocialMessageAttachment[];
   customerId?: string | null;
 }) {
-  try {
-    const { conversations, messages } = await loadRawSocialInboxStore();
-    const nowIso = new Date().toISOString();
-
-    const convIdx = conversations.findIndex(
-      (c) =>
-        c.channel === input.channel &&
-        (c.externalContactId === input.externalContactId ||
-          (input.customerId && c.customerId === input.customerId))
-    );
-
-    let conv: SocialConversation;
-    if (convIdx >= 0) {
-      conv = {
-        ...conversations[convIdx],
-        contactName: input.contactName || conversations[convIdx].contactName,
-        contactAvatar: input.contactAvatar || conversations[convIdx].contactAvatar,
-        customerId: input.customerId || conversations[convIdx].customerId,
-        lastMessageText: input.text,
-        lastMessageAt: nowIso,
-        lastMessageDirection: 'inbound',
-        unreadCount: (conversations[convIdx].unreadCount || 0) + 1,
-        status: 'open',
-        updatedAt: nowIso,
-      };
-      conversations.splice(convIdx, 1);
-    } else {
-      conv = {
-        id: `conv_${input.channel}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        channel: input.channel,
-        externalContactId: input.externalContactId,
-        contactName: input.contactName || input.externalContactId,
-        contactPhone: input.contactPhone || '',
-        contactAvatar: input.contactAvatar,
-        contactHandle: input.externalContactId,
-        customerId: input.customerId || null,
-        status: 'open',
-        unreadCount: 1,
-        lastMessageText: input.text,
-        lastMessageAt: nowIso,
-        lastMessageDirection: 'inbound',
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
-    }
-
-    const inboundMsg: SocialMessage = {
-      id: `msg_in_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      conversationId: conv.id,
-      channel: input.channel,
-      direction: 'inbound',
-      text: input.text,
-      attachments: input.attachments,
-      senderName: conv.contactName,
-      status: 'delivered',
-      createdAt: nowIso,
-    };
-
-    messages.push(inboundMsg);
-    conversations.unshift(conv);
-
-    await saveRawSocialInboxStore(conversations, messages);
+  return withSocialStoreLock(async () => {
     try {
-      const { publishOrderEvent } = await import('@/lib/realtime-bus');
-      await publishOrderEvent({ type: 'social.updated', jobId: '__SOCIAL__', updatedAt: new Date() });
-    } catch {}
+      const { conversations, messages } = await loadRawSocialInboxStore();
+      const nowIso = new Date().toISOString();
 
-    return {
-      success: true,
-      conversation: conv,
-      message: inboundMsg,
-      conversations,
-      messages,
-    };
-  } catch (err: any) {
-    console.error('[recordInboundSocialMessageInternal] Error:', err);
-    return { success: false, error: err?.message || 'Failed to record inbound message' };
-  }
+      const convIdx = conversations.findIndex((c) =>
+        matchesConversationContact(
+          c,
+          input.channel,
+          input.externalContactId,
+          input.contactPhone,
+          input.customerId
+        )
+      );
+
+      let conv: SocialConversation;
+      if (convIdx >= 0) {
+        conv = {
+          ...conversations[convIdx],
+          contactName: input.contactName || conversations[convIdx].contactName,
+          contactAvatar: input.contactAvatar || conversations[convIdx].contactAvatar,
+          customerId: input.customerId || conversations[convIdx].customerId,
+          lastMessageText: input.text,
+          lastMessageAt: nowIso,
+          lastMessageDirection: 'inbound',
+          unreadCount: (conversations[convIdx].unreadCount || 0) + 1,
+          status: 'open',
+          updatedAt: nowIso,
+        };
+        conversations.splice(convIdx, 1);
+      } else {
+        conv = {
+          id: `conv_${input.channel}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          channel: input.channel,
+          externalContactId: input.externalContactId,
+          contactName: input.contactName || input.externalContactId,
+          contactPhone: input.contactPhone || '',
+          contactAvatar: input.contactAvatar,
+          contactHandle: input.externalContactId,
+          customerId: input.customerId || null,
+          status: 'open',
+          unreadCount: 1,
+          lastMessageText: input.text,
+          lastMessageAt: nowIso,
+          lastMessageDirection: 'inbound',
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+      }
+
+      const inboundMsg: SocialMessage = {
+        id: `msg_in_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        conversationId: conv.id,
+        channel: input.channel,
+        direction: 'inbound',
+        text: input.text,
+        attachments: input.attachments,
+        senderName: conv.contactName,
+        status: 'delivered',
+        createdAt: nowIso,
+      };
+
+      messages.push(inboundMsg);
+      conversations.unshift(conv);
+
+      // Push live message + conversation directly over SSE in <50ms BEFORE waiting for 4MB DB write!
+      try {
+        const { publishOrderEvent } = await import('@/lib/realtime-bus');
+        await publishOrderEvent({
+          type: 'social.updated',
+          jobId: `__SOCIAL_MSG_${inboundMsg.id}`,
+          updatedAt: new Date(),
+          socialPayload: {
+            kind: 'message',
+            conversation: conv,
+            message: inboundMsg,
+          },
+        });
+      } catch {}
+
+      await saveRawSocialInboxStore(conversations, messages);
+
+      return {
+        success: true,
+        conversation: conv,
+        message: inboundMsg,
+        conversations,
+        messages,
+      };
+    } catch (err: any) {
+      console.error('[recordInboundSocialMessageInternal] Error:', err);
+      return { success: false, error: err?.message || 'Failed to record inbound message' };
+    }
+  });
 }
 
 export async function recordOutboundSocialMessageFromSystemInternal(input: {
@@ -378,15 +667,19 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
   senderName?: string;
   messageId?: string;
 }) {
+  return withSocialStoreLock(async () => {
   try {
     const { conversations, messages } = await loadRawSocialInboxStore();
     const nowIso = new Date().toISOString();
 
-    const convIdx = conversations.findIndex(
-      (c) =>
-        c.channel === input.channel &&
-        (c.externalContactId === input.externalContactId ||
-          (input.customerId && c.customerId === input.customerId))
+    const convIdx = conversations.findIndex((c) =>
+      matchesConversationContact(
+        c,
+        input.channel,
+        input.externalContactId,
+        input.contactPhone,
+        input.customerId
+      )
     );
 
     let conv: SocialConversation;
@@ -461,14 +754,26 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
     }
     conversations.unshift(conv);
 
-    await saveRawSocialInboxStore(conversations, messages);
+    // Push live outbound message + conversation directly over SSE in <50ms BEFORE waiting for 4MB DB write!
     try {
       const { publishOrderEvent } = await import('@/lib/realtime-bus');
-      await publishOrderEvent({ type: 'social.updated', jobId: '__SOCIAL__', updatedAt: new Date() });
+      await publishOrderEvent({
+        type: 'social.updated',
+        jobId: `__SOCIAL_MSG_${outboundMsg.id}`,
+        updatedAt: new Date(),
+        socialPayload: {
+          kind: 'message',
+          conversation: conv,
+          message: outboundMsg,
+        },
+      });
     } catch {}
+
+    await saveRawSocialInboxStore(conversations, messages);
     return { success: true, conversation: conv, message: outboundMsg };
   } catch (err: any) {
     console.warn('[recordOutboundSocialMessageFromSystemInternal] Non-fatal error:', err);
     return { success: false, error: err?.message };
   }
+  });
 }

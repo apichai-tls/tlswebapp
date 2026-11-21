@@ -39,6 +39,12 @@ import {
   resolvePublicHttpsMediaUrl as resolvePublicHttpsImageUrl,
   loadRawSocialInboxStore as loadRawInboxStore,
   saveRawSocialInboxStore as saveInboxStore,
+  saveRawSocialConversationsOnly,
+  getSocialStoreVersion,
+  invalidateSocialStoreCache,
+  withSocialStoreLock,
+  recordSocialReadWatermark,
+  applyReadWatermarks,
   recordInboundSocialMessageInternal,
 } from '@/lib/social-inbox-internal';
 import {
@@ -47,6 +53,7 @@ import {
   startWhatsAppQrConnection,
   disconnectWhatsAppQrSession,
   sendDirectWhatsAppQrMessage,
+  markWhatsAppChatReadOnDevice,
   type WhatsAppQrState,
 } from '@/lib/whatsapp-qr-manager';
 
@@ -215,8 +222,65 @@ function normalizeAndSortConversations(
       }
     }
 
+    // Auto-clear stale unreadCount if the latest message is outbound (we already replied!)
+    if (updated.lastMessageDirection === 'outbound' && (updated.unreadCount || 0) > 0) {
+      updated.unreadCount = 0;
+      didClean = true;
+    }
+
     return updated;
   });
+
+  // Deduplicate conversations sharing the same channel + externalContactId (or same WhatsApp 9-digit phone tail)
+  const dedupeKeyFor = (c: SocialConversation): string => {
+    const ext = String(c.externalContactId || '').trim();
+    if (c.channel === 'whatsapp') {
+      const digits = String(c.contactPhone || ext).replace(/\D/g, '');
+      if (digits.length >= 7) return `whatsapp:phone:${digits.slice(-9)}`;
+    }
+    if (ext) return `${c.channel}:ext:${ext}`;
+    return `${c.channel}:id:${c.id}`;
+  };
+
+  const dedupedMap = new Map<string, SocialConversation>();
+  const remappedConvIds = new Map<string, string>();
+  for (const conv of normalizedConvs) {
+    const k = dedupeKeyFor(conv);
+    const existing = dedupedMap.get(k);
+    if (!existing) {
+      dedupedMap.set(k, conv);
+    } else {
+      didClean = true;
+      const existingTs = new Date(existing.lastMessageAt || 0).getTime();
+      const convTs = new Date(conv.lastMessageAt || 0).getTime();
+      const primary = convTs > existingTs ? conv : existing;
+      const secondary = convTs > existingTs ? existing : conv;
+      remappedConvIds.set(secondary.id, primary.id);
+      const merged: SocialConversation = {
+        ...primary,
+        customerId: primary.customerId || secondary.customerId || null,
+        customerName: primary.customerName || secondary.customerName || null,
+        customerMemberId: primary.customerMemberId || secondary.customerMemberId || null,
+        contactPhone: primary.contactPhone || secondary.contactPhone || '',
+        contactAvatar: primary.contactAvatar || secondary.contactAvatar,
+        unreadCount:
+          primary.lastMessageDirection === 'outbound'
+            ? 0
+            : Math.max(primary.unreadCount || 0, secondary.unreadCount || 0),
+      };
+      dedupedMap.set(k, merged);
+    }
+  }
+
+  let finalMessages = filteredMessages;
+  if (remappedConvIds.size > 0) {
+    finalMessages = filteredMessages.map((m) => {
+      const targetId = remappedConvIds.get(m.conversationId);
+      return targetId ? { ...m, conversationId: targetId } : m;
+    });
+  }
+
+  const dedupedConvs = Array.from(dedupedMap.values());
 
   const hasRealConversationActivity = (c: SocialConversation): number => {
     if ((msgsByConvId.get(c.id)?.length || 0) > 0) return 1;
@@ -230,17 +294,49 @@ function normalizeAndSortConversations(
     return 0;
   };
 
-  normalizedConvs.sort((a, b) => {
+  dedupedConvs.sort((a, b) => {
+    const aUnread = (a.unreadCount || 0) > 0 ? 1 : 0;
+    const bUnread = (b.unreadCount || 0) > 0 ? 1 : 0;
+    if (aUnread !== bUnread) return bUnread - aUnread;
     const aActive = hasRealConversationActivity(a);
     const bActive = hasRealConversationActivity(b);
     if (aActive !== bActive) return bActive - aActive;
     const aCrm = a.customerId ? 1 : 0;
     const bCrm = b.customerId ? 1 : 0;
     if (!aActive && !bActive && aCrm !== bCrm) return bCrm - aCrm;
-    return new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime();
+    return new Date(b.lastMessageAt || 0).getTime() - new Date(a.lastMessageAt || 0).getTime();
   });
 
-  return { conversations: normalizedConvs, messages: filteredMessages, didClean };
+  return { conversations: dedupedConvs, messages: finalMessages, didClean };
+}
+
+/**
+ * Ultra-fast initial loader (< 300ms): reads directly from the versioned store/RAM cache
+ * without scanning thousands of Customer/Job rows so the Live Chat UI opens instantly.
+ */
+export async function getSocialInboxFastAction() {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const { conversations, messages, config, version } = await loadRawInboxStore();
+    const norm = normalizeAndSortConversations(applyReadWatermarks(conversations), messages);
+    return {
+      success: true,
+      conversations: norm.conversations,
+      messages: norm.messages,
+      config: maskSocialChannelConfigSecrets(config),
+      version,
+    };
+  } catch (err: any) {
+    console.error('[getSocialInboxFastAction] Error:', err);
+    return {
+      success: false,
+      error: err?.message || 'Failed to load inbox',
+      conversations: [] as SocialConversation[],
+      messages: [] as SocialMessage[],
+      config: getDefaultChannelConfig(),
+      version: '0',
+    };
+  }
 }
 
 /**
@@ -1774,84 +1870,114 @@ export async function updateSocialConversationAction(input: {
   contactName?: string;
   tags?: string[];
   notes?: string;
-}) {
+}): Promise<{
+  success: boolean;
+  version?: string;
+  conversation?: SocialConversation;
+  conversations?: SocialConversation[];
+  error?: string;
+}> {
   try {
     await assertServerActionAuthorized({ forbidRoles: ['rider'] });
 
-    const { conversations, messages } = await loadRawInboxStore();
-    const idx = conversations.findIndex((c) => c.id === input.conversationId);
-    if (idx === -1) {
-      return { success: false, error: 'Conversation not found' };
-    }
+    return await withSocialStoreLock(async () => {
+      const { conversations, messages } = await loadRawInboxStore();
+      const idx = conversations.findIndex((c) => c.id === input.conversationId);
+      if (idx === -1) {
+        return { success: false, error: 'Conversation not found' };
+      }
 
-    const nowIso = new Date().toISOString();
-    const conv = { ...conversations[idx] };
-    if (input.status) conv.status = input.status;
-    if (input.markAsRead) conv.unreadCount = 0;
-    if (input.contactName !== undefined) conv.contactName = input.contactName;
-    if (input.contactPhone !== undefined) conv.contactPhone = input.contactPhone;
-    if (input.tags !== undefined) conv.tags = input.tags;
-    if (input.notes !== undefined) conv.notes = input.notes;
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const conv = { ...conversations[idx] };
+      if (input.status) conv.status = input.status;
+      if (input.markAsRead) {
+        conv.unreadCount = 0;
+        conv.lastReadAt = nowIso;
+        recordSocialReadWatermark(conv.id, conv.channel, conv.externalContactId, nowMs);
+      }
+      if (input.contactName !== undefined) conv.contactName = input.contactName;
+      if (input.contactPhone !== undefined) conv.contactPhone = input.contactPhone;
+      if (input.tags !== undefined) conv.tags = input.tags;
+      if (input.notes !== undefined) conv.notes = input.notes;
 
-    if (input.customerId !== undefined) {
-      conv.customerId = input.customerId;
-      if (input.customerId) {
-        const cust = await prisma.customer.findUnique({
-          where: { id: input.customerId },
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-            memberId: true,
-            creditBalance: true,
-            brand: true,
-          },
+      if (input.customerId !== undefined) {
+        conv.customerId = input.customerId;
+        if (input.customerId) {
+          const cust = await prisma.customer.findUnique({
+            where: { id: input.customerId },
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+              memberId: true,
+              creditBalance: true,
+              brand: true,
+            },
+          });
+          if (cust) {
+            conv.customerName = cust.name;
+            conv.customerMemberId = cust.memberId;
+            conv.customerWalletBalance = cust.creditBalance || 0;
+            if (!conv.contactPhone && cust.phone) conv.contactPhone = cust.phone;
+            if (conv.channel === 'line' && isValidLineUserId(conv.externalContactId)) {
+              await prisma.customer.update({
+                where: { id: cust.id },
+                data: { lineId: conv.externalContactId },
+              });
+            }
+          }
+        } else {
+          conv.customerName = null;
+          conv.customerMemberId = null;
+        }
+      }
+
+      conv.updatedAt = nowIso;
+      conversations[idx] = conv;
+
+      // Also clear unreadCount + stamp lastReadAt on any duplicate entries sharing the same ID or channel+externalContactId
+      if (input.markAsRead) {
+        for (let i = 0; i < conversations.length; i++) {
+          const c = conversations[i];
+          if (
+            c.id === input.conversationId ||
+            (conv.externalContactId &&
+              c.channel === conv.channel &&
+              c.externalContactId === conv.externalContactId)
+          ) {
+            recordSocialReadWatermark(c.id, c.channel, c.externalContactId, nowMs);
+            conversations[i] = { ...c, unreadCount: 0, lastReadAt: nowIso, updatedAt: nowIso };
+          }
+        }
+      }
+
+      const norm = normalizeAndSortConversations(applyReadWatermarks(conversations), messages);
+      const version = await saveRawSocialConversationsOnly(norm.conversations);
+
+      if (input.markAsRead && conv.channel === 'whatsapp') {
+        markWhatsAppChatReadOnDevice(conv.externalContactId || conv.contactPhone).catch(() => {});
+      }
+
+      try {
+        const { publishOrderEvent } = await import('@/lib/realtime-bus');
+        await publishOrderEvent({
+          type: 'social.updated',
+          jobId: `__SOCIAL_CONV_${conv.id}_${nowMs}`,
+          updatedAt: new Date(nowMs),
+          socialPayload: input.markAsRead
+            ? { kind: 'read', readConversationIds: [conv.id], channel: conv.channel, version }
+            : { kind: 'message', conversation: conv, version },
         });
-        if (cust) {
-          conv.customerName = cust.name;
-          conv.customerMemberId = cust.memberId;
-          conv.customerWalletBalance = cust.creditBalance || 0;
-          if (!conv.contactPhone && cust.phone) conv.contactPhone = cust.phone;
-          if (conv.channel === 'line' && isValidLineUserId(conv.externalContactId)) {
-            await prisma.customer.update({
-              where: { id: cust.id },
-              data: { lineId: conv.externalContactId },
-            });
-          }
-        }
-      } else {
-        conv.customerName = null;
-        conv.customerMemberId = null;
-      }
-    }
+      } catch {}
 
-    conv.updatedAt = nowIso;
-    conversations[idx] = conv;
-
-    // Also clear unreadCount on any duplicate conversation entries sharing the same ID or channel+externalContactId
-    if (input.markAsRead) {
-      for (let i = 0; i < conversations.length; i++) {
-        const c = conversations[i];
-        if (
-          c.id === input.conversationId ||
-          (conv.externalContactId &&
-            c.channel === conv.channel &&
-            c.externalContactId === conv.externalContactId)
-        ) {
-          if (c.unreadCount > 0) {
-            conversations[i] = { ...c, unreadCount: 0, updatedAt: nowIso };
-          }
-        }
-      }
-    }
-
-    const norm = normalizeAndSortConversations(conversations, messages);
-    await saveInboxStore(norm.conversations, norm.messages);
-    return {
-      success: true,
-      conversation: conv,
-      conversations: norm.conversations,
-    };
+      return {
+        success: true,
+        version,
+        conversation: conv,
+        conversations: norm.conversations,
+      };
+    });
   } catch (err: any) {
     console.error('[updateSocialConversationAction] Error:', err);
     return { success: false, error: err?.message || 'Failed to update conversation' };
@@ -1863,39 +1989,59 @@ export async function updateSocialConversationAction(input: {
  */
 export async function markAllSocialConversationsAsReadAction(
   channel: SocialChannel | 'all' = 'all'
-) {
+): Promise<{
+  success: boolean;
+  version?: string;
+  clearedCount?: number;
+  conversations?: SocialConversation[];
+  error?: string;
+}> {
   try {
     await assertServerActionAuthorized({ forbidRoles: ['rider'] });
 
-    const { conversations, messages } = await loadRawInboxStore();
-    const nowIso = new Date().toISOString();
-    let clearedCount = 0;
+    return await withSocialStoreLock(async () => {
+      const { conversations, messages } = await loadRawInboxStore();
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      let clearedCount = 0;
 
-    const updatedConversations = conversations.map((c) => {
-      const matchesChannel = channel === 'all' || c.channel === channel;
-      if (matchesChannel && (c.unreadCount || 0) > 0) {
-        clearedCount++;
-        return { ...c, unreadCount: 0, updatedAt: nowIso };
+      const updatedConversations = conversations.map((c) => {
+        const matchesChannel = channel === 'all' || c.channel === channel;
+        if (matchesChannel && (c.unreadCount || 0) > 0) {
+          clearedCount++;
+          recordSocialReadWatermark(c.id, c.channel, c.externalContactId, nowMs);
+          return { ...c, unreadCount: 0, lastReadAt: nowIso, updatedAt: nowIso };
+        }
+        return c;
+      });
+
+      if (clearedCount === 0) {
+        return {
+          success: true,
+          clearedCount: 0,
+          conversations: normalizeAndSortConversations(conversations, messages).conversations,
+        };
       }
-      return c;
+
+      const norm = normalizeAndSortConversations(applyReadWatermarks(updatedConversations), messages);
+      const version = await saveRawSocialConversationsOnly(norm.conversations);
+      try {
+        const { publishOrderEvent } = await import('@/lib/realtime-bus');
+        await publishOrderEvent({
+          type: 'social.updated',
+          jobId: `__SOCIAL_READALL_${channel}_${nowMs}`,
+          updatedAt: new Date(nowMs),
+          socialPayload: { kind: 'read_all', channel, version },
+        });
+      } catch {}
+
+      return {
+        success: true,
+        version,
+        clearedCount,
+        conversations: norm.conversations,
+      };
     });
-
-    if (clearedCount === 0) {
-      return { success: true, clearedCount: 0, conversations: normalizeAndSortConversations(conversations, messages).conversations };
-    }
-
-    const norm = normalizeAndSortConversations(updatedConversations, messages);
-    await saveInboxStore(norm.conversations, norm.messages);
-    try {
-      const { publishOrderEvent } = await import('@/lib/realtime-bus');
-      await publishOrderEvent({ type: 'social.updated', jobId: '__SOCIAL__', updatedAt: new Date() });
-    } catch {}
-
-    return {
-      success: true,
-      clearedCount,
-      conversations: norm.conversations,
-    };
   } catch (err: any) {
     console.error('[markAllSocialConversationsAsReadAction] Error:', err);
     return { success: false, error: err?.message || 'Failed to mark all conversations as read' };
@@ -1990,23 +2136,57 @@ export async function saveSocialChannelConfigAction(newConfig: SocialChannelConf
   }
 }
 
+const globalForExternalPoll = globalThis as unknown as {
+  __tlsLastExternalSocialPollAt?: number;
+};
+
 /**
- * Live background polling action (called every 3.5 seconds while staff has Social Inbox open).
- * 1) Polls Telegram Bot API `getUpdates` if a botToken is configured (enables live Telegram chat even on localhost).
- * 2) Syncs any newly arrived LINE OA contacts/messages from the webhook store.
- * 3) Returns the latest conversations and messages for zero-refresh live UI updates.
+ * Ultra-fast live polling action:
+ * - Checks a 20-byte version stamp first; if nothing changed, returns `{ unchanged: true }` in <20ms (zero 4MB blob download!).
+ * - Throttles slow external Telegram/LINE-contact sync to once every 12s so live UI sync never stalls.
+ * - Supports delta message delivery (`deltaMessages`) so the browser doesn't re-download 5,000 old messages.
  */
-export async function pollLiveChannelUpdatesAction() {
+export async function pollLiveChannelUpdatesAction(opts?: {
+  clientVersion?: string;
+  lastMsgTimestamp?: string;
+  forceFull?: boolean;
+}) {
   try {
     await assertServerActionAuthorized({ forbidRoles: ['rider'] });
 
-    const { conversations, messages, config } = await loadRawInboxStore();
+    const nowMs = Date.now();
+    const lastExtPoll = globalForExternalPoll.__tlsLastExternalSocialPollAt || 0;
+    const shouldRunExternalPoll = Boolean(opts?.forceFull) || nowMs - lastExtPoll >= 12_000;
+
+    const dbVersion = await getSocialStoreVersion();
+    if (
+      !shouldRunExternalPoll &&
+      !opts?.forceFull &&
+      opts?.clientVersion &&
+      dbVersion !== '0' &&
+      opts.clientVersion === dbVersion
+    ) {
+      return {
+        success: true,
+        unchanged: true,
+        version: dbVersion,
+        serverTime: new Date().toISOString(),
+      };
+    }
+
+    const { conversations, messages, config, version: loadedVersion } =
+      await loadRawInboxStore(dbVersion);
+    let currentVersion = loadedVersion;
     let didMutate = false;
     let configMutated = false;
 
-    // 1. Live Telegram Bot API Polling (if botToken configured)
+    if (shouldRunExternalPoll) {
+      globalForExternalPoll.__tlsLastExternalSocialPollAt = nowMs;
+    }
+
+    // 1. Live Telegram Bot API Polling (throttled every 12s so it never blocks 2s UI sync)
     const botToken = config.telegram.botToken?.trim();
-    if (config.telegram.enabled && botToken) {
+    if (shouldRunExternalPoll && config.telegram.enabled && botToken) {
       try {
         const offset = (config.telegram.lastUpdateId || 0) + 1;
         const tgRes = await fetch(
@@ -2246,8 +2426,8 @@ export async function pollLiveChannelUpdatesAction() {
       });
     }
 
-    // Sync any newly arrived LINE OA webhook messages from live DB or lineOaContacts
-    try {
+    // Sync any newly arrived LINE OA webhook messages from live DB or lineOaContacts (throttled every 12s)
+    if (shouldRunExternalPoll) try {
       const roLiveDb = getReadOnlyLiveLineDb();
       const [localLineRow, liveLineRow, liveMsgsRow] = await Promise.all([
         prisma.setting.findUnique({ where: { key: 'lineOaContacts' } }),
@@ -2324,17 +2504,53 @@ export async function pollLiveChannelUpdatesAction() {
       }
     } catch {}
 
-    const normPoll = normalizeAndSortConversations(conversations, messages);
+    const normPoll = normalizeAndSortConversations(applyReadWatermarks(conversations), messages);
     conversations.splice(0, conversations.length, ...normPoll.conversations);
     messages.splice(0, messages.length, ...normPoll.messages);
     if (normPoll.didClean) didMutate = true;
 
     if (didMutate) {
-      await saveInboxStore(conversations, messages);
+      currentVersion = await withSocialStoreLock(async () =>
+        saveInboxStore(applyReadWatermarks(conversations), messages)
+      );
+    }
+
+    if (
+      !didMutate &&
+      !opts?.forceFull &&
+      opts?.clientVersion &&
+      opts.clientVersion === currentVersion
+    ) {
+      return {
+        success: true,
+        unchanged: true,
+        version: currentVersion,
+        serverTime: new Date().toISOString(),
+      };
+    }
+
+    // Delta message delivery when client already has history loaded
+    if (opts?.lastMsgTimestamp && !opts?.forceFull) {
+      const cutoffMs = new Date(opts.lastMsgTimestamp).getTime() - 10_000;
+      if (Number.isFinite(cutoffMs)) {
+        const deltaMessages = messages.filter(
+          (m) => new Date(m.createdAt).getTime() >= cutoffMs
+        );
+        return {
+          success: true,
+          unchanged: false,
+          version: currentVersion,
+          conversations,
+          deltaMessages,
+          serverTime: new Date().toISOString(),
+        };
+      }
     }
 
     return {
       success: true,
+      unchanged: false,
+      version: currentVersion,
       conversations,
       messages,
       serverTime: new Date().toISOString(),

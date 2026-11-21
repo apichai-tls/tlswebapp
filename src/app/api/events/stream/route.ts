@@ -73,6 +73,9 @@ export async function GET(request: NextRequest) {
       });
 
       const canReceiveEvent = (ev: RealtimeOrderEvent) => {
+        if (ev.type === 'social.updated') {
+          return user.role !== 'rider';
+        }
         if (ev.type === 'customer.updated') {
           return canAccessCustomerRecords(user, ev.branchId || null);
         }
@@ -96,6 +99,7 @@ export async function GET(request: NextRequest) {
         }
       });
 
+      // Keep Cloud Run / reverse proxies / mobile NATs alive with 10s heartbeats
       const heartbeatInterval = setInterval(() => {
         if (isClosed) return;
         try {
@@ -103,12 +107,21 @@ export async function GET(request: NextRequest) {
         } catch {
           isClosed = true;
         }
-      }, 15000);
+      }, 10000);
+
+      // Graceful rotation at 240s (before Cloud Run's 300s default stream timeout)
+      // so the client rotates seamlessly without flashing "Reconnecting..."
+      const rotateTimer = setTimeout(() => {
+        if (isClosed) return;
+        sendFrame('rotate', { serverTime: Date.now() });
+        cleanup();
+      }, 240_000);
 
       const cleanup = () => {
         if (isClosed) return;
         isClosed = true;
         clearInterval(heartbeatInterval);
+        clearTimeout(rotateTimer);
         unsubscribe();
         try {
           controller.close();
