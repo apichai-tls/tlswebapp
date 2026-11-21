@@ -87,9 +87,61 @@ export async function ensureInactiveRidersOffline(now: Date = new Date()): Promi
         return false;
       }
 
+      // Never mark riders offline while they still have active/pending pickup or delivery jobs
+      const activeJobsForStale = await prisma.job.findMany({
+        where: {
+          status: { notIn: ['cancel', 'completed', 'delivered'] },
+          OR: [
+            { pickupRiderId: { in: staleRiderIds } },
+            { deliveryRiderId: { in: staleRiderIds } },
+            { riderId: { in: staleRiderIds } },
+          ],
+        },
+        select: {
+          status: true,
+          pickupRiderId: true,
+          deliveryRiderId: true,
+          riderId: true,
+          deliveryProofImageUrl: true,
+          adminNotesJson: true,
+        },
+      });
+
+      const protectedRiderIds = new Set<string>();
+      for (const j of activeJobsForStale) {
+        const pRider = j.pickupRiderId || j.riderId;
+        if (pRider && ['accepted', 'pickup'].includes(j.status)) {
+          protectedRiderIds.add(pRider);
+        }
+        if (j.deliveryRiderId) {
+          let isDeliveredStage = false;
+          if (j.status === 'delivery' && j.adminNotesJson) {
+            try {
+              const parsed = JSON.parse(j.adminNotesJson);
+              if (
+                parsed?.kanbanStage === 'delivered' ||
+                parsed?.isRiderDelivered === true ||
+                Boolean(parsed?.deliveredAt)
+              ) {
+                isDeliveredStage = true;
+              }
+            } catch {}
+          }
+          const hasDeliveryPhoto = Boolean(j.deliveryProofImageUrl && j.deliveryProofImageUrl !== '[]');
+          if (!isDeliveredStage && !hasDeliveryPhoto) {
+            protectedRiderIds.add(j.deliveryRiderId);
+          }
+        }
+      }
+
+      const ridersToMarkOffline = staleRiderIds.filter((id) => !protectedRiderIds.has(id));
+      if (ridersToMarkOffline.length === 0) {
+        return false;
+      }
+
       const updateRes = await prisma.rider.updateMany({
         where: {
-          id: { in: staleRiderIds },
+          id: { in: ridersToMarkOffline },
           status: { not: 'offline' },
         },
         data: {
@@ -100,7 +152,7 @@ export async function ensureInactiveRidersOffline(now: Date = new Date()): Promi
       if (updateRes.count > 0) {
         invalidateDbCache('riders');
         console.log(
-          `[RiderIdleOffline] Marked ${updateRes.count} inactive rider(s) offline after ${timeoutMins}m idle: ${staleRiderIds.join(', ')}`
+          `[RiderIdleOffline] Marked ${updateRes.count} inactive rider(s) offline after ${timeoutMins}m idle: ${ridersToMarkOffline.join(', ')}`
         );
         return true;
       }
