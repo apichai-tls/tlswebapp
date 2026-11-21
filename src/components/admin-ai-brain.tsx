@@ -182,8 +182,17 @@ export function AdminAiBrain() {
   const [memories, setMemories] = useState<AiBrainMemoryItem[]>([]);
 
   // Learning mode state
-  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
-  const [answeredQuestions, setAnsweredQuestions] = useState<Record<string, boolean>>({});
+  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const savedDrafts = sessionStorage.getItem("tls_ai_brain_question_drafts");
+        if (savedDrafts) return JSON.parse(savedDrafts);
+      } catch {}
+    }
+    return {};
+  });
+  const [answeredQuestions, setAnsweredQuestions] = useState<Record<string, string>>({});
+  const [editingQuestionIds, setEditingQuestionIds] = useState<Record<string, boolean>>({});
   const [savingQuestionId, setSavingQuestionId] = useState<string | null>(null);
   const [textLearnerOpen, setTextLearnerOpen] = useState(false);
   const [textSourceType, setTextSourceType] = useState<"customer_chat" | "sop_doc" | "staff_note">("customer_chat");
@@ -212,25 +221,55 @@ export function AdminAiBrain() {
   // Chat state
   const [chatMessages, setChatMessages] = useState<
     Array<{ role: "user" | "assistant"; content: string; model?: string }>
-  >([
-    {
-      role: "assistant",
-      content:
-        "Hello! I am currently in **Business Learning Mode** 🧠. My job right now is simply to study how That Laundry Shop works — your branches, services, order flows, internal notes, and how you chat with customers — before proposing any changes.\n\nTest what I understand so far, or teach me how you handle customers in English or Thai!",
-    },
-  ]);
+  >(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const savedChat = sessionStorage.getItem("tls_ai_brain_chat_history");
+        if (savedChat) {
+          const parsed = JSON.parse(savedChat);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch {}
+    }
+    return [
+      {
+        role: "assistant",
+        content:
+          "Hello! I am currently in **Business Learning Mode** 🧠. My job right now is simply to study how That Laundry Shop works — your branches, services, order flows, internal notes, and how you chat with customers — before proposing any changes.\n\nTest what I understand so far, or teach me how you handle customers in English or Thai!",
+      },
+    ];
+  });
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
 
   useEffect(() => {
     try {
       const saved = localStorage.getItem("tls_ai_brain_mode");
+      const savedSubTab = sessionStorage.getItem("tls_ai_brain_subtab") as any;
       if (saved === "ops") {
         setBrainMode("ops");
-        setSubTab("overview");
+        setSubTab(
+          savedSubTab && ["overview", "insights", "memory", "chat"].includes(savedSubTab)
+            ? savedSubTab
+            : "overview"
+        );
+      } else if (savedSubTab && ["learn", "memory", "chat"].includes(savedSubTab)) {
+        setSubTab(savedSubTab);
       }
     } catch {}
   }, []);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("tls_ai_brain_subtab", subTab);
+    } catch {}
+  }, [subTab]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("tls_ai_brain_chat_history", JSON.stringify(chatMessages));
+    } catch {}
+  }, [chatMessages]);
 
   const switchBrainMode = (nextMode: "learning" | "ops") => {
     setBrainMode(nextMode);
@@ -549,6 +588,12 @@ export function AdminAiBrain() {
     }
   };
 
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("tls_ai_brain_question_drafts", JSON.stringify(questionAnswers));
+    } catch {}
+  }, [questionAnswers]);
+
   const handleAnswerQuestion = async (q: ClarifyingQuestionItem) => {
     const answer = (questionAnswers[q.id] || "").trim();
     if (!answer) {
@@ -558,14 +603,26 @@ export function AdminAiBrain() {
     setSavingQuestionId(q.id);
     try {
       const res = await answerClarifyingQuestionAction({
+        questionId: q.id,
+        runId: latestLearningRun?.id,
         question: q.question,
         answer,
         category: q.category,
       });
       if (res.success && res.data) {
-        setMemories((prev) => [res.data!, ...prev]);
-        setAnsweredQuestions((prev) => ({ ...prev, [q.id]: true }));
-        setQuestionAnswers((prev) => ({ ...prev, [q.id]: "" }));
+        setMemories((prev) => {
+          const exists = prev.some((m) => m.id === res.data!.id);
+          return exists
+            ? prev.map((m) => (m.id === res.data!.id ? res.data! : m))
+            : [res.data!, ...prev];
+        });
+        setAnsweredQuestions((prev) => ({ ...prev, [q.id]: answer }));
+        setEditingQuestionIds((prev) => ({ ...prev, [q.id]: false }));
+        setQuestionAnswers((prev) => {
+          const next = { ...prev };
+          delete next[q.id];
+          return next;
+        });
         toast.success("Saved to AI Brain Memory! The AI now knows this.");
       } else {
         toast.error(res.error || "Failed to save answer");
@@ -665,6 +722,40 @@ export function AdminAiBrain() {
     } catch {}
     return null;
   }, [latestLearningRun]);
+
+  // Match clarifying questions against both persisted run metadata AND existing AiBrainMemory rows
+  // so previously answered questions remain marked as "Taught to AI" even after switching tabs or reloading.
+  const resolvedAnswersByQuestionId = useMemo(() => {
+    const map: Record<string, string> = {};
+    const questions = latestLearningPayload?.clarifyingQuestions || [];
+    for (const q of questions) {
+      if (answeredQuestions[q.id]) {
+        map[q.id] = answeredQuestions[q.id];
+        continue;
+      }
+      if (q.answered && q.answer) {
+        map[q.id] = q.answer;
+        continue;
+      }
+      const cleanQ = (q.question || "").trim();
+      if (!cleanQ) continue;
+      const shortPrefix = cleanQ.length > 85 ? cleanQ.slice(0, 82).toLowerCase() : cleanQ.toLowerCase();
+      const matchedMem = memories.find((m) => {
+        const content = (m.content || "").trim();
+        if (content.startsWith(`Q: ${cleanQ}\n`)) return true;
+        if ((m.tags || "").includes("owner-answer") && (m.title || "").trim().toLowerCase().startsWith(shortPrefix)) {
+          return true;
+        }
+        return false;
+      });
+      if (matchedMem) {
+        const marker = "\nA (Management):";
+        const idx = matchedMem.content.indexOf(marker);
+        map[q.id] = idx !== -1 ? matchedMem.content.slice(idx + marker.length).trim() : matchedMem.content;
+      }
+    }
+    return map;
+  }, [latestLearningPayload, answeredQuestions, memories]);
 
   const latestRun = runs.find((r) => r.status !== "learning_completed") || runs[0] || null;
   const newInsightsCount = insights.filter((i) => i.status === "new").length;
@@ -1513,7 +1604,9 @@ export function AdminAiBrain() {
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
                       {latestLearningPayload.clarifyingQuestions.map((q) => {
-                        const isAnswered = Boolean(answeredQuestions[q.id]);
+                        const savedAnswer = resolvedAnswersByQuestionId[q.id];
+                        const isAnswered = Boolean(savedAnswer);
+                        const isEditingAnswer = Boolean(editingQuestionIds[q.id]);
                         return (
                           <div
                             key={q.id}
@@ -1528,9 +1621,23 @@ export function AdminAiBrain() {
                                 {q.category.replace(/_/g, " ")}
                               </span>
                               {isAnswered && (
-                                <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1">
-                                  <CheckCircle2 size={12} /> Taught to AI
-                                </span>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1">
+                                    <CheckCircle2 size={12} /> Taught to AI
+                                  </span>
+                                  {!isEditingAnswer && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setQuestionAnswers((prev) => ({ ...prev, [q.id]: savedAnswer }));
+                                        setEditingQuestionIds((prev) => ({ ...prev, [q.id]: true }));
+                                      }}
+                                      className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 underline cursor-pointer"
+                                    >
+                                      Edit
+                                    </button>
+                                  )}
+                                </div>
                               )}
                             </div>
                             <p className="text-xs font-black text-slate-900 leading-snug">
@@ -1541,7 +1648,13 @@ export function AdminAiBrain() {
                                 <strong>Observed:</strong> {q.observedContext}
                               </p>
                             )}
-                            {!isAnswered && (
+                            {isAnswered && !isEditingAnswer && (
+                              <div className="rounded-xl bg-white/90 border border-emerald-200/80 px-3 py-2 text-xs text-slate-800">
+                                <span className="font-bold text-emerald-700">Your Answer: </span>
+                                <span className="whitespace-pre-line">{savedAnswer}</span>
+                              </div>
+                            )}
+                            {(!isAnswered || isEditingAnswer) && (
                               <div className="flex items-center gap-2 pt-1">
                                 <Input
                                   value={questionAnswers[q.id] || ""}
@@ -1569,6 +1682,17 @@ export function AdminAiBrain() {
                                 >
                                   {savingQuestionId === q.id ? "Saving..." : "Teach AI"}
                                 </Button>
+                                {isEditingAnswer && (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => setEditingQuestionIds((prev) => ({ ...prev, [q.id]: false }))}
+                                    className="h-8 px-2 text-[11px] text-slate-500 cursor-pointer shrink-0"
+                                  >
+                                    Cancel
+                                  </Button>
+                                )}
                               </div>
                             )}
                           </div>

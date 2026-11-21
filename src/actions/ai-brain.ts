@@ -217,7 +217,8 @@ export async function getAiBrainDashboardAction(windowDays: number = 7): Promise
 
     const [
       liveTelemetry,
-      runs,
+      recentRuns,
+      latestLearningRunRow,
       insights,
       memories,
       modelRouting,
@@ -229,7 +230,11 @@ export async function getAiBrainDashboardAction(windowDays: number = 7): Promise
       collectOperationalTelemetry(windowDays),
       prisma.aiBrainRun.findMany({
         orderBy: { createdAt: "desc" },
-        take: 12,
+        take: 15,
+      }),
+      prisma.aiBrainRun.findFirst({
+        where: { status: "learning_completed" },
+        orderBy: { createdAt: "desc" },
       }),
       prisma.aiBrainInsight.findMany({
         orderBy: [{ createdAt: "desc" }],
@@ -237,7 +242,7 @@ export async function getAiBrainDashboardAction(windowDays: number = 7): Promise
       }),
       prisma.aiBrainMemory.findMany({
         orderBy: [{ isActive: "desc" }, { updatedAt: "desc" }],
-        take: 100,
+        take: 250,
       }),
       loadModelRoutingConfig(),
       loadResolvedGeminiApiKey(),
@@ -245,6 +250,11 @@ export async function getAiBrainDashboardAction(windowDays: number = 7): Promise
       discoverTelegramEnvironment(),
       getTelegramAlertHistory(),
     ]);
+
+    const runs =
+      latestLearningRunRow && !recentRuns.some((r) => r.id === latestLearningRunRow.id)
+        ? [...recentRuns, latestLearningRunRow]
+        : recentRuns;
 
     const tgPreview = await evaluateOrderDelayAlerts(tgConfig);
     const baseGemini = getGeminiConfigStatus();
@@ -773,6 +783,33 @@ export async function runBusinessStudyAction(windowDays: number = 30): Promise<{
       }
     }
 
+    // Carry over answered status if any clarifying question matches an existing owner-answer memory
+    const hydratedClarifyingQuestions = (studyResult.clarifyingQuestions || []).map((qItem) => {
+      const cleanQ = (qItem.question || "").trim();
+      if (!cleanQ) return qItem;
+      const shortPrefix = cleanQ.length > 85 ? cleanQ.slice(0, 82).toLowerCase() : cleanQ.toLowerCase();
+      const matchedMem = existingMemories.find((m) => {
+        const content = (m.content || "").trim();
+        if (content.startsWith(`Q: ${cleanQ}\n`)) return true;
+        if ((m.tags || "").includes("owner-answer") && (m.title || "").trim().toLowerCase().startsWith(shortPrefix)) {
+          return true;
+        }
+        return false;
+      });
+      if (matchedMem) {
+        const marker = "\nA (Management):";
+        const idx = matchedMem.content.indexOf(marker);
+        const savedAns = idx !== -1 ? matchedMem.content.slice(idx + marker.length).trim() : matchedMem.content;
+        return {
+          ...qItem,
+          answered: true,
+          answer: savedAns,
+          memoryId: matchedMem.id,
+        };
+      }
+      return qItem;
+    });
+
     const createdRun = await prisma.aiBrainRun.create({
       data: {
         windowDays,
@@ -783,7 +820,7 @@ export async function runBusinessStudyAction(windowDays: number = 30): Promise<{
           mode: "learning",
           corpusStats,
           coverageScores: studyResult.coverageScores,
-          clarifyingQuestions: studyResult.clarifyingQuestions,
+          clarifyingQuestions: hydratedClarifyingQuestions,
         }),
         insightsCount: newMemories.length,
         triggeredById: actor.id,
@@ -797,7 +834,7 @@ export async function runBusinessStudyAction(windowDays: number = 30): Promise<{
         run: createdRun as AiBrainRunItem,
         understandingSummary: studyResult.understandingSummary,
         coverageScores: studyResult.coverageScores,
-        clarifyingQuestions: studyResult.clarifyingQuestions,
+        clarifyingQuestions: hydratedClarifyingQuestions,
         newMemories,
         corpusStats,
         modelUsed: studyResult.modelUsed,
@@ -913,6 +950,8 @@ export async function verifyAiBrainMemoryAction(
 }
 
 export async function answerClarifyingQuestionAction(params: {
+  questionId?: string;
+  runId?: string;
   question: string;
   answer: string;
   category?: string;
@@ -924,20 +963,88 @@ export async function answerClarifyingQuestionAction(params: {
     if (!q || !a) return { success: false, error: "Please enter an answer." };
 
     const shortTitle = q.length > 85 ? `${q.slice(0, 82)}...` : q;
-    const created = await prisma.aiBrainMemory.create({
-      data: {
-        category: params.category || "workflow",
-        title: shortTitle,
-        content: `Q: ${q}\nA (Management): ${a}`,
-        tags: "owner-answer,verified",
-        source: "admin_taught",
-        confidence: 1.0,
-        isActive: true,
-        createdById: actor.id,
-        createdByName: actor.name || actor.email || "Admin",
+    const fullContent = `Q: ${q}\nA (Management): ${a}`;
+
+    // Upsert memory if this exact clarifying question was already answered previously
+    const existingMem = await prisma.aiBrainMemory.findFirst({
+      where: {
+        OR: [
+          { title: { equals: shortTitle, mode: "insensitive" }, tags: { contains: "owner-answer" } },
+          { content: { startsWith: `Q: ${q}\n` } },
+        ],
       },
     });
-    return { success: true, data: created as AiBrainMemoryItem };
+
+    const savedMemory = existingMem
+      ? await prisma.aiBrainMemory.update({
+          where: { id: existingMem.id },
+          data: {
+            category: params.category || existingMem.category || "workflow",
+            title: shortTitle,
+            content: fullContent,
+            tags: "owner-answer,verified",
+            source: "admin_taught",
+            confidence: 1.0,
+            isActive: true,
+          },
+        })
+      : await prisma.aiBrainMemory.create({
+          data: {
+            category: params.category || "workflow",
+            title: shortTitle,
+            content: fullContent,
+            tags: "owner-answer,verified",
+            source: "admin_taught",
+            confidence: 1.0,
+            isActive: true,
+            createdById: actor.id,
+            createdByName: actor.name || actor.email || "Admin",
+          },
+        });
+
+    // Also persist the answered status and answer text directly inside the learning AiBrainRun's metricsJson
+    // so switching tabs or reloading the page always remembers the question was answered.
+    try {
+      const targetRun = params.runId
+        ? await prisma.aiBrainRun.findUnique({ where: { id: params.runId } })
+        : await prisma.aiBrainRun.findFirst({
+            where: { status: "learning_completed" },
+            orderBy: { createdAt: "desc" },
+          });
+
+      if (targetRun?.metricsJson) {
+        const parsed = JSON.parse(targetRun.metricsJson);
+        if (Array.isArray(parsed?.clarifyingQuestions)) {
+          let updatedAny = false;
+          parsed.clarifyingQuestions = parsed.clarifyingQuestions.map((item: any) => {
+            const isMatch =
+              (params.questionId && item.id === params.questionId) ||
+              (typeof item.question === "string" && item.question.trim() === q);
+            if (isMatch) {
+              updatedAny = true;
+              return {
+                ...item,
+                answered: true,
+                answer: a,
+                answeredAt: new Date().toISOString(),
+                memoryId: savedMemory.id,
+              };
+            }
+            return item;
+          });
+          if (updatedAny) {
+            await prisma.aiBrainRun.update({
+              where: { id: targetRun.id },
+              data: { metricsJson: JSON.stringify(parsed) },
+            });
+          }
+        }
+      }
+    } catch (runUpdateErr) {
+      console.warn("Failed to persist answered state in AiBrainRun.metricsJson:", runUpdateErr);
+    }
+
+    return { success: true, data: savedMemory as AiBrainMemoryItem };
   } catch (error: any) {
     return { success: false, error: error.message || "Failed to save answer" };
   }

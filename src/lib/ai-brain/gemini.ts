@@ -17,6 +17,10 @@ export interface ClarifyingQuestionItem {
   question: string;
   whyItMatters: string;
   observedContext: string;
+  answered?: boolean;
+  answer?: string;
+  answeredAt?: string;
+  memoryId?: string;
 }
 
 export interface GeminiBusinessStudyResult {
