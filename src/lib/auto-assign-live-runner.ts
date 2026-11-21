@@ -478,10 +478,10 @@ export async function runAutoAssignLiveOnServer(): Promise<{
       }
       state.completedTaskTimes = completedTimes;
 
-      // Auto-assign runnable unassigned tasks whenever riders are online
+      // Auto-assign runnable unassigned tasks whenever riders are online or busy (active on shift)
       const onlineRiders = riders.filter((r) => {
         const ov = state.riderOnlineOverrides?.[r.id];
-        return ov !== undefined ? ov : (r.status || "").toLowerCase() === "online";
+        return ov !== undefined ? ov : ["online", "busy"].includes((r.status || "").toLowerCase());
       });
 
       let newlyAssigned = 0;

@@ -968,7 +968,7 @@ export function AdminDispatchAutoSim({
       const override = simState.riderOnlineOverrides?.[r.id];
       return override !== undefined
         ? override
-        : (r.status || "").toLowerCase() === "online";
+        : ["online", "busy"].includes((r.status || "").toLowerCase());
     });
     if (!hasOnlineRider) return;
     const hasUnassignedTask = simState.simTasks.some((t) => {
