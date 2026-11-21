@@ -24,7 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 import { jobStore, customerStore, walletApprovalStore, type Job, type Customer } from "@/lib/store";
-import { api } from "@/lib/api";
+import { api, getClientAuthHeaders } from "@/lib/api";
 import { formatBaht, getJobPaymentBreakdown } from "@/lib/utils";
 
 interface RefundCorrectDialogProps {
@@ -114,23 +114,54 @@ export function RefundCorrectDialog({ open, onClose, job, onSuccess }: RefundCor
 
     setIsUploadingSlip(true);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("entityType", "job");
-      formData.append("entityId", job?.id ? `refund-${job.id}` : `refund-${Date.now()}`);
-      formData.append("subType", "proofs");
+      const entityId = job?.id ? `refund-${job.id}` : `refund-${Date.now()}`;
+      let uploadedUrl = "";
+      try {
+        const signRes = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: getClientAuthHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            entityType: "job",
+            entityId,
+            subType: "proofs",
+            contentType: file.type || "image/jpeg",
+          }),
+        });
+        if (signRes.ok) {
+          const { uploadUrl, publicUrl, filePath } = await signRes.json();
+          const putRes = await fetch(uploadUrl, {
+            method: "PUT",
+            headers: { "Content-Type": file.type || "image/jpeg" },
+            body: file,
+          });
+          if (putRes.ok) {
+            uploadedUrl = publicUrl || filePath;
+          }
+        }
+      } catch {}
 
-      const localRes = await fetch("/api/upload-local", {
-        method: "POST",
-        body: formData,
-      });
+      if (!uploadedUrl) {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("entityType", "job");
+        formData.append("entityId", entityId);
+        formData.append("subType", "proofs");
 
-      if (!localRes.ok) {
-        throw new Error("Upload failed");
+        const localRes = await fetch("/api/upload-local", {
+          method: "POST",
+          headers: getClientAuthHeaders(),
+          body: formData,
+        });
+
+        if (!localRes.ok) {
+          throw new Error("Upload failed");
+        }
+
+        const localData = await localRes.json();
+        uploadedUrl = localData.publicUrl;
       }
 
-      const localData = await localRes.json();
-      setSlipImageUrl(localData.publicUrl);
+      setSlipImageUrl(uploadedUrl);
       toast.success("แนบหลักฐานเรียบร้อยแล้ว");
     } catch (err: any) {
       toast.error("อัปโหลดหลักฐานไม่สำเร็จ: " + err.message);

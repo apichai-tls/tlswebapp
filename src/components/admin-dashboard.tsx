@@ -14,7 +14,7 @@ import { format, isSameDay, subDays } from "date-fns";
 import { shopStore, settingsStore, type Job, type JobStatus, type Customer } from "@/lib/store";
 import { useCustomers } from "@/lib/use-customers";
 import { AdminLiveMap } from "@/components/map-loader";
-import { useState, useEffect, useMemo, useSyncExternalStore, useCallback } from "react";
+import { useState, useEffect, useMemo, useSyncExternalStore, useCallback, memo, useDeferredValue } from "react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { AdminTaskTracker } from "@/components/admin-task-tracker";
 import { useAuth } from "@/providers/auth-provider";
@@ -198,7 +198,7 @@ const SERVICE_CATEGORIES_META = [
   },
 ] as const;
 
-export function AdminDashboard({ jobs }: { jobs: Job[] }) {
+export const AdminDashboard = memo(function AdminDashboard({ jobs }: { jobs: Job[] }) {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
@@ -212,6 +212,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
   const [financePeriod, setFinancePeriod] = useState<"this_month" | "last_month" | "this_year" | "all_time">("this_month");
   const [selectedBranchId, setSelectedBranchId] = useState<string>("ALL");
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
 
   // Tasks & Users State
@@ -543,7 +544,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
 
   // Filtered jobs for Timeline Table
   const displayedJobs = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = deferredSearchQuery.trim().toLowerCase();
     return segmentScopedJobs
       .filter((j) => {
         if (activeStage !== "all" && getJobStageKey(j) !== activeStage) return false;
@@ -561,7 +562,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
         return true;
       })
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [segmentScopedJobs, activeStage, selectedServiceCat, searchQuery, getJobStageKey, jobCategoryMap]);
+  }, [segmentScopedJobs, activeStage, selectedServiceCat, deferredSearchQuery, getJobStageKey, jobCategoryMap]);
 
   // Financial Summary (based on selected segment across all jobs + financePeriod)
   const { filteredCompletedJobs, monthlyRevenue, monthlyRiderPayout, platformProfit } = useMemo(() => {
@@ -1466,4 +1467,4 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
       )}
     </div>
   );
-}
+});

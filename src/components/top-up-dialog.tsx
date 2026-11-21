@@ -25,6 +25,7 @@ import { useCustomers } from "@/lib/use-customers";
 import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber, calculateWalletExpiryDate, matchCustomerSearch, formatBaht, formatReceiptCustomerPhone } from "@/lib/utils";
 
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
+import { getClientAuthHeaders } from "@/lib/client-auth";
 import { getCustomerTodayTopUpAction } from "@/actions/db";
 import {
   createTopUpOnlinePaymentAction,
@@ -295,7 +296,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       try {
         const signRes = await fetch("/api/upload-url", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...getClientAuthHeaders() },
           body: JSON.stringify({
             entityType: "job",
             entityId: tempEntityId,
@@ -328,6 +329,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
         const localRes = await fetch("/api/upload-local", {
           method: "POST",
+          headers: { ...getClientAuthHeaders() },
           body: formData,
         });
 

@@ -792,22 +792,25 @@ export const jobStore = {
     if (!job) return;
 
     // proofImageUrl may already be a JSON array string (e.g. '["url1","url2"]')
-    // or a single URL string. Normalise to a JSON array string.
-    const toJsonArray = (val?: string): string | undefined => {
-      if (!val) return undefined;
+    // or a single URL string. Merge with any existing proof URLs on that leg so photos uploaded earlier via RiderJobImages are preserved.
+    const parseUrlArray = (val?: string | null): string[] => {
+      if (!val) return [];
       try {
         const parsed = JSON.parse(val);
-        // Already a valid JSON array → store as-is
-        if (Array.isArray(parsed)) return val;
-        // Was a JSON primitive → wrap in array
-        return JSON.stringify([parsed]);
+        if (Array.isArray(parsed)) return parsed.filter((u): u is string => typeof u === "string" && Boolean(u.trim()));
+        if (typeof parsed === "string" && parsed.trim()) return [parsed.trim()];
       } catch {
-        // Plain URL string → wrap in array
-        return JSON.stringify([val]);
+        if (typeof val === "string" && val.trim()) return [val.trim()];
       }
+      return [];
     };
 
-    const proofJson = toJsonArray(proofImageUrl);
+    const mergeProofJson = (existingRaw?: string | null, incomingRaw?: string): string | undefined => {
+      const existingList = parseUrlArray(existingRaw);
+      const incomingList = parseUrlArray(incomingRaw);
+      const combined = Array.from(new Set([...existingList, ...incomingList]));
+      return combined.length > 0 ? JSON.stringify(combined) : undefined;
+    };
 
     // Determine completion leg
     const isPickupLeg = legType 
@@ -816,6 +819,7 @@ export const jobStore = {
 
     // Add leg validation - legs might not exist for old jobs
     if (isPickupLeg) {
+      const proofJson = mergeProofJson(job.pickupProofImageUrl, proofImageUrl);
       const updatedLegs = job.legs ? {
         ...job.legs,
         pickupOutbound: { ...job.legs.pickupOutbound, status: "completed" as const, completedAt: new Date() },
@@ -829,6 +833,7 @@ export const jobStore = {
         ...actorDetails
       });
     } else {
+      const proofJson = mergeProofJson(job.deliveryProofImageUrl || job.proofImageUrl, proofImageUrl);
       const isWalkIn = (job.type as string) === 'in_store' || (job.source === 'pos' && (job.type as string) !== 'delivery' && (job.type as string) !== 'full_service');
       if (isWalkIn && !isJobFullyPaid(job)) {
         const breakdown = getJobPaymentBreakdown(job);

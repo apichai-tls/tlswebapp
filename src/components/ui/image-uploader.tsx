@@ -3,6 +3,7 @@
 import { useState, useRef } from "react";
 import { UploadCloud, CheckCircle2, Loader2, X, Image as ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getClientAuthHeaders } from "@/lib/client-auth";
 
 function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 0.85): Promise<File> {
   return new Promise((resolve, reject) => {
@@ -109,7 +110,7 @@ export function ImageUploader({
         // 1. Get Signed URL from our Next.js backend
         const response = await fetch("/api/upload-url", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...getClientAuthHeaders() },
           body: JSON.stringify({
             entityType,
             entityId,
@@ -153,6 +154,7 @@ export function ImageUploader({
 
         const fallbackResponse = await fetch("/api/upload-local", {
           method: "POST",
+          headers: { ...getClientAuthHeaders() },
           body: localFormData,
         });
 

@@ -559,6 +559,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     }
   }, []);
   const [searchTerm, setSearchTerm] = useState("");
+  const deferredSearchTerm = React.useDeferredValue(searchTerm);
   const [dateFilter, setDateFilter] = useState<FilterDate>("today");
   const [statusFilter, setStatusFilter] = useState<KanbanColumnId | "all">("all");
   const [billingFilterMode, setBillingFilterMode] = useState<BillingFilterMode>("ALL");
@@ -1396,7 +1397,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     return Array.from(new Set([...configured, ...fromJobs]));
   }, [systemSettings, jobs]);
 
-  const hasActiveSearch = Boolean(searchTerm.trim());
+  const hasActiveSearch = Boolean(deferredSearchTerm.trim());
 
   // 1. Scoped Overview Jobs: filters jobs by Global Context (Branch, Brand, Source, Role, Date, Active/ShowCompleted)
   // This forms the consistent baseline for BOTH the quick filter pill badges AND the final job view.
@@ -1456,8 +1457,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       let matchesDate = true;
       const isActive = !['completed', 'cancel', 'return'].includes(job.status);
       if (dateFilter === "today") {
-        matchesDate = isSameDay(new Date(job.createdAt), today) || 
-                      isActive || 
+        matchesDate = isActive ||
+                      isSameDay(new Date(job.createdAt), today) || 
                       (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false) ||
                       (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false) ||
                       (job.pickupScheduledAt ? isSameDay(new Date(job.pickupScheduledAt), today) : false) ||
@@ -1656,7 +1657,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
   // 4. Final Filtered Jobs for Display (List & Kanban)
   const filteredJobs = useMemo(() => {
-    const searchLower = searchTerm.toLowerCase().trim();
+    const searchLower = deferredSearchTerm.toLowerCase().trim();
 
     return scopedOverviewJobs.filter((job) => {
       // Current Shift Quick Filter
@@ -1805,7 +1806,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   }, [
     scopedOverviewJobs, shiftOnlyFilter, currentBranchShift, currentBranchShiftStats.shiftJobIds,
     stuckOnly, showCompleted, csoPaidFilter, selectedRiderId,
-    billingFilterMode, paymentChannelFilter, searchTerm, riders, customers,
+    billingFilterMode, paymentChannelFilter, deferredSearchTerm, riders, customers,
     shopLocations
   ]);
 
@@ -1834,7 +1835,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
   // Jobs strictly filtered to "Shop Paid on the selected date" for Excel Export & PDF Report
   const shopPaidReportJobs = useMemo(() => {
-    const searchLower = searchTerm.toLowerCase().trim();
+    const searchLower = deferredSearchTerm.toLowerCase().trim();
     const currentSelectedBranchIds = isAreaRestricted ? effectiveSelectedBranchIds : selectedBranchIds;
     const totalBranchCount = isAreaRestricted ? allowedBranches.length : shopLocations.length;
     const isAllBranchesSelected = currentSelectedBranchIds.length >= totalBranchCount;
@@ -1960,7 +1961,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     endDate,
     selectedRiderId,
     paymentChannelFilter,
-    searchTerm,
+    deferredSearchTerm,
     customers,
     riders,
   ]);

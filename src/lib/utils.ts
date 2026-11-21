@@ -542,6 +542,8 @@ export function getJobProcessingBranchId(job?: {
   return null;
 }
 
+const jobPaymentBreakdownCache = new WeakMap<object, { key: string; result: JobPaymentBreakdown }>();
+
 export function getJobPaymentBreakdown(job?: {
   totalAmount?: number | null;
   isPaid?: boolean | null;
@@ -551,6 +553,16 @@ export function getJobPaymentBreakdown(job?: {
   remark?: string | null;
   adminNotesJson?: string | null;
 } | null): JobPaymentBreakdown {
+  const cacheKey = job
+    ? `${job.totalAmount ?? ""}|${job.isPaid ?? ""}|${job.isShopPaid ?? ""}|${(job as any).source ?? ""}|${job.paymentChannel ?? ""}|${job.paymentMethod ?? ""}|${job.remark ?? ""}|${job.adminNotesJson ?? ""}`
+    : "";
+  if (job && typeof job === "object") {
+    const cached = jobPaymentBreakdownCache.get(job);
+    if (cached && cached.key === cacheKey) {
+      return cached.result;
+    }
+  }
+
   const total = Math.max(0, Number(job?.totalAmount) || 0);
   let payments: JobPaymentEntry[] = [];
   const isRewash = isRewashOrNoChargeJob(job);
@@ -605,7 +617,7 @@ export function getJobPaymentBreakdown(job?: {
     : Array.from(new Set(payments.map(p => p.channel || p.method || "Unspecified").filter(Boolean)));
   const isSplit = channels.length > 1;
 
-  return {
+  const result: JobPaymentBreakdown = {
     total,
     totalPaid,
     remaining,
@@ -615,6 +627,11 @@ export function getJobPaymentBreakdown(job?: {
     payments,
     channels,
   };
+
+  if (job && typeof job === "object") {
+    jobPaymentBreakdownCache.set(job, { key: cacheKey, result });
+  }
+  return result;
 }
 
 export function isJobFullyPaid(job?: {
@@ -722,8 +739,71 @@ export function isThaiPhoneNumber(phone: string | null | undefined): boolean {
   return false;
 }
 
+interface CustomerLookupIndex<T> {
+  length: number;
+  byId: Map<string, T>;
+  byNameLower: Map<string, T>;
+  byRawPhone: Map<string, T>;
+  byNormPhone: Map<string, T>;
+}
+
+const customerLookupIndexCache = new WeakMap<object, CustomerLookupIndex<any>>();
+
+function getCustomerLookupIndex<T extends { id: string; name?: string | null; phone?: string | null; secondaryPhone?: string | null }>(
+  customers: T[]
+): CustomerLookupIndex<T> {
+  const existing = customerLookupIndexCache.get(customers);
+  if (existing && existing.length === customers.length) {
+    return existing;
+  }
+  const byId = new Map<string, T>();
+  const byNameLower = new Map<string, T>();
+  const byRawPhone = new Map<string, T>();
+  const byNormPhone = new Map<string, T>();
+
+  for (let i = 0; i < customers.length; i++) {
+    const c = customers[i];
+    if (!c) continue;
+    if (c.id && !byId.has(c.id)) {
+      byId.set(c.id, c);
+    }
+    if (c.name) {
+      const n = c.name.trim().toLowerCase();
+      if (n && !byNameLower.has(n)) {
+        byNameLower.set(n, c);
+      }
+    }
+    if (c.phone) {
+      const p = c.phone.trim();
+      if (p && !byRawPhone.has(p)) byRawPhone.set(p, c);
+      const pNorm = normalizePhone(p);
+      if (pNorm && pNorm.length >= 8 && !byNormPhone.has(pNorm)) {
+        byNormPhone.set(pNorm, c);
+      }
+    }
+    if (c.secondaryPhone) {
+      const sp = c.secondaryPhone.trim();
+      if (sp && !byRawPhone.has(sp)) byRawPhone.set(sp, c);
+      const spNorm = normalizePhone(sp);
+      if (spNorm && spNorm.length >= 8 && !byNormPhone.has(spNorm)) {
+        byNormPhone.set(spNorm, c);
+      }
+    }
+  }
+
+  const index: CustomerLookupIndex<T> = {
+    length: customers.length,
+    byId,
+    byNameLower,
+    byRawPhone,
+    byNormPhone,
+  };
+  customerLookupIndexCache.set(customers, index);
+  return index;
+}
+
 /**
- * Finds the best matching customer for a job or search parameters.
+ * Finds the best matching customer for a job or search parameters in O(1) time via WeakMap index cache.
  * Prioritizes ID match (with name validation fallback), then Name match, then valid Phone/secondaryPhone match.
  */
 export function findMatchingCustomer<T extends { id: string; name?: string | null; phone?: string | null; secondaryPhone?: string | null }>(
@@ -732,23 +812,21 @@ export function findMatchingCustomer<T extends { id: string; name?: string | nul
 ): T | null {
   if (!customers || customers.length === 0) return null;
 
+  const index = getCustomerLookupIndex(customers);
   const targetId = lookup.customerId?.trim();
   const targetName = lookup.customerName?.trim().toLowerCase();
   const targetPhone = lookup.customerPhone?.trim();
 
   // 1. If customerId is provided, check if it matches
   if (targetId) {
-    const byId = customers.find(c => c.id === targetId);
+    const byId = index.byId.get(targetId);
     if (byId) {
-      // If no name is provided, or names match / overlap, use it
       const cName = (byId.name || "").trim().toLowerCase();
       if (!targetName || cName === targetName || targetName.includes(cName) || cName.includes(targetName)) {
         return byId;
       }
-      // If customerId points to a completely mismatched name (e.g. MELISSA vs VIRAKUMARA LIE),
-      // look for the customer by exact name first
       if (targetName) {
-        const byName = customers.find(c => (c.name || "").trim().toLowerCase() === targetName);
+        const byName = index.byNameLower.get(targetName);
         if (byName) return byName;
       }
       return byId;
@@ -757,26 +835,18 @@ export function findMatchingCustomer<T extends { id: string; name?: string | nul
 
   // 2. Match by exact Name
   if (targetName) {
-    const byName = customers.find(c => (c.name || "").trim().toLowerCase() === targetName);
+    const byName = index.byNameLower.get(targetName);
     if (byName) return byName;
   }
 
   // 3. Match by Phone or Secondary Phone (ONLY if phone is a valid real phone number)
   if (isValidPhoneNumber(targetPhone)) {
-    const byPhone = customers.find(c => 
-      (c.phone && c.phone.trim() === targetPhone) || 
-      (c.secondaryPhone && c.secondaryPhone.trim() === targetPhone)
-    );
+    const byPhone = index.byRawPhone.get(targetPhone);
     if (byPhone) return byPhone;
 
-    // Fallback: match by normalized phone digits (handles +66 vs 0, hyphens, spaces)
     const targetNorm = normalizePhone(targetPhone);
     if (targetNorm && targetNorm.length >= 8) {
-      const byNormPhone = customers.find(c => {
-        const pNorm = normalizePhone(c.phone);
-        const secNorm = normalizePhone(c.secondaryPhone);
-        return (pNorm && pNorm === targetNorm) || (secNorm && secNorm === targetNorm);
-      });
+      const byNormPhone = index.byNormPhone.get(targetNorm);
       if (byNormPhone) return byNormPhone;
     }
   }
@@ -1003,6 +1073,122 @@ export function normalizePhone(raw: string | null | undefined): string {
  * - Email and Line ID
  * - Company Name and Tax ID
  */
+interface PrecomputedCustomerSearchProfile {
+  key: string;
+  name: string;
+  nick: string;
+  comp: string;
+  combinedName: string;
+  mId: string;
+  mIdAlnum: string;
+  tIdDigits: string;
+  emailLower: string;
+  lineLower: string;
+  waLower: string;
+  cleanWa: string;
+  phoneLowers: string[];
+  phoneVariantSets: string[][];
+}
+
+const customerSearchProfileCache = new WeakMap<object, PrecomputedCustomerSearchProfile>();
+
+function getCustomerSearchProfile(customer: {
+  id?: string | null;
+  name?: string | null;
+  nickName?: string | null;
+  phone?: string | null;
+  secondaryPhone?: string | null;
+  memberId?: string | null;
+  email?: string | null;
+  lineId?: string | null;
+  whatsappId?: string | null;
+  companyName?: string | null;
+  taxId?: string | null;
+  addresses?: Array<{ contactPhone?: string | null }> | null;
+}): PrecomputedCustomerSearchProfile {
+  const key = `${customer.name || ""}|${customer.nickName || ""}|${customer.phone || ""}|${customer.secondaryPhone || ""}|${customer.memberId || ""}|${customer.email || ""}|${customer.lineId || ""}|${customer.whatsappId || ""}|${customer.companyName || ""}|${customer.taxId || ""}|${customer.addresses?.length || 0}`;
+  const cached = customerSearchProfileCache.get(customer);
+  if (cached && cached.key === key) {
+    return cached;
+  }
+
+  const name = (customer.name || "").toLowerCase();
+  const nick = (customer.nickName || "").toLowerCase();
+  const comp = (customer.companyName || "").toLowerCase();
+  const combinedName = `${name} ${nick} ${comp}`.trim();
+  const mId = customer.memberId ? customer.memberId.trim().toLowerCase() : "";
+  const mIdAlnum = mId ? mId.replace(/[^a-z0-9]/g, "") : "";
+  const tIdDigits = customer.taxId ? customer.taxId.replace(/\D/g, "") : "";
+  const emailLower = customer.email ? customer.email.toLowerCase() : "";
+  const lineLower = customer.lineId ? customer.lineId.toLowerCase() : "";
+  const waLower = customer.whatsappId ? customer.whatsappId.toLowerCase().trim() : "";
+  const cleanWa = waLower ? waLower.replace(/^(@|wa:\s*)/i, "").trim() : "";
+
+  const phonesToCheck: string[] = [];
+  if (customer.phone) phonesToCheck.push(customer.phone);
+  if (customer.secondaryPhone) phonesToCheck.push(customer.secondaryPhone);
+  if (customer.addresses && Array.isArray(customer.addresses)) {
+    for (const addr of customer.addresses) {
+      if (addr.contactPhone) phonesToCheck.push(addr.contactPhone);
+    }
+  }
+
+  const phoneLowers: string[] = [];
+  const phoneVariantSets: string[][] = [];
+
+  for (const rawPhone of phonesToCheck) {
+    if (!rawPhone) continue;
+    phoneLowers.push(rawPhone.toLowerCase().trim());
+    const pDigits = rawPhone.replace(/\D/g, "");
+    if (!pDigits || pDigits.length < 4) continue;
+
+    const variants = new Set<string>();
+    variants.add(pDigits);
+
+    if (pDigits.startsWith("660") && pDigits.length >= 11) {
+      variants.add("0" + pDigits.slice(3));
+      variants.add("66" + pDigits.slice(3));
+      variants.add(pDigits.slice(3));
+    } else if (pDigits.startsWith("66") && pDigits.length >= 10) {
+      variants.add("0" + pDigits.slice(2));
+      variants.add(pDigits.slice(2));
+    } else if (pDigits.startsWith("0") && pDigits.length >= 9) {
+      variants.add("66" + pDigits.slice(1));
+      variants.add(pDigits.slice(1));
+    }
+
+    if (pDigits.length >= 10 && !pDigits.startsWith("0")) {
+      for (const ccLen of [1, 2, 3]) {
+        if (pDigits.length > ccLen + 6) {
+          const localPart = pDigits.slice(ccLen);
+          variants.add(localPart);
+          variants.add("0" + localPart);
+        }
+      }
+    }
+    phoneVariantSets.push(Array.from(variants));
+  }
+
+  const profile: PrecomputedCustomerSearchProfile = {
+    key,
+    name,
+    nick,
+    comp,
+    combinedName,
+    mId,
+    mIdAlnum,
+    tIdDigits,
+    emailLower,
+    lineLower,
+    waLower,
+    cleanWa,
+    phoneLowers,
+    phoneVariantSets,
+  };
+  customerSearchProfileCache.set(customer, profile);
+  return profile;
+}
+
 export function matchCustomerSearch(
   customer: {
     id?: string | null;
@@ -1024,129 +1210,64 @@ export function matchCustomerSearch(
   const q = rawQuery.trim().toLowerCase();
   if (!q) return false;
 
+  const p = getCustomerSearchProfile(customer);
+
   // 1. Name & Nickname match (direct or all-words match)
-  const name = (customer.name || "").toLowerCase();
-  const nick = (customer.nickName || "").toLowerCase();
-  const comp = (customer.companyName || "").toLowerCase();
-  if (name.includes(q) || (nick && nick.includes(q)) || (comp && comp.includes(q))) {
+  if (p.name.includes(q) || (p.nick && p.nick.includes(q)) || (p.comp && p.comp.includes(q))) {
     return true;
   }
 
-  const qWords = q.split(/\s+/).filter(Boolean);
-  if (qWords.length > 1) {
-    const combinedName = `${name} ${nick} ${comp}`.trim();
-    if (qWords.every(w => combinedName.includes(w))) {
+  if (q.includes(" ")) {
+    const qWords = q.split(/\s+/).filter(Boolean);
+    if (qWords.length > 1 && qWords.every(w => p.combinedName.includes(w))) {
       return true;
     }
   }
 
   // 2. Member ID match
-  if (customer.memberId) {
-    const mId = customer.memberId.trim().toLowerCase();
-    const cleanQ = q.replace(/^#/, "").trim();
-    if (mId.includes(q) || mId.includes(cleanQ)) {
+  if (p.mId) {
+    const cleanQ = q.startsWith("#") ? q.slice(1).trim() : q;
+    if (p.mId.includes(q) || p.mId.includes(cleanQ)) {
       return true;
     }
-    const mIdAlnum = mId.replace(/[^a-z0-9]/g, "");
     const cleanQAlnum = cleanQ.replace(/[^a-z0-9]/g, "");
-    if (mIdAlnum && cleanQAlnum && mIdAlnum.includes(cleanQAlnum)) {
-      return true;
-    }
-    if (mIdAlnum.length >= 3 && cleanQAlnum && cleanQAlnum.includes(mIdAlnum)) {
-      return true;
-    }
-  }
-
-  // 3. Tax ID match
-  if (customer.taxId) {
-    const tId = customer.taxId.replace(/\D/g, "");
-    const qDigits = q.replace(/\D/g, "");
-    if (qDigits && tId.includes(qDigits)) return true;
-  }
-
-  // 4. Email, Line ID & WhatsApp ID match
-  if (customer.email && customer.email.toLowerCase().includes(q)) return true;
-  if (customer.lineId && customer.lineId.toLowerCase().includes(q)) return true;
-  if (customer.whatsappId) {
-    const waLower = customer.whatsappId.toLowerCase().trim();
-    const cleanQ = q.replace(/^(@|wa:\s*)/i, "").trim();
-    const cleanWa = waLower.replace(/^(@|wa:\s*)/i, "").trim();
-    if (waLower.includes(q) || (cleanQ && cleanWa.includes(cleanQ))) return true;
-  }
-
-  // 5. Phone Numbers Matching (Thai & International)
-  const phonesToCheck: string[] = [];
-  if (customer.phone) phonesToCheck.push(customer.phone);
-  if (customer.secondaryPhone) phonesToCheck.push(customer.secondaryPhone);
-  if (customer.addresses && Array.isArray(customer.addresses)) {
-    for (const addr of customer.addresses) {
-      if (addr.contactPhone) phonesToCheck.push(addr.contactPhone);
+    if (p.mIdAlnum && cleanQAlnum) {
+      if (p.mIdAlnum.includes(cleanQAlnum)) return true;
+      if (p.mIdAlnum.length >= 3 && cleanQAlnum.includes(p.mIdAlnum)) return true;
     }
   }
 
   const qDigits = q.replace(/\D/g, "");
 
-  for (const rawPhone of phonesToCheck) {
-    if (!rawPhone) continue;
-    const pLower = rawPhone.toLowerCase().trim();
-    if (pLower.includes(q)) return true;
+  // 3. Tax ID match
+  if (p.tIdDigits && qDigits && p.tIdDigits.includes(qDigits)) {
+    return true;
+  }
 
-    const pDigits = rawPhone.replace(/\D/g, "");
-    if (!pDigits || pDigits.length < 4) continue;
+  // 4. Email, Line ID & WhatsApp ID match
+  if (p.emailLower && p.emailLower.includes(q)) return true;
+  if (p.lineLower && p.lineLower.includes(q)) return true;
+  if (p.waLower) {
+    const cleanQ = q.replace(/^(@|wa:\s*)/i, "").trim();
+    if (p.waLower.includes(q) || (cleanQ && p.cleanWa.includes(cleanQ))) return true;
+  }
 
-    if (qDigits) {
-      // Build candidate variants for stored phone
-      const variants = new Set<string>();
-      variants.add(pDigits);
+  // 5. Phone Numbers Matching (Thai & International)
+  for (let i = 0; i < p.phoneLowers.length; i++) {
+    if (p.phoneLowers[i].includes(q)) return true;
+  }
 
-      // Thai / country-code 66 normalization
-      if (pDigits.startsWith("660") && pDigits.length >= 11) {
-        variants.add("0" + pDigits.slice(3));
-        variants.add("66" + pDigits.slice(3));
-        variants.add(pDigits.slice(3));
-      } else if (pDigits.startsWith("66") && pDigits.length >= 10) {
-        variants.add("0" + pDigits.slice(2));
-        variants.add(pDigits.slice(2));
-      } else if (pDigits.startsWith("0") && pDigits.length >= 9) {
-        variants.add("66" + pDigits.slice(1));
-        variants.add(pDigits.slice(1));
-      }
-
-      // International domestic/country-code variations
-      // (e.g. UK: 447806818431 -> 7806818431 & 07806818431, Switzerland: 41788858009 -> 788858009 & 0788858009)
-      if (pDigits.length >= 10 && !pDigits.startsWith("0")) {
-        for (const ccLen of [1, 2, 3]) {
-          if (pDigits.length > ccLen + 6) {
-            const localPart = pDigits.slice(ccLen);
-            variants.add(localPart);
-            variants.add("0" + localPart);
-          }
+  if (qDigits) {
+    const withoutZero = qDigits.startsWith("0") && qDigits.length >= 8 ? qDigits.slice(1) : "";
+    for (let i = 0; i < p.phoneVariantSets.length; i++) {
+      const variants = p.phoneVariantSets[i];
+      for (let j = 0; j < variants.length; j++) {
+        const variant = variants[j];
+        if (qDigits.length < 3 ? variant.startsWith(qDigits) : variant.includes(qDigits)) {
+          return true;
         }
-      }
-
-      // Check matching against variants
-      let matched = false;
-      for (const variant of variants) {
-        if (qDigits.length < 3) {
-          // If query is very short digits (1-2 digits), only match if variant starts with it
-          if (variant.startsWith(qDigits)) {
-            matched = true;
-            break;
-          }
-        } else {
-          if (variant.includes(qDigits)) {
-            matched = true;
-            break;
-          }
-        }
-      }
-      if (matched) return true;
-
-      // If user typed domestic 0-prefixed international number (e.g. '0788858009' -> '788858009')
-      if (qDigits.startsWith("0") && qDigits.length >= 8) {
-        const withoutZero = qDigits.slice(1);
-        for (const variant of variants) {
-          if (variant.includes(withoutZero)) return true;
+        if (withoutZero && variant.includes(withoutZero)) {
+          return true;
         }
       }
     }

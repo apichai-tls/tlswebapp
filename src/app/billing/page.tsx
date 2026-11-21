@@ -378,6 +378,7 @@ function BillingJobCard({
     try {
       await jobStore.updateJobDetails(job.id, {
         billImageUrl: newUrls.length > 0 ? JSON.stringify(newUrls) : (null as any),
+        isExplicitImageDelete: true,
         actorId: user?.id,
         actorName: user?.name || user?.email,
         actorRole: user?.role,

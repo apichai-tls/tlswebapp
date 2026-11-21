@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useSyncExternalStore } from "react";
+import { useState, useMemo, useEffect, useRef, useSyncExternalStore, memo, useDeferredValue } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Minimize2, Maximize2, Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck, Layers, Archive, RefreshCw, RotateCcw, LayoutGrid, List } from "lucide-react";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
+import { getClientAuthHeaders } from "@/lib/client-auth";
 import { useCustomers } from "@/lib/use-customers";
 import { useJobs } from "@/lib/use-jobs";
 import { customerStore, priceListStore, poiStore, shopStore, walletApprovalStore, type Customer, type WalletTransactionItem } from "@/lib/store";
@@ -171,7 +172,7 @@ const getLastActiveText = (date?: Date) => {
   }
 };
 
-export function AdminCRM({ 
+export const AdminCRM = memo(function AdminCRM({ 
   onTopUp, 
   onViewJob 
 }: { 
@@ -429,7 +430,7 @@ export function AdminCRM({
         try {
           const signRes = await fetch("/api/upload-url", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...getClientAuthHeaders() },
             body: JSON.stringify({
               entityType: "job",
               entityId: tempEntityId,
@@ -462,6 +463,7 @@ export function AdminCRM({
 
           const localRes = await fetch("/api/upload-local", {
             method: "POST",
+            headers: { ...getClientAuthHeaders() },
             body: formData,
           });
 
@@ -880,14 +882,16 @@ export function AdminCRM({
     });
   }, [customers, customerAnalytics]);
 
+  const deferredSearchTerm = useDeferredValue(searchTerm);
+
   const filteredDuplicateGroups = useMemo(() => {
-    if (!searchTerm.trim()) return duplicateGroups;
-    const q = searchTerm.toLowerCase().trim();
+    if (!deferredSearchTerm.trim()) return duplicateGroups;
+    const q = deferredSearchTerm.toLowerCase().trim();
     return duplicateGroups.filter(g => {
       if (g.normalizedPhone.includes(q)) return true;
-      return g.customers.some(c => matchCustomerSearch(c, searchTerm));
+      return g.customers.some(c => matchCustomerSearch(c, deferredSearchTerm));
     });
-  }, [duplicateGroups, searchTerm]);
+  }, [duplicateGroups, deferredSearchTerm]);
 
   const rapidDuplicateCount = useMemo(() => {
     return duplicateGroups.filter(g => g.isRapidDuplicate).length;
@@ -997,7 +1001,7 @@ export function AdminCRM({
       }
 
       // 1. Search filter
-      if (searchTerm.trim() && !matchCustomerSearch(c, searchTerm)) {
+      if (deferredSearchTerm.trim() && !matchCustomerSearch(c, deferredSearchTerm)) {
         return false;
       }
 
@@ -1010,7 +1014,7 @@ export function AdminCRM({
       
       return true;
     });
-  }, [customers, searchTerm, activeTab, selectedBrand, selectedBranch]);
+  }, [customers, deferredSearchTerm, activeTab, selectedBrand, selectedBranch]);
 
   // Sort by selected criteria or default (LTV descending, or balance descending for wallet tabs)
   const sortedCustomers = useMemo(() => {
@@ -4614,4 +4618,4 @@ export function AdminCRM({
       </Dialog>
     </div>
   );
-}
+});

@@ -3,13 +3,19 @@ import { Storage } from '@google-cloud/storage';
 // Initialize storage
 // It will automatically use credentials from GOOGLE_APPLICATION_CREDENTIALS environment variable
 // Or you can pass credentials explicitly if provided in .env
+const hasExplicitGcsCredentials = Boolean(process.env.GCS_CLIENT_EMAIL && process.env.GCS_PRIVATE_KEY);
+
 const storage = new Storage({
   projectId: process.env.GCS_PROJECT_ID,
-  credentials: {
-    client_email: process.env.GCS_CLIENT_EMAIL,
-    // Fix for private key string formatting from .env
-    private_key: process.env.GCS_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-  },
+  ...(hasExplicitGcsCredentials
+    ? {
+        credentials: {
+          client_email: process.env.GCS_CLIENT_EMAIL,
+          // Fix for private key string formatting from .env
+          private_key: process.env.GCS_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+        },
+      }
+    : {}),
 });
 
 export const bucketName = process.env.GCS_BUCKET_NAME || 'tls-images-test';
@@ -78,7 +84,8 @@ export async function uploadBufferToGcs(
   } = {}
 ): Promise<string | null> {
   try {
-    if (!process.env.GCS_CLIENT_EMAIL || !process.env.GCS_PRIVATE_KEY) {
+    const canUseAdc = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.K_SERVICE);
+    if (!hasExplicitGcsCredentials && !canUseAdc) {
       return null;
     }
     const entityType = options.entityType || 'system';
@@ -103,13 +110,28 @@ export async function uploadBufferToGcs(
     );
 
     const file = storage.bucket(bucketName).file(filePath);
-    await file.save(buffer, {
-      contentType,
-      resumable: false,
-      metadata: {
-        cacheControl: 'public, max-age=31536000',
-      },
-    });
+    let lastErr: any = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await file.save(buffer, {
+          contentType,
+          resumable: false,
+          metadata: {
+            cacheControl: 'public, max-age=31536000',
+          },
+        });
+        lastErr = null;
+        break;
+      } catch (saveErr: any) {
+        lastErr = saveErr;
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 400));
+        }
+      }
+    }
+    if (lastErr) {
+      throw lastErr;
+    }
 
     return getPublicUrl(filePath);
   } catch (err: any) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useSyncExternalStore, useMemo } from "react";
+import { useState, useSyncExternalStore, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Plus, 
@@ -39,7 +39,7 @@ import {
   DialogFooter 
 } from "@/components/ui/dialog";
 import { serviceStore, settingsStore, type ServiceItem, getServiceSKU } from "@/lib/store";
-import { MultiImageUploader } from "@/components/ui/multi-image-uploader";
+import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
 import { toast } from "sonner";
 
 export function AdminServiceMenu() {
@@ -56,6 +56,7 @@ export function AdminServiceMenu() {
     }
   }, [settings?.service_item_images]);
   const [formImageUrls, setFormImageUrls] = useState<string[]>([]);
+  const serviceImageUploaderRef = useRef<MultiImageUploaderRef>(null);
   
   // Main Tab: "services" (Laundry Services) or "packages" (Promotion & Top-up)
   const [mainTab, setMainTab] = useState<"services" | "packages">("services");
@@ -151,7 +152,10 @@ export function AdminServiceMenu() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const imgUrl = formImageUrls[0] || "";
+    const uploadedUrls = serviceImageUploaderRef.current
+      ? await serviceImageUploaderRef.current.startUpload().catch(() => formImageUrls)
+      : formImageUrls;
+    const imgUrl = uploadedUrls[0] || formImageUrls[0] || "";
     const nameKey = (formData.name || "").trim().toUpperCase();
 
     if (editingService) {
@@ -672,6 +676,8 @@ export function AdminServiceMenu() {
                     Reference Image (รูปภาพอ้างอิงสินค้า)
                   </Label>
                   <MultiImageUploader
+                    ref={serviceImageUploaderRef}
+                    autoUpload={true}
                     entityType="system"
                     entityId={editingService?.id || "service_menu_item"}
                     value={formImageUrls}

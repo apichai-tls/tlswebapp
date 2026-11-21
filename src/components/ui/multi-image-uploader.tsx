@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, forwardRef, useImperativeHandle, useEffe
 import { UploadCloud, Loader2, X, Image as ImageIcon, ChevronLeft, ChevronRight, XCircle, Printer, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { getClientAuthHeaders } from "@/lib/client-auth";
 
 export const printImageUrl = (url: string) => {
   // Use a hidden, non-zero dimensioned iframe positioned offscreen.
@@ -214,11 +215,12 @@ interface MultiImageUploaderProps {
   entityId: string;
   subType?: "bags" | "proofs" | "bills" | "avatars";
   value?: string[]; // Array of pre-existing URLs
-  onValueChange?: (urls: string[]) => void; // Called when existing URLs are removed
+  onValueChange?: (urls: string[]) => void; // Called when URLs are added (in autoUpload mode) or removed
   maxFiles?: number;
   className?: string;
   readOnly?: boolean;
   disableDelete?: boolean;
+  autoUpload?: boolean;
 }
 
 interface PendingFile {
@@ -232,13 +234,33 @@ interface PendingFile {
 }
 
 export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUploaderProps>(
-  ({ entityType, entityId, subType, value = [], onValueChange, maxFiles = 5, className = "", readOnly = false, disableDelete = false }, ref) => {
+  ({ entityType, entityId, subType, value = [], onValueChange, maxFiles = 5, className = "", readOnly = false, disableDelete = false, autoUpload }, ref) => {
     const [isDragging, setIsDragging] = useState(false);
     const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
     const [previewIndex, setPreviewIndex] = useState<number | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    
-    const allImages = [...value, ...pendingFiles.map(pf => pf.previewUrl)];
+    const inFlightUploadsRef = useRef<Map<string, Promise<string>>>(new Map());
+    const valueRef = useRef<string[]>(value);
+    valueRef.current = value;
+    const pendingFilesRef = useRef<PendingFile[]>(pendingFiles);
+    pendingFilesRef.current = pendingFiles;
+
+    // Automatically upload on select/paste when autoUpload is true OR when no ref was passed by the parent
+    const shouldAutoUpload = autoUpload ?? !ref;
+
+    // Prune pendingFiles whose finalUrl has already been synced into `value` so thumbnails never duplicate
+    useEffect(() => {
+      if (!value || value.length === 0) return;
+      setPendingFiles((prev) => {
+        const remaining = prev.filter((pf) => !(pf.status === "success" && pf.finalUrl && value.includes(pf.finalUrl)));
+        return remaining.length === prev.length ? prev : remaining;
+      });
+    }, [value]);
+
+    const visiblePendingFiles = pendingFiles.filter(
+      (pf) => !(pf.status === "success" && pf.finalUrl && value.includes(pf.finalUrl))
+    );
+    const allImages = [...value, ...visiblePendingFiles.map(pf => pf.finalUrl || pf.previewUrl)];
 
     useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
@@ -257,103 +279,145 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
       return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
     }, [previewIndex, allImages.length]);
 
-    useImperativeHandle(ref, () => ({
-      startUpload: async () => {
-        const filesToUpload = pendingFiles.filter((pf) => pf.status === "pending" || pf.status === "error");
-        
-        if (filesToUpload.length === 0) {
-          return [...value, ...pendingFiles.filter(pf => pf.status === "success").map(pf => pf.finalUrl as string)];
-        }
+    const updateFileStatus = useCallback((id: string, updates: Partial<PendingFile>) => {
+      setPendingFiles(prev => {
+        const next = prev.map(f => f.id === id ? { ...f, ...updates } : f);
+        pendingFilesRef.current = next;
+        return next;
+      });
+    }, []);
 
-        const uploadedUrls: string[] = [];
+    const uploadSingleFile = useCallback((uploadData: PendingFile): Promise<string> => {
+      if (uploadData.status === "success" && uploadData.finalUrl) {
+        return Promise.resolve(uploadData.finalUrl);
+      }
+      const existingPromise = inFlightUploadsRef.current.get(uploadData.id);
+      if (existingPromise) {
+        return existingPromise;
+      }
 
-        // We use Promise.all to upload concurrently
-        await Promise.all(
-          filesToUpload.map(async (uploadData) => {
-            try {
-              updateFileStatus(uploadData.id, { status: "uploading", progress: 10 });
+      const promise = (async () => {
+        try {
+          updateFileStatus(uploadData.id, { status: "uploading", progress: 10 });
 
-              // Compress image first so signed URL always uses the exact final MIME type of compressedFile
-              const compressedFile = await compressImage(uploadData.file, 1280, 1280, 0.82);
-              const actualContentType = compressedFile.type || "image/jpeg";
-              const signedUrlResponse = await fetchWithUploadTimeout("/api/upload-url", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  entityType,
-                  entityId,
-                  subType,
-                  contentType: actualContentType,
-                  fileName: compressedFile.name,
-                }),
-              }).catch(() => null);
-              let finalUrl = "";
+          // Compress image first so signed URL always uses the exact final MIME type of compressedFile
+          const compressedFile = await compressImage(uploadData.file, 1280, 1280, 0.82);
+          const actualContentType = compressedFile.type || "image/jpeg";
+          let finalUrl = "";
 
+          try {
+            let gcsUploaded = false;
+            let lastGcsErr: any = null;
+            for (let attempt = 1; attempt <= 2; attempt++) {
               try {
-                // 1. Check Signed URL response
-                const response = signedUrlResponse;
-                if (!response) throw new Error("Failed to reach upload authorization endpoint");
-
-                if (!response.ok) throw new Error("Failed to get upload authorization");
-
-                const { uploadUrl, filePath, publicUrl } = await response.json();
+                const signedUrlResponse = await fetchWithUploadTimeout("/api/upload-url", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", ...getClientAuthHeaders() },
+                  body: JSON.stringify({
+                    entityType,
+                    entityId,
+                    subType,
+                    contentType: actualContentType,
+                    fileName: compressedFile.name,
+                  }),
+                });
+                if (!signedUrlResponse.ok) {
+                  throw new Error(`Upload authorization failed (${signedUrlResponse.status})`);
+                }
+                const { uploadUrl, filePath, publicUrl } = await signedUrlResponse.json();
                 updateFileStatus(uploadData.id, { progress: 40 });
 
-                // 2. Upload file directly to Cloud Storage
                 const uploadResponse = await fetchWithUploadTimeout(uploadUrl, {
                   method: "PUT",
-                  headers: { "Content-Type": compressedFile.type },
+                  headers: { "Content-Type": actualContentType },
                   body: compressedFile,
                 });
-
-                if (!uploadResponse.ok) throw new Error("Cloud storage upload failed");
-                
-                finalUrl = publicUrl || filePath;
-              } catch (gcsError: any) {
-                console.warn("GCS Upload failed, falling back to local filesystem upload:", gcsError.message);
-                updateFileStatus(uploadData.id, { progress: 50 });
-
-                // Fallback: POST file directly to Next.js API /api/upload-local
-                const localFormData = new FormData();
-                localFormData.append("file", compressedFile);
-                localFormData.append("entityType", entityType);
-                localFormData.append("entityId", entityId);
-                if (subType) localFormData.append("subType", subType);
-
-                const fallbackResponse = await fetchWithUploadTimeout("/api/upload-local", {
-                  method: "POST",
-                  body: localFormData,
-                });
-
-                if (!fallbackResponse.ok) {
-                  const errData = await fallbackResponse.json().catch(() => ({}));
-                  throw new Error(errData.error || "Local upload fallback failed");
+                if (!uploadResponse.ok) {
+                  throw new Error(`Cloud storage PUT failed (${uploadResponse.status})`);
                 }
-
-                const fallbackData = await fallbackResponse.json();
-                finalUrl = fallbackData.publicUrl;
+                finalUrl = publicUrl || filePath;
+                gcsUploaded = true;
+                break;
+              } catch (attemptErr: any) {
+                lastGcsErr = attemptErr;
+                if (attempt < 2) {
+                  await new Promise((r) => setTimeout(r, 400));
+                }
               }
-              
-              updateFileStatus(uploadData.id, { progress: 100 });
-              updateFileStatus(uploadData.id, { status: "success", finalUrl });
-              uploadedUrls.push(finalUrl);
-            } catch (error: any) {
-              console.error("Upload process error:", error);
-              updateFileStatus(uploadData.id, { status: "error", errorMsg: error.message });
-              toast.error(`Failed to upload ${uploadData.file.name}: ${error.message}`);
-              throw error; // Rethrow to stop the overarching process if needed
             }
-          })
-        );
+            if (!gcsUploaded) {
+              throw lastGcsErr || new Error("Cloud storage upload failed");
+            }
+          } catch (gcsError: any) {
+            console.warn("GCS Upload failed, falling back to server upload:", gcsError?.message || gcsError);
+            updateFileStatus(uploadData.id, { progress: 50 });
 
-        // After all successful uploads, return combined array
-        return [...value, ...uploadedUrls];
+            const localFormData = new FormData();
+            localFormData.append("file", compressedFile);
+            localFormData.append("entityType", entityType);
+            localFormData.append("entityId", entityId);
+            if (subType) localFormData.append("subType", subType);
+
+            const fallbackResponse = await fetchWithUploadTimeout("/api/upload-local", {
+              method: "POST",
+              headers: { ...getClientAuthHeaders() },
+              body: localFormData,
+            });
+
+            if (!fallbackResponse.ok) {
+              const errData = await fallbackResponse.json().catch(() => ({}));
+              throw new Error(errData.error || "Local upload fallback failed");
+            }
+
+            const fallbackData = await fallbackResponse.json();
+            finalUrl = fallbackData.publicUrl;
+          }
+
+          updateFileStatus(uploadData.id, { progress: 100, status: "success", finalUrl });
+          return finalUrl;
+        } catch (error: any) {
+          console.error("Upload process error:", error);
+          updateFileStatus(uploadData.id, { status: "error", errorMsg: error.message });
+          toast.error(`Failed to upload ${uploadData.file.name}: ${error.message}`);
+          throw error;
+        } finally {
+          inFlightUploadsRef.current.delete(uploadData.id);
+        }
+      })();
+
+      inFlightUploadsRef.current.set(uploadData.id, promise);
+      return promise;
+    }, [entityType, entityId, subType, updateFileStatus]);
+
+    const runUploadAll = useCallback(async (specificFiles?: PendingFile[]): Promise<string[]> => {
+      const currentPending = specificFiles || pendingFilesRef.current;
+      const filesToProcess = currentPending.filter(
+        (pf) => pf.status === "pending" || pf.status === "error" || pf.status === "uploading"
+      );
+
+      const newlyUploadedUrls = filesToProcess.length > 0
+        ? await Promise.all(filesToProcess.map((pf) => uploadSingleFile(pf)))
+        : [];
+
+      const alreadySucceededUrls = pendingFilesRef.current
+        .filter((pf) => pf.status === "success" && pf.finalUrl)
+        .map((pf) => pf.finalUrl as string);
+
+      const combined = Array.from(new Set([...valueRef.current, ...alreadySucceededUrls, ...newlyUploadedUrls].filter(Boolean)));
+      return combined;
+    }, [uploadSingleFile]);
+
+    useImperativeHandle(ref, () => ({
+      startUpload: async () => {
+        return await runUploadAll();
       },
       reset: () => {
+        inFlightUploadsRef.current.clear();
         setPendingFiles([]);
+        pendingFilesRef.current = [];
       },
       getPendingFilesCount: () => {
-        return pendingFiles.length;
+        return pendingFilesRef.current.filter(pf => pf.status !== "success").length;
       },
       addFiles: (files: File[]) => {
         if (readOnly || !files || files.length === 0) return;
@@ -394,7 +458,7 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
     };
 
     const processFiles = (files: File[]) => {
-      const totalFiles = value.length + pendingFiles.length + files.length;
+      const totalFiles = valueRef.current.length + visiblePendingFiles.length + files.length;
       if (totalFiles > maxFiles) {
         toast.error(`You can only select up to ${maxFiles} images.`);
         return;
@@ -417,11 +481,19 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
         status: "pending"
       }));
 
-      setPendingFiles(prev => [...prev, ...newPending]);
-    };
+      setPendingFiles(prev => {
+        const next = [...prev, ...newPending];
+        pendingFilesRef.current = next;
+        return next;
+      });
 
-    const updateFileStatus = (id: string, updates: Partial<PendingFile>) => {
-      setPendingFiles(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
+      if (shouldAutoUpload) {
+        runUploadAll(newPending)
+          .then((combined) => {
+            onValueChange?.(combined);
+          })
+          .catch(() => {});
+      }
     };
 
     const handleRemoveExisting = (urlToRemove: string) => {
@@ -433,7 +505,12 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
 
     const handleRemovePending = (id: string) => {
       if (window.confirm("คุณต้องการลบรูปภาพนี้ใช่หรือไม่? (Are you sure you want to delete this image?)")) {
-        setPendingFiles(prev => prev.filter(f => f.id !== id));
+        inFlightUploadsRef.current.delete(id);
+        setPendingFiles(prev => {
+          const next = prev.filter(f => f.id !== id);
+          pendingFilesRef.current = next;
+          return next;
+        });
       }
     };
 
@@ -464,7 +541,7 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
         onPaste={handlePaste}
       >
         {/* Drop Zone */}
-        {(value.length + pendingFiles.length) < maxFiles ? (
+        {(value.length + visiblePendingFiles.length) < maxFiles ? (
           <div
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -519,7 +596,7 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
         )}
 
         {/* Image Grid */}
-        {(value.length > 0 || pendingFiles.length > 0) && (
+        {(value.length > 0 || visiblePendingFiles.length > 0) && (
           <div className="flex flex-wrap gap-2">
             
             {/* Existing Uploads */}
@@ -546,7 +623,7 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
             ))}
 
             {/* Pending Files */}
-            {pendingFiles.map((pf, index) => (
+            {visiblePendingFiles.map((pf, index) => (
               <div 
                 key={pf.id} 
                 className="relative group w-10 h-10 sm:w-12 sm:h-12 shrink-0 rounded-xl overflow-hidden border border-slate-200 bg-slate-50 cursor-pointer"

@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { addJobLogAction, updateJobAction } from "@/actions/db";
+import { getClientAuthHeaders } from "@/lib/client-auth";
 import { useJobs } from "@/lib/use-jobs";
 import { jobStore, Job, type AdminNoteLog } from "@/lib/store";
 import { Input } from "@/components/ui/input";
@@ -178,17 +179,27 @@ const RiderJobImages = ({
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const lastKeyRef = useRef<string>(`${jobId}::${imageType}`);
 
   useEffect(() => {
+    const currentKey = `${jobId}::${imageType}`;
+    const isNewTarget = lastKeyRef.current !== currentKey;
+    lastKeyRef.current = currentKey;
+
     // Image URLs are included in JOB_SELECT_FIELDS and synced via SSE/delta.
     if (initialValue !== undefined) {
       const parsed = parseUrls(initialValue);
-      setImages(prev => (JSON.stringify(parsed) !== JSON.stringify(prev) ? parsed : prev));
+      setImages(prev => {
+        if (isNewTarget) return parsed;
+        // Preserve any locally uploaded URLs not yet reflected in a parent's cached initialValue prop
+        const merged = Array.from(new Set([...parsed, ...prev].filter(Boolean)));
+        return JSON.stringify(merged) !== JSON.stringify(prev) ? merged : prev;
+      });
       setLoading(false);
       return;
     }
 
-    fetch(`/api/jobs/${jobId}/details`)
+    fetch(`/api/jobs/${jobId}/details`, { headers: { ...getClientAuthHeaders() } })
       .then(r => r.json())
       .then(data => {
         let urlData = data[imageType];
@@ -196,7 +207,11 @@ const RiderJobImages = ({
           urlData = data.proofImageUrl;
         }
         const remoteUrls = parseUrls(urlData);
-        setImages(prev => (JSON.stringify(remoteUrls) !== JSON.stringify(prev) ? remoteUrls : prev));
+        setImages(prev => {
+          if (isNewTarget) return remoteUrls;
+          const merged = Array.from(new Set([...remoteUrls, ...prev].filter(Boolean)));
+          return JSON.stringify(merged) !== JSON.stringify(prev) ? merged : prev;
+        });
       })
       .catch(e => console.error(`Failed to load ${imageType}`, e))
       .finally(() => setLoading(false));
@@ -210,40 +225,62 @@ const RiderJobImages = ({
     try {
       const actualContentType = file.type || 'image/jpeg';
       const subFolder = imageType === 'pickupProofImageUrl' ? 'proofs-pickup' : (imageType === 'deliveryProofImageUrl' ? 'proofs-delivery' : 'bags');
-      const response = await fetch("/api/upload-url", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          entityType: "job",
-          entityId: jobId,
-          subType: `${subFolder}-${Date.now()}`,
-          contentType: actualContentType,
-        }),
-      });
+      const subType = `${subFolder}-${Date.now()}`;
+      let publicUrl = "";
 
-      if (!response.ok) throw new Error("Failed to get upload authorization");
-      const { uploadUrl, publicUrl } = await response.json();
+      try {
+        const response = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getClientAuthHeaders() },
+          body: JSON.stringify({
+            entityType: "job",
+            entityId: jobId,
+            subType,
+            contentType: actualContentType,
+          }),
+        });
 
-      const uploadResponse = await fetch(uploadUrl, {
-        method: "PUT",
-        headers: { "Content-Type": actualContentType },
-        body: file,
-      });
+        if (!response.ok) throw new Error("Failed to get upload authorization");
+        const data = await response.json();
 
-      if (!uploadResponse.ok) throw new Error("Upload failed");
+        const uploadResponse = await fetch(data.uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": actualContentType },
+          body: file,
+        });
 
-      const updatedImages = [...images, publicUrl];
+        if (!uploadResponse.ok) throw new Error("Upload failed");
+        publicUrl = data.publicUrl || data.filePath;
+      } catch (gcsErr: any) {
+        console.warn("[RiderJobImages] Direct GCS upload failed, falling back to /api/upload-local:", gcsErr?.message || gcsErr);
+        const localFormData = new FormData();
+        localFormData.append("file", file);
+        localFormData.append("entityType", "job");
+        localFormData.append("entityId", jobId);
+        localFormData.append("subType", subType);
+
+        const fallbackRes = await fetch("/api/upload-local", {
+          method: "POST",
+          headers: { ...getClientAuthHeaders() },
+          body: localFormData,
+        });
+        if (!fallbackRes.ok) {
+          const errData = await fallbackRes.json().catch(() => ({}));
+          throw new Error(errData.error || "Upload fallback failed");
+        }
+        const fallbackData = await fallbackRes.json();
+        publicUrl = fallbackData.publicUrl;
+      }
+
+      const updatedImages = Array.from(new Set([...images, publicUrl].filter(Boolean)));
       const payload: any = {
         [imageType]: JSON.stringify(updatedImages)
       };
       if (imageType === 'deliveryProofImageUrl') {
-        payload.proofImageUrl = updatedImages[0];
+        payload.proofImageUrl = JSON.stringify(updatedImages);
       }
 
-      const res = await updateJobAction(jobId, { ...payload, __returnErrorObject: true });
-      if ((res as any)?.__actionError) {
-        throw new Error((res as any).error || "Failed to update job");
-      }
+      await jobStore.updateJobDetails(jobId, payload);
       setImages(updatedImages);
       toast.success("Photo uploaded successfully! 📸");
     } catch (err: any) {
@@ -1632,32 +1669,52 @@ export default function RiderPage() {
         // Upload all files in parallel
         const uploadPromises = proofFiles.map(async (proofFile, index) => {
           const actualContentType = proofFile.type || 'image/jpeg';
-          
-          // Upload to GCS
-          const response = await fetch("/api/upload-url", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              entityType: "job",
-              entityId: jobId,
-              subType: `proofs-${index}`,
-              contentType: actualContentType,
-            }),
-          });
+          const subType = `proofs-${index}`;
+          try {
+            const response = await fetch("/api/upload-url", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...getClientAuthHeaders() },
+              body: JSON.stringify({
+                entityType: "job",
+                entityId: jobId,
+                subType,
+                contentType: actualContentType,
+              }),
+            });
 
-          if (!response.ok) throw new Error("Failed to get upload authorization for a photo");
+            if (!response.ok) throw new Error("Failed to get upload authorization for a photo");
 
-          const { uploadUrl, publicUrl } = await response.json();
+            const { uploadUrl, publicUrl, filePath } = await response.json();
 
-          const uploadResponse = await fetch(uploadUrl, {
-            method: "PUT",
-            headers: { "Content-Type": actualContentType },
-            body: proofFile,
-          });
+            const uploadResponse = await fetch(uploadUrl, {
+              method: "PUT",
+              headers: { "Content-Type": actualContentType },
+              body: proofFile,
+            });
 
-          if (!uploadResponse.ok) throw new Error("Upload failed: " + uploadResponse.statusText);
-          
-          return publicUrl;
+            if (!uploadResponse.ok) throw new Error("Upload failed: " + uploadResponse.statusText);
+
+            return publicUrl || filePath;
+          } catch (gcsErr: any) {
+            console.warn("[handleCompleteJob] Direct GCS upload failed, falling back to /api/upload-local:", gcsErr?.message || gcsErr);
+            const localFormData = new FormData();
+            localFormData.append("file", proofFile);
+            localFormData.append("entityType", "job");
+            localFormData.append("entityId", jobId);
+            localFormData.append("subType", subType);
+
+            const fallbackRes = await fetch("/api/upload-local", {
+              method: "POST",
+              headers: { ...getClientAuthHeaders() },
+              body: localFormData,
+            });
+            if (!fallbackRes.ok) {
+              const errData = await fallbackRes.json().catch(() => ({}));
+              throw new Error(errData.error || "Upload fallback failed");
+            }
+            const fallbackData = await fallbackRes.json();
+            return fallbackData.publicUrl;
+          }
         });
 
         finalProofUrls = await Promise.all(uploadPromises);
@@ -1701,28 +1758,50 @@ export default function RiderPage() {
     try {
       const uploadPromises = loadFiles.map(async (loadFile, index) => {
         const actualContentType = loadFile.type || "image/jpeg";
-        const response = await fetch("/api/upload-url", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            entityType: "job",
-            entityId: jobId,
-            subType: `proofs-load-${Date.now()}-${index}`,
-            contentType: actualContentType,
-          }),
-        });
+        const subType = `proofs-load-${Date.now()}-${index}`;
+        try {
+          const response = await fetch("/api/upload-url", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...getClientAuthHeaders() },
+            body: JSON.stringify({
+              entityType: "job",
+              entityId: jobId,
+              subType,
+              contentType: actualContentType,
+            }),
+          });
 
-        if (!response.ok) throw new Error("Failed to get upload authorization for vehicle loading photo");
-        const { uploadUrl, publicUrl } = await response.json();
+          if (!response.ok) throw new Error("Failed to get upload authorization for vehicle loading photo");
+          const { uploadUrl, publicUrl, filePath } = await response.json();
 
-        const uploadResponse = await fetch(uploadUrl, {
-          method: "PUT",
-          headers: { "Content-Type": actualContentType },
-          body: loadFile,
-        });
+          const uploadResponse = await fetch(uploadUrl, {
+            method: "PUT",
+            headers: { "Content-Type": actualContentType },
+            body: loadFile,
+          });
 
-        if (!uploadResponse.ok) throw new Error("Upload failed: " + uploadResponse.statusText);
-        return publicUrl;
+          if (!uploadResponse.ok) throw new Error("Upload failed: " + uploadResponse.statusText);
+          return publicUrl || filePath;
+        } catch (gcsErr: any) {
+          console.warn("[handleConfirmVehicleLoad] Direct GCS upload failed, falling back to /api/upload-local:", gcsErr?.message || gcsErr);
+          const localFormData = new FormData();
+          localFormData.append("file", loadFile);
+          localFormData.append("entityType", "job");
+          localFormData.append("entityId", jobId);
+          localFormData.append("subType", subType);
+
+          const fallbackRes = await fetch("/api/upload-local", {
+            method: "POST",
+            headers: { ...getClientAuthHeaders() },
+            body: localFormData,
+          });
+          if (!fallbackRes.ok) {
+            const errData = await fallbackRes.json().catch(() => ({}));
+            throw new Error(errData.error || "Upload fallback failed");
+          }
+          const fallbackData = await fallbackRes.json();
+          return fallbackData.publicUrl;
+        }
       });
 
       finalLoadUrls = await Promise.all(uploadPromises);

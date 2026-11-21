@@ -299,7 +299,7 @@ export async function uploadReceiptImage(blob: Blob, entityId: string, filename:
     const file = new File([blob], filename, { type: "image/png" });
     const formData = new FormData();
     formData.append("file", file);
-    formData.append("entityType", "jobs");
+    formData.append("entityType", "job");
     formData.append("entityId", entityId || "unknown");
     formData.append("subType", "proofs");
     const res = await fetch("/api/upload-local", {
@@ -308,7 +308,7 @@ export async function uploadReceiptImage(blob: Blob, entityId: string, filename:
       body: formData,
     });
     const data = await res.json();
-    if (data.success && data.publicUrl) return filename.startsWith("receipt-") ? `${data.publicUrl}?v=${Date.now()}` : data.publicUrl;
+    if (data.success && data.publicUrl) return (filename.startsWith("receipt-") || filename.startsWith("proforma-")) ? `${data.publicUrl}?v=${Date.now()}` : data.publicUrl;
   } catch (localErr) {
     console.error("Local upload failed:", localErr);
   }

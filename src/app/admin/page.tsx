@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback, useDeferredValue } from "react";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
@@ -505,10 +505,22 @@ function AdminPageContent() {
   const [selectedMemberId, setSelectedMemberId] = useState("");
   const [customerPriceListId, setCustomerPriceListId] = useState<string | null>(null);
 
+  const deferredCustomerSearchQuery = useDeferredValue(customerSearchQuery);
+  const deferredCustomerName = useDeferredValue(customerName);
+  const deferredCustomerPhone = useDeferredValue(customerPhone);
+
   const filteredCustomers = useMemo(() => {
-    if (!customerSearchQuery.trim()) return [];
-    return customers.filter(c => matchCustomerSearch(c, customerSearchQuery));
-  }, [customerSearchQuery, customers]);
+    const q = deferredCustomerSearchQuery.trim();
+    if (!q) return [];
+    const results: Customer[] = [];
+    for (let i = 0; i < customers.length; i++) {
+      if (matchCustomerSearch(customers[i], q)) {
+        results.push(customers[i]);
+        if (results.length >= 50) break;
+      }
+    }
+    return results;
+  }, [deferredCustomerSearchQuery, customers]);
   
   const [pickupLoc, setPickupLoc] = useState("");
   const [pickupCoords, setPickupCoords] = useState<LatLng | null>(null);
@@ -1599,20 +1611,18 @@ function AdminPageContent() {
   }, [activeTab]);
 
   const isNewCustomer = useMemo(() => {
+    if (!dialogOpen) return false;
     // If no customer selected or typed, not a new customer
-    if (!selectedProfileCustomer && !customerPhone && !customerName) return false;
+    if (!selectedProfileCustomer && !deferredCustomerPhone && !deferredCustomerName) return false;
 
     if (selectedProfileCustomer) {
       return selectedProfileCustomer.isNew === true;
     }
 
-    const targetPhone = customerPhone?.trim();
-    const targetName = customerName?.trim().toUpperCase();
-
-    const matched = customers.find(c =>
-      (targetPhone && c.phone === targetPhone) ||
-      (targetName && c.name?.trim().toUpperCase() === targetName)
-    );
+    const matched = findMatchingCustomer(customers, {
+      customerName: deferredCustomerName,
+      customerPhone: deferredCustomerPhone,
+    });
 
     if (matched) {
       return matched.isNew === true;
@@ -1620,7 +1630,7 @@ function AdminPageContent() {
 
     // Completely new customer typed manually
     return true;
-  }, [selectedProfileCustomer, customerPhone, customerName, customers]);
+  }, [dialogOpen, selectedProfileCustomer, deferredCustomerPhone, deferredCustomerName, customers]);
 
   // Resolves primary / secondary / international phones for the active customer
   const phoneResolution = useMemo(() => {
@@ -2205,11 +2215,12 @@ function AdminPageContent() {
   const [isEditingRefImages, setIsEditingRefImages] = useState(false);
   const [zoomedRefImage, setZoomedRefImage] = useState<{ url: string; label: string } | null>(null);
 
-  // Merged Customer Past Transactions (DB + in-memory store)
+  // Merged Customer Past Transactions (DB + in-memory store) — computed ONLY when dialog is open
   const customerPastJobs = useMemo<any[]>(() => {
+    if (!dialogOpen) return [];
     const targetId = selectedProfileCustomer?.id || (editingJobId && activeJob?.customerId);
-    const targetPhone = (customerPhone || selectedProfileCustomer?.phone || activeJob?.customerPhone || "").trim();
-    const targetName = (customerName || selectedProfileCustomer?.name || activeJob?.customerName || "").trim();
+    const targetPhone = (deferredCustomerPhone || selectedProfileCustomer?.phone || activeJob?.customerPhone || "").trim();
+    const targetName = (deferredCustomerName || selectedProfileCustomer?.name || activeJob?.customerName || "").trim();
     const cleanTargetPhone = targetPhone.replace(/\D/g, "");
 
     if (!targetId && cleanTargetPhone.length < 8 && !targetName) return [];
@@ -2223,29 +2234,32 @@ function AdminPageContent() {
     });
 
     // 2. Add in-memory store jobs (fresher or uncommitted)
-    jobs.filter((j: any) => {
-      if (editingJobId && j.id === editingJobId) return false;
-      if (targetId && j.customerId && j.customerId === targetId) return true;
-      if (cleanTargetPhone.length >= 8 && j.customerPhone) {
+    const targetNameLower = targetName.length > 2 ? targetName.toLowerCase() : "";
+    for (let i = 0; i < jobs.length; i++) {
+      const j: any = jobs[i];
+      if (editingJobId && j.id === editingJobId) continue;
+      let matched = false;
+      if (targetId && j.customerId && j.customerId === targetId) {
+        matched = true;
+      } else if (cleanTargetPhone.length >= 8 && j.customerPhone) {
         const cleanJ = j.customerPhone.replace(/\D/g, "");
         if (cleanJ === cleanTargetPhone || (cleanJ.length >= 8 && cleanTargetPhone.endsWith(cleanJ)) || (cleanTargetPhone.length >= 8 && cleanJ.endsWith(cleanTargetPhone))) {
-          return true;
+          matched = true;
         }
+      } else if (targetNameLower && j.customerName && j.customerName.trim().toLowerCase() === targetNameLower) {
+        matched = true;
       }
-      if (targetName && targetName.length > 2 && j.customerName) {
-        if (j.customerName.trim().toLowerCase() === targetName.toLowerCase()) return true;
+      if (matched) {
+        jobMap[j.id] = j;
       }
-      return false;
-    }).forEach((j: any) => {
-      jobMap[j.id] = j;
-    });
+    }
 
     return (Object.values(jobMap) as any[]).sort((a: any, b: any) => {
       const timeA = new Date(a.createdAt || a.scheduledAt || a.date || 0).getTime();
       const timeB = new Date(b.createdAt || b.scheduledAt || b.date || 0).getTime();
       return timeB - timeA;
     });
-  }, [dbCustomerJobs, jobs, editingJobId, activeJob, selectedProfileCustomer, customerPhone, customerName]);
+  }, [dialogOpen, dbCustomerJobs, jobs, editingJobId, activeJob, selectedProfileCustomer, deferredCustomerPhone, deferredCustomerName]);
 
   const currentPastJob: any = customerPastJobs[pastJobIndex] || customerPastJobs[0] || null;
 
@@ -6247,6 +6261,33 @@ function AdminPageContent() {
   handleCreateNewJobRef.current = handleCreateNewJob;
   const stableHandleCreateNewJob = useCallback(() => {
     handleCreateNewJobRef.current();
+  }, []);
+
+  const handleOpenSplitDeliveryRef = useRef(handleOpenSplitDelivery);
+  handleOpenSplitDeliveryRef.current = handleOpenSplitDelivery;
+  const stableHandleOpenSplitDelivery = useCallback((job: Job) => {
+    handleOpenSplitDeliveryRef.current(job);
+  }, []);
+
+  const handleCreateOrderFromCalculatorRef = useRef(handleCreateOrderFromCalculator);
+  handleCreateOrderFromCalculatorRef.current = handleCreateOrderFromCalculator;
+  const stableHandleCreateOrderFromCalculator = useCallback((payload: CalculatorOrderPayload) => {
+    handleCreateOrderFromCalculatorRef.current(payload);
+  }, []);
+
+  const stableHandleTopUp = useCallback((customer?: Customer | null) => {
+    setTopUpCustomer(customer || null);
+    setShowTopUpDialog(true);
+  }, []);
+
+  const stableHandleNavigateToPois = useCallback(() => {
+    setActiveTab("pois");
+    window.history.replaceState(null, "", "#pois");
+  }, []);
+
+  const stableHandleNavigateToCalculator = useCallback(() => {
+    setActiveTab("calculator");
+    window.history.replaceState(null, "", "#calculator");
   }, []);
 
   return (
@@ -13105,7 +13146,7 @@ function AdminPageContent() {
               jobs={jobs} 
               onEditJob={stableHandleEditFullJob} 
               onCreateJob={stableHandleCreateNewJob} 
-              onSplitDelivery={handleOpenSplitDelivery}
+              onSplitDelivery={stableHandleOpenSplitDelivery}
               savingJobIds={savingJobIds} 
             />
           )}
@@ -13116,22 +13157,19 @@ function AdminPageContent() {
           {activeTab === "services" && hasAccess("services") && <AdminServiceMenu />}
           {activeTab === "customers" && hasAccess("customers") && (
             <AdminCRM 
-              onTopUp={(customer) => {
-                setTopUpCustomer(customer || null);
-                setShowTopUpDialog(true);
-              }} 
+              onTopUp={stableHandleTopUp} 
               onViewJob={stableHandleEditFullJob}
             />
           )}
           {activeTab === "calculator" && (
             <AdminFeeCalculator 
-              onNavigateToPois={() => handleTabChange("pois")} 
-              onCreateOrder={handleCreateOrderFromCalculator}
+              onNavigateToPois={stableHandleNavigateToPois} 
+              onCreateOrder={stableHandleCreateOrderFromCalculator}
             />
           )}
           {activeTab === "pois" && (
             <AdminPoiManager 
-              onBack={() => handleTabChange("calculator")} 
+              onBack={stableHandleNavigateToCalculator} 
               initialSubTab={((typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("subtab") : "duplicates") as any) || "duplicates"}
             />
           )}
@@ -13182,16 +13220,15 @@ function AdminPageContent() {
           {(hasOpenedInbox || activeTab === "inbox") && hasAccess("inbox") && (
             <div className={activeTab === "inbox" ? "flex-1 flex flex-col min-h-0 h-full" : "hidden"}>
               <AdminSocialInbox
+                isHidden={activeTab !== "inbox"}
                 currentUser={user}
                 customers={customers}
                 jobs={jobs}
                 shops={shopLocations}
                 onEditJob={stableHandleEditFullJob}
-                onCreateJobForCustomer={(cust) => {
-                  stableHandleCreateNewJob();
-                }}
-                onCreateOrderFromCalculator={handleCreateOrderFromCalculator}
-                onNavigateToPois={() => handleTabChange("pois")}
+                onCreateJobForCustomer={stableHandleCreateNewJob}
+                onCreateOrderFromCalculator={stableHandleCreateOrderFromCalculator}
+                onNavigateToPois={stableHandleNavigateToPois}
               />
             </div>
           )}

@@ -11,6 +11,7 @@ import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { getTransportFeeBreakdown, safeCeil, roundGrandTotal, findMatchingCustomer, formatJobDisplayId, generateReceiptNumber, formatBaht, formatReceiptCustomerPhone } from "@/lib/utils";
 
 import { customerStore, serviceStore } from "@/lib/store";
+import { getClientAuthHeaders } from "@/lib/client-auth";
 
 interface ShopInfo {
   id?: string;
@@ -364,7 +365,7 @@ export function A5ReceiptDialog({
       try {
         const signRes = await fetch("/api/upload-url", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...getClientAuthHeaders() },
           body: JSON.stringify({
             entityType: "job",
             entityId: targetId || "unknown",
@@ -392,10 +393,10 @@ export function A5ReceiptDialog({
         const file = new File([blob], filename, { type: "image/png" });
         const formData = new FormData();
         formData.append("file", file);
-        formData.append("entityType", "jobs");
+        formData.append("entityType", "job");
         formData.append("entityId", targetId || "unknown");
         formData.append("subType", "proofs");
-        const res = await fetch("/api/upload-local", { method: "POST", body: formData });
+        const res = await fetch("/api/upload-local", { method: "POST", headers: { ...getClientAuthHeaders() }, body: formData });
         uploadResult = await res.json();
       }
 

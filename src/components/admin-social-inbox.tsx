@@ -128,6 +128,7 @@ const QUICK_EMOJIS = [
 ];
 
 interface AdminSocialInboxProps {
+  isHidden?: boolean;
   currentUser?: any;
   customers?: any[];
   jobs?: any[];
@@ -138,7 +139,7 @@ interface AdminSocialInboxProps {
   onNavigateToPois?: () => void;
 }
 
-export function AdminSocialInbox({
+export const AdminSocialInbox = React.memo(function AdminSocialInbox({
   currentUser,
   customers = [],
   jobs = [],
@@ -4878,4 +4879,21 @@ export function AdminSocialInbox({
       </Dialog>
     </div>
   );
-}
+}, (prevProps, nextProps) => {
+  // When Live Chat is hidden in the background (user is on All Jobs / Dashboard / CRM),
+  // skip re-rendering on background jobs/customers updates until the user switches back to Inbox.
+  if (prevProps.isHidden && nextProps.isHidden) {
+    return true;
+  }
+  return (
+    prevProps.isHidden === nextProps.isHidden &&
+    prevProps.currentUser === nextProps.currentUser &&
+    prevProps.customers === nextProps.customers &&
+    prevProps.jobs === nextProps.jobs &&
+    prevProps.shops === nextProps.shops &&
+    prevProps.onCreateJobForCustomer === nextProps.onCreateJobForCustomer &&
+    prevProps.onEditJob === nextProps.onEditJob &&
+    prevProps.onCreateOrderFromCalculator === nextProps.onCreateOrderFromCalculator &&
+    prevProps.onNavigateToPois === nextProps.onNavigateToPois
+  );
+});

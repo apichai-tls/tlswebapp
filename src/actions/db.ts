@@ -436,6 +436,20 @@ function mergeAdminNotesJson(
     ...incoming.obj,
     notes: mergedNotes,
   };
+  if (
+    Array.isArray(existing.obj.deliveryLoadedImageUrls) &&
+    existing.obj.deliveryLoadedImageUrls.length > 0 &&
+    incoming.obj.deliveryLoadedImageUrls !== null
+  ) {
+    const incLoaded = Array.isArray(incoming.obj.deliveryLoadedImageUrls)
+      ? incoming.obj.deliveryLoadedImageUrls
+      : [];
+    if (incLoaded.length > 0 || incoming.obj.deliveryLoadedOnVehicleAt !== null) {
+      mergedObj.deliveryLoadedImageUrls = Array.from(
+        new Set([...existing.obj.deliveryLoadedImageUrls, ...incLoaded])
+      );
+    }
+  }
   if (mergedPayments.length > 0 || Array.isArray(existing.obj.payments) || Array.isArray(incoming.obj.payments)) {
     mergedObj.payments = mergedPayments;
   }
@@ -3042,8 +3056,55 @@ async function updateJobActionInternal(id: string, updates: any) {
   }
   
   const isMediaOrProformaOnlyUpdate = Object.keys(updates).every(k => 
-    ['billImageUrl', 'bagImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl', 'proformaNumber', 'proformaRevision', 'proformaCartHash', 'adminNotesJson', 'actorId', 'actorName', 'actorRole', 'updatedAt', 'expectedUpdatedAt', 'checkConflict'].includes(k)
+    ['billImageUrl', 'bagImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl', 'proformaNumber', 'proformaRevision', 'proformaCartHash', 'adminNotesJson', 'actorId', 'actorName', 'actorRole', 'updatedAt', 'expectedUpdatedAt', 'checkConflict', 'isExplicitImageDelete'].includes(k)
   );
+  const isExplicitImageDelete = Boolean((updates as any)?.isExplicitImageDelete);
+  if (updates && 'isExplicitImageDelete' in updates) delete (updates as any).isExplicitImageDelete;
+
+  const parseStringUrlsArray = (raw: string | null | undefined): string[] => {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((u): u is string => typeof u === 'string' && Boolean(u.trim()));
+      }
+      if (typeof parsed === 'string' && parsed.trim()) {
+        return [parsed.trim()];
+      }
+    } catch {
+      if (typeof raw === 'string' && raw.trim()) {
+        return [raw.trim()];
+      }
+    }
+    return [];
+  };
+
+  const mergePhotoUrlsPreservingExisting = (
+    existingRaw: string | null | undefined,
+    incomingRaw: string | null | undefined,
+    allowDeletion: boolean
+  ): string | null => {
+    if (allowDeletion) {
+      if (!incomingRaw) return null;
+      const inc = parseStringUrlsArray(incomingRaw);
+      return inc.length > 0 ? JSON.stringify(Array.from(new Set(inc))) : null;
+    }
+    const existingList = parseStringUrlsArray(existingRaw);
+    const incomingList = parseStringUrlsArray(incomingRaw);
+    if (existingList.length === 0) {
+      return incomingList.length > 0 ? JSON.stringify(Array.from(new Set(incomingList))) : null;
+    }
+    const seenBase = new Set<string>();
+    const merged: string[] = [];
+    for (const u of [...existingList, ...incomingList]) {
+      const base = u.split('?')[0];
+      if (!seenBase.has(base)) {
+        seenBase.add(base);
+        merged.push(u);
+      }
+    }
+    return merged.length > 0 ? JSON.stringify(merged) : null;
+  };
 
   // 1. ATOMIC TRANSACTION: Acquire PostgreSQL row-level lock FIRST, then read freshJob,
   // perform all merges (adminNotesJson, legsJson, billImageUrl, proformaRevision, etc.) against freshJob,
@@ -3216,9 +3277,28 @@ async function updateJobActionInternal(id: string, updates: any) {
   }
   if (updates.subStatus !== undefined) data.subStatus = updates.subStatus;
   if (updates.completedAt !== undefined) data.completedAt = updates.completedAt;
-  if (updates.pickupProofImageUrl !== undefined) data.pickupProofImageUrl = updates.pickupProofImageUrl;
-  if (updates.deliveryProofImageUrl !== undefined) data.deliveryProofImageUrl = updates.deliveryProofImageUrl;
-  if (updates.proofImageUrl !== undefined) data.proofImageUrl = updates.proofImageUrl;
+  if (updates.pickupProofImageUrl !== undefined) {
+    data.pickupProofImageUrl = mergePhotoUrlsPreservingExisting(
+      existingJob?.pickupProofImageUrl,
+      updates.pickupProofImageUrl,
+      isExplicitImageDelete
+    );
+  }
+  if (updates.deliveryProofImageUrl !== undefined) {
+    const mergedDeliv = mergePhotoUrlsPreservingExisting(
+      existingJob?.deliveryProofImageUrl || existingJob?.proofImageUrl,
+      updates.deliveryProofImageUrl,
+      isExplicitImageDelete
+    );
+    data.deliveryProofImageUrl = mergedDeliv;
+    data.proofImageUrl = mergedDeliv;
+  } else if (updates.proofImageUrl !== undefined) {
+    data.proofImageUrl = mergePhotoUrlsPreservingExisting(
+      existingJob?.proofImageUrl,
+      updates.proofImageUrl,
+      isExplicitImageDelete
+    );
+  }
   if (updates.riderId !== undefined) data.riderId = updates.riderId;
   if (updates.legs) {
     if (
@@ -3348,7 +3428,13 @@ async function updateJobActionInternal(id: string, updates: any) {
     data.dropoffLat = updates.dropoffCoords.lat;
     data.dropoffLng = updates.dropoffCoords.lng;
   }
-  if (updates.bagImageUrl !== undefined) data.bagImageUrl = updates.bagImageUrl;
+  if (updates.bagImageUrl !== undefined) {
+    data.bagImageUrl = mergePhotoUrlsPreservingExisting(
+      existingJob?.bagImageUrl,
+      updates.bagImageUrl,
+      isExplicitImageDelete
+    );
+  }
   if (updates.billImageUrl !== undefined) {
     const getBillUrlCanonicalKey = (u: string): string => {
       const pfMatch = u.match(/proforma-(?:PR-)?([a-zA-Z0-9_-]+?-rev\d+\.png)/i);
@@ -3408,8 +3494,10 @@ async function updateJobActionInternal(id: string, updates: any) {
             ? existingUrls.filter(u => typeof u === "string" && !u.includes("/receipt-") && !u.includes("receipt-"))
             : existingUrls;
 
-          // Merge unique URLs so concurrent background uploads (e.g. proforma and receipt) never clobber each other
-          const filteredBaseExisting = isMediaOrProformaOnlyUpdate ? baseExisting : baseExisting.filter(u => typeof u === "string" && (u.includes("proforma-") || u.includes("receipt-")));
+          // Merge unique URLs so concurrent background uploads (e.g. proforma, receipt, and bill photos) never clobber each other
+          const filteredBaseExisting = isExplicitImageDelete
+            ? baseExisting.filter(u => typeof u === "string" && (u.includes("proforma-") || u.includes("receipt-")))
+            : baseExisting;
           const merged = deduplicateAndSortBillUrls([...filteredBaseExisting, ...incomingUrls]);
           data.billImageUrl = JSON.stringify(merged);
         } else {
