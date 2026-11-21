@@ -25,6 +25,26 @@ export async function GET(request: Request) {
   if (!verifyCronToken(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  const { searchParams } = new URL(request.url);
+  const force = searchParams.get("force") === "1";
+  const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
+  const bkkNow = new Date(Date.now() + BANGKOK_OFFSET_MS);
+  const bkkMinutes = bkkNow.getUTCHours() * 60 + bkkNow.getUTCMinutes();
+  const bangkokTimeStr = `${String(bkkNow.getUTCHours()).padStart(2, "0")}:${String(
+    bkkNow.getUTCMinutes()
+  ).padStart(2, "0")}`;
+
+  // Skip scheduled cron execution before 10:30 Asia/Bangkok unless ?force=1 is passed
+  if (!force && bkkMinutes < 10 * 60 + 30) {
+    return NextResponse.json({
+      success: true,
+      skipped: true,
+      reason: "Before 10:30 Asia/Bangkok",
+      bangkokTime: bangkokTimeStr,
+    });
+  }
+
   const result = await runAutoAssignLiveOnServer();
   return NextResponse.json(result, { status: result.success ? 200 : 500 });
 }
