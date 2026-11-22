@@ -140,6 +140,7 @@ interface AdminSocialInboxProps {
 }
 
 export const AdminSocialInbox = React.memo(function AdminSocialInbox({
+  isHidden = false,
   currentUser,
   customers = [],
   jobs = [],
@@ -800,9 +801,12 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
     const interval = setInterval(() => {
-      if (typeof document !== 'undefined' && document.hidden) return;
+      // Never fire background Server Action polls while hidden on another tab (CRM / Jobs / POS)
+      // because Next.js serializes Server Actions in a single client queue!
+      // SSE (tls-social-updated) still pushes live messages in <50ms while hidden.
+      if (isHidden || (typeof document !== 'undefined' && document.hidden)) return;
       syncLiveInboxNow(false);
-    }, 4000);
+    }, 10000);
 
     return () => {
       window.removeEventListener('tls-social-updated', handleSseSocialUpdate);
@@ -810,7 +814,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       clearInterval(interval);
     };
-  }, [syncLiveInboxNow, playNotificationChime]);
+  }, [isHidden, syncLiveInboxNow, playNotificationChime]);
 
   // Active Conversation & Messages
   const activeConversation = useMemo(

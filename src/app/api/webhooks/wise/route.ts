@@ -115,21 +115,50 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // 2. If not matched by reference, match by exact amount on pending Wise jobs in last 6 hours (only if unique)
+      // 2. If not matched by reference, match by exact amount on pending Wise jobs in last 12 hours (only if unique)
       if (!matchedJob && verifiedAmount > 0) {
-        const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+        const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
         const candidates = await prisma.job.findMany({
           where: {
             isPaid: false,
+            status: { notIn: ["cancel", "completed"] },
             paymentChannel: { contains: "wise", mode: "insensitive" },
             totalAmount: verifiedAmount,
-            updatedAt: { gte: sixHoursAgo },
+            updatedAt: { gte: twelveHoursAgo },
           },
           orderBy: { updatedAt: "desc" },
           take: 2,
         });
         if (candidates.length === 1) {
           matchedJob = candidates[0];
+        }
+      }
+
+      // 3. Fallback: If customer paid BEFORE staff selected "Wise" on the order (or left reference blank),
+      // match by EXACT amount + customer name token overlap (e.g. "Jonathan Bakhos" <-> "BAKHOS"), strictly if unique!
+      if (!matchedJob && verifiedAmount > 0 && verifiedSenderName && verifiedSenderName !== "Wise Webhook") {
+        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const amountMatches = await prisma.job.findMany({
+          where: {
+            isPaid: false,
+            status: { notIn: ["cancel", "completed"] },
+            totalAmount: verifiedAmount,
+            updatedAt: { gte: twentyFourHoursAgo },
+          },
+          orderBy: { updatedAt: "desc" },
+          take: 10,
+        });
+        const senderTokens = verifiedSenderName
+          .toLowerCase()
+          .replace(/[^a-z0-9ก-๙\s]/g, " ")
+          .split(/\s+/)
+          .filter((t) => t.length >= 3);
+        const nameMatched = amountMatches.filter((j) => {
+          const cust = String(j.customerName || "").toLowerCase();
+          return senderTokens.some((tok) => cust.includes(tok));
+        });
+        if (nameMatched.length === 1) {
+          matchedJob = nameMatched[0];
         }
       }
 

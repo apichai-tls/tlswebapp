@@ -2914,7 +2914,21 @@ export default function RiderPage() {
                         <span className="text-sm font-bold">{distance} km</span>
                       </div>
                       <a 
-                        href={`https://www.google.com/maps/dir/?api=1&destination=${targetCoords?.lat || 13.7},${targetCoords?.lng || 100.5}`}
+                        href={(() => {
+                          const hasValidCoords =
+                            Boolean(targetCoords) &&
+                            Math.abs(Number(targetCoords?.lat || 0)) > 0.1 &&
+                            Math.abs(Number(targetCoords?.lng || 0)) > 0.1;
+                          const dest = hasValidCoords
+                            ? `${targetCoords!.lat},${targetCoords!.lng}`
+                            : encodeURIComponent(
+                                (targetLocation || "")
+                                  .replace(/^⭐\s*/, "")
+                                  .replace(/\s*\(Room[^)]*\)/gi, "")
+                                  .trim()
+                              );
+                          return `https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=driving`;
+                        })()}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex items-center gap-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 px-3 py-1 rounded-lg transition-colors font-bold text-xs"

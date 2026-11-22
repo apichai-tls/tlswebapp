@@ -182,12 +182,16 @@ export function WisePaymentDialog({
           });
         }
       } else if (isManual) {
-        const latest = res.activities?.[0];
-        toast.info(
-          `ยังไม่พบยอดโอนใหม่ ฿${amountToPay.toFixed(2)} สำหรับบิล ${orderRef}${
-            latest ? ` (รายการล่าสุด: ${latest.senderName} ${latest.rawAmount})` : ""
-          }`
-        );
+        if (!res.success && res.error) {
+          toast.error(`Wise API Error: ${res.error}`);
+        } else {
+          const latest = res.activities?.[0];
+          toast.info(
+            `ยังไม่พบยอดโอนใหม่ ฿${amountToPay.toFixed(2)} สำหรับบิล ${orderRef}${
+              latest ? ` (รายการล่าสุด: ${latest.senderName} ${latest.rawAmount})` : ""
+            }`
+          );
+        }
       }
     } catch (err: any) {
       if (isManual) {

@@ -51,17 +51,36 @@ export async function fetchWiseRecentTransactionsInternal(limit: number = 20): P
   try {
     const creds = await getStoredWiseCredentials();
     const token = creds.token;
-    const profileId = creds.profileId || 47558107;
+    const profileId = creds.profileId || DEFAULT_WISE_PROFILE_ID;
 
     if (!token) {
       return { success: false, error: 'Wise API Token is not configured.' };
     }
 
-    const activities = await fetchWiseActivities(token, profileId, limit);
-    return {
-      success: true,
-      activities,
-    };
+    try {
+      const activities = await fetchWiseActivities(token, profileId, limit);
+      return {
+        success: true,
+        activities,
+      };
+    } catch (primaryErr: any) {
+      // If a stale WISE_API_TOKEN / WISE_PROFILE_ID env var or DB setting fails with 401/403,
+      // automatically fall back to the verified default business token + profileId!
+      if (token !== DEFAULT_WISE_TOKEN || String(profileId) !== DEFAULT_WISE_PROFILE_ID) {
+        try {
+          const fallbackActivities = await fetchWiseActivities(
+            DEFAULT_WISE_TOKEN,
+            DEFAULT_WISE_PROFILE_ID,
+            limit
+          );
+          return {
+            success: true,
+            activities: fallbackActivities,
+          };
+        } catch {}
+      }
+      throw primaryErr;
+    }
   } catch (err: any) {
     return {
       success: false,

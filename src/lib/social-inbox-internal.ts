@@ -566,11 +566,26 @@ export async function recordInboundSocialMessageInternal(input: {
   text: string;
   attachments?: SocialMessageAttachment[];
   customerId?: string | null;
+  messageId?: string;
+  createdAt?: string;
+  isHistorySync?: boolean;
 }) {
   return withSocialStoreLock(async () => {
     try {
       const { conversations, messages } = await loadRawSocialInboxStore();
+
+      // Deduplicate by deterministic external messageId (e.g. msg_wa_in_<key.id>)
+      // so reconnect history syncs NEVER duplicate bubbles or re-increment unreadCount!
+      if (input.messageId && messages.some((m) => m.id === input.messageId)) {
+        return { success: true, deduped: true };
+      }
+
       const nowIso = new Date().toISOString();
+      const msgIso =
+        input.createdAt && !isNaN(new Date(input.createdAt).getTime())
+          ? new Date(input.createdAt).toISOString()
+          : nowIso;
+      const msgMs = new Date(msgIso).getTime();
 
       const convIdx = conversations.findIndex((c) =>
         matchesConversationContact(
@@ -584,17 +599,28 @@ export async function recordInboundSocialMessageInternal(input: {
 
       let conv: SocialConversation;
       if (convIdx >= 0) {
+        const existing = conversations[convIdx];
+        const existingLastMs = existing.lastMessageAt
+          ? new Date(existing.lastMessageAt).getTime()
+          : 0;
+        const isNewerOrEqual = msgMs >= existingLastMs;
+        const lastReadMs = existing.lastReadAt ? new Date(existing.lastReadAt).getTime() : 0;
+        const alreadyReadByWatermark = Boolean(lastReadMs && msgMs <= lastReadMs + 1500);
+        const shouldBumpUnread = !alreadyReadByWatermark && (!input.isHistorySync || isNewerOrEqual);
+
         conv = {
-          ...conversations[convIdx],
-          contactName: input.contactName || conversations[convIdx].contactName,
-          contactAvatar: input.contactAvatar || conversations[convIdx].contactAvatar,
-          customerId: input.customerId || conversations[convIdx].customerId,
-          lastMessageText: input.text,
-          lastMessageAt: nowIso,
-          lastMessageDirection: 'inbound',
-          unreadCount: (conversations[convIdx].unreadCount || 0) + 1,
+          ...existing,
+          contactName: input.contactName || existing.contactName,
+          contactAvatar: input.contactAvatar || existing.contactAvatar,
+          customerId: input.customerId || existing.customerId,
+          lastMessageText: isNewerOrEqual ? input.text : existing.lastMessageText,
+          lastMessageAt: isNewerOrEqual ? msgIso : existing.lastMessageAt,
+          lastMessageDirection: isNewerOrEqual ? 'inbound' : existing.lastMessageDirection,
+          unreadCount: shouldBumpUnread
+            ? (existing.unreadCount || 0) + 1
+            : existing.unreadCount || 0,
           status: 'open',
-          updatedAt: nowIso,
+          updatedAt: isNewerOrEqual ? msgIso : existing.updatedAt,
         };
         conversations.splice(convIdx, 1);
       } else {
@@ -608,17 +634,19 @@ export async function recordInboundSocialMessageInternal(input: {
           contactHandle: input.externalContactId,
           customerId: input.customerId || null,
           status: 'open',
-          unreadCount: 1,
+          unreadCount: input.isHistorySync ? 0 : 1,
           lastMessageText: input.text,
-          lastMessageAt: nowIso,
+          lastMessageAt: msgIso,
           lastMessageDirection: 'inbound',
-          createdAt: nowIso,
-          updatedAt: nowIso,
+          createdAt: msgIso,
+          updatedAt: msgIso,
         };
       }
 
       const inboundMsg: SocialMessage = {
-        id: `msg_in_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        id:
+          input.messageId ||
+          `msg_in_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         conversationId: conv.id,
         channel: input.channel,
         direction: 'inbound',
@@ -626,26 +654,28 @@ export async function recordInboundSocialMessageInternal(input: {
         attachments: input.attachments,
         senderName: conv.contactName,
         status: 'delivered',
-        createdAt: nowIso,
+        createdAt: msgIso,
       };
 
       messages.push(inboundMsg);
       conversations.unshift(conv);
 
-      // Push live message + conversation directly over SSE in <50ms BEFORE waiting for 4MB DB write!
-      try {
-        const { publishOrderEvent } = await import('@/lib/realtime-bus');
-        await publishOrderEvent({
-          type: 'social.updated',
-          jobId: `__SOCIAL_MSG_${inboundMsg.id}`,
-          updatedAt: new Date(),
-          socialPayload: {
-            kind: 'message',
-            conversation: conv,
-            message: inboundMsg,
-          },
-        });
-      } catch {}
+      // Push live message + conversation directly over SSE in <50ms BEFORE waiting for DB write!
+      if (!input.isHistorySync) {
+        try {
+          const { publishOrderEvent } = await import('@/lib/realtime-bus');
+          await publishOrderEvent({
+            type: 'social.updated',
+            jobId: `__SOCIAL_MSG_${inboundMsg.id}`,
+            updatedAt: new Date(),
+            socialPayload: {
+              kind: 'message',
+              conversation: conv,
+              message: inboundMsg,
+            },
+          });
+        } catch {}
+      }
 
       await saveRawSocialInboxStore(conversations, messages);
 
@@ -674,11 +704,23 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
   imageUrls?: string[];
   senderName?: string;
   messageId?: string;
+  createdAt?: string;
+  isHistorySync?: boolean;
 }) {
   return withSocialStoreLock(async () => {
   try {
     const { conversations, messages } = await loadRawSocialInboxStore();
+
+    if (input.isHistorySync && input.messageId && messages.some((m) => m.id === input.messageId)) {
+      return { success: true, deduped: true };
+    }
+
     const nowIso = new Date().toISOString();
+    const msgIso =
+      input.createdAt && !isNaN(new Date(input.createdAt).getTime())
+        ? new Date(input.createdAt).toISOString()
+        : nowIso;
+    const msgMs = new Date(msgIso).getTime();
 
     const convIdx = conversations.findIndex((c) =>
       matchesConversationContact(
@@ -692,19 +734,24 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
 
     let conv: SocialConversation;
     if (convIdx >= 0) {
+      const existing = conversations[convIdx];
+      const existingLastMs = existing.lastMessageAt
+        ? new Date(existing.lastMessageAt).getTime()
+        : 0;
+      const isNewerOrEqual = msgMs >= existingLastMs;
       conv = {
-        ...conversations[convIdx],
-        externalContactId: input.externalContactId || conversations[convIdx].externalContactId,
-        contactName: input.contactName || conversations[convIdx].contactName,
-        contactPhone: input.contactPhone || conversations[convIdx].contactPhone,
-        contactAvatar: input.contactAvatar || conversations[convIdx].contactAvatar,
-        customerId: input.customerId || conversations[convIdx].customerId,
-        lastMessageText: input.text,
-        lastMessageAt: nowIso,
-        lastMessageDirection: 'outbound',
-        unreadCount: 0,
+        ...existing,
+        externalContactId: input.externalContactId || existing.externalContactId,
+        contactName: input.contactName || existing.contactName,
+        contactPhone: input.contactPhone || existing.contactPhone,
+        contactAvatar: input.contactAvatar || existing.contactAvatar,
+        customerId: input.customerId || existing.customerId,
+        lastMessageText: isNewerOrEqual ? input.text : existing.lastMessageText,
+        lastMessageAt: isNewerOrEqual ? msgIso : existing.lastMessageAt,
+        lastMessageDirection: isNewerOrEqual ? 'outbound' : existing.lastMessageDirection,
+        unreadCount: isNewerOrEqual ? 0 : existing.unreadCount || 0,
         status: 'open',
-        updatedAt: nowIso,
+        updatedAt: isNewerOrEqual ? msgIso : existing.updatedAt,
       };
       conversations.splice(convIdx, 1);
     } else {
@@ -724,10 +771,10 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
         status: 'open',
         unreadCount: 0,
         lastMessageText: input.text,
-        lastMessageAt: nowIso,
+        lastMessageAt: msgIso,
         lastMessageDirection: 'outbound',
-        createdAt: nowIso,
-        updatedAt: nowIso,
+        createdAt: msgIso,
+        updatedAt: msgIso,
       };
     }
 
@@ -752,7 +799,7 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
       senderName: input.senderName || 'LINE OA Bot',
       status: 'delivered',
       deliveryMethod: input.channel === 'line' ? 'line_api' : 'social_api',
-      createdAt: nowIso,
+      createdAt: msgIso,
     };
 
     if (existingMsgIdx >= 0) {
@@ -763,19 +810,21 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
     conversations.unshift(conv);
 
     // Push live outbound message + conversation directly over SSE in <50ms BEFORE waiting for 4MB DB write!
-    try {
-      const { publishOrderEvent } = await import('@/lib/realtime-bus');
-      await publishOrderEvent({
-        type: 'social.updated',
-        jobId: `__SOCIAL_MSG_${outboundMsg.id}`,
-        updatedAt: new Date(),
-        socialPayload: {
-          kind: 'message',
-          conversation: conv,
-          message: outboundMsg,
-        },
-      });
-    } catch {}
+    if (!input.isHistorySync) {
+      try {
+        const { publishOrderEvent } = await import('@/lib/realtime-bus');
+        await publishOrderEvent({
+          type: 'social.updated',
+          jobId: `__SOCIAL_MSG_${outboundMsg.id}`,
+          updatedAt: new Date(),
+          socialPayload: {
+            kind: 'message',
+            conversation: conv,
+            message: outboundMsg,
+          },
+        });
+      } catch {}
+    }
 
     await saveRawSocialInboxStore(conversations, messages);
     return { success: true, conversation: conv, message: outboundMsg };

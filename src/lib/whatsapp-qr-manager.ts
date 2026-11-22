@@ -23,6 +23,7 @@ interface GlobalWhatsAppSingleton {
   startingPromise: Promise<WhatsAppQrState> | null;
   sentMessageIds: Set<string>;
   lastInboundKeys: Map<string, any>;
+  lidToPhoneMap: Map<string, string>;
   autoStartChecked: boolean;
   replacedByAnotherInstance: boolean;
   resolvedAuthDir: string | null;
@@ -57,6 +58,7 @@ function getSingleton(): GlobalWhatsAppSingleton {
       startingPromise: null,
       sentMessageIds: new Set<string>(),
       lastInboundKeys: new Map<string, any>(),
+      lidToPhoneMap: new Map<string, string>(),
       autoStartChecked: false,
       replacedByAnotherInstance: false,
       resolvedAuthDir: null,
@@ -64,6 +66,9 @@ function getSingleton(): GlobalWhatsAppSingleton {
       cachedWaVersion: null,
       cachedCredsMeta: null,
     };
+  }
+  if (!globalForWa.__tlsWhatsAppQrSingleton.lidToPhoneMap) {
+    globalForWa.__tlsWhatsAppQrSingleton.lidToPhoneMap = new Map<string, string>();
   }
   return globalForWa.__tlsWhatsAppQrSingleton;
 }
@@ -140,8 +145,16 @@ function scheduleBackupAuthDirToDb(authDir: string, delayMs = 45000): void {
       const filesMap: Record<string, string> = {};
       for (const name of entries) {
         if (!name.endsWith('.json')) continue;
-        // Persist creds.json and essential app-state/pre-key files
-        if (name === 'creds.json' || name.startsWith('app-state-sync-') || name.startsWith('session-')) {
+        // Persist creds.json, app-state, Signal sessions, pre-keys, and LID-to-Phone mappings
+        // so Cloud Run restarts NEVER fail decryption or lose @lid -> phone resolution for new contacts!
+        if (
+          name === 'creds.json' ||
+          name.startsWith('app-state-sync-') ||
+          name.startsWith('session-') ||
+          name.startsWith('lid-mapping-') ||
+          name.startsWith('pre-key-') ||
+          name.startsWith('sender-key-')
+        ) {
           const content = await fs.promises.readFile(path.join(authDir, name), 'utf8');
           filesMap[name] = content;
         }
@@ -179,7 +192,32 @@ async function clearAuthFromDiskAndDb(): Promise<void> {
   } catch {}
 }
 
+function rememberLidMapping(a?: string | null, b?: string | null): void {
+  const s = getSingleton();
+  const candidates = [a, b].filter(Boolean) as string[];
+  let lidKey = '';
+  let phoneDigits = '';
+  for (const c of candidates) {
+    if (c.endsWith('@lid')) {
+      lidKey = c.split('@')[0].split(':')[0].trim();
+    } else if (c.endsWith('@s.whatsapp.net') || c.endsWith('@c.us')) {
+      const digits = c.split('@')[0].split(':')[0].replace(/\D/g, '');
+      if (digits.length >= 7) phoneDigits = digits;
+    } else if (/^\+?\d{7,15}$/.test(c.trim())) {
+      phoneDigits = c.replace(/\D/g, '');
+    }
+  }
+  if (lidKey && phoneDigits) {
+    s.lidToPhoneMap.set(lidKey, phoneDigits);
+    if (s.lidToPhoneMap.size > 5000) {
+      const oldest = s.lidToPhoneMap.keys().next().value;
+      if (oldest) s.lidToPhoneMap.delete(oldest);
+    }
+  }
+}
+
 function extractPhoneDigitsFromJid(jid?: string | null, altJid?: string | null): string {
+  rememberLidMapping(jid, altJid);
   for (const candidate of [altJid, jid]) {
     if (!candidate) continue;
     if (candidate.endsWith('@s.whatsapp.net') || candidate.endsWith('@c.us')) {
@@ -187,8 +225,100 @@ function extractPhoneDigitsFromJid(jid?: string | null, altJid?: string | null):
       if (userPart.length >= 7) return userPart;
     }
   }
+  // Resolve @lid via in-memory LID -> Phone map so non-contacts never split into ghost threads!
+  const s = getSingleton();
+  for (const candidate of [jid, altJid]) {
+    if (candidate && candidate.endsWith('@lid')) {
+      const lidKey = candidate.split('@')[0].split(':')[0].trim();
+      const mapped = s.lidToPhoneMap.get(lidKey);
+      if (mapped && mapped.length >= 7) return mapped;
+    }
+  }
   const fallback = (altJid || jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
   return fallback;
+}
+
+async function resolvePhoneDigitsAsync(
+  sock: any,
+  jid?: string | null,
+  altJid?: string | null,
+  extraCandidates?: Array<string | null | undefined>
+): Promise<string> {
+  const all = [altJid, ...(extraCandidates || []), jid].filter(Boolean) as string[];
+  for (const c of all) {
+    if (c.endsWith('@s.whatsapp.net') || c.endsWith('@c.us')) {
+      rememberLidMapping(jid, c);
+      const userPart = c.split('@')[0].split(':')[0].replace(/\D/g, '');
+      if (userPart.length >= 7) return userPart;
+    }
+  }
+  const syncMapped = extractPhoneDigitsFromJid(jid, altJid);
+  // If the primary jid is @lid and we didn't find a PN mapping yet, ask Baileys' internal lidMapping repo
+  if (jid && jid.endsWith('@lid')) {
+    const lidKey = jid.split('@')[0].split(':')[0].trim();
+    const s = getSingleton();
+    if (!s.lidToPhoneMap.has(lidKey)) {
+      try {
+        const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(jid);
+        if (pn) {
+          rememberLidMapping(jid, pn);
+          const digits = String(pn).split('@')[0].split(':')[0].replace(/\D/g, '');
+          if (digits.length >= 7) return digits;
+        }
+      } catch {}
+    } else {
+      return s.lidToPhoneMap.get(lidKey)!;
+    }
+  }
+  return syncMapped;
+}
+
+function extractWhatsAppMessageTimestampIso(m: any): string {
+  const rawTs = m?.messageTimestamp;
+  let sec = 0;
+  if (typeof rawTs === 'number') {
+    sec = rawTs;
+  } else if (typeof rawTs === 'string') {
+    sec = Number(rawTs) || 0;
+  } else if (rawTs && typeof rawTs === 'object') {
+    if (typeof rawTs.toNumber === 'function') {
+      sec = rawTs.toNumber();
+    } else if (typeof rawTs.low === 'number') {
+      sec = rawTs.low;
+    }
+  }
+  if (sec > 1_000_000_000_000) {
+    // Already in ms
+    return new Date(sec).toISOString();
+  }
+  if (sec > 1_500_000_000) {
+    return new Date(sec * 1000).toISOString();
+  }
+  return new Date().toISOString();
+}
+
+function unwrapWhatsAppMessageContent(rawMsg: any): any {
+  let inner = rawMsg;
+  for (let i = 0; i < 4 && inner; i++) {
+    if (inner.ephemeralMessage?.message) {
+      inner = inner.ephemeralMessage.message;
+    } else if (inner.viewOnceMessage?.message) {
+      inner = inner.viewOnceMessage.message;
+    } else if (inner.viewOnceMessageV2?.message) {
+      inner = inner.viewOnceMessageV2.message;
+    } else if (inner.viewOnceMessageV2Extension?.message) {
+      inner = inner.viewOnceMessageV2Extension.message;
+    } else if (inner.documentWithCaptionMessage?.message) {
+      inner = inner.documentWithCaptionMessage.message;
+    } else if (inner.editedMessage?.message) {
+      inner = inner.editedMessage.message;
+    } else if (inner.protocolMessage?.editedMessage) {
+      inner = inner.protocolMessage.editedMessage;
+    } else {
+      break;
+    }
+  }
+  return inner;
 }
 
 export function getWhatsAppQrStatus(): WhatsAppQrState {
@@ -475,140 +605,190 @@ export async function startWhatsAppQrConnection(
         }
       });
 
+      // Populate LID <-> Phone map from contacts & chats so non-contacts never split into ghost threads
+      const indexContactsForLid = (contacts: any[]) => {
+        if (!Array.isArray(contacts)) return;
+        for (const c of contacts) {
+          if (!c) continue;
+          rememberLidMapping(c.id, c.lid || c.phoneNumber);
+          if (c.lid && c.phoneNumber) rememberLidMapping(c.lid, c.phoneNumber);
+        }
+      };
+
+      sock.ev.on('contacts.upsert', (contacts: any[]) => indexContactsForLid(contacts));
+      sock.ev.on('contacts.update', (contacts: any[]) => indexContactsForLid(contacts));
+
+      const ingestWhatsAppMessage = async (m: any, opts: { isHistorySync: boolean }) => {
+        if (!m?.message || !m?.key) return;
+        const remoteJid = String(m.key.remoteJid || '');
+        // Ignore group chats, status broadcasts, and newsletter channels
+        if (
+          !remoteJid ||
+          remoteJid === 'status@broadcast' ||
+          remoteJid.endsWith('@g.us') ||
+          remoteJid.endsWith('@newsletter') ||
+          remoteJid.endsWith('@broadcast')
+        ) {
+          return;
+        }
+
+        const msgId = String(m.key.id || '');
+        if (msgId && s.sentMessageIds.has(msgId)) {
+          // Already recorded when sent from Omnichannel Live Chat Hub
+          return;
+        }
+
+        const phoneDigits = await resolvePhoneDigitsAsync(
+          sock,
+          remoteJid,
+          m.key.remoteJidAlt,
+          [m.key.senderPn, m.key.participantAlt, m.key.participant]
+        );
+        if (!phoneDigits || phoneDigits.length < 6) return;
+
+        const inner = unwrapWhatsAppMessageContent(m.message);
+        if (!inner) return;
+
+        let textBody = String(
+          inner?.conversation ||
+            inner?.extendedTextMessage?.text ||
+            inner?.imageMessage?.caption ||
+            inner?.videoMessage?.caption ||
+            inner?.documentMessage?.caption ||
+            inner?.buttonsResponseMessage?.selectedDisplayText ||
+            inner?.listResponseMessage?.title ||
+            inner?.templateButtonReplyMessage?.selectedDisplayText ||
+            ''
+        ).trim();
+
+        // Preserve non-text message types (voice notes, locations, documents, contacts, stickers)
+        if (!textBody) {
+          if (inner?.audioMessage) textBody = '🎤 [Voice note via WhatsApp]';
+          else if (inner?.videoMessage) textBody = '🎥 [Sent a video via WhatsApp]';
+          else if (inner?.documentMessage) {
+            const docName = inner.documentMessage.fileName || inner.documentMessage.title || 'Document';
+            textBody = `📎 [Document: ${docName}]`;
+          } else if (inner?.locationMessage) {
+            const locName = inner.locationMessage.name || inner.locationMessage.address || '';
+            const lat = inner.locationMessage.degreesLatitude;
+            const lng = inner.locationMessage.degreesLongitude;
+            textBody = locName
+              ? `📍 [Location: ${locName}]${lat && lng ? ` (${lat}, ${lng})` : ''}`
+              : lat && lng
+              ? `📍 [Shared Location: ${lat}, ${lng}]`
+              : '📍 [Shared a location via WhatsApp]';
+          } else if (inner?.contactMessage) {
+            textBody = `👤 [Shared Contact: ${inner.contactMessage.displayName || 'Contact'}]`;
+          } else if (inner?.stickerMessage) {
+            textBody = '🎭 [Sticker]';
+          }
+        }
+
+        const attachments: SocialMessageAttachment[] = [];
+        const imageUrls: string[] = [];
+
+        if (inner?.imageMessage && typeof downloadMediaMessage === 'function') {
+          try {
+            const buffer = await downloadMediaMessage(
+              m,
+              'buffer',
+              {},
+              { logger, reuploadRequest: sock.updateMediaMessage }
+            );
+            if (buffer) {
+              const rawBuffer = Buffer.from(buffer);
+              const mime = inner.imageMessage.mimetype || 'image/jpeg';
+              const safeId = (msgId || `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '');
+              const filename = `wa-${safeId}.jpg`;
+
+              // 1. Primary: Upload directly to Google Cloud Storage for permanent retention
+              let imageUrl: string | null = await uploadBufferToGcs(rawBuffer, {
+                entityType: 'system',
+                entityId: `wa_${phoneDigits}`,
+                subType: 'chat',
+                contentType: mime,
+                extension: 'jpg',
+                customFileName: filename,
+              });
+
+              // 2. Fallback: Local storage or inline base64 if GCS is unavailable
+              if (!imageUrl) {
+                try {
+                  const uploadDir = path.resolve(process.cwd(), 'storage', 'uploads', 'system', 'chat');
+                  await fs.promises.mkdir(uploadDir, { recursive: true });
+                  await fs.promises.writeFile(path.join(uploadDir, filename), rawBuffer);
+                  imageUrl = `/uploads/system/chat/${filename}`;
+                } catch {
+                  imageUrl = `data:${mime};base64,${rawBuffer.toString('base64')}`;
+                }
+              }
+              if (imageUrl) {
+                imageUrls.push(imageUrl);
+                attachments.push({
+                  type: 'image',
+                  url: imageUrl,
+                  name: 'WhatsApp Photo',
+                });
+              }
+            }
+          } catch (imgErr) {
+            console.warn('[WhatsApp QR Bridge] Failed to download image:', imgErr);
+          }
+        }
+
+        if (!textBody && attachments.length === 0) return;
+
+        const fromMe = Boolean(m.key.fromMe);
+        const displayPhone = formatDisplayPhone(phoneDigits, '66');
+        const pushName = !fromMe && m.pushName ? String(m.pushName).trim() : '';
+        const createdAtIso = extractWhatsAppMessageTimestampIso(m);
+
+        const {
+          recordInboundSocialMessageInternal,
+          recordOutboundSocialMessageFromSystemInternal,
+        } = await import('@/lib/social-inbox-internal');
+
+        if (!fromMe) {
+          if (m.key?.id && m.key?.remoteJid) {
+            s.lastInboundKeys.set(phoneDigits, m.key);
+            if (s.lastInboundKeys.size > 400) {
+              const oldest = s.lastInboundKeys.keys().next().value;
+              if (oldest) s.lastInboundKeys.delete(oldest);
+            }
+          }
+          await recordInboundSocialMessageInternal({
+            channel: 'whatsapp',
+            externalContactId: phoneDigits,
+            contactName: pushName || displayPhone,
+            contactPhone: displayPhone,
+            text: textBody || '📷 [Sent a photo via WhatsApp]',
+            attachments: attachments.length > 0 ? attachments : undefined,
+            messageId: msgId ? `msg_wa_in_${msgId}` : undefined,
+            createdAt: createdAtIso,
+            isHistorySync: opts.isHistorySync,
+          });
+        } else {
+          // Sent by Admin from WhatsApp phone app or WhatsApp Web! Sync into Omnichannel Hub too!
+          await recordOutboundSocialMessageFromSystemInternal({
+            channel: 'whatsapp',
+            externalContactId: phoneDigits,
+            contactPhone: displayPhone,
+            text: textBody || '📷 [Sent a photo via WhatsApp]',
+            imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+            senderName: 'Admin (WhatsApp App)',
+            messageId: msgId ? `msg_wa_echo_${msgId}` : undefined,
+            createdAt: createdAtIso,
+            isHistorySync: opts.isHistorySync,
+          });
+        }
+      };
+
       sock.ev.on('messages.upsert', async (event: any) => {
         try {
           if (event?.type !== 'notify' && event?.type !== 'append') return;
           const msgs: any[] = Array.isArray(event?.messages) ? event.messages : [];
-
           for (const m of msgs) {
-            if (!m?.message || !m?.key) continue;
-            const remoteJid = String(m.key.remoteJid || '');
-            // Ignore group chats, status broadcasts, and newsletter channels
-            if (
-              !remoteJid ||
-              remoteJid === 'status@broadcast' ||
-              remoteJid.endsWith('@g.us') ||
-              remoteJid.endsWith('@newsletter') ||
-              remoteJid.endsWith('@broadcast')
-            ) {
-              continue;
-            }
-
-            const msgId = String(m.key.id || '');
-            if (msgId && s.sentMessageIds.has(msgId)) {
-              // Already recorded when sent from Omnichannel Live Chat Hub
-              continue;
-            }
-
-            const phoneDigits = extractPhoneDigitsFromJid(remoteJid, m.key.remoteJidAlt);
-            if (!phoneDigits || phoneDigits.length < 6) continue;
-
-            const inner =
-              m.message?.ephemeralMessage?.message ||
-              m.message?.viewOnceMessage?.message ||
-              m.message?.viewOnceMessageV2?.message ||
-              m.message;
-
-            const textBody = String(
-              inner?.conversation ||
-                inner?.extendedTextMessage?.text ||
-                inner?.imageMessage?.caption ||
-                inner?.videoMessage?.caption ||
-                inner?.documentMessage?.caption ||
-                ''
-            ).trim();
-
-            const attachments: SocialMessageAttachment[] = [];
-            const imageUrls: string[] = [];
-
-            if (inner?.imageMessage && typeof downloadMediaMessage === 'function') {
-              try {
-                const buffer = await downloadMediaMessage(
-                  m,
-                  'buffer',
-                  {},
-                  { logger, reuploadRequest: sock.updateMediaMessage }
-                );
-                if (buffer) {
-                  const rawBuffer = Buffer.from(buffer);
-                  const mime = inner.imageMessage.mimetype || 'image/jpeg';
-                  const safeId = (msgId || `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '');
-                  const filename = `wa-${safeId}.jpg`;
-
-                  // 1. Primary: Upload directly to Google Cloud Storage for permanent retention
-                  let imageUrl: string | null = await uploadBufferToGcs(rawBuffer, {
-                    entityType: 'system',
-                    entityId: `wa_${phoneDigits}`,
-                    subType: 'chat',
-                    contentType: mime,
-                    extension: 'jpg',
-                    customFileName: filename,
-                  });
-
-                  // 2. Fallback: Local storage or inline base64 if GCS is unavailable
-                  if (!imageUrl) {
-                    try {
-                      const uploadDir = path.resolve(process.cwd(), 'storage', 'uploads', 'system', 'chat');
-                      await fs.promises.mkdir(uploadDir, { recursive: true });
-                      await fs.promises.writeFile(path.join(uploadDir, filename), rawBuffer);
-                      imageUrl = `/uploads/system/chat/${filename}`;
-                    } catch {
-                      imageUrl = `data:${mime};base64,${rawBuffer.toString('base64')}`;
-                    }
-                  }
-                  if (imageUrl) {
-                    imageUrls.push(imageUrl);
-                    attachments.push({
-                      type: 'image',
-                      url: imageUrl,
-                      name: 'WhatsApp Photo',
-                    });
-                  }
-                }
-              } catch (imgErr) {
-                console.warn('[WhatsApp QR Bridge] Failed to download image:', imgErr);
-              }
-            }
-
-            if (!textBody && attachments.length === 0) continue;
-
-            const fromMe = Boolean(m.key.fromMe);
-            const displayPhone = formatDisplayPhone(phoneDigits, '66');
-            const pushName = !fromMe && m.pushName ? String(m.pushName).trim() : '';
-
-            const {
-              recordInboundSocialMessageInternal,
-              recordOutboundSocialMessageFromSystemInternal,
-            } = await import('@/lib/social-inbox-internal');
-
-            if (!fromMe) {
-              if (m.key?.id && m.key?.remoteJid) {
-                s.lastInboundKeys.set(phoneDigits, m.key);
-                if (s.lastInboundKeys.size > 400) {
-                  const oldest = s.lastInboundKeys.keys().next().value;
-                  if (oldest) s.lastInboundKeys.delete(oldest);
-                }
-              }
-              await recordInboundSocialMessageInternal({
-                channel: 'whatsapp',
-                externalContactId: phoneDigits,
-                contactName: pushName || displayPhone,
-                contactPhone: displayPhone,
-                text: textBody || '📷 [Sent a photo via WhatsApp]',
-                attachments: attachments.length > 0 ? attachments : undefined,
-              });
-            } else {
-              // Sent by Admin from WhatsApp phone app or WhatsApp Web! Sync into Omnichannel Hub too!
-              await recordOutboundSocialMessageFromSystemInternal({
-                channel: 'whatsapp',
-                externalContactId: phoneDigits,
-                contactPhone: displayPhone,
-                text: textBody || '📷 [Sent a photo via WhatsApp]',
-                imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
-                senderName: 'Admin (WhatsApp App)',
-                messageId: msgId ? `msg_wa_echo_${msgId}` : undefined,
-              });
-            }
+            await ingestWhatsAppMessage(m, { isHistorySync: false });
           }
         } catch (err) {
           console.warn('[WhatsApp QR Bridge] messages.upsert handler error:', err);
@@ -625,6 +805,7 @@ export async function startWhatsAppQrConnection(
             if (!jid || jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) {
               continue;
             }
+            rememberLidMapping(jid, ch?.pnJid || ch?.lidJid);
             const cleared =
               ch?.unreadCount === 0 ||
               ch?.markedAsUnread === false ||
@@ -654,8 +835,39 @@ export async function startWhatsAppQrConnection(
       });
 
       sock.ev.on('messaging-history.set', async (payload: any) => {
-        if (Array.isArray(payload?.chats) && payload.chats.length > 0) {
-          await syncClearedWhatsAppChats(payload.chats);
+        try {
+          if (Array.isArray(payload?.contacts) && payload.contacts.length > 0) {
+            indexContactsForLid(payload.contacts);
+          }
+          if (Array.isArray(payload?.chats) && payload.chats.length > 0) {
+            for (const ch of payload.chats) {
+              rememberLidMapping(ch?.id, ch?.pnJid || ch?.lidJid);
+            }
+          }
+          // Backfill any missed messages from the last 72 hours (e.g. sent during Cloud Run restart/deploy)
+          if (Array.isArray(payload?.messages) && payload.messages.length > 0) {
+            const cutoffMs = Date.now() - 72 * 60 * 60 * 1000;
+            const recentMsgs = payload.messages
+              .filter((m: any) => {
+                if (!m?.message || !m?.key) return false;
+                const tsIso = extractWhatsAppMessageTimestampIso(m);
+                return new Date(tsIso).getTime() >= cutoffMs;
+              })
+              .sort(
+                (a: any, b: any) =>
+                  new Date(extractWhatsAppMessageTimestampIso(a)).getTime() -
+                  new Date(extractWhatsAppMessageTimestampIso(b)).getTime()
+              )
+              .slice(-200);
+            for (const m of recentMsgs) {
+              await ingestWhatsAppMessage(m, { isHistorySync: true });
+            }
+          }
+          if (Array.isArray(payload?.chats) && payload.chats.length > 0) {
+            await syncClearedWhatsAppChats(payload.chats);
+          }
+        } catch (err) {
+          console.warn('[WhatsApp QR Bridge] messaging-history.set handler error:', err);
         }
       });
 

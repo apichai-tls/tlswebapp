@@ -246,8 +246,9 @@ export async function addCustomerAction(data: any): Promise<{ success: boolean; 
       return { success: false, error: "ไม่สามารถสร้างลูกค้าใหม่ได้ กรุณาลองใหม่อีกครั้ง" };
     }
 
-    try {
-      await prisma.activityLog.create({
+    // Write ActivityLog asynchronously so Register New Customer returns immediately
+    void prisma.activityLog
+      .create({
         data: {
           entityId: c.id,
           entityType: 'customer',
@@ -263,12 +264,14 @@ export async function addCustomerAction(data: any): Promise<{ success: boolean; 
           }),
           userId: data.actorId || null,
           userName: data.actorName || null,
-        }
+        },
+      })
+      .then(() => {
+        console.log(`[ActivityLog] Created customer ${c.id} (${c.name}) by ${data.actorName || 'Unknown'}`);
+      })
+      .catch((err: any) => {
+        console.error("Failed to write ActivityLog on customer create:", err?.message);
       });
-      console.log(`[ActivityLog] Created customer ${c.id} (${c.name}) by ${data.actorName || 'Unknown'}`);
-    } catch (err: any) {
-      console.error("Failed to write ActivityLog on customer create:", err.message);
-    }
 
     const sanitizedCreated = primeCustomerCache(c) || sanitizeCustomerRecord(c);
     await publishOrderEvent({
@@ -1890,6 +1893,34 @@ export async function addJobAction(data: any) {
       if (needsSequentialId) {
         const seqLockKey = `job_seq:${prefix}`;
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${seqLockKey}))`;
+
+        // DB-level 90-second duplicate-order guard (survives multi-instance Cloud Run & client timeout retries):
+        // If the exact same staff member already created a non-cancelled order for the exact same customer,
+        // exact same pickupLocation (including Room #), and same totalAmount within the last 90s,
+        // return the existing order instead of creating a double entry!
+        const dedupeCustomerName = typeof data.customerName === 'string' ? data.customerName.trim() : '';
+        const dedupePickupLoc = typeof data.pickupLocation === 'string' ? data.pickupLocation.trim() : '';
+        const dedupeCreatedBy = (data.createdBy || data.actorName || '').trim();
+        const dedupeAmount = Number(data.totalAmount ?? 0);
+        if (dedupeCustomerName && dedupePickupLoc && dedupeCreatedBy) {
+          const ninetySecAgo = new Date(Date.now() - 90_000);
+          const recentDup = await tx.job.findFirst({
+            where: {
+              createdAt: { gte: ninetySecAgo },
+              status: { not: 'cancel' },
+              ...(data.customerId ? { customerId: data.customerId } : { customerName: dedupeCustomerName }),
+              pickupLocation: dedupePickupLoc,
+              createdBy: dedupeCreatedBy,
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+          if (recentDup && Math.abs(Number(recentDup.totalAmount ?? 0) - dedupeAmount) < 0.01) {
+            console.warn(
+              `[addJobAction] Prevented duplicate order for ${dedupeCustomerName} (${dedupePickupLoc}) by ${dedupeCreatedBy}; returning existing #${recentDup.id}`
+            );
+            return recentDup;
+          }
+        }
 
         const latestJob = await tx.job.findFirst({
           where: { id: { startsWith: prefix } },

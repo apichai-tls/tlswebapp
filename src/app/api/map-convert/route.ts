@@ -94,17 +94,16 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const fetchTarget = new URL(validation.parsed.toString());
-    fetchTarget.protocol = "https:";
+    let currentUrl = validation.parsed.toString().replace(/^http:\/\//i, "https://");
+    let finalUrl = currentUrl;
 
-    const res = await fetch(fetchTarget.toString(), { redirect: "manual" });
-
-    let finalUrl = fetchTarget.toString();
-
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location");
-      if (location) {
-        const resolvedRedirect = new URL(location, fetchTarget).toString();
+    // Follow up to 5 validated Google Maps redirects (maps.app.goo.gl often chains 2-3 hops)
+    for (let hop = 0; hop < 5; hop++) {
+      const res = await fetch(currentUrl, { redirect: "manual" });
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get("location");
+        if (!location) break;
+        const resolvedRedirect = new URL(location, currentUrl).toString();
         const redirectValidation = validateMapConvertUrl(resolvedRedirect);
         if (!redirectValidation.valid) {
           return NextResponse.json(
@@ -112,19 +111,28 @@ export async function GET(request: NextRequest) {
             { status: 400 }
           );
         }
-        finalUrl = resolvedRedirect;
+        currentUrl = resolvedRedirect.replace(/^http:\/\//i, "https://");
+        finalUrl = currentUrl;
+      } else {
+        break;
       }
     }
 
     let lat = null;
     let lng = null;
 
+    // Priority 1: Exact pinned place coordinates (!3d...!4d... or ?q=lat,lng or ll=lat,lng)
+    // Priority 2: Viewport center (@lat,lng) only as last resort
     const pMatch = finalUrl.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+    const qMatch = finalUrl.match(/[?&](?:q|query|ll)=(-?\d+\.\d+)(?:,|%2C)(-?\d+\.\d+)/i);
     const aMatch = finalUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
 
     if (pMatch) {
       lat = pMatch[1];
       lng = pMatch[2];
+    } else if (qMatch) {
+      lat = qMatch[1];
+      lng = qMatch[2];
     } else if (aMatch) {
       lat = aMatch[1];
       lng = aMatch[2];

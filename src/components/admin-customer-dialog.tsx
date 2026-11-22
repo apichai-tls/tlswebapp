@@ -871,21 +871,19 @@ export function AdminCustomerDialog({
         }
       } else {
         const newCustomer = await customerStore.addCustomer(customerData as any);
-        // Create initial address record in CustomerAddress table
+        // Create initial address record in CustomerAddress table asynchronously so Save finishes immediately
         if (newCustomer?.id && address.trim()) {
-          try {
-            await addCustomerAddressAction(newCustomer.id, {
-              label: addressLabel.trim() || "Hotel",
-              placeName: address.trim(),
-              address: address.trim(),
-              roomNumber: roomNo.trim() || undefined,
-              district: district || "Bangkok",
-              leaveWithJuristic,
-              isPrimary: true
-            });
-          } catch (addrErr) {
+          void addCustomerAddressAction(newCustomer.id, {
+            label: addressLabel.trim() || "Hotel",
+            placeName: address.trim(),
+            address: address.trim(),
+            roomNumber: roomNo.trim() || undefined,
+            district: district || "Bangkok",
+            leaveWithJuristic,
+            isPrimary: true
+          }).catch((addrErr) => {
             console.error("Failed to add initial address to CustomerAddress table:", addrErr);
-          }
+          });
         }
         if (newCustomer?.isMember && newCustomer?.memberId) {
           toast.success(`บันทึกลูกค้าใหม่ "${name}" สำเร็จ — ได้รับรหัสสมาชิก: ${newCustomer.memberId}`, { duration: 6000 });
