@@ -238,16 +238,47 @@ function schedulePgReconnect(delayMs: number) {
 
 let isPollingWatermark = false;
 let lastWatermarkPollAt = 0;
+let lastKnownSocialVersion = '';
+
 function ensureWatermarkLoop() {
   if (bus.watermarkTimer) return;
   bus.watermarkTimer = setInterval(async () => {
     if (bus.subscribers.size === 0 || isPollingWatermark) return;
-    // When PG LISTEN/NOTIFY is active, only run watermark reconciliation every 12s instead of every 1.5s
-    const minInterval = bus.pgConnected ? 12000 : 3500;
-    if (Date.now() - lastWatermarkPollAt < minInterval) return;
-    lastWatermarkPollAt = Date.now();
     isPollingWatermark = true;
     try {
+      // 1. Check 20-byte Social Inbox version stamp every 2s so multi-instance Cloud Run webhooks
+      //    (WhatsApp Cloud API / LINE OA) trigger an instant SSE push across all instances in <=2s!
+      const socialVerRow = await prisma.setting.findUnique({
+        where: { key: 'TLS_SOCIAL_VERSION_V1' },
+        select: { value: true },
+      });
+      const currentSocialVer = socialVerRow?.value?.trim() || '';
+      if (currentSocialVer && currentSocialVer !== lastKnownSocialVersion) {
+        const hadPrev = Boolean(lastKnownSocialVersion);
+        lastKnownSocialVersion = currentSocialVer;
+        if (hadPrev) {
+          const nowMs = Date.now();
+          const socialEv: RealtimeOrderEvent = {
+            eventId: `wm-social-${currentSocialVer}`,
+            type: 'social.updated',
+            jobId: `__SOCIAL_WM_${currentSocialVer}`,
+            revision: nowMs,
+            updatedAt: new Date(nowMs).toISOString(),
+            socialPayload: {
+              kind: 'message',
+              version: currentSocialVer,
+            },
+            instanceId: bus.instanceId,
+          };
+          recordAndDispatchLocal(socialEv, true);
+        }
+      }
+
+      // 2. Reconcile Job watermark
+      const minInterval = bus.pgConnected ? 6000 : 2500;
+      if (Date.now() - lastWatermarkPollAt < minInterval) return;
+      lastWatermarkPollAt = Date.now();
+
       const sinceDate = new Date(bus.lastWatermarkMs);
       const recentJobs = await prisma.job.findMany({
         where: {

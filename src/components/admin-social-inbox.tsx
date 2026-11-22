@@ -706,17 +706,16 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
   // SUB-50ms INSTANT REAL-TIME SYNC:
   // 1) Direct SSE payload splice (0ms React state update — zero HTTP round-trip!)
-  // 2) Tab Focus Sync + 4s ultra-lightweight 20-byte versioned fallback poll
+  // 2) Tab Focus Sync + 2.5s ultra-lightweight 20-byte versioned fallback poll
   useEffect(() => {
     const handleSseSocialUpdate = (evt: Event) => {
       const detail = (evt as CustomEvent)?.detail;
       const sp = detail?.socialPayload;
 
-      if (sp?.version) {
-        storeVersionRef.current = sp.version;
-      }
-
       if (sp?.kind === 'message' && (sp.conversation || sp.message)) {
+        if (sp?.version) {
+          storeVersionRef.current = sp.version;
+        }
         setLiveConnected(true);
         setLastLiveSyncAt(
           new Date().toLocaleTimeString([], {
@@ -737,7 +736,21 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
             }
           }
           setMessages((prev) => {
-            if (prev.some((m) => m.id === incomingMsg.id)) return prev;
+            const existingIdx = prev.findIndex((m) => m.id === incomingMsg.id);
+            if (existingIdx >= 0) {
+              // Update status/deliveryMethod/externalError in place (e.g. sent -> delivered -> read)
+              const existing = prev[existingIdx];
+              if (
+                existing.status === incomingMsg.status &&
+                existing.externalError === incomingMsg.externalError &&
+                existing.text === incomingMsg.text
+              ) {
+                return prev;
+              }
+              const next = [...prev];
+              next[existingIdx] = { ...existing, ...incomingMsg };
+              return next;
+            }
             if (incomingMsg.direction === 'inbound') {
               recentlyReadConvIdsRef.current.delete(incomingMsg.conversationId);
               playNotificationChime();
@@ -766,6 +779,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       }
 
       if (sp?.kind === 'read' && Array.isArray(sp.readConversationIds) && sp.readConversationIds.length > 0) {
+        if (sp?.version) storeVersionRef.current = sp.version;
         const readSet = new Set<string>(sp.readConversationIds);
         const nowMs = Date.now();
         for (const id of readSet) recentlyReadConvIdsRef.current.set(id, nowMs);
@@ -776,6 +790,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       }
 
       if (sp?.kind === 'read_all') {
+        if (sp?.version) storeVersionRef.current = sp.version;
         const ch = sp.channel || 'all';
         const nowMs = Date.now();
         setConversations((prev) =>
@@ -790,7 +805,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         return;
       }
 
-      // Fallback for generic social.updated events without inline payload
+      // Fallback for generic social.updated events without inline payload (do NOT advance storeVersionRef before fetching!)
       syncLiveInboxNow(false);
     };
 
@@ -810,7 +825,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       // SSE (tls-social-updated) still pushes live messages in <50ms while hidden.
       if (isHidden || (typeof document !== 'undefined' && document.hidden)) return;
       syncLiveInboxNow(false);
-    }, 10000);
+    }, 2500);
 
     return () => {
       window.removeEventListener('tls-social-updated', handleSseSocialUpdate);

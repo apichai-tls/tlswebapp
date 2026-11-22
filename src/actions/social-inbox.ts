@@ -1538,13 +1538,12 @@ export async function sendSocialMessageAction(input: {
       return { success: false, error: 'Message cannot be empty.' };
     }
 
-    const [authUser, { conversations, messages, config }, waQr] = await Promise.all([
+    const [authUser, { conversations, messages, config }] = await Promise.all([
       assertServerActionAuthorized({
         requireWrite: true,
         forbidRoles: ['rider'],
       }),
       loadRawInboxStore(),
-      getWhatsAppQrStatusAsync(false),
     ]);
 
     const convIdx = conversations.findIndex((c) => c.id === input.conversationId);
@@ -1562,6 +1561,10 @@ export async function sendSocialMessageAction(input: {
         : text;
 
     const waCreds = resolveWhatsAppCloudCredentials(config.whatsapp);
+    const isWaCloudMode = conv.channel === 'whatsapp' && config.whatsapp.mode === 'cloud_api' && waCreds.isConfigured;
+    const waQr = isWaCloudMode || conv.channel !== 'whatsapp'
+      ? { status: 'disconnected' as const }
+      : await getWhatsAppQrStatusAsync(false);
     const useWaCloudApi =
       conv.channel === 'whatsapp' &&
       waCreds.isConfigured &&
@@ -1904,19 +1907,36 @@ export async function sendSocialMessageAction(input: {
     conversations.splice(convIdx, 1);
     conversations.unshift(updatedConv);
 
+    let savedVer: string | undefined;
     if (pendingWaQrPromise) {
-      const [qrRes] = await Promise.all([
+      const [qrRes, v] = await Promise.all([
         pendingWaQrPromise,
         saveInboxStore(conversations, messages),
       ]);
+      savedVer = v;
       if (!qrRes.ok) {
         newMsg.status = 'failed';
         newMsg.externalError = qrRes.error;
-        await saveInboxStore(conversations, messages);
+        savedVer = await saveInboxStore(conversations, messages);
       }
     } else {
-      await saveInboxStore(conversations, messages);
+      savedVer = await saveInboxStore(conversations, messages);
     }
+
+    try {
+      const { publishOrderEvent } = await import('@/lib/realtime-bus');
+      await publishOrderEvent({
+        type: 'social.updated',
+        jobId: `__SOCIAL_OUT_${newMsg.id}`,
+        updatedAt: new Date(),
+        socialPayload: {
+          kind: 'message',
+          conversation: updatedConv,
+          message: newMsg,
+          version: savedVer,
+        },
+      });
+    } catch {}
 
     return {
       success: true,

@@ -671,7 +671,9 @@ export async function recordInboundSocialMessageInternal(input: {
       messages.push(inboundMsg);
       conversations.unshift(conv);
 
-      // Push live message + conversation directly over SSE in <50ms BEFORE waiting for DB write!
+      const savedVersion = await saveRawSocialInboxStore(conversations, messages);
+
+      // Push live message + conversation + committed version directly over SSE & PG NOTIFY!
       if (!input.isHistorySync) {
         try {
           const { publishOrderEvent } = await import('@/lib/realtime-bus');
@@ -683,12 +685,11 @@ export async function recordInboundSocialMessageInternal(input: {
               kind: 'message',
               conversation: conv,
               message: inboundMsg,
+              version: savedVersion,
             },
           });
         } catch {}
       }
-
-      await saveRawSocialInboxStore(conversations, messages);
 
       return {
         success: true,
