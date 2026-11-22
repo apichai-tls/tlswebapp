@@ -5695,14 +5695,14 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         onPaymentSuccess={async (paidInfo) => {
           if (onlinePaymentJob) {
             const { api, refreshDb } = await import("@/lib/api");
-            api.optimisticUpdate(onlinePaymentJob.id, {
-              isPaid: true,
-              isShopPaid: true,
-              paymentChannel: paidInfo.channel,
-            } as any);
-            jobStore.notify();
             await refreshDb();
             const updated = jobStore.getSnapshot().find(j => j.id === onlinePaymentJob.id) || onlinePaymentJob;
+            api.applyServerJob(
+              { ...updated, isPaid: true, isShopPaid: true, paymentChannel: paidInfo.channel },
+              undefined,
+              { clearSaveState: true }
+            );
+            jobStore.notify();
             setReceiptJob({ ...updated, isPaid: true, isShopPaid: true, paymentChannel: paidInfo.channel } as Job);
             setShowReceipt(true);
           }

@@ -852,10 +852,7 @@ function AdminPageContent() {
             (originalJobRef.current as any).adminNotesJson = updated.adminNotesJson;
             (originalJobRef.current as any).updatedAt = updated.updatedAt;
           }
-          api.optimisticUpdate(editingJobId, {
-            adminNotesJson: updated.adminNotesJson,
-            updatedAt: updated.updatedAt,
-          } as any);
+          api.applyServerJob(updated, undefined, { clearSaveState: true });
           jobStore.notify();
         }
       } catch (err) {
@@ -1396,7 +1393,62 @@ function AdminPageContent() {
           if (JSON.stringify(currentCartSimple) !== JSON.stringify(origCartSimple)) {
             conflicts.push("Order Items");
           } else {
+            const freshList = Array.isArray(freshJob.items) ? freshJob.items : [];
+            const mappedFreshCart = freshList.map((item: any) => ({
+              id: item.serviceId || item.id || Math.random().toString(),
+              name: item.name,
+              nameEn: item.nameEn || item.name,
+              quantity: item.quantity || 1,
+              price: item.price || 0,
+              basePrice: item.basePrice !== undefined ? item.basePrice : (item.price || 0),
+              category: item.category || "",
+              unit: item.unit || "pcs",
+            }));
+            setDialogCart(mappedFreshCart);
             orig.items = freshJob.items;
+            orig.itemsJson = (freshJob as any).itemsJson;
+            orig.totalAmount = freshJob.totalAmount;
+            orig.serviceType = freshJob.serviceType;
+            orig.laundryTypes = freshJob.laundryTypes;
+          }
+        }
+
+        // 7b. Location & Delivery Fee
+        if (
+          (freshJob.pickupLocation || "") !== (orig.pickupLocation || "") ||
+          (freshJob.dropoffLocation || "") !== (orig.dropoffLocation || "") ||
+          Number(freshJob.fee || 0) !== Number(orig.fee || 0)
+        ) {
+          const parseSyncRoom = (loc: string) => {
+            const match = (loc || "").match(/^(.*?)(?:\s*\(Room\s*((?:[^()]|\([^)]*\))*)\))+$/i);
+            if (match) return { base: match[1].trim(), room: (match[2] || "").trim() };
+            return { base: loc || "", room: "" };
+          };
+          const origP = parseSyncRoom(orig.pickupLocation || "");
+          const isLocalAddressUnmodified =
+            pickupLoc.trim() === origP.base.trim() &&
+            (!origP.room || pickupRoom.trim() === origP.room.trim());
+          if (isLocalAddressUnmodified) {
+            const freshP = parseSyncRoom(freshJob.pickupLocation || "");
+            const freshD = parseSyncRoom(freshJob.dropoffLocation || "");
+            setPickupLoc(freshP.base);
+            if (freshP.room) setPickupRoom(freshP.room);
+            if (freshJob.pickupCoords) setPickupCoords(freshJob.pickupCoords);
+            setDeliveryLoc(freshD.base);
+            if (freshD.room) setDeliveryRoom(freshD.room);
+            if (freshJob.dropoffCoords) setDeliveryCoords(freshJob.dropoffCoords);
+            if (freshJob.pickupDistance !== undefined) setPickupDist(freshJob.pickupDistance);
+            if (freshJob.deliveryDistance !== undefined) setDeliveryDist(freshJob.deliveryDistance);
+            setEditingFeeLock(freshJob.fee ?? null);
+            orig.pickupLocation = freshJob.pickupLocation;
+            orig.dropoffLocation = freshJob.dropoffLocation;
+            orig.pickupCoords = freshJob.pickupCoords;
+            orig.dropoffCoords = freshJob.dropoffCoords;
+            orig.pickupDistance = freshJob.pickupDistance;
+            orig.deliveryDistance = freshJob.deliveryDistance;
+            orig.pickupCommission = freshJob.pickupCommission;
+            orig.deliveryCommission = freshJob.deliveryCommission;
+            orig.fee = freshJob.fee;
             orig.totalAmount = freshJob.totalAmount;
           }
         }
@@ -1409,10 +1461,11 @@ function AdminPageContent() {
           return format(roundToNearest30(d), "yyyy-MM-dd'T'HH:mm");
         };
         const freshPickupStr = toSchedStr(freshJob.pickupScheduledAt || freshJob.scheduledAt);
-        const origPickupStr = toSchedStr(orig.pickupScheduledAt || orig.scheduledAt);
+        const origPickupStr = orig._initialPickupTimeStr || toSchedStr(orig.pickupScheduledAt || orig.scheduledAt);
         if (freshPickupStr && freshPickupStr !== origPickupStr) {
           if (!pickupScheduledTime || pickupScheduledTime === origPickupStr) {
             setPickupScheduledTime(freshPickupStr);
+            orig._initialPickupTimeStr = freshPickupStr;
             orig.pickupScheduledAt = freshJob.pickupScheduledAt;
             orig.pickupScheduledEndAt = freshJob.pickupScheduledEndAt;
             orig.scheduledAt = freshJob.scheduledAt;
@@ -1422,10 +1475,11 @@ function AdminPageContent() {
         }
 
         const freshDeliveryStr = toSchedStr(freshJob.deliveryScheduledAt);
-        const origDeliveryStr = toSchedStr(orig.deliveryScheduledAt);
+        const origDeliveryStr = orig._initialDeliveryTimeStr || toSchedStr(orig.deliveryScheduledAt);
         if (freshDeliveryStr && freshDeliveryStr !== origDeliveryStr) {
           if (!deliveryScheduledTime || deliveryScheduledTime === origDeliveryStr) {
             setDeliveryScheduledTime(freshDeliveryStr);
+            orig._initialDeliveryTimeStr = freshDeliveryStr;
             orig.deliveryScheduledAt = freshJob.deliveryScheduledAt;
             orig.deliveryScheduledEndAt = freshJob.deliveryScheduledEndAt;
           } else if (deliveryScheduledTime !== freshDeliveryStr) {
@@ -9302,7 +9356,33 @@ function AdminPageContent() {
                                 <select
                                   className="flex h-8 w-full rounded-lg border border-slate-200/90 bg-slate-50/70 hover:bg-white px-2 py-1 text-xs font-semibold text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/20"
                                   value={pickupRiderId}
-                                  onChange={(e) => setPickupRiderId(e.target.value)}
+                                  onChange={(e) => {
+                                    const nextRiderId = e.target.value;
+                                    setPickupRiderId(nextRiderId);
+                                    if (editingJobId) {
+                                      const targetId = editingJobId;
+                                      if (originalJobRef.current && originalJobRef.current.id === targetId) {
+                                        originalJobRef.current.pickupRiderId = nextRiderId || undefined;
+                                      }
+                                      jobStore
+                                        .updateJobDetails(targetId, {
+                                          pickupRiderId: (nextRiderId || null) as any,
+                                          actorId: user?.id,
+                                          actorName: user?.name || user?.email,
+                                          actorRole: user?.role,
+                                        } as any)
+                                        .then((saved) => {
+                                          if (
+                                            saved?.updatedAt &&
+                                            originalJobRef.current &&
+                                            originalJobRef.current.id === targetId
+                                          ) {
+                                            (originalJobRef.current as any).updatedAt = saved.updatedAt;
+                                          }
+                                        })
+                                        .catch(() => {});
+                                    }
+                                  }}
                                 >
                                   <option value="">-- Assign Rider --</option>
                                   {riders
@@ -9362,7 +9442,33 @@ function AdminPageContent() {
                                 <select
                                   className="flex h-8 w-full rounded-lg border border-slate-200/90 bg-slate-50/70 hover:bg-white px-2 py-1 text-xs font-semibold text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/20"
                                   value={deliveryRiderId}
-                                  onChange={(e) => setDeliveryRiderId(e.target.value)}
+                                  onChange={(e) => {
+                                    const nextRiderId = e.target.value;
+                                    setDeliveryRiderId(nextRiderId);
+                                    if (editingJobId) {
+                                      const targetId = editingJobId;
+                                      if (originalJobRef.current && originalJobRef.current.id === targetId) {
+                                        originalJobRef.current.deliveryRiderId = nextRiderId || undefined;
+                                      }
+                                      jobStore
+                                        .updateJobDetails(targetId, {
+                                          deliveryRiderId: (nextRiderId || null) as any,
+                                          actorId: user?.id,
+                                          actorName: user?.name || user?.email,
+                                          actorRole: user?.role,
+                                        } as any)
+                                        .then((saved) => {
+                                          if (
+                                            saved?.updatedAt &&
+                                            originalJobRef.current &&
+                                            originalJobRef.current.id === targetId
+                                          ) {
+                                            (originalJobRef.current as any).updatedAt = saved.updatedAt;
+                                          }
+                                        })
+                                        .catch(() => {});
+                                    }
+                                  }}
                                 >
                                   <option value="">-- Assign Rider --</option>
                                   {riders

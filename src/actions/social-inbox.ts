@@ -56,6 +56,13 @@ import {
   markWhatsAppChatReadOnDevice,
   type WhatsAppQrState,
 } from '@/lib/whatsapp-qr-manager';
+import {
+  resolveWhatsAppCloudCredentials,
+  verifyWhatsAppCloudConnection,
+  sendWhatsAppCloudApiMessage,
+  markWhatsAppCloudMessageAsRead,
+  type WhatsAppCloudVerificationResult,
+} from '@/lib/whatsapp-cloud-api';
 
 import { PrismaClient } from '@prisma/client';
 
@@ -1257,53 +1264,61 @@ export async function createWhatsAppChatAction(input: {
     if (msgText) {
       let deliveryMethod: SocialMessage['deliveryMethod'] = 'whatsapp_web_bridge';
       let status: SocialMessage['status'] = 'sent';
+      let externalMessageId: string | undefined;
+      let externalError: string | undefined;
 
-      // Priority 0: If Direct WhatsApp QR Link (Linked Devices) is connected, send directly!
-      const waQr = await getWhatsAppQrStatusAsync();
-      if (waQr.status === 'connected' || waQr.status === 'connecting') {
-        const qrSendRes = await sendDirectWhatsAppQrMessage({
-          phone: e164Phone,
-          countryCode,
+      const waCreds = resolveWhatsAppCloudCredentials(config.whatsapp);
+      const preferCloudApi = config.whatsapp.mode === 'cloud_api' && waCreds.isConfigured;
+
+      // Priority 1: If Meta WhatsApp Business Cloud API is active and configured, dispatch via Official Graph API
+      if (preferCloudApi) {
+        const cloudSend = await sendWhatsAppCloudApiMessage({
+          phoneNumberId: waCreds.phoneNumberId,
+          accessToken: waCreds.accessToken,
+          toPhoneE164: e164Phone,
+          customerName: conversation.customerName || conversation.contactName,
           text: msgText,
         });
-        if (qrSendRes.ok) {
-          deliveryMethod = 'whatsapp_gateway_api';
+        if (cloudSend.delivered) {
+          deliveryMethod = 'whatsapp_cloud_api';
           status = 'delivered';
+          externalMessageId = cloudSend.externalMessageId;
+        } else {
+          externalError = cloudSend.error;
         }
       }
 
-      // If WhatsApp Cloud API is configured and not already sent via QR, attempt direct Cloud API dispatch
-      if (
-        status !== 'delivered' &&
-        config.whatsapp.mode === 'cloud_api' &&
-        config.whatsapp.phoneNumberId &&
-        config.whatsapp.accessToken
-      ) {
-        try {
-          const cloudRes = await fetch(
-            `https://graph.facebook.com/v19.0/${encodeURIComponent(
-              config.whatsapp.phoneNumberId.trim()
-            )}/messages`,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${config.whatsapp.accessToken.trim()}`,
-              },
-              body: JSON.stringify({
-                messaging_product: 'whatsapp',
-                to: e164Phone,
-                type: 'text',
-                text: { body: msgText },
-              }),
-            }
-          );
-          if (cloudRes.ok) {
-            deliveryMethod = 'whatsapp_cloud_api';
+      // Priority 2: If Direct WhatsApp QR Link (Linked Devices) is connected and message not yet delivered, send directly!
+      if (status !== 'delivered') {
+        const waQr = await getWhatsAppQrStatusAsync();
+        if (waQr.status === 'connected' || waQr.status === 'connecting') {
+          const qrSendRes = await sendDirectWhatsAppQrMessage({
+            phone: e164Phone,
+            countryCode,
+            text: msgText,
+          });
+          if (qrSendRes.ok) {
+            deliveryMethod = 'whatsapp_gateway_api';
             status = 'delivered';
+            externalError = undefined;
           }
-        } catch (e) {
-          console.warn('[WhatsApp Cloud API] Fallback to Web Bridge:', e);
+        }
+      }
+
+      // Priority 3: Fallback to Cloud API if configured even if mode was not explicitly set to cloud_api
+      if (status !== 'delivered' && !preferCloudApi && waCreds.isConfigured) {
+        const cloudSend = await sendWhatsAppCloudApiMessage({
+          phoneNumberId: waCreds.phoneNumberId,
+          accessToken: waCreds.accessToken,
+          toPhoneE164: e164Phone,
+          customerName: conversation.customerName || conversation.contactName,
+          text: msgText,
+        });
+        if (cloudSend.delivered) {
+          deliveryMethod = 'whatsapp_cloud_api';
+          status = 'delivered';
+          externalMessageId = cloudSend.externalMessageId;
+          externalError = undefined;
         }
       }
 
@@ -1318,6 +1333,8 @@ export async function createWhatsAppChatAction(input: {
         senderRole: authUser.role,
         status,
         deliveryMethod,
+        externalMessageId,
+        externalError,
         createdAt: nowIso,
       };
 
@@ -1544,17 +1561,32 @@ export async function sendSocialMessageAction(input: {
         ? `↩️ "${input.replyTo.text.slice(0, 80)}${input.replyTo.text.length > 80 ? '...' : ''}"\n${text}`
         : text;
 
-    const hasQrLinked =
-      conv.channel === 'whatsapp' && (waQr.status === 'connected' || waQr.status === 'connecting');
+    const waCreds = resolveWhatsAppCloudCredentials(config.whatsapp);
+    const useWaCloudApi =
+      conv.channel === 'whatsapp' &&
+      waCreds.isConfigured &&
+      (config.whatsapp.mode === 'cloud_api' ||
+        !(waQr.status === 'connected' || waQr.status === 'connecting'));
 
-    // Resolve public HTTPS URLs for any image attachments only when needed by external HTTP APIs (skip for direct WhatsApp QR which sends raw buffer directly)
+    const hasQrLinked =
+      conv.channel === 'whatsapp' &&
+      !useWaCloudApi &&
+      (waQr.status === 'connected' || waQr.status === 'connecting');
+
+    // Resolve public HTTPS URLs for any image & file attachments when needed by external HTTP APIs
     const resolvedImageUrls: string[] = [];
-    if (!hasQrLinked && attachments.length > 0) {
+    const resolvedFileAttachments: Array<{ url: string; name?: string }> = [];
+    if ((!hasQrLinked || useWaCloudApi) && attachments.length > 0) {
       for (const att of attachments) {
         if (att.type === 'image' && att.url) {
           const httpsUrl = await resolvePublicHttpsImageUrl(att.url);
           if (httpsUrl) {
             resolvedImageUrls.push(httpsUrl);
+          }
+        } else if (att.type === 'file' && att.url) {
+          const httpsUrl = await resolvePublicHttpsImageUrl(att.url);
+          if (httpsUrl) {
+            resolvedFileAttachments.push({ url: httpsUrl, name: att.name });
           }
         }
       }
@@ -1562,6 +1594,7 @@ export async function sendSocialMessageAction(input: {
 
     let deliveryMethod: SocialMessage['deliveryMethod'] = 'platform_log';
     let status: SocialMessage['status'] = 'sent';
+    let externalMessageId: string | undefined;
     let externalError: string | undefined;
     let whatsappUrl: string | undefined;
     let whatsappWebUrl: string | undefined;
@@ -1616,10 +1649,43 @@ export async function sendSocialMessageAction(input: {
       whatsappWebUrl = buildWhatsAppWebUrl(targetPhone, waBody, cc);
       whatsappProtocolUrl = buildWhatsAppProtocolUrl(targetPhone, waBody, cc);
 
+      // Mode A: Official Meta WhatsApp Business Cloud API (Priority when cloud_api is selected or configured)
+      if (useWaCloudApi) {
+        deliveryMethod = 'whatsapp_cloud_api';
+        const targetReplyMsg = input.replyTo?.messageId
+          ? messages.find((m) => m.id === input.replyTo?.messageId)
+          : undefined;
+        const replyWamid = targetReplyMsg?.externalMessageId?.startsWith('wamid.')
+          ? targetReplyMsg.externalMessageId
+          : undefined;
+
+        const cloudSend = await sendWhatsAppCloudApiMessage({
+          phoneNumberId: waCreds.phoneNumberId,
+          accessToken: waCreds.accessToken,
+          toPhoneE164: e164,
+          customerName: conv.customerName || conv.contactName,
+          text: replyWamid ? text : outboundTextWithQuote,
+          resolvedImageUrls,
+          fileAttachments: resolvedFileAttachments,
+          replyToExternalMessageId: replyWamid,
+        });
+
+        if (cloudSend.delivered) {
+          status = 'delivered';
+          externalMessageId = cloudSend.externalMessageId;
+        } else {
+          externalError = cloudSend.error;
+        }
+      }
+
       // Mode 0: Built-in Direct WhatsApp QR Link (Linked Devices — 100% Free & 2-Way Sync)
-      if (hasQrLinked) {
+      if (
+        status !== 'delivered' &&
+        (hasQrLinked || (waQr.status === 'connected' || waQr.status === 'connecting'))
+      ) {
         deliveryMethod = 'whatsapp_gateway_api';
         status = 'delivered';
+        externalError = undefined;
         // Launch WhatsApp socket send concurrently with DB save below for minimum latency
         pendingWaQrPromise = sendDirectWhatsAppQrMessage({
           phone: targetPhone,
@@ -1629,60 +1695,22 @@ export async function sendSocialMessageAction(input: {
         });
       }
 
-      // Mode A: Official Meta WhatsApp Business Cloud API
-      if (
-        status !== 'delivered' &&
-        config.whatsapp.mode === 'cloud_api' &&
-        config.whatsapp.phoneNumberId &&
-        config.whatsapp.accessToken
-      ) {
+      // Fallback to Cloud API if QR was attempted first and Cloud API is available
+      if (status !== 'delivered' && !useWaCloudApi && waCreds.isConfigured) {
         deliveryMethod = 'whatsapp_cloud_api';
-        try {
-          const endpoint = `https://graph.facebook.com/v19.0/${encodeURIComponent(
-            config.whatsapp.phoneNumberId.trim()
-          )}/messages`;
-          const headers = {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${config.whatsapp.accessToken.trim()}`,
-          };
-
-          if (outboundTextWithQuote) {
-            const textRes = await fetch(endpoint, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({
-                messaging_product: 'whatsapp',
-                to: e164,
-                type: 'text',
-                text: { body: outboundTextWithQuote },
-              }),
-            });
-            if (textRes.ok) {
-              status = 'delivered';
-            } else {
-              const errJson = await textRes.json().catch(() => ({}));
-              externalError = errJson?.error?.message || `Meta WhatsApp Cloud API HTTP ${textRes.status}`;
-            }
-          }
-
-          for (const httpsImg of resolvedImageUrls) {
-            const imgRes = await fetch(endpoint, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({
-                messaging_product: 'whatsapp',
-                to: e164,
-                type: 'image',
-                image: { link: httpsImg },
-              }),
-            });
-            if (imgRes.ok) status = 'delivered';
-          }
-
-          if (status !== 'delivered') {
-            deliveryMethod = 'whatsapp_web_bridge';
-          }
-        } catch {
+        const cloudSend = await sendWhatsAppCloudApiMessage({
+          phoneNumberId: waCreds.phoneNumberId,
+          accessToken: waCreds.accessToken,
+          toPhoneE164: e164,
+          text: outboundTextWithQuote,
+          resolvedImageUrls,
+          fileAttachments: resolvedFileAttachments,
+        });
+        if (cloudSend.delivered) {
+          status = 'delivered';
+          externalMessageId = cloudSend.externalMessageId;
+        } else {
+          externalError = cloudSend.error;
           deliveryMethod = 'whatsapp_web_bridge';
         }
       }
@@ -1856,6 +1884,7 @@ export async function sendSocialMessageAction(input: {
       senderRole: authUser.role,
       status,
       deliveryMethod,
+      externalMessageId,
       externalError,
       createdAt: nowIso,
     };
@@ -2029,6 +2058,29 @@ export async function updateSocialConversationAction(input: {
 
       if (input.markAsRead && conv.channel === 'whatsapp') {
         markWhatsAppChatReadOnDevice(conv.externalContactId || conv.contactPhone).catch(() => {});
+
+        // Also send Official Meta WhatsApp Cloud API read receipt (`status: "read"`) for the latest inbound wamid
+        loadRawInboxStore()
+          .then(({ config: currentCfg }) => {
+            const waCreds = resolveWhatsAppCloudCredentials(currentCfg?.whatsapp);
+            if (!waCreds.isConfigured) return;
+            const latestInboundWamid = [...messages]
+              .reverse()
+              .find(
+                (m) =>
+                  m.conversationId === conv.id &&
+                  m.direction === 'inbound' &&
+                  m.externalMessageId?.startsWith('wamid.')
+              )?.externalMessageId;
+            if (latestInboundWamid) {
+              markWhatsAppCloudMessageAsRead({
+                phoneNumberId: waCreds.phoneNumberId,
+                accessToken: waCreds.accessToken,
+                externalMessageId: latestInboundWamid,
+              }).catch(() => {});
+            }
+          })
+          .catch(() => {});
       }
 
       try {
@@ -2169,6 +2221,7 @@ export async function saveSocialChannelConfigAction(newConfig: SocialChannelConf
       whatsapp: {
         ...newConfig.whatsapp,
         accessToken: resolveSecret(newConfig.whatsapp?.accessToken, existingConfig.whatsapp?.accessToken),
+        appSecret: resolveSecret(newConfig.whatsapp?.appSecret, existingConfig.whatsapp?.appSecret),
         gatewayApiKey: resolveSecret(newConfig.whatsapp?.gatewayApiKey, existingConfig.whatsapp?.gatewayApiKey),
       },
       facebook: {
@@ -2672,24 +2725,30 @@ export async function checkChannelsLiveStatusAction(): Promise<{
 
   const waQr = await getWhatsAppQrStatusAsync();
   const isWaQrConnected = waQr.status === 'connected';
+  const waCreds = resolveWhatsAppCloudCredentials(config.whatsapp);
+  const isWaCloudPreferred = config.whatsapp.mode === 'cloud_api' && waCreds.isConfigured;
 
   const statuses: Record<SocialChannel, SocialChannelLiveStatus> = {
     whatsapp: {
       channel: 'whatsapp',
       connected: true,
-      modeLabel: isWaQrConnected
+      modeLabel: isWaCloudPreferred
+        ? 'Live Cloud API'
+        : isWaQrConnected
         ? 'Direct QR Connected'
-        : config.whatsapp.mode === 'cloud_api' && config.whatsapp.accessToken
+        : waCreds.isConfigured
         ? 'Live Cloud API'
         : config.whatsapp.mode === 'gateway_api' && config.whatsapp.gatewayUrl
         ? 'Live QR Gateway API'
         : 'Live App & Web Bridge',
-      accountName: isWaQrConnected
+      accountName: isWaQrConnected && !isWaCloudPreferred
         ? `${waQr.connectedName || 'WhatsApp'} (${waQr.connectedPhone || ''})`
         : config.whatsapp.businessPhoneNumber || '+66 WhatsApp Direct',
-      details: isWaQrConnected
+      details: isWaCloudPreferred
+        ? 'Connected to Official Meta WhatsApp Business Cloud API'
+        : isWaQrConnected
         ? 'Direct Linked Device Active (Free 100% • 2-Way Live Sync)'
-        : config.whatsapp.mode === 'cloud_api' && config.whatsapp.accessToken
+        : waCreds.isConfigured
         ? 'Connected to Meta WhatsApp Cloud API'
         : config.whatsapp.mode === 'gateway_api' && config.whatsapp.gatewayUrl
         ? `Connected to Gateway (${config.whatsapp.gatewayUrl})`
@@ -2775,10 +2834,52 @@ export async function checkChannelsLiveStatusAction(): Promise<{
     } catch {}
   }
 
+  // Ping Meta WhatsApp Business Cloud API if configured
+  if (waCreds.isConfigured && (isWaCloudPreferred || !isWaQrConnected)) {
+    try {
+      const waVerify = await verifyWhatsAppCloudConnection({
+        phoneNumberId: waCreds.phoneNumberId,
+        accessToken: waCreds.accessToken,
+      });
+      if (waVerify.connected) {
+        statuses.whatsapp.connected = true;
+        statuses.whatsapp.modeLabel = 'Verified Meta Cloud API';
+        statuses.whatsapp.accountName = `${waVerify.verifiedName || 'WhatsApp Business'} (${
+          waVerify.displayPhoneNumber || config.whatsapp.businessPhoneNumber || waCreds.phoneNumberId
+        })`;
+        statuses.whatsapp.details = `Verified Live Meta WhatsApp Cloud API${
+          waVerify.qualityRating ? ` • Quality: ${waVerify.qualityRating}` : ''
+        }`;
+      }
+    } catch {}
+  }
+
   return {
     success: true,
     statuses,
   };
+}
+
+/**
+ * Test & Verify Meta WhatsApp Business Cloud API connection (Phone Number ID & Access Token)
+ */
+export async function testWhatsAppCloudApiAction(input?: {
+  phoneNumberId?: string;
+  accessToken?: string;
+}): Promise<WhatsAppCloudVerificationResult> {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  const { config } = await loadRawInboxStore();
+  const savedCreds = resolveWhatsAppCloudCredentials(config.whatsapp);
+
+  const incomingToken = (input?.accessToken || '').trim();
+  const effectiveToken =
+    incomingToken && !incomingToken.includes('••••') ? incomingToken : savedCreds.accessToken;
+  const effectivePhoneId = (input?.phoneNumberId || '').trim() || savedCreds.phoneNumberId;
+
+  return verifyWhatsAppCloudConnection({
+    phoneNumberId: effectivePhoneId,
+    accessToken: effectiveToken,
+  });
 }
 
 /**

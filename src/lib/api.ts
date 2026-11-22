@@ -204,6 +204,22 @@ export function setJobSaveState(jobId: string, status: JobSaveStatus, message?: 
       saveStateCleanupTimers.delete(jobId);
     }, 3500);
     saveStateCleanupTimers.set(jobId, timer);
+  } else if (status === 'saving') {
+    // Safety watchdog: if 'saving' was triggered by an optimistic update that is not followed
+    // by an active in-flight api.updateJob (or finishes out-of-band), auto-clear after 15s.
+    const timer = setTimeout(() => {
+      saveStateCleanupTimers.delete(jobId);
+      if (
+        realtimeState.jobSaveStates[jobId]?.status === 'saving' &&
+        (pendingJobSaves.get(jobId) || 0) === 0
+      ) {
+        pendingFieldEdits.delete(jobId);
+        confirmedJobSnapshots.delete(jobId);
+        delete realtimeState.jobSaveStates[jobId];
+        emitRealtimeChange();
+      }
+    }, 15000);
+    saveStateCleanupTimers.set(jobId, timer);
   }
 }
 
@@ -551,7 +567,9 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
 
       memoryDb = parseMockDb(parsed);
       isDbLoaded = true;
-      lastServerSyncMs = Math.max(lastServerSyncMs, Date.now());
+      if (lastServerSyncMs === 0) {
+        lastServerSyncMs = Date.now() - 15000;
+      }
       realtimeState.lastSyncAt = Date.now();
       api.notify('all');
 
@@ -924,10 +942,18 @@ export const api = {
   /**
    * Applies a single authoritative server job into memoryDb with monotonic revision ordering.
    */
-  applyServerJob(rawJob: any, revisionMs?: number): { changed: boolean; job: Job } {
+  applyServerJob(rawJob: any, revisionMs?: number, options?: { clearSaveState?: boolean }): { changed: boolean; job: Job } {
     const db = initDb();
     const existingIdx = db.jobs.findIndex((j) => j.id === rawJob.id);
     const existingJob = existingIdx >= 0 ? db.jobs[existingIdx] : undefined;
+
+    if (options?.clearSaveState && (pendingJobSaves.get(rawJob.id) || 0) === 0) {
+      pendingFieldEdits.delete(rawJob.id);
+      confirmedJobSnapshots.delete(rawJob.id);
+      if (realtimeState.jobSaveStates[rawJob.id]?.status === 'saving') {
+        setJobSaveState(rawJob.id, 'saved');
+      }
+    }
 
     const incomingRev =
       revisionMs ||
@@ -938,14 +964,22 @@ export const api = {
     const isPaymentAdvance =
       Boolean(existingJob && isJobShopSettled(rawJob) && !isJobShopSettled(existingJob));
 
-    if (prevRev > 0 && incomingRev < prevRev && !isPaymentAdvance) {
+    if (prevRev > 0 && incomingRev < prevRev && !isPaymentAdvance && !options?.clearSaveState) {
       return { changed: false, job: existingJob || normalizeServerJob(rawJob) };
     }
 
     // Do not clobber an active in-flight save or dirty edits unless Shop Paid state advanced
+    const hasInFlightSave = (pendingJobSaves.get(rawJob.id) || 0) > 0;
     const hasDirtyEdits = (pendingFieldEdits.get(rawJob.id)?.size || 0) > 0;
-    if (((pendingJobSaves.get(rawJob.id) || 0) > 0 || hasDirtyEdits) && !isPaymentAdvance) {
+    if ((hasInFlightSave || hasDirtyEdits) && !isPaymentAdvance) {
       return { changed: false, job: existingJob || normalizeServerJob(rawJob) };
+    }
+
+    if (
+      !hasInFlightSave &&
+      realtimeState.jobSaveStates[rawJob.id]?.status === 'saving'
+    ) {
+      setJobSaveState(rawJob.id, 'saved');
     }
 
     if (incomingRev > prevRev) {
@@ -1975,13 +2009,15 @@ export const api = {
     }
 
     // Track pending field keys so concurrent refreshes (including paid-state transitions) do not overwrite unconfirmed drafts
-    const dirtySet = pendingFieldEdits.get(id) || new Set<string>();
-    for (const k of Object.keys(cleanUpdates)) {
-      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName', 'isExplicitImageDelete'].includes(k)) {
-        dirtySet.add(k);
+    if (!isSilentMediaUpdate) {
+      const dirtySet = pendingFieldEdits.get(id) || new Set<string>();
+      for (const k of Object.keys(cleanUpdates)) {
+        if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName', 'isExplicitImageDelete'].includes(k)) {
+          dirtySet.add(k);
+        }
       }
+      pendingFieldEdits.set(id, dirtySet);
     }
-    pendingFieldEdits.set(id, dirtySet);
 
     // Mark local state as saving (unconfirmed) until server responds (unless silent background media attachment)
     const optimisticJob: Job = {
@@ -2037,7 +2073,7 @@ export const api = {
         db.jobs = nextJobs;
       }
 
-      if (remainingSaves === 0) {
+      if (remainingSaves === 0 && (!isSilentMediaUpdate || realtimeState.jobSaveStates[id]?.status === 'saving')) {
         setJobSaveState(id, 'saved');
       }
       api.notify('jobs');
@@ -2069,9 +2105,12 @@ export const api = {
 
       setJobSaveState(id, isConflict ? 'conflict' : 'failed', err?.message || 'Save failed');
 
-      if (isConflict) {
+      if (remainingSaves === 0) {
         pendingFieldEdits.delete(id);
         confirmedJobSnapshots.delete(id);
+      }
+
+      if (isConflict) {
         // Immediately fetch the latest server version so UI displays the authoritative state
         api.fetchAndApplyJob(id).catch(() => {});
       } else {
@@ -2113,13 +2152,24 @@ export const api = {
       delete cleanUpdates.billNo;
     }
 
-    const dirtySet = pendingFieldEdits.get(id) || new Set<string>();
-    for (const k of Object.keys(cleanUpdates)) {
-      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName', 'isExplicitImageDelete'].includes(k)) {
-        dirtySet.add(k);
+    const isSilentMedia = Boolean(
+      (cleanUpdates as any).__silentBackground ||
+      (cleanUpdates as any).isAutoReceiptWorker ||
+      Object.keys(cleanUpdates).every((k) =>
+        ['billImageUrl', 'actorId', 'actorName', 'actorRole', '__silentBackground', 'suppressThrow', 'isAutoReceiptWorker', 'systemActorName'].includes(k)
+      )
+    );
+    delete (cleanUpdates as any).__silentBackground;
+
+    if (!isSilentMedia) {
+      const dirtySet = pendingFieldEdits.get(id) || new Set<string>();
+      for (const k of Object.keys(cleanUpdates)) {
+        if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName', 'isExplicitImageDelete'].includes(k)) {
+          dirtySet.add(k);
+        }
       }
+      pendingFieldEdits.set(id, dirtySet);
     }
-    pendingFieldEdits.set(id, dirtySet);
 
     const deduplicateAndSortBillUrls = (urls: string[]): string[] => {
       const getBillUrlCanonicalKey = (u: string): string => {
@@ -2202,14 +2252,6 @@ export const api = {
     ) {
       cleanUpdates.status = 'pending';
     }
-
-    const isSilentMedia = Boolean(
-      (cleanUpdates as any).__silentBackground ||
-      Object.keys(cleanUpdates).every((k) =>
-        ['billImageUrl', 'actorId', 'actorName', 'actorRole', '__silentBackground', 'suppressThrow'].includes(k)
-      )
-    );
-    delete (cleanUpdates as any).__silentBackground;
 
     const updatedJob: Job = {
       ...existingJob,

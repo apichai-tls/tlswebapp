@@ -96,8 +96,10 @@ import {
   startWhatsAppQrPairingAction,
   getWhatsAppQrStatusAction,
   disconnectWhatsAppQrAction,
+  testWhatsAppCloudApiAction,
 } from '@/actions/social-inbox';
 import type { WhatsAppQrState } from '@/lib/whatsapp-qr-manager';
+import type { WhatsAppCloudVerificationResult } from '@/lib/whatsapp-cloud-api';
 import { syncLineOaFollowersAction } from '@/actions/line';
 
 const QUICK_EMOJIS = [
@@ -164,6 +166,8 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
   const [lastLiveSyncAt, setLastLiveSyncAt] = useState<string>('');
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [markingAllRead, setMarkingAllRead] = useState(false);
+  const [testingWaCloud, setTestingWaCloud] = useState(false);
+  const [waCloudTestResult, setWaCloudTestResult] = useState<WhatsAppCloudVerificationResult | null>(null);
 
   // Font Size Preference (S / M / L / XL, persisted in localStorage)
   type ChatFontSizeKey = 'sm' | 'md' | 'lg' | 'xl';
@@ -1795,22 +1799,44 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
             {isOutbound && (
               <div className="flex items-center gap-1 mt-1 px-1 text-[9px] text-slate-500 font-semibold">
-                <CheckCheck size={11} className="text-emerald-600" />
-                <span>
-                  {msg.deliveryMethod === 'line_api'
-                    ? 'Delivered Live via LINE OA API'
-                    : msg.deliveryMethod === 'whatsapp_cloud_api'
-                    ? 'Delivered Live via WhatsApp Cloud API'
-                    : msg.deliveryMethod === 'whatsapp_gateway_api'
-                    ? 'Delivered Live via WhatsApp Gateway'
-                    : msg.deliveryMethod === 'meta_graph_api'
-                    ? 'Delivered Live via Meta Graph API'
-                    : msg.deliveryMethod === 'telegram_bot_api'
-                    ? 'Delivered Live via Telegram Bot API'
-                    : msg.deliveryMethod === 'whatsapp_web_bridge'
-                    ? 'Sent • WhatsApp Bridge Active'
-                    : 'Delivered'}
-                </span>
+                {msg.status === 'failed' ? (
+                  <span className="text-rose-600 font-bold">
+                    ⚠️ Failed{msg.externalError ? `: ${msg.externalError}` : ''}
+                  </span>
+                ) : (
+                  <>
+                    <CheckCheck
+                      size={11}
+                      className={
+                        msg.status === 'read'
+                          ? 'text-[#0084FF]'
+                          : msg.status === 'delivered'
+                          ? 'text-emerald-600'
+                          : 'text-slate-400'
+                      }
+                    />
+                    <span className={msg.status === 'read' ? 'text-[#0084FF] font-bold' : ''}>
+                      {msg.status === 'read'
+                        ? 'Read by Customer • '
+                        : msg.status === 'sent'
+                        ? 'Sent • '
+                        : ''}
+                      {msg.deliveryMethod === 'line_api'
+                        ? 'Delivered Live via LINE OA API'
+                        : msg.deliveryMethod === 'whatsapp_cloud_api'
+                        ? 'Official WhatsApp Cloud API'
+                        : msg.deliveryMethod === 'whatsapp_gateway_api'
+                        ? 'Delivered Live via WhatsApp Gateway'
+                        : msg.deliveryMethod === 'meta_graph_api'
+                        ? 'Delivered Live via Meta Graph API'
+                        : msg.deliveryMethod === 'telegram_bot_api'
+                        ? 'Delivered Live via Telegram Bot API'
+                        : msg.deliveryMethod === 'whatsapp_web_bridge'
+                        ? 'Sent • WhatsApp Bridge Active'
+                        : 'Delivered'}
+                    </span>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -4615,36 +4641,207 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                 )}
 
                 {config.whatsapp.mode === 'cloud_api' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                    <div className="space-y-1">
-                      <label className="font-bold text-slate-700">Meta Phone Number ID</label>
-                      <Input
-                        value={config.whatsapp.phoneNumberId || ''}
-                        onChange={(e) =>
-                          setConfig({
-                            ...config,
-                            whatsapp: { ...config.whatsapp, phoneNumberId: e.target.value },
-                          })
-                        }
-                        placeholder="e.g. 10592837465..."
-                        className="h-8 bg-white font-mono"
-                      />
+                  <div className="space-y-3 pt-1">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="font-bold text-slate-700">Meta Phone Number ID *</label>
+                        <Input
+                          value={config.whatsapp.phoneNumberId || ''}
+                          onChange={(e) =>
+                            setConfig({
+                              ...config,
+                              whatsapp: { ...config.whatsapp, phoneNumberId: e.target.value },
+                            })
+                          }
+                          placeholder="e.g. 105928374651234"
+                          className="h-8 bg-white font-mono"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="font-bold text-slate-700">
+                          WhatsApp Business Account ID (WABA ID)
+                        </label>
+                        <Input
+                          value={config.whatsapp.businessAccountId || ''}
+                          onChange={(e) =>
+                            setConfig({
+                              ...config,
+                              whatsapp: { ...config.whatsapp, businessAccountId: e.target.value },
+                            })
+                          }
+                          placeholder="e.g. 102938475610293"
+                          className="h-8 bg-white font-mono"
+                        />
+                      </div>
+                      <div className="space-y-1 sm:col-span-2">
+                        <label className="font-bold text-slate-700">
+                          Cloud API Permanent / System User Access Token *
+                        </label>
+                        <Input
+                          type="password"
+                          value={config.whatsapp.accessToken || ''}
+                          onChange={(e) =>
+                            setConfig({
+                              ...config,
+                              whatsapp: { ...config.whatsapp, accessToken: e.target.value },
+                            })
+                          }
+                          placeholder="EAAG..."
+                          className="h-8 bg-white font-mono"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="font-bold text-slate-700">Webhook Verify Token</label>
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            value={config.whatsapp.verifyToken || 'tls_whatsapp_verify_2026'}
+                            onChange={(e) =>
+                              setConfig({
+                                ...config,
+                                whatsapp: { ...config.whatsapp, verifyToken: e.target.value },
+                              })
+                            }
+                            placeholder="tls_whatsapp_verify_2026"
+                            className="h-8 bg-white font-mono"
+                          />
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              navigator.clipboard.writeText(
+                                config.whatsapp.verifyToken || 'tls_whatsapp_verify_2026'
+                              );
+                              toast.success('Copied Verify Token!');
+                            }}
+                            className="h-8 px-2 text-[11px] font-bold shrink-0"
+                          >
+                            <Copy size={12} className="mr-1" /> Copy
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="font-bold text-slate-700">
+                          Meta App Secret (Optional Signature Check)
+                        </label>
+                        <Input
+                          type="password"
+                          value={config.whatsapp.appSecret || ''}
+                          onChange={(e) =>
+                            setConfig({
+                              ...config,
+                              whatsapp: { ...config.whatsapp, appSecret: e.target.value },
+                            })
+                          }
+                          placeholder="Optional Meta App Secret..."
+                          className="h-8 bg-white font-mono"
+                        />
+                      </div>
                     </div>
-                    <div className="space-y-1">
-                      <label className="font-bold text-slate-700">Cloud API Access Token</label>
-                      <Input
-                        type="password"
-                        value={config.whatsapp.accessToken || ''}
-                        onChange={(e) =>
-                          setConfig({
-                            ...config,
-                            whatsapp: { ...config.whatsapp, accessToken: e.target.value },
-                          })
-                        }
-                        placeholder="EAAG..."
-                        className="h-8 bg-white font-mono"
-                      />
+
+                    <div className="p-2.5 rounded-lg bg-white border border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="space-y-0.5">
+                        <div className="text-[11px] font-bold text-slate-700">
+                          Meta Webhook Callback URL (Subscribe to{' '}
+                          <code className="text-emerald-700">messages</code> field):
+                        </div>
+                        <code className="text-[11px] font-mono text-emerald-800 break-all">
+                          {typeof window !== 'undefined' && !window.location.origin.includes('localhost')
+                            ? `${window.location.origin}/api/webhooks/social`
+                            : 'https://app.thatlaundryshop.com/api/webhooks/social'}
+                        </code>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const url =
+                              typeof window !== 'undefined' && !window.location.origin.includes('localhost')
+                                ? `${window.location.origin}/api/webhooks/social`
+                                : 'https://app.thatlaundryshop.com/api/webhooks/social';
+                            navigator.clipboard.writeText(url);
+                            toast.success('Copied Meta WhatsApp Webhook URL!');
+                          }}
+                          className="h-7 px-2.5 text-[11px] font-bold"
+                        >
+                          <Copy size={11} className="mr-1" /> Copy Webhook URL
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={testingWaCloud}
+                          onClick={async () => {
+                            try {
+                              setTestingWaCloud(true);
+                              setWaCloudTestResult(null);
+                              const res = await testWhatsAppCloudApiAction({
+                                phoneNumberId: config.whatsapp.phoneNumberId,
+                                accessToken: config.whatsapp.accessToken,
+                              });
+                              setWaCloudTestResult(res);
+                              if (res.connected) {
+                                toast.success(
+                                  `Verified Meta WhatsApp Cloud API: ${
+                                    res.verifiedName || 'Connected'
+                                  } (${res.displayPhoneNumber || res.phoneNumberId})`
+                                );
+                              } else {
+                                toast.error(res.error || 'Meta Cloud API verification failed');
+                              }
+                            } catch (err: any) {
+                              toast.error(err?.message || 'Failed to test Cloud API');
+                            } finally {
+                              setTestingWaCloud(false);
+                            }
+                          }}
+                          className="h-7 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold"
+                        >
+                          <RefreshCw
+                            size={11}
+                            className={`mr-1 ${testingWaCloud ? 'animate-spin' : ''}`}
+                          />
+                          {testingWaCloud ? 'Verifying...' : 'Verify & Test Cloud API'}
+                        </Button>
+                      </div>
                     </div>
+
+                    {waCloudTestResult && (
+                      <div
+                        className={`p-2.5 rounded-lg border text-[11px] ${
+                          waCloudTestResult.connected
+                            ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                            : 'bg-rose-50 border-rose-300 text-rose-800'
+                        }`}
+                      >
+                        {waCloudTestResult.connected ? (
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-semibold">
+                            <span className="font-black text-emerald-700">
+                              ✅ Connected to Meta Graph API v21.0
+                            </span>
+                            {waCloudTestResult.verifiedName && (
+                              <span>
+                                Business: <strong>{waCloudTestResult.verifiedName}</strong>
+                              </span>
+                            )}
+                            {waCloudTestResult.displayPhoneNumber && (
+                              <span>
+                                Phone: <strong>{waCloudTestResult.displayPhoneNumber}</strong>
+                              </span>
+                            )}
+                            {waCloudTestResult.qualityRating && (
+                              <span>
+                                Quality Rating:{' '}
+                                <strong>{waCloudTestResult.qualityRating}</strong>
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="font-bold">⚠️ {waCloudTestResult.error}</div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 

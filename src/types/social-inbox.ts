@@ -90,6 +90,8 @@ export interface SocialChannelConfig {
     phoneNumberId?: string;
     accessToken?: string;
     verifyToken?: string;
+    businessAccountId?: string;
+    appSecret?: string;
     gatewayUrl?: string;
     gatewayApiKey?: string;
     gatewayInstanceId?: string;

@@ -102,12 +102,14 @@ export function getDefaultSocialChannelConfig(): SocialChannelConfig {
       enabled: true,
       mode: 'web_bridge',
       launchTarget: 'companion_popup',
-      businessPhoneNumber: '+66 80 000 0000',
+      businessPhoneNumber: '+66 94 691 6668',
       defaultCountryCode: '66',
       autoOpenWaWebOnSend: true,
-      phoneNumberId: '',
+      phoneNumberId: '2388321071224396',
       accessToken: '',
       verifyToken: 'tls_whatsapp_verify_2026',
+      businessAccountId: '425291338024231',
+      appSecret: '',
       gatewayUrl: '',
       gatewayApiKey: '',
       gatewayInstanceId: 'default',
@@ -155,6 +157,7 @@ export function maskSocialChannelConfigSecrets(config: SocialChannelConfig): Soc
     whatsapp: {
       ...config.whatsapp,
       accessToken: maskSecretValue(config.whatsapp?.accessToken),
+      appSecret: maskSecretValue(config.whatsapp?.appSecret),
       gatewayApiKey: maskSecretValue(config.whatsapp?.gatewayApiKey),
     },
     facebook: {
@@ -276,7 +279,7 @@ export async function resolvePublicHttpsMediaUrl(url: string): Promise<string | 
   if (trimmed.startsWith('http://')) return trimmed.replace(/^http:\/\//i, 'https://');
   if (trimmed.startsWith('/')) {
     const base = (
-      process.env.NEXT_PUBLIC_APP_URL || 'https://www.thatlaundryshop.com'
+      process.env.NEXT_PUBLIC_APP_URL || 'https://app.thatlaundryshop.com'
     ).replace(/\/+$/, '');
     return `${base}${trimmed}`;
   }
@@ -567,6 +570,8 @@ export async function recordInboundSocialMessageInternal(input: {
   attachments?: SocialMessageAttachment[];
   customerId?: string | null;
   messageId?: string;
+  externalMessageId?: string;
+  deliveryMethod?: SocialMessage['deliveryMethod'];
   createdAt?: string;
   isHistorySync?: boolean;
 }) {
@@ -574,9 +579,13 @@ export async function recordInboundSocialMessageInternal(input: {
     try {
       const { conversations, messages } = await loadRawSocialInboxStore();
 
-      // Deduplicate by deterministic external messageId (e.g. msg_wa_in_<key.id>)
-      // so reconnect history syncs NEVER duplicate bubbles or re-increment unreadCount!
-      if (input.messageId && messages.some((m) => m.id === input.messageId)) {
+      // Deduplicate by deterministic external messageId (e.g. msg_wa_in_<key.id> or wamid)
+      // so reconnect history syncs or Meta webhook retries NEVER duplicate bubbles or re-increment unreadCount!
+      if (
+        (input.messageId && messages.some((m) => m.id === input.messageId)) ||
+        (input.externalMessageId &&
+          messages.some((m) => m.externalMessageId === input.externalMessageId))
+      ) {
         return { success: true, deduped: true };
       }
 
@@ -654,6 +663,8 @@ export async function recordInboundSocialMessageInternal(input: {
         attachments: input.attachments,
         senderName: conv.contactName,
         status: 'delivered',
+        deliveryMethod: input.deliveryMethod,
+        externalMessageId: input.externalMessageId,
         createdAt: msgIso,
       };
 
@@ -832,5 +843,70 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
     console.warn('[recordOutboundSocialMessageFromSystemInternal] Non-fatal error:', err);
     return { success: false, error: err?.message };
   }
+  });
+}
+
+const STATUS_RANK: Record<string, number> = {
+  sent: 1,
+  delivered: 2,
+  read: 3,
+  failed: 4,
+};
+
+/**
+ * Updates an outbound message's delivery/read receipt status (sent -> delivered -> read / failed)
+ * when Meta WhatsApp Cloud API sends a `statuses` webhook event.
+ */
+export async function updateOutboundSocialMessageStatusInternal(input: {
+  externalMessageId: string;
+  status: 'sent' | 'delivered' | 'read' | 'failed';
+  errorText?: string;
+}): Promise<{ updated: boolean }> {
+  const extId = (input.externalMessageId || '').trim();
+  if (!extId) return { updated: false };
+
+  return withSocialStoreLock(async () => {
+    try {
+      const { conversations, messages } = await loadRawSocialInboxStore();
+      const idx = messages.findIndex((m) => m.externalMessageId === extId);
+      if (idx < 0) return { updated: false };
+
+      const existing = messages[idx];
+      const currentRank = STATUS_RANK[existing.status] || 0;
+      const incomingRank = STATUS_RANK[input.status] || 0;
+
+      // Never downgrade 'read' back to 'delivered' or 'sent' due to out-of-order webhook arrivals
+      if (existing.status !== 'failed' && input.status !== 'failed' && incomingRank <= currentRank) {
+        return { updated: false };
+      }
+
+      const updatedMsg: SocialMessage = {
+        ...existing,
+        status: input.status,
+        ...(input.errorText ? { externalError: input.errorText } : {}),
+      };
+      messages[idx] = updatedMsg;
+
+      const conv = conversations.find((c) => c.id === updatedMsg.conversationId);
+      try {
+        const { publishOrderEvent } = await import('@/lib/realtime-bus');
+        await publishOrderEvent({
+          type: 'social.updated',
+          jobId: `__SOCIAL_STATUS_${updatedMsg.id}_${input.status}`,
+          updatedAt: new Date(),
+          socialPayload: {
+            kind: 'message',
+            conversation: conv,
+            message: updatedMsg,
+          },
+        });
+      } catch {}
+
+      await saveRawSocialInboxStore(conversations, messages);
+      return { updated: true };
+    } catch (err) {
+      console.warn('[updateOutboundSocialMessageStatusInternal] Error:', err);
+      return { updated: false };
+    }
   });
 }

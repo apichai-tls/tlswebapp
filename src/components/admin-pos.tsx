@@ -7083,12 +7083,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         onPaymentSuccess={async (paidInfo) => {
           if (onlinePaymentJob) {
             const { api } = await import("@/lib/api");
-            api.optimisticUpdate(onlinePaymentJob.id, {
-              isPaid: true,
-              isShopPaid: true,
-              paymentChannel: paidInfo.channel,
-            } as any);
-            await api.fetchAndApplyJob(onlinePaymentJob.id).catch(() => {});
+            const fetched = await api.fetchAndApplyJob(onlinePaymentJob.id).catch(() => null);
+            const baseJob = fetched || jobStore.getSnapshot().find(j => j.id === onlinePaymentJob.id) || onlinePaymentJob;
+            api.applyServerJob(
+              { ...baseJob, isPaid: true, isShopPaid: true, paymentChannel: paidInfo.channel },
+              undefined,
+              { clearSaveState: true }
+            );
             jobStore.notify();
             const all = jobStore.getSnapshot();
             const updated = all.find(j => j.id === onlinePaymentJob.id);

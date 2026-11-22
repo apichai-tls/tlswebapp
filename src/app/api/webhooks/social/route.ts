@@ -3,7 +3,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   loadRawSocialInboxStore,
   recordInboundSocialMessageInternal,
+  updateOutboundSocialMessageStatusInternal,
 } from '@/lib/social-inbox-internal';
+import {
+  resolveWhatsAppCloudCredentials,
+  downloadWhatsAppCloudMediaToGcs,
+} from '@/lib/whatsapp-cloud-api';
 import { formatDisplayPhone } from '@/lib/social-helpers';
 import { SocialMessageAttachment } from '@/types/social-inbox';
 import { checkRateLimit, getRequestClientIp } from '@/lib/rate-limit';
@@ -27,12 +32,15 @@ export async function GET(req: NextRequest) {
 
   if (mode === 'subscribe' && challenge !== null) {
     const store = await loadRawSocialInboxStore();
+    const waCreds = resolveWhatsAppCloudCredentials(store.config?.whatsapp);
     const configuredTokens = Array.from(
       new Set(
         [
+          process.env.WHATSAPP_VERIFY_TOKEN,
           process.env.SOCIAL_WEBHOOK_VERIFY_TOKEN,
           process.env.META_WEBHOOK_VERIFY_TOKEN,
           store.config?.whatsapp?.verifyToken,
+          waCreds.verifyToken,
         ]
           .map((t) => (t || '').trim())
           .filter(Boolean)
@@ -83,8 +91,12 @@ export async function POST(req: NextRequest) {
     const rawBody = await req.text();
     const payload = rawBody ? JSON.parse(rawBody) : {};
 
-    // Verify Meta X-Hub-Signature-256 when META_APP_SECRET is configured
-    const metaAppSecret = (process.env.META_APP_SECRET || '').trim();
+    // Verify gateway / webhook secret when configured on channel or env
+    const store = await loadRawSocialInboxStore();
+    const waCreds = resolveWhatsAppCloudCredentials(store.config?.whatsapp);
+
+    // Verify Meta X-Hub-Signature-256 when META_APP_SECRET or whatsapp.appSecret is configured
+    const metaAppSecret = waCreds.appSecret || (process.env.META_APP_SECRET || '').trim();
     if (
       metaAppSecret &&
       (payload?.object === 'whatsapp_business_account' ||
@@ -98,15 +110,44 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Verify gateway / webhook secret when configured on channel or env
-    const store = await loadRawSocialInboxStore();
-
     // 1. WhatsApp Business Cloud API Payload (`object === "whatsapp_business_account"`)
     if (payload?.object === 'whatsapp_business_account' && Array.isArray(payload?.entry)) {
+      const defaultCc = store.config?.whatsapp?.defaultCountryCode || '66';
+
       for (const entry of payload.entry) {
         const changes = Array.isArray(entry?.changes) ? entry.changes : [];
         for (const change of changes) {
           const val = change?.value;
+
+          // 1A. Handle Outbound Message Delivery & Read Receipt Statuses (`sent` | `delivered` | `read` | `failed`)
+          const statuses = Array.isArray(val?.statuses) ? val.statuses : [];
+          for (const st of statuses) {
+            const extId = String(st?.id || '').trim();
+            const rawStatus = String(st?.status || '').toLowerCase();
+            if (!extId) continue;
+
+            if (
+              rawStatus === 'sent' ||
+              rawStatus === 'delivered' ||
+              rawStatus === 'read' ||
+              rawStatus === 'failed'
+            ) {
+              const errObj = Array.isArray(st?.errors) && st.errors[0] ? st.errors[0] : null;
+              const errorText = errObj
+                ? `${errObj.title || 'WhatsApp Delivery Error'}${
+                    errObj.error_data?.details ? `: ${errObj.error_data.details}` : ''
+                  }`
+                : undefined;
+
+              await updateOutboundSocialMessageStatusInternal({
+                externalMessageId: extId,
+                status: rawStatus as 'sent' | 'delivered' | 'read' | 'failed',
+                errorText,
+              });
+            }
+          }
+
+          // 1B. Handle Inbound Customer Messages (Text, Images, PDFs/Documents, Locations, Stickers, Audio, Interactive)
           const contacts = Array.isArray(val?.contacts) ? val.contacts : [];
           const messages = Array.isArray(val?.messages) ? val.messages : [];
 
@@ -114,34 +155,154 @@ export async function POST(req: NextRequest) {
             const fromPhone = String(msg?.from || '').replace(/\D/g, '');
             if (!fromPhone) continue;
 
+            const wamid = String(msg?.id || '').trim() || undefined;
+            const msgTimestampSec = Number(msg?.timestamp);
+            const createdAtIso =
+              Number.isFinite(msgTimestampSec) && msgTimestampSec > 1000000000
+                ? new Date(msgTimestampSec * 1000).toISOString()
+                : undefined;
+
             const contactProfile = contacts.find((c: any) => String(c?.wa_id) === fromPhone);
             const profileName =
-              contactProfile?.profile?.name || formatDisplayPhone(fromPhone, '66');
+              contactProfile?.profile?.name || formatDisplayPhone(fromPhone, defaultCc);
 
             const attachments: SocialMessageAttachment[] = [];
-            if (msg?.type === 'image' && msg?.image?.url) {
-              attachments.push({
-                type: 'image',
-                url: String(msg.image.url),
-                name: 'WhatsApp Image',
-              });
-            }
+            let textBody = '';
+            const msgType = String(msg?.type || 'text').toLowerCase();
 
-            const textBody =
-              msg?.type === 'text'
-                ? String(msg?.text?.body || '')
-                : msg?.image?.caption
-                ? String(msg.image.caption)
-                : `📷 [WhatsApp ${msg?.type || 'media'} message]`;
+            if (msgType === 'text') {
+              textBody = String(msg?.text?.body || '');
+            } else if (msgType === 'image' || msgType === 'sticker') {
+              const mediaObj = msgType === 'sticker' ? msg?.sticker : msg?.image;
+              textBody = String(mediaObj?.caption || '').trim();
+
+              if (mediaObj?.url) {
+                attachments.push({
+                  type: 'image',
+                  url: String(mediaObj.url),
+                  name: msgType === 'sticker' ? 'WhatsApp Sticker' : 'WhatsApp Photo',
+                });
+              } else if (mediaObj?.id && waCreds.accessToken) {
+                const downloaded = await downloadWhatsAppCloudMediaToGcs({
+                  mediaId: String(mediaObj.id),
+                  accessToken: waCreds.accessToken,
+                  senderPhone: fromPhone,
+                  fallbackMimeType: mediaObj.mime_type || 'image/jpeg',
+                });
+                if (downloaded?.url) {
+                  attachments.push({
+                    type: 'image',
+                    url: downloaded.url,
+                    name: msgType === 'sticker' ? 'WhatsApp Sticker' : 'WhatsApp Photo',
+                  });
+                }
+              }
+              if (!textBody) {
+                textBody =
+                  msgType === 'sticker'
+                    ? '🎨 [WhatsApp Sticker]'
+                    : '📷 [Sent a photo via WhatsApp]';
+              }
+            } else if (msgType === 'document') {
+              const docObj = msg?.document;
+              const docName = String(docObj?.filename || 'WhatsApp Document.pdf');
+              textBody = String(docObj?.caption || '').trim();
+
+              if (docObj?.url) {
+                attachments.push({
+                  type: 'file',
+                  url: String(docObj.url),
+                  name: docName,
+                });
+              } else if (docObj?.id && waCreds.accessToken) {
+                const downloaded = await downloadWhatsAppCloudMediaToGcs({
+                  mediaId: String(docObj.id),
+                  accessToken: waCreds.accessToken,
+                  senderPhone: fromPhone,
+                  fallbackMimeType: docObj.mime_type || 'application/pdf',
+                  originalFilename: docName,
+                });
+                if (downloaded?.url) {
+                  attachments.push({
+                    type: downloaded.mimeType.startsWith('image/') ? 'image' : 'file',
+                    url: downloaded.url,
+                    name: docName,
+                  });
+                }
+              }
+              if (!textBody) {
+                textBody = `📄 [Sent a document: ${docName}]`;
+              }
+            } else if (msgType === 'audio' || msgType === 'voice' || msgType === 'video') {
+              const mediaObj = msg?.[msgType] || msg?.audio || msg?.video;
+              const mediaLabel =
+                msgType === 'video' ? 'WhatsApp Video' : 'WhatsApp Voice Note';
+              textBody = String(mediaObj?.caption || '').trim();
+
+              if (mediaObj?.id && waCreds.accessToken) {
+                const downloaded = await downloadWhatsAppCloudMediaToGcs({
+                  mediaId: String(mediaObj.id),
+                  accessToken: waCreds.accessToken,
+                  senderPhone: fromPhone,
+                  fallbackMimeType:
+                    mediaObj.mime_type || (msgType === 'video' ? 'video/mp4' : 'audio/ogg'),
+                });
+                if (downloaded?.url) {
+                  attachments.push({
+                    type: 'file',
+                    url: downloaded.url,
+                    name: `${mediaLabel}.${downloaded.extension}`,
+                  });
+                }
+              }
+              if (!textBody) {
+                textBody =
+                  msgType === 'video'
+                    ? '🎥 [Sent a video via WhatsApp]'
+                    : '🎤 [Sent a voice message via WhatsApp]';
+              }
+            } else if (msgType === 'location') {
+              const loc = msg?.location || {};
+              const lat = loc.latitude;
+              const lng = loc.longitude;
+              const locName = loc.name ? String(loc.name).trim() : '';
+              const locAddr = loc.address ? String(loc.address).trim() : '';
+              const labelParts = [locName, locAddr].filter(Boolean).join(' — ');
+              const mapsUrl =
+                lat !== undefined && lng !== undefined
+                  ? `https://www.google.com/maps?q=${lat},${lng}`
+                  : '';
+              textBody = `📍 Shared Location${labelParts ? `: ${labelParts}` : ''}${
+                mapsUrl ? `\n🗺️ Google Maps: ${mapsUrl}` : ''
+              }`;
+            } else if (msgType === 'interactive' || msgType === 'button') {
+              const interactive = msg?.interactive;
+              const replyText =
+                interactive?.button_reply?.title ||
+                interactive?.list_reply?.title ||
+                msg?.button?.text ||
+                msg?.button?.payload ||
+                '';
+              textBody = String(replyText || '🔘 [Interactive Button Reply]');
+            } else if (msgType === 'reaction') {
+              const emoji = msg?.reaction?.emoji || '👍';
+              textBody = `Reacted ${emoji} to a message`;
+            } else {
+              textBody = `📷 [WhatsApp ${msgType} message]`;
+            }
 
             if (textBody || attachments.length > 0) {
               await recordInboundSocialMessageInternal({
                 channel: 'whatsapp',
                 externalContactId: fromPhone,
                 contactName: profileName,
-                contactPhone: formatDisplayPhone(fromPhone, '66'),
+                contactPhone: formatDisplayPhone(fromPhone, defaultCc),
                 text: textBody,
                 attachments: attachments.length > 0 ? attachments : undefined,
+                messageId: wamid ? `msg_wa_cloud_${wamid}` : undefined,
+                externalMessageId: wamid,
+                deliveryMethod: 'whatsapp_cloud_api',
+                createdAt: createdAtIso,
               });
             }
           }
