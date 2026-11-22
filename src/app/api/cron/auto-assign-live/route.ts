@@ -45,7 +45,7 @@ export async function GET(request: Request) {
     });
   }
 
-  const result = await runAutoAssignLiveOnServer();
+  const result = await runAutoAssignLiveOnServer({ force });
   return NextResponse.json(result, { status: result.success ? 200 : 500 });
 }
 

@@ -961,9 +961,12 @@ export function AdminDispatchAutoSim({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLiveShadow, isDbLoaded, mergedLiveJobs, todayKey, effectiveArea, isAreaRestricted, allowedBranchIds, shopLocations]);
 
-  // Auto-Assign Live: automatically start Auto-Assign whenever at least 1 rider is online and unassigned tasks exist (including Wave 5 Not Ready pre-staging)
+  // Auto-Assign Live: automatically start Auto-Assign whenever >= 10:30 Asia/Bangkok, at least 1 rider is online/busy, and unassigned tasks exist (including Wave 5 Not Ready pre-staging)
   useEffect(() => {
     if (!isLiveShadow || isLiveArchiveMode || !isDbLoaded || isAutoAssignRunning) return;
+    const bkkNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    const bkkMins = bkkNow.getUTCHours() * 60 + bkkNow.getUTCMinutes();
+    if (bkkMins < 10 * 60 + 30) return;
     const hasOnlineRider = riders.some((r) => {
       const override = simState.riderOnlineOverrides?.[r.id];
       return override !== undefined

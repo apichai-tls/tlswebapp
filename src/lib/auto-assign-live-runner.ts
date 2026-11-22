@@ -101,6 +101,11 @@ function getBangkokHourFloat(d: Date = new Date()): number {
   return bkk.getUTCHours() + bkk.getUTCMinutes() / 60;
 }
 
+function getBangkokMinutesOfDay(d: Date = new Date()): number {
+  const bkk = new Date(d.getTime() + BANGKOK_OFFSET_MS);
+  return bkk.getUTCHours() * 60 + bkk.getUTCMinutes();
+}
+
 function formatBangkokHHmm(d: Date = new Date()): string {
   const bkk = new Date(d.getTime() + BANGKOK_OFFSET_MS);
   return `${String(bkk.getUTCHours()).padStart(2, "0")}:${String(bkk.getUTCMinutes()).padStart(2, "0")}`;
@@ -186,7 +191,7 @@ function isRealLegCompleted(j: any, legType: "pickup" | "delivery"): boolean {
 let inFlightPromise: Promise<any> | null = null;
 let rerunQueued = false;
 
-export async function runAutoAssignLiveOnServer(): Promise<{
+export async function runAutoAssignLiveOnServer(options?: { force?: boolean }): Promise<{
   success: boolean;
   dateKey: string;
   onlineRiders: number;
@@ -195,6 +200,7 @@ export async function runAutoAssignLiveOnServer(): Promise<{
   newlyAssigned: number;
   markedDone: number;
   unassignedRemaining: number;
+  skippedAssignReason?: string;
   error?: string;
 }> {
   if (inFlightPromise) {
@@ -478,14 +484,16 @@ export async function runAutoAssignLiveOnServer(): Promise<{
       }
       state.completedTaskTimes = completedTimes;
 
-      // Auto-assign runnable unassigned tasks whenever riders are online or busy (active on shift)
+      // Auto-assign runnable unassigned tasks whenever riders are online or busy (active on shift) and time >= 10:30 Asia/Bangkok
+      const bkkMinutes = getBangkokMinutesOfDay(now);
+      const isBeforeStartCutoff = !options?.force && bkkMinutes < 10 * 60 + 30;
       const onlineRiders = riders.filter((r) => {
         const ov = state.riderOnlineOverrides?.[r.id];
         return ov !== undefined ? ov : ["online", "busy"].includes((r.status || "").toLowerCase());
       });
 
       let newlyAssigned = 0;
-      if (onlineRiders.length > 0) {
+      if (!isBeforeStartCutoff && onlineRiders.length > 0) {
         const branchInfos = shops.map((s) => ({
           id: s.id,
           name: s.name,
@@ -723,6 +731,7 @@ export async function runAutoAssignLiveOnServer(): Promise<{
         newlyAssigned,
         markedDone,
         unassignedRemaining,
+        ...(isBeforeStartCutoff ? { skippedAssignReason: "Before 10:30 Asia/Bangkok" } : {}),
       };
     } catch (err: any) {
       console.error("[runAutoAssignLiveOnServer] Error:", err);
