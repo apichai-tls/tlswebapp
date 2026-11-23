@@ -2182,13 +2182,29 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       });
 
       if (res.success) {
-        if (res.conversations) setConversations(res.conversations);
-        if (res.messages) {
+        if ((res as any).conversations) {
+          setConversations((res as any).conversations);
+        } else if (res.conversation) {
+          const savedConv = res.conversation;
+          setConversations((prev) => {
+            const filtered = prev.filter((c) => c.id !== savedConv.id);
+            return [savedConv, ...filtered];
+          });
+        }
+        if ((res as any).messages) {
           setMessages((prev) => {
             const otherOptimistic = prev.filter(
               (m) => m.id.startsWith('optimistic_') && m.id !== tempMsgId
             );
-            return [...res.messages, ...otherOptimistic];
+            return [...(res as any).messages, ...otherOptimistic];
+          });
+        } else if (res.message) {
+          const savedMsg = res.message;
+          setMessages((prev) => {
+            const withoutTempAndDup = prev.filter(
+              (m) => m.id !== tempMsgId && m.id !== savedMsg.id
+            );
+            return [...withoutTempAndDup, savedMsg];
           });
         } else {
           setMessages((prev) => prev.filter((m) => m.id !== tempMsgId));
@@ -2304,8 +2320,14 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
     if (res.success) {
       playNotificationChime();
-      if (res.conversations) setConversations(res.conversations);
-      if (res.messages) setMessages(res.messages);
+      if (res.conversation) {
+        const savedConv = res.conversation;
+        setConversations((prev) => [savedConv, ...prev.filter((c) => c.id !== savedConv.id)]);
+      }
+      if (res.message) {
+        const savedMsg = res.message;
+        setMessages((prev) => [...prev.filter((m) => m.id !== savedMsg.id), savedMsg]);
+      }
       toast.success(`💬 Live message received from ${activeConversation.contactName}`);
     }
   };

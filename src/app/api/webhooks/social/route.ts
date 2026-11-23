@@ -176,13 +176,7 @@ export async function POST(req: NextRequest) {
               const mediaObj = msgType === 'sticker' ? msg?.sticker : msg?.image;
               textBody = String(mediaObj?.caption || '').trim();
 
-              if (mediaObj?.url) {
-                attachments.push({
-                  type: 'image',
-                  url: String(mediaObj.url),
-                  name: msgType === 'sticker' ? 'WhatsApp Sticker' : 'WhatsApp Photo',
-                });
-              } else if (mediaObj?.id && waCreds.accessToken) {
+              if (mediaObj?.id && waCreds.accessToken) {
                 const downloaded = await downloadWhatsAppCloudMediaToGcs({
                   mediaId: String(mediaObj.id),
                   accessToken: waCreds.accessToken,
@@ -196,6 +190,15 @@ export async function POST(req: NextRequest) {
                     name: msgType === 'sticker' ? 'WhatsApp Sticker' : 'WhatsApp Photo',
                   });
                 }
+              } else if (
+                mediaObj?.url &&
+                !/lookaside\.fbsbx\.com/i.test(String(mediaObj.url))
+              ) {
+                attachments.push({
+                  type: 'image',
+                  url: String(mediaObj.url),
+                  name: msgType === 'sticker' ? 'WhatsApp Sticker' : 'WhatsApp Photo',
+                });
               }
               if (!textBody) {
                 textBody =
@@ -208,13 +211,7 @@ export async function POST(req: NextRequest) {
               const docName = String(docObj?.filename || 'WhatsApp Document.pdf');
               textBody = String(docObj?.caption || '').trim();
 
-              if (docObj?.url) {
-                attachments.push({
-                  type: 'file',
-                  url: String(docObj.url),
-                  name: docName,
-                });
-              } else if (docObj?.id && waCreds.accessToken) {
+              if (docObj?.id && waCreds.accessToken) {
                 const downloaded = await downloadWhatsAppCloudMediaToGcs({
                   mediaId: String(docObj.id),
                   accessToken: waCreds.accessToken,
@@ -229,6 +226,15 @@ export async function POST(req: NextRequest) {
                     name: docName,
                   });
                 }
+              } else if (
+                docObj?.url &&
+                !/lookaside\.fbsbx\.com/i.test(String(docObj.url))
+              ) {
+                attachments.push({
+                  type: 'file',
+                  url: String(docObj.url),
+                  name: docName,
+                });
               }
               if (!textBody) {
                 textBody = `📄 [Sent a document: ${docName}]`;

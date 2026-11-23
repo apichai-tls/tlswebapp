@@ -41,11 +41,24 @@ import {
   saveRawSocialInboxStore as saveInboxStore,
   saveRawSocialConversationsOnly,
   getSocialStoreVersion,
+  bumpSocialStoreVersion,
   invalidateSocialStoreCache,
   withSocialStoreLock,
   recordSocialReadWatermark,
   applyReadWatermarks,
   recordInboundSocialMessageInternal,
+  ensureSocialInboxSchemaAndMigrate,
+  loadSocialChannelConfig,
+  querySocialConversations,
+  queryConversationMessages,
+  queryRecentSocialMessages,
+  queryDeltaSocialMessages,
+  findSocialConversationById,
+  findSocialConversationForContact,
+  upsertSocialConversationRow,
+  insertSocialMessageAndTouchConversation,
+  deleteSocialConversationAndMessages,
+  markSocialConversationsReadInDb,
 } from '@/lib/social-inbox-internal';
 import {
   getWhatsAppQrStatus,
@@ -187,6 +200,8 @@ function normalizeAndSortConversations(
 
     if (convMsgs.length > 0) {
       const latestMsg = convMsgs[convMsgs.length - 1];
+      const latestMsgMs = new Date(latestMsg.createdAt || 0).getTime();
+      const convLastMs = new Date(updated.lastMessageAt || 0).getTime();
       const isTgGroupInbound =
         updated.channel === 'telegram' &&
         (updated.contactName?.startsWith('👥') || updated.externalContactId?.startsWith('-')) &&
@@ -198,15 +213,16 @@ function normalizeAndSortConversations(
           : latestMsg.text;
 
       if (
-        updated.lastMessageText !== expectedPreview ||
-        updated.lastMessageAt !== latestMsg.createdAt
+        latestMsgMs >= convLastMs &&
+        (updated.lastMessageText !== expectedPreview ||
+          updated.lastMessageAt !== latestMsg.createdAt)
       ) {
         updated.lastMessageText = expectedPreview;
         updated.lastMessageAt = latestMsg.createdAt;
         updated.lastMessageDirection = latestMsg.direction;
         if (
           !updated.updatedAt ||
-          new Date(latestMsg.createdAt).getTime() > new Date(updated.updatedAt).getTime()
+          latestMsgMs > new Date(updated.updatedAt).getTime()
         ) {
           updated.updatedAt = latestMsg.createdAt;
         }
@@ -408,10 +424,7 @@ export async function getConversationMessagesAction(conversationId: string): Pro
   try {
     await assertServerActionAuthorized({ forbidRoles: ['rider'] });
     if (!conversationId) return { success: true, messages: [] };
-    const { messages } = await loadRawInboxStore();
-    const threadMsgs = messages
-      .filter((m) => m.conversationId === conversationId)
-      .sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+    const threadMsgs = await queryConversationMessages(conversationId, 1000);
     return { success: true, messages: threadMsgs };
   } catch (err: any) {
     return { success: false, messages: [], error: err?.message || 'Failed to load thread messages' };
@@ -1155,7 +1168,7 @@ export async function createWhatsAppChatAction(input: {
     }
 
     const displayPhone = formatDisplayPhone(e164Phone, countryCode);
-    const { conversations, messages, config } = await loadRawInboxStore();
+    const config = await loadSocialChannelConfig();
 
     // Check if phone matches an existing CRM customer
     const phoneKey = normalizePhoneKey(e164Phone);
@@ -1205,33 +1218,31 @@ export async function createWhatsAppChatAction(input: {
       `WhatsApp +${e164Phone}`;
 
     // Check if a WhatsApp conversation already exists for this phone or customer
-    let existingIdx = conversations.findIndex(
-      (c) =>
-        c.channel === 'whatsapp' &&
-        (c.externalContactId === e164Phone ||
-          normalizePhoneKey(c.externalContactId) === phoneKey ||
-          (matchedCustomer && c.customerId === matchedCustomer.id))
-    );
+    const existingConv = await findSocialConversationForContact({
+      channel: 'whatsapp',
+      externalContactId: e164Phone,
+      contactPhone: displayPhone,
+      customerId: matchedCustomer?.id,
+    });
 
     let conversation: SocialConversation;
 
-    if (existingIdx >= 0) {
+    if (existingConv) {
       conversation = {
-        ...conversations[existingIdx],
+        ...existingConv,
         externalContactId: e164Phone,
-        contactName: resolvedName || conversations[existingIdx].contactName,
+        contactName: resolvedName || existingConv.contactName,
         contactPhone: displayPhone,
         contactHandle: `+${e164Phone}`,
-        customerId: matchedCustomer?.id || conversations[existingIdx].customerId || null,
-        customerName: matchedCustomer?.name || conversations[existingIdx].customerName || null,
+        customerId: matchedCustomer?.id || existingConv.customerId || null,
+        customerName: matchedCustomer?.name || existingConv.customerName || null,
         customerMemberId:
-          matchedCustomer?.memberId || conversations[existingIdx].customerMemberId || null,
+          matchedCustomer?.memberId || existingConv.customerMemberId || null,
         customerWalletBalance:
-          matchedCustomer?.creditBalance ?? conversations[existingIdx].customerWalletBalance ?? 0,
+          matchedCustomer?.creditBalance ?? existingConv.customerWalletBalance ?? 0,
         status: 'open',
         updatedAt: nowIso,
       };
-      conversations.splice(existingIdx, 1);
     } else {
       conversation = {
         id: `conv_wa_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -1338,14 +1349,28 @@ export async function createWhatsAppChatAction(input: {
         createdAt: nowIso,
       };
 
-      messages.push(createdMessage);
       conversation.lastMessageText = msgText;
       conversation.lastMessageAt = nowIso;
       conversation.lastMessageDirection = 'outbound';
     }
 
-    conversations.unshift(conversation);
-    await saveInboxStore(conversations, messages);
+    if (createdMessage) {
+      const committed = await insertSocialMessageAndTouchConversation({
+        message: createdMessage,
+        conversation,
+        incrementUnread: false,
+      });
+      conversation = committed.conversation;
+      createdMessage = committed.message;
+    } else {
+      const upserted = await upsertSocialConversationRow(conversation, true);
+      conversation = upserted.conversation;
+    }
+
+    const [conversations, messages] = await Promise.all([
+      querySocialConversations(1000),
+      queryConversationMessages(conversation.id, 500),
+    ]);
 
     const whatsappUrl = buildWhatsAppUrl(e164Phone, msgText, countryCode);
 
@@ -1400,7 +1425,6 @@ export async function createMultiChannelChatAction(input: {
       return { success: false, error: 'Please provide a contact handle/ID or customer name.' };
     }
 
-    const { conversations, messages } = await loadRawInboxStore();
     const nowIso = new Date().toISOString();
 
     let matchedCust = null;
@@ -1420,22 +1444,20 @@ export async function createMultiChannelChatAction(input: {
     }
 
     const resolvedExtId = extId || matchedCust?.lineId || `social_${Date.now()}`;
-    let existingIdx = conversations.findIndex(
-      (c) =>
-        c.channel === input.channel &&
-        (c.externalContactId === resolvedExtId ||
-          (matchedCust && c.customerId === matchedCust.id))
-    );
+    const existingConv = await findSocialConversationForContact({
+      channel: input.channel,
+      externalContactId: resolvedExtId,
+      customerId: matchedCust?.id,
+    });
 
     let conversation: SocialConversation;
-    if (existingIdx >= 0) {
+    if (existingConv) {
       conversation = {
-        ...conversations[existingIdx],
-        contactName: name || conversations[existingIdx].contactName,
+        ...existingConv,
+        contactName: name || existingConv.contactName,
         status: 'open',
         updatedAt: nowIso,
       };
-      conversations.splice(existingIdx, 1);
     } else {
       conversation = {
         id: `conv_${input.channel}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -1461,6 +1483,7 @@ export async function createMultiChannelChatAction(input: {
     }
 
     const msgText = (input.initialMessage || '').trim();
+    let createdMsg: SocialMessage | null = null;
     if (msgText) {
       let deliveryMethod: SocialMessage['deliveryMethod'] = 'social_api';
       let status: SocialMessage['status'] = 'sent';
@@ -1484,7 +1507,7 @@ export async function createMultiChannelChatAction(input: {
         }
       }
 
-      messages.push({
+      createdMsg = {
         id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         conversationId: conversation.id,
         channel: input.channel,
@@ -1497,14 +1520,28 @@ export async function createMultiChannelChatAction(input: {
         deliveryMethod,
         externalError,
         createdAt: nowIso,
-      });
+      };
 
       conversation.lastMessageText = msgText;
       conversation.lastMessageAt = nowIso;
     }
 
-    conversations.unshift(conversation);
-    await saveInboxStore(conversations, messages);
+    if (createdMsg) {
+      const committed = await insertSocialMessageAndTouchConversation({
+        message: createdMsg,
+        conversation,
+        incrementUnread: false,
+      });
+      conversation = committed.conversation;
+    } else {
+      const upserted = await upsertSocialConversationRow(conversation, true);
+      conversation = upserted.conversation;
+    }
+
+    const [conversations, messages] = await Promise.all([
+      querySocialConversations(1000),
+      queryConversationMessages(conversation.id, 500),
+    ]);
 
     return {
       success: true,
@@ -1538,20 +1575,19 @@ export async function sendSocialMessageAction(input: {
       return { success: false, error: 'Message cannot be empty.' };
     }
 
-    const [authUser, { conversations, messages, config }] = await Promise.all([
+    const [authUser, conv, config] = await Promise.all([
       assertServerActionAuthorized({
         requireWrite: true,
         forbidRoles: ['rider'],
       }),
-      loadRawInboxStore(),
+      findSocialConversationById(input.conversationId),
+      loadSocialChannelConfig(),
     ]);
 
-    const convIdx = conversations.findIndex((c) => c.id === input.conversationId);
-    if (convIdx === -1) {
+    if (!conv) {
       return { success: false, error: 'Conversation not found.' };
     }
 
-    const conv = conversations[convIdx];
     const nowIso = new Date().toISOString();
 
     // Format text with reply quote if replying to a specific message
@@ -1656,8 +1692,11 @@ export async function sendSocialMessageAction(input: {
       if (useWaCloudApi) {
         deliveryMethod = 'whatsapp_cloud_api';
         const targetReplyMsg = input.replyTo?.messageId
-          ? messages.find((m) => m.id === input.replyTo?.messageId)
-          : undefined;
+          ? await prisma.socialMessage.findUnique({
+              where: { id: input.replyTo.messageId },
+              select: { externalMessageId: true },
+            })
+          : null;
         const replyWamid = targetReplyMsg?.externalMessageId?.startsWith('wamid.')
           ? targetReplyMsg.externalMessageId
           : undefined;
@@ -1892,8 +1931,6 @@ export async function sendSocialMessageAction(input: {
       createdAt: nowIso,
     };
 
-    messages.push(newMsg);
-
     const updatedConv: SocialConversation = {
       ...conv,
       lastMessageText: newMsg.text,
@@ -1904,49 +1941,50 @@ export async function sendSocialMessageAction(input: {
       updatedAt: nowIso,
     };
 
-    conversations.splice(convIdx, 1);
-    conversations.unshift(updatedConv);
+    let committed = await insertSocialMessageAndTouchConversation({
+      message: newMsg,
+      conversation: updatedConv,
+      incrementUnread: false,
+    });
 
-    let savedVer: string | undefined;
     if (pendingWaQrPromise) {
-      const [qrRes, v] = await Promise.all([
-        pendingWaQrPromise,
-        saveInboxStore(conversations, messages),
-      ]);
-      savedVer = v;
+      const qrRes = await pendingWaQrPromise;
       if (!qrRes.ok) {
-        newMsg.status = 'failed';
-        newMsg.externalError = qrRes.error;
-        savedVer = await saveInboxStore(conversations, messages);
+        await prisma.socialMessage.update({
+          where: { id: committed.message.id },
+          data: { status: 'failed', externalError: qrRes.error || 'WhatsApp QR send failed' },
+        });
+        const v = await bumpSocialStoreVersion();
+        committed = {
+          ...committed,
+          message: { ...committed.message, status: 'failed', externalError: qrRes.error },
+          version: v,
+        };
       }
-    } else {
-      savedVer = await saveInboxStore(conversations, messages);
     }
 
     try {
       const { publishOrderEvent } = await import('@/lib/realtime-bus');
       await publishOrderEvent({
         type: 'social.updated',
-        jobId: `__SOCIAL_OUT_${newMsg.id}`,
+        jobId: `__SOCIAL_OUT_${committed.message.id}`,
         updatedAt: new Date(),
         socialPayload: {
           kind: 'message',
-          conversation: updatedConv,
-          message: newMsg,
-          version: savedVer,
+          conversation: committed.conversation,
+          message: committed.message,
+          version: committed.version,
         },
       });
     } catch {}
 
     return {
       success: true,
-      message: newMsg,
-      conversation: updatedConv,
+      message: committed.message,
+      conversation: committed.conversation,
       whatsappUrl,
       whatsappWebUrl,
       whatsappProtocolUrl,
-      conversations,
-      messages,
     };
   } catch (err: any) {
     console.error('[sendSocialMessageAction] Error:', err);
@@ -2001,127 +2039,132 @@ export async function updateSocialConversationAction(input: {
   try {
     await assertServerActionAuthorized({ forbidRoles: ['rider'] });
 
-    return await withSocialStoreLock(async () => {
-      const { conversations, messages } = await loadRawInboxStore();
-      const idx = conversations.findIndex((c) => c.id === input.conversationId);
-      if (idx === -1) {
-        return { success: false, error: 'Conversation not found' };
-      }
+    const existing = await findSocialConversationById(input.conversationId);
+    if (!existing) {
+      return { success: false, error: 'Conversation not found' };
+    }
 
-      const nowMs = Date.now();
-      const nowIso = new Date(nowMs).toISOString();
-      const conv = { ...conversations[idx] };
-      if (input.status) conv.status = input.status;
-      if (input.markAsRead) {
-        conv.unreadCount = 0;
-        conv.lastReadAt = nowIso;
-        recordSocialReadWatermark(conv.id, conv.channel, conv.externalContactId, nowMs);
-      }
-      if (input.contactName !== undefined) conv.contactName = input.contactName;
-      if (input.contactPhone !== undefined) conv.contactPhone = input.contactPhone;
-      if (input.tags !== undefined) conv.tags = input.tags;
-      if (input.notes !== undefined) conv.notes = input.notes;
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const conv: SocialConversation = { ...existing };
+    const hasMetadataEdit =
+      input.status !== undefined ||
+      input.customerId !== undefined ||
+      input.contactPhone !== undefined ||
+      input.contactName !== undefined ||
+      input.tags !== undefined ||
+      input.notes !== undefined;
 
-      if (input.customerId !== undefined) {
-        conv.customerId = input.customerId;
-        if (input.customerId) {
-          const cust = await prisma.customer.findUnique({
-            where: { id: input.customerId },
-            select: {
-              id: true,
-              name: true,
-              phone: true,
-              memberId: true,
-              creditBalance: true,
-              brand: true,
-            },
-          });
-          if (cust) {
-            conv.customerName = cust.name;
-            conv.customerMemberId = cust.memberId;
-            conv.customerWalletBalance = cust.creditBalance || 0;
-            if (!conv.contactPhone && cust.phone) conv.contactPhone = cust.phone;
-            if (conv.channel === 'line' && isValidLineUserId(conv.externalContactId)) {
-              await prisma.customer.update({
-                where: { id: cust.id },
-                data: { lineId: conv.externalContactId },
-              });
-            }
-          }
-        } else {
-          conv.customerName = null;
-          conv.customerMemberId = null;
-        }
-      }
+    if (input.status) conv.status = input.status;
+    if (input.markAsRead) {
+      conv.unreadCount = 0;
+      conv.lastReadAt = nowIso;
+      recordSocialReadWatermark(conv.id, conv.channel, conv.externalContactId, nowMs);
+    }
+    if (input.contactName !== undefined) conv.contactName = input.contactName;
+    if (input.contactPhone !== undefined) conv.contactPhone = input.contactPhone;
+    if (input.tags !== undefined) conv.tags = input.tags;
+    if (input.notes !== undefined) conv.notes = input.notes;
 
-      conv.updatedAt = nowIso;
-      conversations[idx] = conv;
-
-      // Also clear unreadCount + stamp lastReadAt on any duplicate entries sharing the same ID or channel+externalContactId
-      if (input.markAsRead) {
-        for (let i = 0; i < conversations.length; i++) {
-          const c = conversations[i];
-          if (
-            c.id === input.conversationId ||
-            (conv.externalContactId &&
-              c.channel === conv.channel &&
-              c.externalContactId === conv.externalContactId)
-          ) {
-            recordSocialReadWatermark(c.id, c.channel, c.externalContactId, nowMs);
-            conversations[i] = { ...c, unreadCount: 0, lastReadAt: nowIso, updatedAt: nowIso };
-          }
-        }
-      }
-
-      const norm = normalizeAndSortConversations(applyReadWatermarks(conversations), messages);
-      const version = await saveRawSocialConversationsOnly(norm.conversations);
-
-      if (input.markAsRead && conv.channel === 'whatsapp') {
-        markWhatsAppChatReadOnDevice(conv.externalContactId || conv.contactPhone).catch(() => {});
-
-        // Also send Official Meta WhatsApp Cloud API read receipt (`status: "read"`) for the latest inbound wamid
-        loadRawInboxStore()
-          .then(({ config: currentCfg }) => {
-            const waCreds = resolveWhatsAppCloudCredentials(currentCfg?.whatsapp);
-            if (!waCreds.isConfigured) return;
-            const latestInboundWamid = [...messages]
-              .reverse()
-              .find(
-                (m) =>
-                  m.conversationId === conv.id &&
-                  m.direction === 'inbound' &&
-                  m.externalMessageId?.startsWith('wamid.')
-              )?.externalMessageId;
-            if (latestInboundWamid) {
-              markWhatsAppCloudMessageAsRead({
-                phoneNumberId: waCreds.phoneNumberId,
-                accessToken: waCreds.accessToken,
-                externalMessageId: latestInboundWamid,
-              }).catch(() => {});
-            }
-          })
-          .catch(() => {});
-      }
-
-      try {
-        const { publishOrderEvent } = await import('@/lib/realtime-bus');
-        await publishOrderEvent({
-          type: 'social.updated',
-          jobId: `__SOCIAL_CONV_${conv.id}_${nowMs}`,
-          updatedAt: new Date(nowMs),
-          socialPayload: input.markAsRead
-            ? { kind: 'read', readConversationIds: [conv.id], channel: conv.channel, version }
-            : { kind: 'message', conversation: conv, version },
+    if (input.customerId !== undefined) {
+      conv.customerId = input.customerId;
+      if (input.customerId) {
+        const cust = await prisma.customer.findUnique({
+          where: { id: input.customerId },
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            memberId: true,
+            creditBalance: true,
+            brand: true,
+          },
         });
-      } catch {}
+        if (cust) {
+          conv.customerName = cust.name;
+          conv.customerMemberId = cust.memberId;
+          conv.customerWalletBalance = cust.creditBalance || 0;
+          if (!conv.contactPhone && cust.phone) conv.contactPhone = cust.phone;
+          if (conv.channel === 'line' && isValidLineUserId(conv.externalContactId)) {
+            await prisma.customer.update({
+              where: { id: cust.id },
+              data: { lineId: conv.externalContactId },
+            });
+          }
+        }
+      } else {
+        conv.customerName = null;
+        conv.customerMemberId = null;
+      }
+    }
 
-      return {
-        success: true,
-        version,
-        conversation: conv,
-        conversations: norm.conversations,
-      };
-    });
+    conv.updatedAt = nowIso;
+
+    if (input.markAsRead && conv.externalContactId) {
+      await prisma.socialConversation.updateMany({
+        where: {
+          channel: conv.channel,
+          externalContactId: conv.externalContactId,
+          unreadCount: { gt: 0 },
+        },
+        data: {
+          unreadCount: 0,
+          lastReadAt: new Date(nowMs),
+          updatedAt: new Date(nowMs),
+        },
+      });
+    }
+
+    const upserted = await upsertSocialConversationRow(conv, true);
+    const version = upserted.version || (await getSocialStoreVersion());
+
+    if (input.markAsRead && conv.channel === 'whatsapp') {
+      markWhatsAppChatReadOnDevice(conv.externalContactId || conv.contactPhone).catch(() => {});
+
+      loadSocialChannelConfig()
+        .then(async (currentCfg) => {
+          const waCreds = resolveWhatsAppCloudCredentials(currentCfg?.whatsapp);
+          if (!waCreds.isConfigured) return;
+          const latestInbound = await prisma.socialMessage.findFirst({
+            where: {
+              conversationId: conv.id,
+              direction: 'inbound',
+              externalMessageId: { startsWith: 'wamid.' },
+            },
+            orderBy: { createdAt: 'desc' },
+            select: { externalMessageId: true },
+          });
+          if (latestInbound?.externalMessageId) {
+            markWhatsAppCloudMessageAsRead({
+              phoneNumberId: waCreds.phoneNumberId,
+              accessToken: waCreds.accessToken,
+              externalMessageId: latestInbound.externalMessageId,
+            }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }
+
+    try {
+      const { publishOrderEvent } = await import('@/lib/realtime-bus');
+      await publishOrderEvent({
+        type: 'social.updated',
+        jobId: `__SOCIAL_CONV_${conv.id}_${nowMs}`,
+        updatedAt: new Date(nowMs),
+        socialPayload: input.markAsRead && !hasMetadataEdit
+          ? { kind: 'read', readConversationIds: [conv.id], channel: conv.channel, version }
+          : { kind: 'message', conversation: upserted.conversation, version },
+      });
+    } catch {}
+
+    const conversations = hasMetadataEdit ? await querySocialConversations(1000) : undefined;
+
+    return {
+      success: true,
+      version,
+      conversation: upserted.conversation,
+      conversations,
+    };
   } catch (err: any) {
     console.error('[updateSocialConversationAction] Error:', err);
     return { success: false, error: err?.message || 'Failed to update conversation' };
@@ -2143,32 +2186,11 @@ export async function markAllSocialConversationsAsReadAction(
   try {
     await assertServerActionAuthorized({ forbidRoles: ['rider'] });
 
-    return await withSocialStoreLock(async () => {
-      const { conversations, messages } = await loadRawInboxStore();
+    const { clearedCount, version } = await markSocialConversationsReadInDb({ channel });
+    const conversations = await querySocialConversations(1000);
+
+    if (clearedCount > 0) {
       const nowMs = Date.now();
-      const nowIso = new Date(nowMs).toISOString();
-      let clearedCount = 0;
-
-      const updatedConversations = conversations.map((c) => {
-        const matchesChannel = channel === 'all' || c.channel === channel;
-        if (matchesChannel && (c.unreadCount || 0) > 0) {
-          clearedCount++;
-          recordSocialReadWatermark(c.id, c.channel, c.externalContactId, nowMs);
-          return { ...c, unreadCount: 0, lastReadAt: nowIso, updatedAt: nowIso };
-        }
-        return c;
-      });
-
-      if (clearedCount === 0) {
-        return {
-          success: true,
-          clearedCount: 0,
-          conversations: normalizeAndSortConversations(conversations, messages).conversations,
-        };
-      }
-
-      const norm = normalizeAndSortConversations(applyReadWatermarks(updatedConversations), messages);
-      const version = await saveRawSocialConversationsOnly(norm.conversations);
       try {
         const { publishOrderEvent } = await import('@/lib/realtime-bus');
         await publishOrderEvent({
@@ -2178,14 +2200,14 @@ export async function markAllSocialConversationsAsReadAction(
           socialPayload: { kind: 'read_all', channel, version },
         });
       } catch {}
+    }
 
-      return {
-        success: true,
-        version,
-        clearedCount,
-        conversations: norm.conversations,
-      };
-    });
+    return {
+      success: true,
+      version,
+      clearedCount,
+      conversations,
+    };
   } catch (err: any) {
     console.error('[markAllSocialConversationsAsReadAction] Error:', err);
     return { success: false, error: err?.message || 'Failed to mark all conversations as read' };
@@ -2199,15 +2221,15 @@ export async function deleteSocialConversationAction(conversationId: string) {
   try {
     await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
 
-    const { conversations, messages } = await loadRawInboxStore();
-    const nextConvs = conversations.filter((c) => c.id !== conversationId);
-    const nextMsgs = messages.filter((m) => m.conversationId !== conversationId);
-
-    await saveInboxStore(nextConvs, nextMsgs);
+    await deleteSocialConversationAndMessages(conversationId);
+    const [conversations, messages] = await Promise.all([
+      querySocialConversations(1000),
+      queryRecentSocialMessages(250),
+    ]);
     return {
       success: true,
-      conversations: nextConvs,
-      messages: nextMsgs,
+      conversations,
+      messages,
     };
   } catch (err: any) {
     console.error('[deleteSocialConversationAction] Error:', err);
@@ -2229,7 +2251,7 @@ export async function saveSocialChannelConfigAction(newConfig: SocialChannelConf
       };
     }
 
-    const { config: existingConfig } = await loadRawInboxStore();
+    const existingConfig = await loadSocialChannelConfig(true);
     const resolveSecret = (incoming?: string | null, current?: string | null): string => {
       const s = (incoming ?? '').trim();
       if (!s || s.includes('••••')) return current || '';
@@ -2263,6 +2285,7 @@ export async function saveSocialChannelConfigAction(newConfig: SocialChannelConf
       update: { value: JSON.stringify(mergedConfig) },
       create: { key: SOCIAL_CONFIG_KEY, value: JSON.stringify(mergedConfig) },
     });
+    invalidateSocialStoreCache();
 
     const botToken = mergedConfig?.telegram?.botToken?.trim();
     if (mergedConfig?.telegram?.enabled && botToken) {
@@ -2340,9 +2363,9 @@ async function pollLiveChannelUpdatesInternal(opts?: {
       };
     }
 
-    const { conversations, messages, config, version: loadedVersion } =
-      await loadRawInboxStore(dbVersion);
-    let currentVersion = loadedVersion;
+    await ensureSocialInboxSchemaAndMigrate();
+    const config = await loadSocialChannelConfig();
+    let currentVersion = dbVersion;
     let didMutate = false;
     let configMutated = false;
 
@@ -2376,24 +2399,29 @@ async function pollLiveChannelUpdatesInternal(opts?: {
               const mTitle = memberEvent.chat.title ? String(memberEvent.chat.title).trim() : `Group #${mChatId}`;
               const mName = mTitle.startsWith('👥') ? mTitle : `👥 ${mTitle}`;
               const nowIso = new Date().toISOString();
-              const exists = conversations.some(
-                (c) => c.channel === 'telegram' && c.externalContactId === mChatId
-              );
-              if (!exists) {
-                conversations.unshift({
-                  id: `conv_tg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                  channel: 'telegram',
-                  externalContactId: mChatId,
-                  contactName: mName,
-                  contactHandle: `Group (${mChatId})`,
-                  status: 'open',
-                  unreadCount: 1,
-                  lastMessageText: `Connected to Telegram Group "${mTitle}"`,
-                  lastMessageAt: nowIso,
-                  lastMessageDirection: 'inbound',
-                  createdAt: nowIso,
-                  updatedAt: nowIso,
-                });
+              const existingGroup = await findSocialConversationForContact({
+                channel: 'telegram',
+                externalContactId: mChatId,
+              });
+              if (!existingGroup) {
+                const upserted = await upsertSocialConversationRow(
+                  {
+                    id: `conv_tg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                    channel: 'telegram',
+                    externalContactId: mChatId,
+                    contactName: mName,
+                    contactHandle: `Group (${mChatId})`,
+                    status: 'open',
+                    unreadCount: 1,
+                    lastMessageText: `Connected to Telegram Group "${mTitle}"`,
+                    lastMessageAt: nowIso,
+                    lastMessageDirection: 'inbound',
+                    createdAt: nowIso,
+                    updatedAt: nowIso,
+                  },
+                  true
+                );
+                if (upserted.version) currentVersion = upserted.version;
                 didMutate = true;
               }
               continue;
@@ -2416,13 +2444,6 @@ async function pollLiveChannelUpdatesInternal(opts?: {
                   ? groupTitle
                   : `👥 ${groupTitle}`
                 : senderName;
-            const threadHandle = isGroupChat
-              ? msg.chat.username
-                ? `@${msg.chat.username}`
-                : `Group (${chatId})`
-              : from.username
-              ? `@${from.username}`
-              : chatId;
             const isBotAddedEvent =
               Array.isArray(msg.new_chat_members) && msg.new_chat_members.length > 0;
             const text = String(
@@ -2523,55 +2544,20 @@ async function pollLiveChannelUpdatesInternal(opts?: {
                 ? '📷 [Sent a photo via Telegram]'
                 : `📎 [Sent a file: ${attachments[0]?.name || 'Document'}]`);
             const previewText = isGroupChat ? `${senderName}: ${displayBody}` : displayBody;
-            let convIdx = conversations.findIndex(
-              (c) => c.channel === 'telegram' && c.externalContactId === chatId
-            );
 
-            let conv: SocialConversation;
-            if (convIdx >= 0) {
-              conv = {
-                ...conversations[convIdx],
-                contactName: threadContactName || conversations[convIdx].contactName,
-                contactHandle: threadHandle || conversations[convIdx].contactHandle,
-                lastMessageText: previewText,
-                lastMessageAt: nowIso,
-                lastMessageDirection: 'inbound',
-                unreadCount: (conversations[convIdx].unreadCount || 0) + 1,
-                status: 'open',
-                updatedAt: nowIso,
-              };
-              conversations.splice(convIdx, 1);
-            } else {
-              conv = {
-                id: `conv_tg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                channel: 'telegram',
-                externalContactId: chatId,
-                contactName: threadContactName,
-                contactHandle: threadHandle,
-                status: 'open',
-                unreadCount: 1,
-                lastMessageText: previewText,
-                lastMessageAt: nowIso,
-                lastMessageDirection: 'inbound',
-                createdAt: nowIso,
-                updatedAt: nowIso,
-              };
-            }
-
-            conversations.unshift(conv);
-            messages.push({
-              id: `msg_tg_${upd.update_id}_${Date.now()}`,
-              conversationId: conv.id,
+            const rec = await recordInboundSocialMessageInternal({
               channel: 'telegram',
-              direction: 'inbound',
-              text: displayBody,
+              externalContactId: chatId,
+              contactName: threadContactName,
+              text: previewText,
               attachments: attachments.length > 0 ? attachments : undefined,
-              senderName,
-              status: 'delivered',
+              messageId: `msg_tg_${upd.update_id}`,
               deliveryMethod: 'telegram_bot_api',
               createdAt: nowIso,
             });
-            didMutate = true;
+            if (rec.success && !(rec as any).deduped) {
+              didMutate = true;
+            }
           }
 
           if (maxUpdateId > (config.telegram.lastUpdateId || 0)) {
@@ -2590,34 +2576,18 @@ async function pollLiveChannelUpdatesInternal(opts?: {
         update: { value: JSON.stringify(config) },
         create: { key: SOCIAL_CONFIG_KEY, value: JSON.stringify(config) },
       });
+      invalidateSocialStoreCache();
     }
 
-    // Sync any newly arrived LINE OA webhook messages from live DB or lineOaContacts (throttled every 12s)
+    // Sync any newly arrived LINE OA webhook messages from lineOaContacts (throttled every 12s)
     if (shouldRunExternalPoll) try {
       const roLiveDb = getReadOnlyLiveLineDb();
-      const [localLineRow, liveLineRow, liveMsgsRow] = await Promise.all([
+      const [localLineRow, liveLineRow] = await Promise.all([
         prisma.setting.findUnique({ where: { key: 'lineOaContacts' } }),
         roLiveDb
           ? roLiveDb.setting.findUnique({ where: { key: 'lineOaContacts' } }).catch(() => null)
           : Promise.resolve(null),
-        roLiveDb
-          ? roLiveDb.setting.findUnique({ where: { key: SOCIAL_MESSAGES_KEY } }).catch(() => null)
-          : Promise.resolve(null),
       ]);
-
-      if (liveMsgsRow?.value) {
-        const liveMsgs: SocialMessage[] = JSON.parse(liveMsgsRow.value);
-        if (Array.isArray(liveMsgs)) {
-          const existingIds = new Set(messages.map((m) => m.id));
-          for (const lm of liveMsgs) {
-            if (lm?.id && !existingIds.has(lm.id)) {
-              messages.push(lm);
-              existingIds.add(lm.id);
-              didMutate = true;
-            }
-          }
-        }
-      }
 
       for (const raw of [localLineRow?.value, liveLineRow?.value]) {
         if (!raw) continue;
@@ -2627,59 +2597,40 @@ async function pollLiveChannelUpdatesInternal(opts?: {
           if (!lc?.userId || !lc.lastMessageText || lc.lastMessageText === '[Followed LINE OA]') {
             continue;
           }
-          const convIdx = conversations.findIndex(
-            (c) => c.channel === 'line' && c.externalContactId === lc.userId
-          );
-          if (convIdx >= 0) {
-            const conv = conversations[convIdx];
-            const hasMsg =
-              conv.lastMessageText === lc.lastMessageText ||
-              messages.some(
-                (m) => m.conversationId === conv.id && m.text === lc.lastMessageText
-              );
-            if (!hasMsg) {
-              const ts = lc.lastInteractionAt || new Date().toISOString();
-              const isNewerThanRead =
-                !conv.updatedAt ||
-                new Date(ts).getTime() > new Date(conv.updatedAt).getTime();
-              messages.push({
-                id: `msg_line_wh_${lc.userId.slice(-8)}_${new Date(ts).getTime()}`,
-                conversationId: conv.id,
-                channel: 'line',
-                direction: 'inbound',
+          const ts = lc.lastInteractionAt || new Date().toISOString();
+          const msgId = `msg_line_wh_${lc.userId.slice(-8)}_${new Date(ts).getTime()}`;
+          const existingConv = await findSocialConversationForContact({
+            channel: 'line',
+            externalContactId: lc.userId,
+          });
+          if (existingConv && existingConv.lastMessageText !== lc.lastMessageText) {
+            const hasSameText = await prisma.socialMessage.findFirst({
+              where: {
+                conversationId: existingConv.id,
                 text: lc.lastMessageText,
-                senderName: lc.displayName || conv.contactName,
-                status: 'delivered',
+              },
+              select: { id: true },
+            });
+            if (!hasSameText) {
+              const rec = await recordInboundSocialMessageInternal({
+                channel: 'line',
+                externalContactId: lc.userId,
+                contactName: lc.displayName || existingConv.contactName,
+                text: lc.lastMessageText,
+                messageId: msgId,
                 deliveryMethod: 'line_api',
                 createdAt: ts,
               });
-              conversations[convIdx] = {
-                ...conv,
-                lastMessageText: lc.lastMessageText,
-                lastMessageAt: ts,
-                lastMessageDirection: 'inbound',
-                unreadCount: isNewerThanRead
-                  ? (conv.unreadCount || 0) + 1
-                  : conv.unreadCount || 0,
-                updatedAt: isNewerThanRead ? ts : conv.updatedAt,
-              };
-              didMutate = true;
+              if (rec.success && !(rec as any).deduped) {
+                didMutate = true;
+              }
             }
           }
         }
       }
     } catch {}
 
-    const normPoll = normalizeAndSortConversations(applyReadWatermarks(conversations), messages);
-    conversations.splice(0, conversations.length, ...normPoll.conversations);
-    messages.splice(0, messages.length, ...normPoll.messages);
-    if (normPoll.didClean) didMutate = true;
-
-    if (didMutate) {
-      currentVersion = await withSocialStoreLock(async () =>
-        saveInboxStore(applyReadWatermarks(conversations), messages)
-      );
-    }
+    currentVersion = await getSocialStoreVersion(true);
 
     if (
       !didMutate &&
@@ -2695,13 +2646,13 @@ async function pollLiveChannelUpdatesInternal(opts?: {
       };
     }
 
+    const conversations = await querySocialConversations(1000);
+
     // Delta message delivery when client already has history loaded
     if (opts?.lastMsgTimestamp && !opts?.forceFull) {
       const cutoffMs = new Date(opts.lastMsgTimestamp).getTime() - 10_000;
       if (Number.isFinite(cutoffMs)) {
-        const deltaMessages = messages.filter(
-          (m) => new Date(m.createdAt).getTime() >= cutoffMs
-        );
+        const deltaMessages = await queryDeltaSocialMessages(new Date(cutoffMs), 500);
         return {
           success: true,
           unchanged: false,
@@ -2713,6 +2664,7 @@ async function pollLiveChannelUpdatesInternal(opts?: {
       }
     }
 
+    const messages = await queryRecentSocialMessages(500);
     return {
       success: true,
       unchanged: false,
@@ -2740,7 +2692,7 @@ export async function checkChannelsLiveStatusAction(): Promise<{
 }> {
   await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   const nowIso = new Date().toISOString();
-  const { config } = await loadRawInboxStore();
+  const config = await loadSocialChannelConfig();
   const lineSettings = await getStoredLineOaSettings('that_laundry_shop');
 
   const waQr = await getWhatsAppQrStatusAsync();
@@ -2888,7 +2840,7 @@ export async function testWhatsAppCloudApiAction(input?: {
   accessToken?: string;
 }): Promise<WhatsAppCloudVerificationResult> {
   await assertServerActionAuthorized({ forbidRoles: ['rider'] });
-  const { config } = await loadRawInboxStore();
+  const config = await loadSocialChannelConfig();
   const savedCreds = resolveWhatsAppCloudCredentials(config.whatsapp);
 
   const incomingToken = (input?.accessToken || '').trim();

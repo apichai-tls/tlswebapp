@@ -8,12 +8,14 @@ import type {
   SocialConversation,
   SocialMessage,
   SocialMessageAttachment,
+  SocialMessageReplyRef,
 } from '@/types/social-inbox';
 
 export const SOCIAL_CONVERSATIONS_KEY = 'TLS_SOCIAL_CONVERSATIONS_V1';
 export const SOCIAL_MESSAGES_KEY = 'TLS_SOCIAL_MESSAGES_V1';
 export const SOCIAL_CONFIG_KEY = 'TLS_SOCIAL_CHANNEL_CONFIG_V1';
 export const SOCIAL_VERSION_KEY = 'TLS_SOCIAL_VERSION_V1';
+export const SOCIAL_DB_MIGRATED_KEY = 'TLS_SOCIAL_DB_MIGRATED_V2';
 
 interface SocialStoreMemoryCache {
   version: string;
@@ -25,14 +27,348 @@ interface SocialStoreMemoryCache {
 
 const globalForSocialCache = globalThis as unknown as {
   __tlsSocialStoreCache?: SocialStoreMemoryCache | null;
+  __tlsSocialConfigCache?: { config: SocialChannelConfig; loadedAt: number } | null;
   __tlsSocialReadWatermarks?: Map<string, number>;
   __tlsSocialLastVersionCheckAt?: number;
+  __tlsSocialSchemaEnsurePromise?: Promise<void> | null;
+  __tlsSocialSchemaReady?: boolean;
 };
+
+function safeDate(val?: string | Date | null, fallback: Date = new Date()): Date {
+  if (!val) return fallback;
+  const d = val instanceof Date ? val : new Date(val);
+  return isNaN(d.getTime()) ? fallback : d;
+}
+
+function parseJsonSafe<T>(raw?: string | null): T | undefined {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+export function mapDbRowToConversation(row: {
+  id: string;
+  channel: string;
+  externalContactId: string;
+  contactName: string;
+  contactPhone: string | null;
+  contactAvatar: string | null;
+  contactHandle: string | null;
+  customerId: string | null;
+  customerName: string | null;
+  customerMemberId: string | null;
+  customerWalletBalance: number | null;
+  brand: string | null;
+  branchId: string | null;
+  branchName: string | null;
+  status: string;
+  unreadCount: number;
+  lastReadAt: Date | null;
+  assignedStaffId: string | null;
+  assignedStaffName: string | null;
+  tagsJson: string | null;
+  notes: string | null;
+  lastMessageText: string;
+  lastMessageAt: Date;
+  lastMessageDirection: string;
+  createdAt: Date;
+  updatedAt: Date;
+}): SocialConversation {
+  const tags = parseJsonSafe<string[]>(row.tagsJson);
+  return {
+    id: row.id,
+    channel: row.channel as SocialChannel,
+    externalContactId: row.externalContactId,
+    contactName: row.contactName,
+    contactPhone: row.contactPhone ?? undefined,
+    contactAvatar: row.contactAvatar ?? undefined,
+    contactHandle: row.contactHandle ?? undefined,
+    customerId: row.customerId,
+    customerName: row.customerName,
+    customerMemberId: row.customerMemberId,
+    customerWalletBalance: row.customerWalletBalance ?? 0,
+    brand: (row.brand as SocialConversation['brand']) || 'that_laundry_shop',
+    branchId: row.branchId,
+    branchName: row.branchName,
+    status: (row.status as SocialConversation['status']) || 'open',
+    unreadCount: row.unreadCount || 0,
+    lastReadAt: row.lastReadAt ? row.lastReadAt.toISOString() : undefined,
+    assignedStaffId: row.assignedStaffId,
+    assignedStaffName: row.assignedStaffName,
+    tags: Array.isArray(tags) ? tags : undefined,
+    notes: row.notes ?? undefined,
+    lastMessageText: row.lastMessageText || '',
+    lastMessageAt: row.lastMessageAt.toISOString(),
+    lastMessageDirection: (row.lastMessageDirection as SocialMessage['direction']) || 'inbound',
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+export function mapConversationToDbData(c: SocialConversation) {
+  const now = new Date();
+  return {
+    id: c.id,
+    channel: c.channel,
+    externalContactId: c.externalContactId || '',
+    contactName: c.contactName || c.externalContactId || 'Customer',
+    contactPhone: c.contactPhone ?? null,
+    contactAvatar: c.contactAvatar ?? null,
+    contactHandle: c.contactHandle ?? null,
+    customerId: c.customerId ?? null,
+    customerName: c.customerName ?? null,
+    customerMemberId: c.customerMemberId ?? null,
+    customerWalletBalance: c.customerWalletBalance ?? 0,
+    brand: c.brand || 'that_laundry_shop',
+    branchId: c.branchId ?? null,
+    branchName: c.branchName ?? null,
+    status: c.status || 'open',
+    unreadCount: Math.max(0, Number(c.unreadCount) || 0),
+    lastReadAt: c.lastReadAt ? safeDate(c.lastReadAt, now) : null,
+    assignedStaffId: c.assignedStaffId ?? null,
+    assignedStaffName: c.assignedStaffName ?? null,
+    tagsJson: Array.isArray(c.tags) && c.tags.length > 0 ? JSON.stringify(c.tags) : null,
+    notes: c.notes ?? null,
+    lastMessageText: c.lastMessageText || '',
+    lastMessageAt: safeDate(c.lastMessageAt, now),
+    lastMessageDirection: c.lastMessageDirection || 'inbound',
+    createdAt: safeDate(c.createdAt, now),
+    updatedAt: safeDate(c.updatedAt, now),
+  };
+}
+
+export function mapDbRowToMessage(row: {
+  id: string;
+  conversationId: string;
+  channel: string;
+  direction: string;
+  text: string;
+  attachmentsJson: string | null;
+  replyToJson: string | null;
+  senderName: string;
+  senderId: string | null;
+  senderRole: string | null;
+  status: string;
+  deliveryMethod: string | null;
+  externalMessageId: string | null;
+  externalError: string | null;
+  createdAt: Date;
+}): SocialMessage {
+  const attachments = parseJsonSafe<SocialMessageAttachment[]>(row.attachmentsJson);
+  const replyTo = parseJsonSafe<SocialMessageReplyRef>(row.replyToJson);
+  return {
+    id: row.id,
+    conversationId: row.conversationId,
+    channel: row.channel as SocialChannel,
+    direction: (row.direction as SocialMessage['direction']) || 'inbound',
+    text: row.text || '',
+    attachments: Array.isArray(attachments) && attachments.length > 0 ? attachments : undefined,
+    replyTo: replyTo && typeof replyTo === 'object' ? replyTo : undefined,
+    senderName: row.senderName || '',
+    senderId: row.senderId ?? undefined,
+    senderRole: row.senderRole ?? undefined,
+    status: (row.status as SocialMessage['status']) || 'delivered',
+    deliveryMethod: (row.deliveryMethod as SocialMessage['deliveryMethod']) ?? undefined,
+    externalMessageId: row.externalMessageId ?? undefined,
+    externalError: row.externalError ?? undefined,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+export function mapMessageToDbData(m: SocialMessage) {
+  return {
+    id: m.id,
+    conversationId: m.conversationId,
+    channel: m.channel,
+    direction: m.direction || 'inbound',
+    text: m.text || '',
+    attachmentsJson:
+      Array.isArray(m.attachments) && m.attachments.length > 0
+        ? JSON.stringify(m.attachments)
+        : null,
+    replyToJson: m.replyTo ? JSON.stringify(m.replyTo) : null,
+    senderName: m.senderName || '',
+    senderId: m.senderId ?? null,
+    senderRole: m.senderRole ?? null,
+    status: m.status || 'delivered',
+    deliveryMethod: m.deliveryMethod ?? null,
+    externalMessageId: m.externalMessageId ?? null,
+    externalError: m.externalError ?? null,
+    createdAt: safeDate(m.createdAt),
+  };
+}
+
+/**
+ * Self-bootstrapping additive SQL schema + zero-downtime migration from legacy Setting JSON blobs
+ * (`TLS_SOCIAL_CONVERSATIONS_V1` & `TLS_SOCIAL_MESSAGES_V1`) into dedicated indexed PostgreSQL tables.
+ * Leaves legacy Setting rows untouched as a read-only backup.
+ */
+export async function ensureSocialInboxSchemaAndMigrate(): Promise<void> {
+  if (globalForSocialCache.__tlsSocialSchemaReady) return;
+  if (globalForSocialCache.__tlsSocialSchemaEnsurePromise) {
+    return globalForSocialCache.__tlsSocialSchemaEnsurePromise;
+  }
+
+  globalForSocialCache.__tlsSocialSchemaEnsurePromise = (async () => {
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "SocialConversation" (
+          "id" TEXT NOT NULL,
+          "channel" TEXT NOT NULL,
+          "externalContactId" TEXT NOT NULL,
+          "contactName" TEXT NOT NULL,
+          "contactPhone" TEXT,
+          "contactAvatar" TEXT,
+          "contactHandle" TEXT,
+          "customerId" TEXT,
+          "customerName" TEXT,
+          "customerMemberId" TEXT,
+          "customerWalletBalance" DOUBLE PRECISION DEFAULT 0,
+          "brand" TEXT DEFAULT 'that_laundry_shop',
+          "branchId" TEXT,
+          "branchName" TEXT,
+          "status" TEXT NOT NULL DEFAULT 'open',
+          "unreadCount" INTEGER NOT NULL DEFAULT 0,
+          "lastReadAt" TIMESTAMP(3),
+          "assignedStaffId" TEXT,
+          "assignedStaffName" TEXT,
+          "tagsJson" TEXT,
+          "notes" TEXT,
+          "lastMessageText" TEXT NOT NULL DEFAULT '',
+          "lastMessageAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "lastMessageDirection" TEXT NOT NULL DEFAULT 'inbound',
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "SocialConversation_pkey" PRIMARY KEY ("id")
+        );
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "SocialConversation_channel_externalContactId_idx"
+        ON "SocialConversation"("channel", "externalContactId");
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "SocialConversation_customerId_idx"
+        ON "SocialConversation"("customerId");
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "SocialConversation_lastMessageAt_idx"
+        ON "SocialConversation"("lastMessageAt" DESC);
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "SocialConversation_updatedAt_idx"
+        ON "SocialConversation"("updatedAt" DESC);
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "SocialConversation_channel_unreadCount_idx"
+        ON "SocialConversation"("channel", "unreadCount");
+      `);
+
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "SocialMessage" (
+          "id" TEXT NOT NULL,
+          "conversationId" TEXT NOT NULL,
+          "channel" TEXT NOT NULL,
+          "direction" TEXT NOT NULL,
+          "text" TEXT NOT NULL DEFAULT '',
+          "attachmentsJson" TEXT,
+          "replyToJson" TEXT,
+          "senderName" TEXT NOT NULL DEFAULT '',
+          "senderId" TEXT,
+          "senderRole" TEXT,
+          "status" TEXT NOT NULL DEFAULT 'delivered',
+          "deliveryMethod" TEXT,
+          "externalMessageId" TEXT,
+          "externalError" TEXT,
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "SocialMessage_pkey" PRIMARY KEY ("id")
+        );
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "SocialMessage_conversationId_createdAt_idx"
+        ON "SocialMessage"("conversationId", "createdAt" ASC);
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "SocialMessage_createdAt_idx"
+        ON "SocialMessage"("createdAt" DESC);
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "SocialMessage_externalMessageId_idx"
+        ON "SocialMessage"("externalMessageId");
+      `);
+
+      // One-time automatic data migration from Setting JSON blobs
+      const migRow = await prisma.setting.findUnique({
+        where: { key: SOCIAL_DB_MIGRATED_KEY },
+        select: { value: true },
+      });
+
+      if (migRow?.value !== 'true') {
+        const legacyRows = await prisma.setting.findMany({
+          where: { key: { in: [SOCIAL_CONVERSATIONS_KEY, SOCIAL_MESSAGES_KEY] } },
+        });
+        const legacyMap = new Map(legacyRows.map((r) => [r.key, r.value]));
+
+        const rawConvs = parseJsonSafe<SocialConversation[]>(
+          legacyMap.get(SOCIAL_CONVERSATIONS_KEY)
+        );
+        const rawMsgs = parseJsonSafe<SocialMessage[]>(legacyMap.get(SOCIAL_MESSAGES_KEY));
+
+        if (Array.isArray(rawConvs) && rawConvs.length > 0) {
+          const seenConvIds = new Set<string>();
+          const convDataList = [];
+          for (const c of rawConvs) {
+            if (!c?.id || seenConvIds.has(c.id)) continue;
+            seenConvIds.add(c.id);
+            convDataList.push(mapConversationToDbData(c));
+          }
+          for (let i = 0; i < convDataList.length; i += 250) {
+            await prisma.socialConversation.createMany({
+              data: convDataList.slice(i, i + 250),
+              skipDuplicates: true,
+            });
+          }
+        }
+
+        if (Array.isArray(rawMsgs) && rawMsgs.length > 0) {
+          const seenMsgIds = new Set<string>();
+          const msgDataList = [];
+          for (const m of rawMsgs) {
+            if (!m?.id || !m?.conversationId || seenMsgIds.has(m.id)) continue;
+            seenMsgIds.add(m.id);
+            msgDataList.push(mapMessageToDbData(m));
+          }
+          for (let i = 0; i < msgDataList.length; i += 500) {
+            await prisma.socialMessage.createMany({
+              data: msgDataList.slice(i, i + 500),
+              skipDuplicates: true,
+            });
+          }
+        }
+
+        await prisma.setting.upsert({
+          where: { key: SOCIAL_DB_MIGRATED_KEY },
+          update: { value: 'true' },
+          create: { key: SOCIAL_DB_MIGRATED_KEY, value: 'true' },
+        });
+      }
+
+      globalForSocialCache.__tlsSocialSchemaReady = true;
+    } catch (err) {
+      globalForSocialCache.__tlsSocialSchemaEnsurePromise = null;
+      throw err;
+    }
+  })();
+
+  return globalForSocialCache.__tlsSocialSchemaEnsurePromise;
+}
 
 export async function getSocialStoreVersion(forceDb = false): Promise<string> {
   const cached = globalForSocialCache.__tlsSocialStoreCache;
   const lastCheck = globalForSocialCache.__tlsSocialLastVersionCheckAt || 0;
-  if (!forceDb && cached && cached.version && Date.now() - lastCheck < 1500) {
+  if (!forceDb && cached && cached.version && Date.now() - lastCheck < 400) {
     return cached.version;
   }
   try {
@@ -49,7 +385,19 @@ export async function getSocialStoreVersion(forceDb = false): Promise<string> {
 
 export function invalidateSocialStoreCache(): void {
   globalForSocialCache.__tlsSocialStoreCache = null;
+  globalForSocialCache.__tlsSocialConfigCache = null;
   globalForSocialCache.__tlsSocialLastVersionCheckAt = 0;
+}
+
+export async function bumpSocialStoreVersion(): Promise<string> {
+  const nextVersion = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  await prisma.setting.upsert({
+    where: { key: SOCIAL_VERSION_KEY },
+    update: { value: nextVersion },
+    create: { key: SOCIAL_VERSION_KEY, value: nextVersion },
+  });
+  invalidateSocialStoreCache();
+  return nextVersion;
 }
 
 function getReadWatermarks(): Map<string, number> {
@@ -59,7 +407,12 @@ function getReadWatermarks(): Map<string, number> {
   return globalForSocialCache.__tlsSocialReadWatermarks;
 }
 
-export function recordSocialReadWatermark(convId: string, channel?: string, externalContactId?: string, atMs: number = Date.now()): void {
+export function recordSocialReadWatermark(
+  convId: string,
+  channel?: string,
+  externalContactId?: string,
+  atMs: number = Date.now()
+): void {
   const map = getReadWatermarks();
   if (convId) map.set(`id:${convId}`, Math.max(map.get(`id:${convId}`) || 0, atMs));
   if (channel && externalContactId) {
@@ -67,7 +420,6 @@ export function recordSocialReadWatermark(convId: string, channel?: string, exte
     map.set(k, Math.max(map.get(k) || 0, atMs));
   }
   if (map.size > 2000) {
-    // Trim oldest entries
     const keys = Array.from(map.keys()).slice(0, 500);
     for (const k of keys) map.delete(k);
   }
@@ -77,7 +429,9 @@ export function applyReadWatermarks(conversations: SocialConversation[]): Social
   const map = getReadWatermarks();
   return conversations.map((c) => {
     const wmById = map.get(`id:${c.id}`) || 0;
-    const wmByExt = c.externalContactId ? map.get(`ext:${c.channel}:${c.externalContactId.trim()}`) || 0 : 0;
+    const wmByExt = c.externalContactId
+      ? map.get(`ext:${c.channel}:${c.externalContactId.trim()}`) || 0
+      : 0;
     const convReadMs = c.lastReadAt ? new Date(c.lastReadAt).getTime() : 0;
     const bestReadMs = Math.max(wmById, wmByExt, Number.isFinite(convReadMs) ? convReadMs : 0);
     if (!bestReadMs) return c;
@@ -140,6 +494,43 @@ export function getDefaultSocialChannelConfig(): SocialChannelConfig {
       botToken: '',
     },
   };
+}
+
+export async function loadSocialChannelConfig(forceDb = false): Promise<SocialChannelConfig> {
+  const cached = globalForSocialCache.__tlsSocialConfigCache;
+  if (!forceDb && cached && Date.now() - cached.loadedAt < 5000) {
+    return {
+      whatsapp: { ...cached.config.whatsapp },
+      line: { ...cached.config.line },
+      facebook: { ...cached.config.facebook },
+      instagram: { ...cached.config.instagram },
+      telegram: { ...cached.config.telegram },
+    };
+  }
+  let config = getDefaultSocialChannelConfig();
+  try {
+    const row = await prisma.setting.findUnique({
+      where: { key: SOCIAL_CONFIG_KEY },
+      select: { value: true },
+    });
+    if (row?.value) {
+      const parsed = JSON.parse(row.value);
+      if (parsed && typeof parsed === 'object') {
+        config = {
+          whatsapp: { ...config.whatsapp, ...(parsed.whatsapp || {}) },
+          line: { ...config.line, ...(parsed.line || {}) },
+          facebook: { ...config.facebook, ...(parsed.facebook || {}) },
+          instagram: { ...config.instagram, ...(parsed.instagram || {}) },
+          telegram: { ...config.telegram, ...(parsed.telegram || {}) },
+        };
+      }
+    }
+  } catch {}
+  globalForSocialCache.__tlsSocialConfigCache = {
+    config,
+    loadedAt: Date.now(),
+  };
+  return config;
 }
 
 function maskSecretValue(val?: string | null): string {
@@ -286,12 +677,365 @@ export async function resolvePublicHttpsMediaUrl(url: string): Promise<string | 
   return null;
 }
 
+// ============================================================================
+// ROW-LEVEL POSTGRESQL QUERIES & ATOMIC MUTATIONS
+// ============================================================================
+
+export async function querySocialConversations(limit = 1000): Promise<SocialConversation[]> {
+  await ensureSocialInboxSchemaAndMigrate();
+  const [unreadRows, recentRows] = await Promise.all([
+    prisma.socialConversation.findMany({
+      where: { unreadCount: { gt: 0 } },
+      orderBy: { lastMessageAt: 'desc' },
+      take: limit,
+    }),
+    prisma.socialConversation.findMany({
+      orderBy: { lastMessageAt: 'desc' },
+      take: limit,
+    }),
+  ]);
+
+  const byId = new Map<string, SocialConversation>();
+  for (const r of [...unreadRows, ...recentRows]) {
+    if (!byId.has(r.id)) {
+      byId.set(r.id, mapDbRowToConversation(r));
+    }
+  }
+
+  const watered = applyReadWatermarks(Array.from(byId.values()));
+  const isActiveConv = (c: SocialConversation): number =>
+    c.lastMessageText &&
+    c.lastMessageText !== 'Connected via LINE Official Account (@thatlaundryshop)' &&
+    c.lastMessageText !== '[Followed LINE OA]'
+      ? 1
+      : 0;
+
+  watered.sort((a, b) => {
+    const aUnread = (a.unreadCount || 0) > 0 ? 1 : 0;
+    const bUnread = (b.unreadCount || 0) > 0 ? 1 : 0;
+    if (aUnread !== bUnread) return bUnread - aUnread;
+    const aActive = isActiveConv(a);
+    const bActive = isActiveConv(b);
+    if (aActive !== bActive) return bActive - aActive;
+    const aCrm = a.customerId ? 1 : 0;
+    const bCrm = b.customerId ? 1 : 0;
+    if (!aActive && !bActive && aCrm !== bCrm) return bCrm - aCrm;
+    return new Date(b.lastMessageAt || 0).getTime() - new Date(a.lastMessageAt || 0).getTime();
+  });
+
+  return watered.slice(0, limit);
+}
+
+export async function queryConversationMessages(
+  conversationId: string,
+  limit = 1000
+): Promise<SocialMessage[]> {
+  await ensureSocialInboxSchemaAndMigrate();
+  const rows = await prisma.socialMessage.findMany({
+    where: { conversationId },
+    orderBy: { createdAt: 'asc' },
+    take: limit,
+  });
+  return rows.map(mapDbRowToMessage);
+}
+
+export async function queryRecentSocialMessages(limit = 250): Promise<SocialMessage[]> {
+  await ensureSocialInboxSchemaAndMigrate();
+  const rows = await prisma.socialMessage.findMany({
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  });
+  return rows.reverse().map(mapDbRowToMessage);
+}
+
+export async function queryDeltaSocialMessages(
+  sinceDate: Date,
+  limit = 500
+): Promise<SocialMessage[]> {
+  await ensureSocialInboxSchemaAndMigrate();
+  const rows = await prisma.socialMessage.findMany({
+    where: { createdAt: { gte: sinceDate } },
+    orderBy: { createdAt: 'asc' },
+    take: limit,
+  });
+  return rows.map(mapDbRowToMessage);
+}
+
+export async function findSocialConversationById(id: string): Promise<SocialConversation | null> {
+  if (!id) return null;
+  await ensureSocialInboxSchemaAndMigrate();
+  const row = await prisma.socialConversation.findUnique({ where: { id } });
+  return row ? applyReadWatermarks([mapDbRowToConversation(row)])[0] : null;
+}
+
+function phoneDigitsTail(raw?: string | null): string {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length < 7) return digits;
+  return digits.slice(-9);
+}
+
+export async function findSocialConversationForContact(opts: {
+  channel: SocialChannel;
+  externalContactId: string;
+  contactPhone?: string;
+  customerId?: string | null;
+}): Promise<SocialConversation | null> {
+  await ensureSocialInboxSchemaAndMigrate();
+  const ext = (opts.externalContactId || '').trim();
+  const orConds: any[] = [];
+  if (ext) {
+    orConds.push({ channel: opts.channel, externalContactId: ext });
+  }
+  if (opts.customerId) {
+    orConds.push({ channel: opts.channel, customerId: opts.customerId });
+  }
+
+  if (orConds.length > 0) {
+    const direct = await prisma.socialConversation.findFirst({
+      where: { OR: orConds },
+      orderBy: { lastMessageAt: 'desc' },
+    });
+    if (direct) return mapDbRowToConversation(direct);
+  }
+
+  if (opts.channel === 'whatsapp') {
+    const tail = phoneDigitsTail(opts.contactPhone || ext);
+    if (tail.length >= 7) {
+      const waRows = await prisma.socialConversation.findMany({
+        where: {
+          channel: 'whatsapp',
+          OR: [
+            { externalContactId: { endsWith: tail } },
+            { contactPhone: { contains: tail.slice(-4) } },
+          ],
+        },
+        orderBy: { lastMessageAt: 'desc' },
+        take: 25,
+      });
+      for (const r of waRows) {
+        if (
+          phoneDigitsTail(r.externalContactId) === tail ||
+          phoneDigitsTail(r.contactPhone) === tail
+        ) {
+          return mapDbRowToConversation(r);
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+export async function upsertSocialConversationRow(
+  conv: SocialConversation,
+  shouldBumpVersion = true
+): Promise<{ conversation: SocialConversation; version?: string }> {
+  await ensureSocialInboxSchemaAndMigrate();
+  const data = mapConversationToDbData(conv);
+  const saved = await prisma.socialConversation.upsert({
+    where: { id: conv.id },
+    create: data,
+    update: {
+      channel: data.channel,
+      externalContactId: data.externalContactId,
+      contactName: data.contactName,
+      contactPhone: data.contactPhone,
+      contactAvatar: data.contactAvatar,
+      contactHandle: data.contactHandle,
+      customerId: data.customerId,
+      customerName: data.customerName,
+      customerMemberId: data.customerMemberId,
+      customerWalletBalance: data.customerWalletBalance,
+      brand: data.brand,
+      branchId: data.branchId,
+      branchName: data.branchName,
+      status: data.status,
+      unreadCount: data.unreadCount,
+      lastReadAt: data.lastReadAt,
+      assignedStaffId: data.assignedStaffId,
+      assignedStaffName: data.assignedStaffName,
+      tagsJson: data.tagsJson,
+      notes: data.notes,
+      lastMessageText: data.lastMessageText,
+      lastMessageAt: data.lastMessageAt,
+      lastMessageDirection: data.lastMessageDirection,
+      updatedAt: data.updatedAt,
+    },
+  });
+  const version = shouldBumpVersion ? await bumpSocialStoreVersion() : undefined;
+  return { conversation: mapDbRowToConversation(saved), version };
+}
+
+/**
+ * Atomically inserts a single `SocialMessage` row and updates/creates ONLY its parent
+ * `SocialConversation` row inside one PostgreSQL transaction — zero cross-chat overwrites!
+ */
+export async function insertSocialMessageAndTouchConversation(opts: {
+  message: SocialMessage;
+  conversation: SocialConversation;
+  incrementUnread?: boolean;
+}): Promise<{ conversation: SocialConversation; message: SocialMessage; version: string }> {
+  await ensureSocialInboxSchemaAndMigrate();
+  const msgData = mapMessageToDbData(opts.message);
+  const convData = mapConversationToDbData(opts.conversation);
+  const nextVersion = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  const result = await prisma.$transaction(async (tx) => {
+    const savedMsg = await tx.socialMessage.upsert({
+      where: { id: msgData.id },
+      create: msgData,
+      update: {
+        text: msgData.text,
+        attachmentsJson: msgData.attachmentsJson,
+        replyToJson: msgData.replyToJson,
+        status: msgData.status,
+        deliveryMethod: msgData.deliveryMethod,
+        externalMessageId: msgData.externalMessageId,
+        externalError: msgData.externalError,
+      },
+    });
+
+    const existingConv = await tx.socialConversation.findUnique({
+      where: { id: convData.id },
+    });
+
+    let savedConv;
+    if (existingConv) {
+      const isNewerOrEqual =
+        msgData.createdAt.getTime() >= existingConv.lastMessageAt.getTime();
+      const isOutbound = msgData.direction === 'outbound';
+
+      savedConv = await tx.socialConversation.update({
+        where: { id: convData.id },
+        data: {
+          externalContactId: convData.externalContactId || existingConv.externalContactId,
+          contactName: convData.contactName || existingConv.contactName,
+          contactPhone: convData.contactPhone || existingConv.contactPhone,
+          contactAvatar: convData.contactAvatar || existingConv.contactAvatar,
+          contactHandle: convData.contactHandle || existingConv.contactHandle,
+          customerId: convData.customerId ?? existingConv.customerId,
+          customerName: convData.customerName ?? existingConv.customerName,
+          customerMemberId: convData.customerMemberId ?? existingConv.customerMemberId,
+          customerWalletBalance:
+            convData.customerWalletBalance ?? existingConv.customerWalletBalance,
+          brand: convData.brand || existingConv.brand,
+          branchId: convData.branchId ?? existingConv.branchId,
+          branchName: convData.branchName ?? existingConv.branchName,
+          lastMessageText: isNewerOrEqual
+            ? msgData.text
+            : existingConv.lastMessageText,
+          lastMessageAt: isNewerOrEqual
+            ? msgData.createdAt
+            : existingConv.lastMessageAt,
+          lastMessageDirection: isNewerOrEqual
+            ? msgData.direction
+            : existingConv.lastMessageDirection,
+          unreadCount: opts.incrementUnread
+            ? { increment: 1 }
+            : isOutbound && isNewerOrEqual
+            ? 0
+            : existingConv.unreadCount,
+          status: 'open',
+          updatedAt: isNewerOrEqual ? msgData.createdAt : new Date(),
+        },
+      });
+    } else {
+      savedConv = await tx.socialConversation.create({
+        data: {
+          ...convData,
+          unreadCount: opts.incrementUnread ? Math.max(1, convData.unreadCount) : 0,
+        },
+      });
+    }
+
+    await tx.setting.upsert({
+      where: { key: SOCIAL_VERSION_KEY },
+      update: { value: nextVersion },
+      create: { key: SOCIAL_VERSION_KEY, value: nextVersion },
+    });
+
+    return { savedConv, savedMsg };
+  });
+
+  invalidateSocialStoreCache();
+  return {
+    conversation: applyReadWatermarks([mapDbRowToConversation(result.savedConv)])[0],
+    message: mapDbRowToMessage(result.savedMsg),
+    version: nextVersion,
+  };
+}
+
+export async function deleteSocialConversationAndMessages(
+  conversationId: string
+): Promise<string> {
+  await ensureSocialInboxSchemaAndMigrate();
+  const nextVersion = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  await prisma.$transaction([
+    prisma.socialMessage.deleteMany({ where: { conversationId } }),
+    prisma.socialConversation.deleteMany({ where: { id: conversationId } }),
+    prisma.setting.upsert({
+      where: { key: SOCIAL_VERSION_KEY },
+      update: { value: nextVersion },
+      create: { key: SOCIAL_VERSION_KEY, value: nextVersion },
+    }),
+  ]);
+  invalidateSocialStoreCache();
+  return nextVersion;
+}
+
+export async function markSocialConversationsReadInDb(opts: {
+  conversationIds?: string[];
+  channel?: SocialChannel | 'all';
+}): Promise<{ clearedCount: number; version: string }> {
+  await ensureSocialInboxSchemaAndMigrate();
+  const now = new Date();
+  const nowMs = now.getTime();
+  const where: any = { unreadCount: { gt: 0 } };
+  if (opts.conversationIds && opts.conversationIds.length > 0) {
+    where.id = { in: opts.conversationIds };
+  } else if (opts.channel && opts.channel !== 'all') {
+    where.channel = opts.channel;
+  }
+
+  const targets = await prisma.socialConversation.findMany({
+    where,
+    select: { id: true, channel: true, externalContactId: true },
+  });
+
+  if (targets.length === 0) {
+    const curVer = await getSocialStoreVersion();
+    return { clearedCount: 0, version: curVer };
+  }
+
+  for (const t of targets) {
+    recordSocialReadWatermark(t.id, t.channel, t.externalContactId, nowMs);
+  }
+
+  const res = await prisma.socialConversation.updateMany({
+    where: { id: { in: targets.map((t) => t.id) } },
+    data: {
+      unreadCount: 0,
+      lastReadAt: now,
+      updatedAt: now,
+    },
+  });
+
+  const version = await bumpSocialStoreVersion();
+  return { clearedCount: res.count, version };
+}
+
+// ============================================================================
+// COMPATIBILITY STORE HELPERS (Now backed 100% by SocialConversation & SocialMessage tables!)
+// ============================================================================
+
 export async function loadRawSocialInboxStore(knownVersion?: string): Promise<{
   conversations: SocialConversation[];
   messages: SocialMessage[];
   config: SocialChannelConfig;
   version: string;
 }> {
+  await ensureSocialInboxSchemaAndMigrate();
+
   const cached = globalForSocialCache.__tlsSocialStoreCache;
   if (cached) {
     const dbVersion = knownVersion ?? (await getSocialStoreVersion());
@@ -311,52 +1055,21 @@ export async function loadRawSocialInboxStore(knownVersion?: string): Promise<{
     }
   }
 
-  const rows = await prisma.setting.findMany({
-    where: {
-      key: {
-        in: [SOCIAL_CONVERSATIONS_KEY, SOCIAL_MESSAGES_KEY, SOCIAL_CONFIG_KEY, SOCIAL_VERSION_KEY],
-      },
-    },
-  });
+  const [conversations, msgRowsDesc, config, verRow] = await Promise.all([
+    querySocialConversations(1000),
+    prisma.socialMessage.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 1500,
+    }),
+    loadSocialChannelConfig(true),
+    prisma.setting.findUnique({
+      where: { key: SOCIAL_VERSION_KEY },
+      select: { value: true },
+    }),
+  ]);
 
-  const map = new Map(rows.map((r) => [r.key, r.value]));
-
-  let conversations: SocialConversation[] = [];
-  let messages: SocialMessage[] = [];
-  let config: SocialChannelConfig = getDefaultSocialChannelConfig();
-  const version = (map.get(SOCIAL_VERSION_KEY) || '').trim() || String(Date.now());
-
-  const rawConvs = map.get(SOCIAL_CONVERSATIONS_KEY);
-  if (rawConvs) {
-    try {
-      const parsed = JSON.parse(rawConvs);
-      if (Array.isArray(parsed)) conversations = parsed;
-    } catch {}
-  }
-
-  const rawMsgs = map.get(SOCIAL_MESSAGES_KEY);
-  if (rawMsgs) {
-    try {
-      const parsed = JSON.parse(rawMsgs);
-      if (Array.isArray(parsed)) messages = parsed;
-    } catch {}
-  }
-
-  const rawCfg = map.get(SOCIAL_CONFIG_KEY);
-  if (rawCfg) {
-    try {
-      const parsed = JSON.parse(rawCfg);
-      if (parsed && typeof parsed === 'object') {
-        config = {
-          whatsapp: { ...config.whatsapp, ...(parsed.whatsapp || {}) },
-          line: { ...config.line, ...(parsed.line || {}) },
-          facebook: { ...config.facebook, ...(parsed.facebook || {}) },
-          instagram: { ...config.instagram, ...(parsed.instagram || {}) },
-          telegram: { ...config.telegram, ...(parsed.telegram || {}) },
-        };
-      }
-    } catch {}
-  }
+  const messages = msgRowsDesc.reverse().map(mapDbRowToMessage);
+  const version = verRow?.value?.trim() || String(Date.now());
 
   globalForSocialCache.__tlsSocialStoreCache = {
     version,
@@ -369,90 +1082,56 @@ export async function loadRawSocialInboxStore(knownVersion?: string): Promise<{
   return { conversations, messages, config, version };
 }
 
+/**
+ * Additive row-sync fallback (NEVER deletes existing DB rows that weren't in memory!).
+ */
 export async function saveRawSocialInboxStore(
   conversations: SocialConversation[],
   messages: SocialMessage[]
 ): Promise<string> {
+  await ensureSocialInboxSchemaAndMigrate();
   const trimmedConvs = applyReadWatermarks(conversations.slice(0, 1000));
-  // Deduplicate by message ID & sort chronologically ASC before slicing(-5000)
-  // so the 5,000 NEWEST messages are ALWAYS kept and brand-new messages are never dropped!
-  const msgById = new Map<string, SocialMessage>();
-  for (const m of messages) {
-    if (m?.id) msgById.set(m.id, m);
-  }
-  const sortedMsgs = Array.from(msgById.values()).sort(
-    (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
-  );
-  const trimmedMsgs = sortedMsgs.slice(-5000);
-  const nextVersion = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
-  await Promise.all([
-    prisma.setting.upsert({
-      where: { key: SOCIAL_CONVERSATIONS_KEY },
-      update: { value: JSON.stringify(trimmedConvs) },
-      create: { key: SOCIAL_CONVERSATIONS_KEY, value: JSON.stringify(trimmedConvs) },
-    }),
-    prisma.setting.upsert({
-      where: { key: SOCIAL_MESSAGES_KEY },
-      update: { value: JSON.stringify(trimmedMsgs) },
-      create: { key: SOCIAL_MESSAGES_KEY, value: JSON.stringify(trimmedMsgs) },
-    }),
-    prisma.setting.upsert({
-      where: { key: SOCIAL_VERSION_KEY },
-      update: { value: nextVersion },
-      create: { key: SOCIAL_VERSION_KEY, value: nextVersion },
-    }),
-  ]);
-
-  if (globalForSocialCache.__tlsSocialStoreCache) {
-    globalForSocialCache.__tlsSocialStoreCache = {
-      ...globalForSocialCache.__tlsSocialStoreCache,
-      version: nextVersion,
-      conversations: trimmedConvs.slice(),
-      messages: trimmedMsgs.slice(),
-      loadedAt: Date.now(),
-    };
+  if (trimmedConvs.length > 0) {
+    const existingIds = new Set(
+      (
+        await prisma.socialConversation.findMany({
+          where: { id: { in: trimmedConvs.map((c) => c.id) } },
+          select: { id: true },
+        })
+      ).map((r) => r.id)
+    );
+    const toCreate = trimmedConvs.filter((c) => !existingIds.has(c.id)).map(mapConversationToDbData);
+    if (toCreate.length > 0) {
+      await prisma.socialConversation.createMany({ data: toCreate, skipDuplicates: true });
+    }
   }
 
-  return nextVersion;
+  if (messages.length > 0) {
+    const recentSlice = messages.slice(-500);
+    await prisma.socialMessage.createMany({
+      data: recentSlice.map(mapMessageToDbData),
+      skipDuplicates: true,
+    });
+  }
+
+  return bumpSocialStoreVersion();
 }
 
-/**
- * Fast conversations-only save (~10x faster than full save because it skips rewriting the 4MB messages blob).
- * Use when only conversation metadata (unreadCount, lastReadAt, status, customerId, notes) changed.
- */
 export async function saveRawSocialConversationsOnly(
   conversations: SocialConversation[]
 ): Promise<string> {
+  await ensureSocialInboxSchemaAndMigrate();
   const trimmedConvs = applyReadWatermarks(conversations.slice(0, 1000));
-  const nextVersion = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-
-  await Promise.all([
-    prisma.setting.upsert({
-      where: { key: SOCIAL_CONVERSATIONS_KEY },
-      update: { value: JSON.stringify(trimmedConvs) },
-      create: { key: SOCIAL_CONVERSATIONS_KEY, value: JSON.stringify(trimmedConvs) },
-    }),
-    prisma.setting.upsert({
-      where: { key: SOCIAL_VERSION_KEY },
-      update: { value: nextVersion },
-      create: { key: SOCIAL_VERSION_KEY, value: nextVersion },
-    }),
-  ]);
-
-  if (globalForSocialCache.__tlsSocialStoreCache) {
-    globalForSocialCache.__tlsSocialStoreCache = {
-      ...globalForSocialCache.__tlsSocialStoreCache,
-      version: nextVersion,
-      conversations: trimmedConvs.slice(),
-      loadedAt: Date.now(),
-    };
+  if (trimmedConvs.length > 0) {
+    await prisma.socialConversation.createMany({
+      data: trimmedConvs.map(mapConversationToDbData),
+      skipDuplicates: true,
+    });
   }
-
-  return nextVersion;
+  return bumpSocialStoreVersion();
 }
 
-// In-process write serialization queue so concurrent WhatsApp/LINE messages & read-syncs never clobber each other
 let socialStoreLockChain: Promise<void> = Promise.resolve();
 
 export async function withSocialStoreLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -469,95 +1148,69 @@ export async function withSocialStoreLock<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-function phoneDigitsTail(raw?: string | null): string {
-  const digits = String(raw || '').replace(/\D/g, '');
-  if (digits.length < 7) return digits;
-  return digits.slice(-9);
-}
-
-function matchesConversationContact(
-  c: SocialConversation,
-  channel: SocialChannel,
-  externalContactId: string,
-  contactPhone?: string,
-  customerId?: string | null
-): boolean {
-  if (c.channel !== channel) return false;
-  if (c.externalContactId && externalContactId && c.externalContactId === externalContactId) {
-    return true;
-  }
-  if (customerId && c.customerId && c.customerId === customerId) {
-    return true;
-  }
-  if (channel === 'whatsapp') {
-    const targetTail = phoneDigitsTail(contactPhone || externalContactId);
-    if (targetTail.length >= 7) {
-      const cExtTail = phoneDigitsTail(c.externalContactId);
-      const cPhoneTail = phoneDigitsTail(c.contactPhone);
-      if (cExtTail === targetTail || cPhoneTail === targetTail) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 export async function syncExternalReadStatesInternal(
   channel: SocialChannel,
   readExternalIds: string[]
 ): Promise<{ clearedCount: number }> {
   if (!readExternalIds || readExternalIds.length === 0) return { clearedCount: 0 };
-  return withSocialStoreLock(async () => {
-    try {
-      const { conversations, messages } = await loadRawSocialInboxStore();
-      const nowIso = new Date().toISOString();
-      let clearedCount = 0;
-      const clearedIds: string[] = [];
+  try {
+    await ensureSocialInboxSchemaAndMigrate();
+    const unreadRows = await prisma.socialConversation.findMany({
+      where: { channel, unreadCount: { gt: 0 } },
+      select: { id: true, externalContactId: true, contactPhone: true },
+    });
+    if (unreadRows.length === 0) return { clearedCount: 0 };
 
-      const normalizedIds = new Set(readExternalIds.map((id) => String(id || '').trim()).filter(Boolean));
-      const normalizedTails = new Set(
-        readExternalIds.map((id) => phoneDigitsTail(id)).filter((t) => t.length >= 7)
-      );
+    const normalizedIds = new Set(
+      readExternalIds.map((id) => String(id || '').trim()).filter(Boolean)
+    );
+    const normalizedTails = new Set(
+      readExternalIds.map((id) => phoneDigitsTail(id)).filter((t) => t.length >= 7)
+    );
 
-      for (let i = 0; i < conversations.length; i++) {
-        const c = conversations[i];
-        if (c.channel !== channel || !(c.unreadCount > 0)) continue;
-        const extMatch = c.externalContactId && normalizedIds.has(c.externalContactId.trim());
-        const tailMatch =
-          channel === 'whatsapp' &&
-          (normalizedTails.has(phoneDigitsTail(c.externalContactId)) ||
-            normalizedTails.has(phoneDigitsTail(c.contactPhone)));
-        if (extMatch || tailMatch) {
-          recordSocialReadWatermark(c.id, c.channel, c.externalContactId, Date.now());
-          conversations[i] = { ...c, unreadCount: 0, lastReadAt: nowIso, updatedAt: nowIso };
-          clearedIds.push(c.id);
-          clearedCount++;
-        }
+    const matchedIds: string[] = [];
+    const nowMs = Date.now();
+    for (const r of unreadRows) {
+      const extMatch = r.externalContactId && normalizedIds.has(r.externalContactId.trim());
+      const tailMatch =
+        channel === 'whatsapp' &&
+        (normalizedTails.has(phoneDigitsTail(r.externalContactId)) ||
+          normalizedTails.has(phoneDigitsTail(r.contactPhone)));
+      if (extMatch || tailMatch) {
+        recordSocialReadWatermark(r.id, channel, r.externalContactId, nowMs);
+        matchedIds.push(r.id);
       }
-
-      if (clearedCount > 0) {
-        // Instant 0ms SSE push BEFORE waiting for DB write
-        try {
-          const { publishOrderEvent } = await import('@/lib/realtime-bus');
-          await publishOrderEvent({
-            type: 'social.updated',
-            jobId: `__SOCIAL_READ_${Date.now()}`,
-            updatedAt: new Date(),
-            socialPayload: {
-              kind: 'read',
-              readConversationIds: clearedIds.slice(0, 50),
-              channel,
-            },
-          });
-        } catch {}
-        await saveRawSocialConversationsOnly(conversations);
-      }
-      return { clearedCount };
-    } catch (err) {
-      console.warn('[syncExternalReadStatesInternal] Error:', err);
-      return { clearedCount: 0 };
     }
-  });
+
+    if (matchedIds.length === 0) return { clearedCount: 0 };
+
+    const now = new Date(nowMs);
+    await prisma.socialConversation.updateMany({
+      where: { id: { in: matchedIds } },
+      data: { unreadCount: 0, lastReadAt: now, updatedAt: now },
+    });
+    const version = await bumpSocialStoreVersion();
+
+    try {
+      const { publishOrderEvent } = await import('@/lib/realtime-bus');
+      await publishOrderEvent({
+        type: 'social.updated',
+        jobId: `__SOCIAL_READ_${nowMs}`,
+        updatedAt: now,
+        socialPayload: {
+          kind: 'read',
+          readConversationIds: matchedIds.slice(0, 50),
+          channel,
+          version,
+        },
+      });
+    } catch {}
+
+    return { clearedCount: matchedIds.length };
+  } catch (err) {
+    console.warn('[syncExternalReadStatesInternal] Error:', err);
+    return { clearedCount: 0 };
+  }
 }
 
 export async function recordInboundSocialMessageInternal(input: {
@@ -575,134 +1228,132 @@ export async function recordInboundSocialMessageInternal(input: {
   createdAt?: string;
   isHistorySync?: boolean;
 }) {
-  return withSocialStoreLock(async () => {
-    try {
-      const { conversations, messages } = await loadRawSocialInboxStore();
+  try {
+    await ensureSocialInboxSchemaAndMigrate();
 
-      // Deduplicate by deterministic external messageId (e.g. msg_wa_in_<key.id> or wamid)
-      // so reconnect history syncs or Meta webhook retries NEVER duplicate bubbles or re-increment unreadCount!
-      if (
-        (input.messageId && messages.some((m) => m.id === input.messageId)) ||
-        (input.externalMessageId &&
-          messages.some((m) => m.externalMessageId === input.externalMessageId))
-      ) {
+    // Indexed O(log N) deduplication directly in PostgreSQL
+    const dedupOr: any[] = [];
+    if (input.messageId) dedupOr.push({ id: input.messageId });
+    if (input.externalMessageId) dedupOr.push({ externalMessageId: input.externalMessageId });
+    if (dedupOr.length > 0) {
+      const dup = await prisma.socialMessage.findFirst({
+        where: { OR: dedupOr },
+        select: { id: true },
+      });
+      if (dup) {
         return { success: true, deduped: true };
       }
-
-      const nowIso = new Date().toISOString();
-      const msgIso =
-        input.createdAt && !isNaN(new Date(input.createdAt).getTime())
-          ? new Date(input.createdAt).toISOString()
-          : nowIso;
-      const msgMs = new Date(msgIso).getTime();
-
-      const convIdx = conversations.findIndex((c) =>
-        matchesConversationContact(
-          c,
-          input.channel,
-          input.externalContactId,
-          input.contactPhone,
-          input.customerId
-        )
-      );
-
-      let conv: SocialConversation;
-      if (convIdx >= 0) {
-        const existing = conversations[convIdx];
-        const existingLastMs = existing.lastMessageAt
-          ? new Date(existing.lastMessageAt).getTime()
-          : 0;
-        const isNewerOrEqual = msgMs >= existingLastMs;
-        const lastReadMs = existing.lastReadAt ? new Date(existing.lastReadAt).getTime() : 0;
-        const alreadyReadByWatermark = Boolean(lastReadMs && msgMs <= lastReadMs + 1500);
-        const shouldBumpUnread = !alreadyReadByWatermark && (!input.isHistorySync || isNewerOrEqual);
-
-        conv = {
-          ...existing,
-          contactName: input.contactName || existing.contactName,
-          contactAvatar: input.contactAvatar || existing.contactAvatar,
-          customerId: input.customerId || existing.customerId,
-          lastMessageText: isNewerOrEqual ? input.text : existing.lastMessageText,
-          lastMessageAt: isNewerOrEqual ? msgIso : existing.lastMessageAt,
-          lastMessageDirection: isNewerOrEqual ? 'inbound' : existing.lastMessageDirection,
-          unreadCount: shouldBumpUnread
-            ? (existing.unreadCount || 0) + 1
-            : existing.unreadCount || 0,
-          status: 'open',
-          updatedAt: isNewerOrEqual ? msgIso : existing.updatedAt,
-        };
-        conversations.splice(convIdx, 1);
-      } else {
-        conv = {
-          id: `conv_${input.channel}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          channel: input.channel,
-          externalContactId: input.externalContactId,
-          contactName: input.contactName || input.externalContactId,
-          contactPhone: input.contactPhone || '',
-          contactAvatar: input.contactAvatar,
-          contactHandle: input.externalContactId,
-          customerId: input.customerId || null,
-          status: 'open',
-          unreadCount: input.isHistorySync ? 0 : 1,
-          lastMessageText: input.text,
-          lastMessageAt: msgIso,
-          lastMessageDirection: 'inbound',
-          createdAt: msgIso,
-          updatedAt: msgIso,
-        };
-      }
-
-      const inboundMsg: SocialMessage = {
-        id:
-          input.messageId ||
-          `msg_in_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        conversationId: conv.id,
-        channel: input.channel,
-        direction: 'inbound',
-        text: input.text,
-        attachments: input.attachments,
-        senderName: conv.contactName,
-        status: 'delivered',
-        deliveryMethod: input.deliveryMethod,
-        externalMessageId: input.externalMessageId,
-        createdAt: msgIso,
-      };
-
-      messages.push(inboundMsg);
-      conversations.unshift(conv);
-
-      const savedVersion = await saveRawSocialInboxStore(conversations, messages);
-
-      // Push live message + conversation + committed version directly over SSE & PG NOTIFY!
-      if (!input.isHistorySync) {
-        try {
-          const { publishOrderEvent } = await import('@/lib/realtime-bus');
-          await publishOrderEvent({
-            type: 'social.updated',
-            jobId: `__SOCIAL_MSG_${inboundMsg.id}`,
-            updatedAt: new Date(),
-            socialPayload: {
-              kind: 'message',
-              conversation: conv,
-              message: inboundMsg,
-              version: savedVersion,
-            },
-          });
-        } catch {}
-      }
-
-      return {
-        success: true,
-        conversation: conv,
-        message: inboundMsg,
-        conversations,
-        messages,
-      };
-    } catch (err: any) {
-      console.error('[recordInboundSocialMessageInternal] Error:', err);
-      return { success: false, error: err?.message || 'Failed to record inbound message' };
     }
-  });
+
+    const nowIso = new Date().toISOString();
+    const msgIso =
+      input.createdAt && !isNaN(new Date(input.createdAt).getTime())
+        ? new Date(input.createdAt).toISOString()
+        : nowIso;
+    const msgMs = new Date(msgIso).getTime();
+
+    const existing = await findSocialConversationForContact({
+      channel: input.channel,
+      externalContactId: input.externalContactId,
+      contactPhone: input.contactPhone,
+      customerId: input.customerId,
+    });
+
+    let conv: SocialConversation;
+    let shouldBumpUnread = false;
+
+    if (existing) {
+      const existingLastMs = existing.lastMessageAt
+        ? new Date(existing.lastMessageAt).getTime()
+        : 0;
+      const isNewerOrEqual = msgMs >= existingLastMs;
+      const lastReadMs = existing.lastReadAt ? new Date(existing.lastReadAt).getTime() : 0;
+      const alreadyReadByWatermark = Boolean(lastReadMs && msgMs <= lastReadMs + 1500);
+      shouldBumpUnread = !alreadyReadByWatermark && (!input.isHistorySync || isNewerOrEqual);
+
+      conv = {
+        ...existing,
+        contactName: input.contactName || existing.contactName,
+        contactAvatar: input.contactAvatar || existing.contactAvatar,
+        customerId: input.customerId || existing.customerId,
+        lastMessageText: isNewerOrEqual ? input.text : existing.lastMessageText,
+        lastMessageAt: isNewerOrEqual ? msgIso : existing.lastMessageAt,
+        lastMessageDirection: isNewerOrEqual ? 'inbound' : existing.lastMessageDirection,
+        unreadCount: shouldBumpUnread
+          ? (existing.unreadCount || 0) + 1
+          : existing.unreadCount || 0,
+        status: 'open',
+        updatedAt: isNewerOrEqual ? msgIso : existing.updatedAt,
+      };
+    } else {
+      shouldBumpUnread = !input.isHistorySync;
+      conv = {
+        id: `conv_${input.channel}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        channel: input.channel,
+        externalContactId: input.externalContactId,
+        contactName: input.contactName || input.externalContactId,
+        contactPhone: input.contactPhone || '',
+        contactAvatar: input.contactAvatar,
+        contactHandle: input.externalContactId,
+        customerId: input.customerId || null,
+        status: 'open',
+        unreadCount: shouldBumpUnread ? 1 : 0,
+        lastMessageText: input.text,
+        lastMessageAt: msgIso,
+        lastMessageDirection: 'inbound',
+        createdAt: msgIso,
+        updatedAt: msgIso,
+      };
+    }
+
+    const inboundMsg: SocialMessage = {
+      id:
+        input.messageId ||
+        `msg_in_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      conversationId: conv.id,
+      channel: input.channel,
+      direction: 'inbound',
+      text: input.text,
+      attachments: input.attachments,
+      senderName: conv.contactName,
+      status: 'delivered',
+      deliveryMethod: input.deliveryMethod,
+      externalMessageId: input.externalMessageId,
+      createdAt: msgIso,
+    };
+
+    const committed = await insertSocialMessageAndTouchConversation({
+      message: inboundMsg,
+      conversation: conv,
+      incrementUnread: shouldBumpUnread,
+    });
+
+    if (!input.isHistorySync) {
+      try {
+        const { publishOrderEvent } = await import('@/lib/realtime-bus');
+        await publishOrderEvent({
+          type: 'social.updated',
+          jobId: `__SOCIAL_MSG_${committed.message.id}`,
+          updatedAt: new Date(),
+          socialPayload: {
+            kind: 'message',
+            conversation: committed.conversation,
+            message: committed.message,
+            version: committed.version,
+          },
+        });
+      } catch {}
+    }
+
+    return {
+      success: true,
+      conversation: committed.conversation,
+      message: committed.message,
+    };
+  } catch (err: any) {
+    console.error('[recordInboundSocialMessageInternal] Error:', err);
+    return { success: false, error: err?.message || 'Failed to record inbound message' };
+  }
 }
 
 export async function recordOutboundSocialMessageFromSystemInternal(input: {
@@ -719,12 +1370,15 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
   createdAt?: string;
   isHistorySync?: boolean;
 }) {
-  return withSocialStoreLock(async () => {
   try {
-    const { conversations, messages } = await loadRawSocialInboxStore();
+    await ensureSocialInboxSchemaAndMigrate();
 
-    if (input.isHistorySync && input.messageId && messages.some((m) => m.id === input.messageId)) {
-      return { success: true, deduped: true };
+    if (input.isHistorySync && input.messageId) {
+      const dup = await prisma.socialMessage.findUnique({
+        where: { id: input.messageId },
+        select: { id: true },
+      });
+      if (dup) return { success: true, deduped: true };
     }
 
     const nowIso = new Date().toISOString();
@@ -734,19 +1388,15 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
         : nowIso;
     const msgMs = new Date(msgIso).getTime();
 
-    const convIdx = conversations.findIndex((c) =>
-      matchesConversationContact(
-        c,
-        input.channel,
-        input.externalContactId,
-        input.contactPhone,
-        input.customerId
-      )
-    );
+    const existing = await findSocialConversationForContact({
+      channel: input.channel,
+      externalContactId: input.externalContactId,
+      contactPhone: input.contactPhone,
+      customerId: input.customerId,
+    });
 
     let conv: SocialConversation;
-    if (convIdx >= 0) {
-      const existing = conversations[convIdx];
+    if (existing) {
       const existingLastMs = existing.lastMessageAt
         ? new Date(existing.lastMessageAt).getTime()
         : 0;
@@ -765,7 +1415,6 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
         status: 'open',
         updatedAt: isNewerOrEqual ? msgIso : existing.updatedAt,
       };
-      conversations.splice(convIdx, 1);
     } else {
       const convId =
         input.channel === 'line'
@@ -790,16 +1439,14 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
       };
     }
 
-    const attachments: SocialMessageAttachment[] = (input.imageUrls || []).map((url, idx) => ({
-      id: `att_sys_${Date.now()}_${idx}`,
+    const attachments: SocialMessageAttachment[] = (input.imageUrls || []).map((url) => ({
       type: 'image',
       url,
-      name: `photo_${idx + 1}.jpg`,
+      name: 'WhatsApp Photo',
     }));
 
     const msgId =
       input.messageId || `msg_sys_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const existingMsgIdx = messages.findIndex((m) => m.id === msgId);
 
     const outboundMsg: SocialMessage = {
       id: msgId,
@@ -814,37 +1461,38 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
       createdAt: msgIso,
     };
 
-    if (existingMsgIdx >= 0) {
-      messages[existingMsgIdx] = outboundMsg;
-    } else {
-      messages.push(outboundMsg);
-    }
-    conversations.unshift(conv);
+    const committed = await insertSocialMessageAndTouchConversation({
+      message: outboundMsg,
+      conversation: conv,
+      incrementUnread: false,
+    });
 
-    // Push live outbound message + conversation directly over SSE in <50ms BEFORE waiting for 4MB DB write!
     if (!input.isHistorySync) {
       try {
         const { publishOrderEvent } = await import('@/lib/realtime-bus');
         await publishOrderEvent({
           type: 'social.updated',
-          jobId: `__SOCIAL_MSG_${outboundMsg.id}`,
+          jobId: `__SOCIAL_MSG_${committed.message.id}`,
           updatedAt: new Date(),
           socialPayload: {
             kind: 'message',
-            conversation: conv,
-            message: outboundMsg,
+            conversation: committed.conversation,
+            message: committed.message,
+            version: committed.version,
           },
         });
       } catch {}
     }
 
-    await saveRawSocialInboxStore(conversations, messages);
-    return { success: true, conversation: conv, message: outboundMsg };
+    return {
+      success: true,
+      conversation: committed.conversation,
+      message: committed.message,
+    };
   } catch (err: any) {
     console.warn('[recordOutboundSocialMessageFromSystemInternal] Non-fatal error:', err);
     return { success: false, error: err?.message };
   }
-  });
 }
 
 const STATUS_RANK: Record<string, number> = {
@@ -854,10 +1502,6 @@ const STATUS_RANK: Record<string, number> = {
   failed: 4,
 };
 
-/**
- * Updates an outbound message's delivery/read receipt status (sent -> delivered -> read / failed)
- * when Meta WhatsApp Cloud API sends a `statuses` webhook event.
- */
 export async function updateOutboundSocialMessageStatusInternal(input: {
   externalMessageId: string;
   status: 'sent' | 'delivered' | 'read' | 'failed';
@@ -866,48 +1510,48 @@ export async function updateOutboundSocialMessageStatusInternal(input: {
   const extId = (input.externalMessageId || '').trim();
   if (!extId) return { updated: false };
 
-  return withSocialStoreLock(async () => {
-    try {
-      const { conversations, messages } = await loadRawSocialInboxStore();
-      const idx = messages.findIndex((m) => m.externalMessageId === extId);
-      if (idx < 0) return { updated: false };
+  try {
+    await ensureSocialInboxSchemaAndMigrate();
+    const existing = await prisma.socialMessage.findFirst({
+      where: { externalMessageId: extId },
+    });
+    if (!existing) return { updated: false };
 
-      const existing = messages[idx];
-      const currentRank = STATUS_RANK[existing.status] || 0;
-      const incomingRank = STATUS_RANK[input.status] || 0;
-
-      // Never downgrade 'read' back to 'delivered' or 'sent' due to out-of-order webhook arrivals
-      if (existing.status !== 'failed' && input.status !== 'failed' && incomingRank <= currentRank) {
-        return { updated: false };
-      }
-
-      const updatedMsg: SocialMessage = {
-        ...existing,
-        status: input.status,
-        ...(input.errorText ? { externalError: input.errorText } : {}),
-      };
-      messages[idx] = updatedMsg;
-
-      const conv = conversations.find((c) => c.id === updatedMsg.conversationId);
-      try {
-        const { publishOrderEvent } = await import('@/lib/realtime-bus');
-        await publishOrderEvent({
-          type: 'social.updated',
-          jobId: `__SOCIAL_STATUS_${updatedMsg.id}_${input.status}`,
-          updatedAt: new Date(),
-          socialPayload: {
-            kind: 'message',
-            conversation: conv,
-            message: updatedMsg,
-          },
-        });
-      } catch {}
-
-      await saveRawSocialInboxStore(conversations, messages);
-      return { updated: true };
-    } catch (err) {
-      console.warn('[updateOutboundSocialMessageStatusInternal] Error:', err);
+    const currentRank = STATUS_RANK[existing.status] || 0;
+    const incomingRank = STATUS_RANK[input.status] || 0;
+    if (existing.status !== 'failed' && input.status !== 'failed' && incomingRank <= currentRank) {
       return { updated: false };
     }
-  });
+
+    const updatedRow = await prisma.socialMessage.update({
+      where: { id: existing.id },
+      data: {
+        status: input.status,
+        ...(input.errorText ? { externalError: input.errorText } : {}),
+      },
+    });
+    const updatedMsg = mapDbRowToMessage(updatedRow);
+    const conv = await findSocialConversationById(updatedMsg.conversationId);
+    const version = await bumpSocialStoreVersion();
+
+    try {
+      const { publishOrderEvent } = await import('@/lib/realtime-bus');
+      await publishOrderEvent({
+        type: 'social.updated',
+        jobId: `__SOCIAL_STATUS_${updatedMsg.id}_${input.status}`,
+        updatedAt: new Date(),
+        socialPayload: {
+          kind: 'message',
+          conversation: conv ?? undefined,
+          message: updatedMsg,
+          version,
+        },
+      });
+    } catch {}
+
+    return { updated: true };
+  } catch (err) {
+    console.warn('[updateOutboundSocialMessageStatusInternal] Error:', err);
+    return { updated: false };
+  }
 }

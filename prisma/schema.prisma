@@ -782,4 +782,61 @@ model AiBrainInsight {
   @@index([createdAt])
 }
 
+model SocialConversation {
+  id                    String    @id
+  channel               String
+  externalContactId     String
+  contactName           String
+  contactPhone          String?
+  contactAvatar         String?   @db.Text
+  contactHandle         String?
+  customerId            String?
+  customerName          String?
+  customerMemberId      String?
+  customerWalletBalance Float?    @default(0)
+  brand                 String?   @default("that_laundry_shop")
+  branchId              String?
+  branchName            String?
+  status                String    @default("open")
+  unreadCount           Int       @default(0)
+  lastReadAt            DateTime?
+  assignedStaffId       String?
+  assignedStaffName     String?
+  tagsJson              String?   @db.Text
+  notes                 String?   @db.Text
+  lastMessageText       String    @default("") @db.Text
+  lastMessageAt         DateTime  @default(now())
+  lastMessageDirection  String    @default("inbound")
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @default(now()) @updatedAt
+
+  @@index([channel, externalContactId])
+  @@index([customerId])
+  @@index([lastMessageAt(sort: Desc)])
+  @@index([updatedAt(sort: Desc)])
+  @@index([channel, unreadCount])
+}
+
+model SocialMessage {
+  id                String   @id
+  conversationId    String
+  channel           String
+  direction         String
+  text              String   @default("") @db.Text
+  attachmentsJson   String?  @db.Text
+  replyToJson       String?  @db.Text
+  senderName        String   @default("")
+  senderId          String?
+  senderRole        String?
+  status            String   @default("delivered")
+  deliveryMethod    String?
+  externalMessageId String?
+  externalError     String?  @db.Text
+  createdAt         DateTime @default(now())
+
+  @@index([conversationId, createdAt(sort: Asc)])
+  @@index([createdAt(sort: Desc)])
+  @@index([externalMessageId])
+}
+
 
