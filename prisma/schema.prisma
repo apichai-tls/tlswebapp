@@ -800,6 +800,8 @@ model SocialConversation {
   status                String    @default("open")
   unreadCount           Int       @default(0)
   lastReadAt            DateTime?
+  lastReadById          String?
+  lastReadByName        String?
   assignedStaffId       String?
   assignedStaffName     String?
   tagsJson              String?   @db.Text
@@ -837,6 +839,27 @@ model SocialMessage {
   @@index([conversationId, createdAt(sort: Asc)])
   @@index([createdAt(sort: Desc)])
   @@index([externalMessageId])
+}
+
+model SocialMediaJob {
+  id               String   @id
+  messageId        String
+  conversationId   String
+  mediaId          String
+  senderPhone      String?
+  fallbackMimeType String?
+  originalFilename String?
+  attachmentType   String   @default("image")
+  attachmentName   String   @default("WhatsApp Attachment")
+  status           String   @default("pending")
+  attempts         Int      @default(0)
+  nextRetryAt      DateTime @default(now())
+  lastError        String?  @db.Text
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
+
+  @@index([status, nextRetryAt])
+  @@index([messageId])
 }
 
 

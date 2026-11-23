@@ -42,7 +42,8 @@ const nextConfig: NextConfig = {
     ],
   },
   env: {
-    NEXT_PUBLIC_BUILD_TIME: new Date().toISOString(),
+    NEXT_PUBLIC_BUILD_TIME:
+      process.env.NODE_ENV === "production" ? new Date().toISOString() : "dev-local",
   },
   async headers() {
     return [

@@ -288,6 +288,12 @@ export async function POST(req: NextRequest) {
           profile?.statusMessage ||
           (existingIdx >= 0 ? contacts[existingIdx].statusMessage : undefined),
         lastInteractionAt: nowIso,
+        followedAt:
+          event.type === "follow"
+            ? (existingIdx >= 0 && contacts[existingIdx].followedAt) || nowIso
+            : existingIdx >= 0
+            ? contacts[existingIdx].followedAt
+            : undefined,
         lastMessageText:
           messageText ||
           (event.type === "follow"

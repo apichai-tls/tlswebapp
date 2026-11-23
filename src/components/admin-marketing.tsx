@@ -49,6 +49,7 @@ const AdminMarketingCalendar = dynamic(() => import("@/components/admin-marketin
 const AdminMarketingLinks = dynamic(() => import("@/components/admin-marketing-links").then((m) => m.AdminMarketingLinks), { ssr: false });
 const AdminMarketingCoupons = dynamic(() => import("@/components/admin-marketing-coupons").then((m) => m.AdminMarketingCoupons), { ssr: false });
 const AdminPromotionReport = dynamic(() => import("@/components/admin-promotion-report").then((m) => m.AdminPromotionReport), { ssr: false });
+const AdminLineFollowersReport = dynamic(() => import("@/components/admin-line-followers-report").then((m) => m.AdminLineFollowersReport), { ssr: false });
 
 interface AdminMarketingProps {
   onViewJob?: (job: any) => void;
@@ -61,7 +62,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
   // Sub-tabs state (extensible for future marketing tools)
-  const [subTab, setSubTab] = useState<"calendar" | "links" | "promo" | "coupons">("calendar");
+  const [subTab, setSubTab] = useState<"calendar" | "links" | "promo" | "coupons" | "line-followers">("calendar");
 
   // Filters State
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
@@ -819,6 +820,8 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                   ? "Link & QR Code Tracker • สร้างลิงก์ย่อ ป้ายคิวอาร์โค้ด และวัดผลสถิติจำนวนคนเข้าชม"
                   : subTab === "coupons"
                   ? "Customer Vouchers & Templates • จัดการวอยเชอร์ส่วนลดลูกค้าและเทมเพลตแคมเปญ"
+                  : subTab === "line-followers"
+                  ? "LINE OA New Followers Report • รายชื่อและสถิติลูกค้าที่กดแอด LINE ใหม่แยกตามเดือน"
                   : "Promo Code Performance Report • รายงานและสถิติประสิทธิภาพโค้ดโปรโมชั่น"}
               </p>
             </div>
@@ -873,6 +876,18 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
               <Ticket size={14} />
               <span>Customer Vouchers</span>
               <span className="text-[10px] opacity-75 font-medium hidden sm:inline">(วอยเชอร์)</span>
+            </button>
+            <button
+              onClick={() => setSubTab("line-followers")}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                subTab === "line-followers"
+                  ? "bg-white dark:bg-slate-800 text-[#06C755] shadow-xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+              }`}
+            >
+              <Users size={14} />
+              <span>LINE &amp; WA Leads</span>
+              <span className="text-[10px] opacity-75 font-medium hidden sm:inline">(ลูกค้าใหม่ LINE / WA)</span>
             </button>
           </div>
         </div>
@@ -2214,6 +2229,13 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
       {subTab === "coupons" && (
         <div className="animate-in fade-in duration-200">
           <AdminMarketingCoupons />
+        </div>
+      )}
+
+      {/* LINE OA NEW FOLLOWERS MONTHLY REPORT CONTENT */}
+      {subTab === "line-followers" && (
+        <div className="animate-in fade-in duration-200">
+          <AdminLineFollowersReport />
         </div>
       )}
 

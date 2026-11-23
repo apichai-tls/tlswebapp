@@ -67,6 +67,8 @@ export function mapDbRowToConversation(row: {
   status: string;
   unreadCount: number;
   lastReadAt: Date | null;
+  lastReadById?: string | null;
+  lastReadByName?: string | null;
   assignedStaffId: string | null;
   assignedStaffName: string | null;
   tagsJson: string | null;
@@ -96,6 +98,8 @@ export function mapDbRowToConversation(row: {
     status: (row.status as SocialConversation['status']) || 'open',
     unreadCount: row.unreadCount || 0,
     lastReadAt: row.lastReadAt ? row.lastReadAt.toISOString() : undefined,
+    lastReadById: row.lastReadById ?? undefined,
+    lastReadByName: row.lastReadByName ?? undefined,
     assignedStaffId: row.assignedStaffId,
     assignedStaffName: row.assignedStaffName,
     tags: Array.isArray(tags) ? tags : undefined,
@@ -128,6 +132,8 @@ export function mapConversationToDbData(c: SocialConversation) {
     status: c.status || 'open',
     unreadCount: Math.max(0, Number(c.unreadCount) || 0),
     lastReadAt: c.lastReadAt ? safeDate(c.lastReadAt, now) : null,
+    lastReadById: c.lastReadById ?? null,
+    lastReadByName: c.lastReadByName ?? null,
     assignedStaffId: c.assignedStaffId ?? null,
     assignedStaffName: c.assignedStaffName ?? null,
     tagsJson: Array.isArray(c.tags) && c.tags.length > 0 ? JSON.stringify(c.tags) : null,
@@ -233,6 +239,8 @@ export async function ensureSocialInboxSchemaAndMigrate(): Promise<void> {
           "status" TEXT NOT NULL DEFAULT 'open',
           "unreadCount" INTEGER NOT NULL DEFAULT 0,
           "lastReadAt" TIMESTAMP(3),
+          "lastReadById" TEXT,
+          "lastReadByName" TEXT,
           "assignedStaffId" TEXT,
           "assignedStaffName" TEXT,
           "tagsJson" TEXT,
@@ -244,6 +252,12 @@ export async function ensureSocialInboxSchemaAndMigrate(): Promise<void> {
           "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
           CONSTRAINT "SocialConversation_pkey" PRIMARY KEY ("id")
         );
+      `);
+      await prisma.$executeRawUnsafe(`
+        ALTER TABLE "SocialConversation" ADD COLUMN IF NOT EXISTS "lastReadById" TEXT;
+      `);
+      await prisma.$executeRawUnsafe(`
+        ALTER TABLE "SocialConversation" ADD COLUMN IF NOT EXISTS "lastReadByName" TEXT;
       `);
       await prisma.$executeRawUnsafe(`
         CREATE INDEX IF NOT EXISTS "SocialConversation_channel_externalContactId_idx"
@@ -297,6 +311,35 @@ export async function ensureSocialInboxSchemaAndMigrate(): Promise<void> {
       await prisma.$executeRawUnsafe(`
         CREATE INDEX IF NOT EXISTS "SocialMessage_externalMessageId_idx"
         ON "SocialMessage"("externalMessageId");
+      `);
+
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "SocialMediaJob" (
+          "id" TEXT NOT NULL,
+          "messageId" TEXT NOT NULL,
+          "conversationId" TEXT NOT NULL,
+          "mediaId" TEXT NOT NULL,
+          "senderPhone" TEXT,
+          "fallbackMimeType" TEXT,
+          "originalFilename" TEXT,
+          "attachmentType" TEXT NOT NULL DEFAULT 'image',
+          "attachmentName" TEXT NOT NULL DEFAULT 'WhatsApp Attachment',
+          "status" TEXT NOT NULL DEFAULT 'pending',
+          "attempts" INTEGER NOT NULL DEFAULT 0,
+          "nextRetryAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "lastError" TEXT,
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "SocialMediaJob_pkey" PRIMARY KEY ("id")
+        );
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "SocialMediaJob_status_nextRetryAt_idx"
+        ON "SocialMediaJob"("status", "nextRetryAt");
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "SocialMediaJob_messageId_idx"
+        ON "SocialMediaJob"("messageId");
       `);
 
       // One-time automatic data migration from Setting JSON blobs
@@ -496,7 +539,10 @@ export function getDefaultSocialChannelConfig(): SocialChannelConfig {
   };
 }
 
-export async function loadSocialChannelConfig(forceDb = false): Promise<SocialChannelConfig> {
+export async function loadSocialChannelConfig(
+  forceDb = false,
+  throwOnDbError = false
+): Promise<SocialChannelConfig> {
   const cached = globalForSocialCache.__tlsSocialConfigCache;
   if (!forceDb && cached && Date.now() - cached.loadedAt < 5000) {
     return {
@@ -525,7 +571,20 @@ export async function loadSocialChannelConfig(forceDb = false): Promise<SocialCh
         };
       }
     }
-  } catch {}
+  } catch (err) {
+    if (throwOnDbError && !cached) {
+      throw err;
+    }
+    if (cached) {
+      return {
+        whatsapp: { ...cached.config.whatsapp },
+        line: { ...cached.config.line },
+        facebook: { ...cached.config.facebook },
+        instagram: { ...cached.config.instagram },
+        telegram: { ...cached.config.telegram },
+      };
+    }
+  }
   globalForSocialCache.__tlsSocialConfigCache = {
     config,
     loadedAt: Date.now(),
@@ -753,8 +812,20 @@ export async function queryDeltaSocialMessages(
   limit = 500
 ): Promise<SocialMessage[]> {
   await ensureSocialInboxSchemaAndMigrate();
+  const recentMediaJobs = await prisma.socialMediaJob.findMany({
+    where: {
+      status: 'completed',
+      updatedAt: { gte: sinceDate },
+    },
+    select: { messageId: true },
+    take: 100,
+  });
+  const mediaMsgIds = recentMediaJobs.map((j) => j.messageId);
   const rows = await prisma.socialMessage.findMany({
-    where: { createdAt: { gte: sinceDate } },
+    where:
+      mediaMsgIds.length > 0
+        ? { OR: [{ createdAt: { gte: sinceDate } }, { id: { in: mediaMsgIds } }] }
+        : { createdAt: { gte: sinceDate } },
     orderBy: { createdAt: 'asc' },
     take: limit,
   });
@@ -852,6 +923,8 @@ export async function upsertSocialConversationRow(
       status: data.status,
       unreadCount: data.unreadCount,
       lastReadAt: data.lastReadAt,
+      lastReadById: data.lastReadById,
+      lastReadByName: data.lastReadByName,
       assignedStaffId: data.assignedStaffId,
       assignedStaffName: data.assignedStaffName,
       tagsJson: data.tagsJson,
@@ -866,21 +939,82 @@ export async function upsertSocialConversationRow(
   return { conversation: mapDbRowToConversation(saved), version };
 }
 
+export interface PendingSocialMediaJobInput {
+  mediaId: string;
+  senderPhone?: string;
+  fallbackMimeType?: string;
+  originalFilename?: string;
+  attachmentType: 'image' | 'file';
+  attachmentName: string;
+}
+
 /**
  * Atomically inserts a single `SocialMessage` row and updates/creates ONLY its parent
  * `SocialConversation` row inside one PostgreSQL transaction — zero cross-chat overwrites!
+ * Uses `pg_advisory_xact_lock` on the message/external ID so concurrent retries produce strictly ONE message.
  */
 export async function insertSocialMessageAndTouchConversation(opts: {
   message: SocialMessage;
   conversation: SocialConversation;
   incrementUnread?: boolean;
-}): Promise<{ conversation: SocialConversation; message: SocialMessage; version: string }> {
+  clearUnreadOnOutbound?: boolean;
+  pendingMediaJob?: PendingSocialMediaJobInput;
+}): Promise<{
+  conversation: SocialConversation;
+  message: SocialMessage;
+  version: string;
+  deduped?: boolean;
+}> {
   await ensureSocialInboxSchemaAndMigrate();
   const msgData = mapMessageToDbData(opts.message);
   const convData = mapConversationToDbData(opts.conversation);
   const nextVersion = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const lockKey = `social_msg:${msgData.externalMessageId || msgData.id}`;
+  const contactKeyTail =
+    convData.channel === 'whatsapp'
+      ? phoneDigitsTail(convData.externalContactId) || convData.externalContactId
+      : convData.externalContactId;
+  const contactLockKey = `social_contact:${convData.channel}:${contactKeyTail}`;
 
   const result = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${contactLockKey}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+
+    const dedupConds: any[] = [{ id: msgData.id }];
+    if (msgData.externalMessageId) {
+      dedupConds.push({ externalMessageId: msgData.externalMessageId });
+    }
+    const existingMsg = await tx.socialMessage.findFirst({
+      where: { OR: dedupConds },
+    });
+
+    if (existingMsg) {
+      const existingConvRow = await tx.socialConversation.findUnique({
+        where: { id: existingMsg.conversationId },
+      });
+      if (existingConvRow) {
+        return { savedConv: existingConvRow, savedMsg: existingMsg, deduped: true };
+      }
+    }
+
+    // Check by convData.id first; if not found, check if a concurrent request just created a conversation for the same contact
+    let existingConv = await tx.socialConversation.findUnique({
+      where: { id: convData.id },
+    });
+    if (!existingConv && convData.externalContactId) {
+      existingConv = await tx.socialConversation.findFirst({
+        where: {
+          channel: convData.channel,
+          externalContactId: convData.externalContactId,
+        },
+        orderBy: { lastMessageAt: 'desc' },
+      });
+      if (existingConv) {
+        convData.id = existingConv.id;
+        msgData.conversationId = existingConv.id;
+      }
+    }
+
     const savedMsg = await tx.socialMessage.upsert({
       where: { id: msgData.id },
       create: msgData,
@@ -895,18 +1029,39 @@ export async function insertSocialMessageAndTouchConversation(opts: {
       },
     });
 
-    const existingConv = await tx.socialConversation.findUnique({
-      where: { id: convData.id },
-    });
+    if (opts.pendingMediaJob?.mediaId) {
+      const jobId = `mediajob_${savedMsg.id}`;
+      await tx.socialMediaJob.upsert({
+        where: { id: jobId },
+        create: {
+          id: jobId,
+          messageId: savedMsg.id,
+          conversationId: convData.id,
+          mediaId: opts.pendingMediaJob.mediaId,
+          senderPhone: opts.pendingMediaJob.senderPhone ?? null,
+          fallbackMimeType: opts.pendingMediaJob.fallbackMimeType ?? null,
+          originalFilename: opts.pendingMediaJob.originalFilename ?? null,
+          attachmentType: opts.pendingMediaJob.attachmentType,
+          attachmentName: opts.pendingMediaJob.attachmentName,
+          status: 'pending',
+          attempts: 0,
+          nextRetryAt: new Date(),
+        },
+        update: {},
+      });
+    }
 
     let savedConv;
     if (existingConv) {
+      // Allow 2s tolerance because Meta webhook timestamps are in whole seconds (.000Z) while DB timestamps have ms
       const isNewerOrEqual =
-        msgData.createdAt.getTime() >= existingConv.lastMessageAt.getTime();
+        msgData.createdAt.getTime() >= existingConv.lastMessageAt.getTime() - 2000;
       const isOutbound = msgData.direction === 'outbound';
+      const shouldClearUnread = isOutbound && (isNewerOrEqual || Boolean(opts.clearUnreadOnOutbound));
+      const readNowDate = new Date(Math.max(Date.now(), msgData.createdAt.getTime()));
 
       savedConv = await tx.socialConversation.update({
-        where: { id: convData.id },
+        where: { id: existingConv.id },
         data: {
           externalContactId: convData.externalContactId || existingConv.externalContactId,
           contactName: convData.contactName || existingConv.contactName,
@@ -932,18 +1087,51 @@ export async function insertSocialMessageAndTouchConversation(opts: {
             : existingConv.lastMessageDirection,
           unreadCount: opts.incrementUnread
             ? { increment: 1 }
-            : isOutbound && isNewerOrEqual
+            : shouldClearUnread
             ? 0
             : existingConv.unreadCount,
+          ...(opts.incrementUnread
+            ? {
+                lastReadById: null,
+                lastReadByName: null,
+              }
+            : shouldClearUnread
+            ? {
+                lastReadAt: readNowDate,
+                lastReadById: msgData.senderId ?? convData.lastReadById ?? existingConv.lastReadById,
+                lastReadByName:
+                  msgData.senderName || convData.lastReadByName || existingConv.lastReadByName,
+              }
+            : {}),
           status: 'open',
           updatedAt: isNewerOrEqual ? msgData.createdAt : new Date(),
         },
       });
+
+      // If any duplicate conversation rows exist for the same externalContactId, clear their unreadCount too
+      if (shouldClearUnread && existingConv.externalContactId) {
+        await tx.socialConversation.updateMany({
+          where: {
+            channel: existingConv.channel,
+            externalContactId: existingConv.externalContactId,
+            unreadCount: { gt: 0 },
+          },
+          data: {
+            unreadCount: 0,
+            lastReadAt: readNowDate,
+            lastReadById: msgData.senderId ?? convData.lastReadById ?? existingConv.lastReadById,
+            lastReadByName:
+              msgData.senderName || convData.lastReadByName || existingConv.lastReadByName,
+          },
+        });
+      }
     } else {
+      const isOutbound = msgData.direction === 'outbound';
       savedConv = await tx.socialConversation.create({
         data: {
           ...convData,
           unreadCount: opts.incrementUnread ? Math.max(1, convData.unreadCount) : 0,
+          ...(isOutbound ? { lastReadAt: new Date() } : {}),
         },
       });
     }
@@ -954,15 +1142,170 @@ export async function insertSocialMessageAndTouchConversation(opts: {
       create: { key: SOCIAL_VERSION_KEY, value: nextVersion },
     });
 
-    return { savedConv, savedMsg };
+    return { savedConv, savedMsg, deduped: false };
   });
 
-  invalidateSocialStoreCache();
+  if (opts.message.direction === 'outbound' && (!opts.incrementUnread)) {
+    const readWatermarkMs = Math.max(Date.now(), new Date(opts.message.createdAt).getTime());
+    recordSocialReadWatermark(
+      result.savedConv.id,
+      result.savedConv.channel,
+      result.savedConv.externalContactId,
+      readWatermarkMs
+    );
+  }
+
+  if (!result.deduped) {
+    invalidateSocialStoreCache();
+  }
+  const curVersion = result.deduped ? await getSocialStoreVersion() : nextVersion;
   return {
     conversation: applyReadWatermarks([mapDbRowToConversation(result.savedConv)])[0],
     message: mapDbRowToMessage(result.savedMsg),
-    version: nextVersion,
+    version: curVersion,
+    deduped: result.deduped,
   };
+}
+
+let isProcessingMediaJobs = false;
+
+/**
+ * Durable, retryable background worker for WhatsApp Cloud API media attachments.
+ * Reclaims pending or stale (>60s) processing jobs, downloads from Meta Graph API, uploads to GCS,
+ * updates the saved `SocialMessage` in-place, and broadcasts a live `social.updated` event!
+ */
+export async function processPendingSocialMediaJobs(): Promise<{ processed: number }> {
+  if (isProcessingMediaJobs) return { processed: 0 };
+  isProcessingMediaJobs = true;
+  let processed = 0;
+
+  try {
+    await ensureSocialInboxSchemaAndMigrate();
+    const now = new Date();
+    const staleProcessingCutoff = new Date(now.getTime() - 60_000);
+
+    const dueJobs = await prisma.socialMediaJob.findMany({
+      where: {
+        attempts: { lt: 5 },
+        OR: [
+          { status: 'pending', nextRetryAt: { lte: now } },
+          { status: 'processing', updatedAt: { lte: staleProcessingCutoff } },
+        ],
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 10,
+    });
+
+    if (dueJobs.length === 0) return { processed: 0 };
+
+    const config = await loadSocialChannelConfig();
+    const { resolveWhatsAppCloudCredentials, downloadWhatsAppCloudMediaToGcs } = await import(
+      '@/lib/whatsapp-cloud-api'
+    );
+    const waCreds = resolveWhatsAppCloudCredentials(config?.whatsapp);
+    if (!waCreds.accessToken) return { processed: 0 };
+
+    for (const job of dueJobs) {
+      const claim = await prisma.socialMediaJob.updateMany({
+        where: { id: job.id, status: job.status, attempts: job.attempts },
+        data: {
+          status: 'processing',
+          attempts: { increment: 1 },
+          updatedAt: new Date(),
+        },
+      });
+      if (claim.count === 0) continue;
+
+      const attemptNum = job.attempts + 1;
+      try {
+        const downloaded = await downloadWhatsAppCloudMediaToGcs({
+          mediaId: job.mediaId,
+          accessToken: waCreds.accessToken,
+          senderPhone: job.senderPhone || undefined,
+          fallbackMimeType: job.fallbackMimeType || undefined,
+          originalFilename: job.originalFilename || undefined,
+        });
+
+        if (!downloaded?.url) {
+          throw new Error('Media download or GCS upload returned empty URL');
+        }
+
+        const resolvedType: 'image' | 'file' =
+          job.attachmentType === 'image' || downloaded.mimeType.startsWith('image/')
+            ? 'image'
+            : 'file';
+        const resolvedName =
+          job.attachmentName.includes('.') || resolvedType === 'image'
+            ? job.attachmentName
+            : `${job.attachmentName}.${downloaded.extension}`;
+
+        const newAttachment: SocialMessageAttachment = {
+          type: resolvedType,
+          url: downloaded.url,
+          name: resolvedName,
+        };
+
+        const msgRow = await prisma.socialMessage.findUnique({ where: { id: job.messageId } });
+        if (msgRow) {
+          const updatedMsgRow = await prisma.socialMessage.update({
+            where: { id: job.messageId },
+            data: { attachmentsJson: JSON.stringify([newAttachment]) },
+          });
+          await prisma.socialMediaJob.update({
+            where: { id: job.id },
+            data: { status: 'completed', lastError: null, updatedAt: new Date() },
+          });
+          const version = await bumpSocialStoreVersion();
+          const updatedMsg = mapDbRowToMessage(updatedMsgRow);
+          const conv = await findSocialConversationById(job.conversationId);
+
+          try {
+            const { publishOrderEvent } = await import('@/lib/realtime-bus');
+            await publishOrderEvent({
+              type: 'social.updated',
+              jobId: `__SOCIAL_MEDIA_READY_${updatedMsg.id}`,
+              updatedAt: new Date(),
+              socialPayload: {
+                kind: 'message',
+                conversation: conv ?? undefined,
+                message: updatedMsg,
+                version,
+              },
+            });
+          } catch {}
+          processed++;
+        } else {
+          await prisma.socialMediaJob.update({
+            where: { id: job.id },
+            data: { status: 'completed', updatedAt: new Date() },
+          });
+        }
+      } catch (err: any) {
+        const backoffMs = Math.min(120_000, 5_000 * Math.pow(3, attemptNum - 1));
+        await prisma.socialMediaJob.update({
+          where: { id: job.id },
+          data: {
+            status: attemptNum >= 5 ? 'failed' : 'pending',
+            nextRetryAt: new Date(Date.now() + backoffMs),
+            lastError: String(err?.message || 'media_job_failed').slice(0, 240),
+            updatedAt: new Date(),
+          },
+        });
+        console.warn('[SocialMediaJob] Attachment retry scheduled:', {
+          jobId: job.id,
+          messageId: job.messageId,
+          attempt: attemptNum,
+          nextRetryInMs: backoffMs,
+        });
+      }
+    }
+    return { processed };
+  } catch (err: any) {
+    console.warn('[SocialMediaJob] Worker error:', String(err?.message || err).slice(0, 160));
+    return { processed };
+  } finally {
+    isProcessingMediaJobs = false;
+  }
 }
 
 export async function deleteSocialConversationAndMessages(
@@ -986,6 +1329,8 @@ export async function deleteSocialConversationAndMessages(
 export async function markSocialConversationsReadInDb(opts: {
   conversationIds?: string[];
   channel?: SocialChannel | 'all';
+  actorId?: string | null;
+  actorName?: string | null;
 }): Promise<{ clearedCount: number; version: string }> {
   await ensureSocialInboxSchemaAndMigrate();
   const now = new Date();
@@ -1016,6 +1361,8 @@ export async function markSocialConversationsReadInDb(opts: {
     data: {
       unreadCount: 0,
       lastReadAt: now,
+      ...(opts.actorId !== undefined ? { lastReadById: opts.actorId } : {}),
+      ...(opts.actorName !== undefined ? { lastReadByName: opts.actorName } : {}),
       updatedAt: now,
     },
   });
@@ -1221,17 +1568,20 @@ export async function recordInboundSocialMessageInternal(input: {
   contactAvatar?: string;
   text: string;
   attachments?: SocialMessageAttachment[];
+  pendingMediaJob?: PendingSocialMediaJobInput;
   customerId?: string | null;
   messageId?: string;
   externalMessageId?: string;
   deliveryMethod?: SocialMessage['deliveryMethod'];
   createdAt?: string;
   isHistorySync?: boolean;
+  skipUnreadIncrement?: boolean;
+  webhookReceivedAtMs?: number;
 }) {
   try {
     await ensureSocialInboxSchemaAndMigrate();
 
-    // Indexed O(log N) deduplication directly in PostgreSQL
+    // Fast indexed O(log N) pre-check before conversation lookup
     const dedupOr: any[] = [];
     if (input.messageId) dedupOr.push({ id: input.messageId });
     if (input.externalMessageId) dedupOr.push({ externalMessageId: input.externalMessageId });
@@ -1269,7 +1619,10 @@ export async function recordInboundSocialMessageInternal(input: {
       const isNewerOrEqual = msgMs >= existingLastMs;
       const lastReadMs = existing.lastReadAt ? new Date(existing.lastReadAt).getTime() : 0;
       const alreadyReadByWatermark = Boolean(lastReadMs && msgMs <= lastReadMs + 1500);
-      shouldBumpUnread = !alreadyReadByWatermark && (!input.isHistorySync || isNewerOrEqual);
+      shouldBumpUnread =
+        !input.skipUnreadIncrement &&
+        !alreadyReadByWatermark &&
+        (!input.isHistorySync || isNewerOrEqual);
 
       conv = {
         ...existing,
@@ -1326,7 +1679,27 @@ export async function recordInboundSocialMessageInternal(input: {
       message: inboundMsg,
       conversation: conv,
       incrementUnread: shouldBumpUnread,
+      pendingMediaJob: input.pendingMediaJob,
     });
+
+    if (committed.deduped) {
+      return { success: true, deduped: true };
+    }
+
+    const dbSavedAtMs = Date.now();
+    if (input.webhookReceivedAtMs) {
+      console.info(
+        '[SocialInboxTiming]',
+        JSON.stringify({
+          stage: 'db_saved',
+          msgId: committed.message.id,
+          channel: input.channel,
+          direction: 'inbound',
+          hasMediaJob: Boolean(input.pendingMediaJob),
+          webhookToDbMs: dbSavedAtMs - input.webhookReceivedAtMs,
+        })
+      );
+    }
 
     if (!input.isHistorySync) {
       try {
@@ -1334,24 +1707,36 @@ export async function recordInboundSocialMessageInternal(input: {
         await publishOrderEvent({
           type: 'social.updated',
           jobId: `__SOCIAL_MSG_${committed.message.id}`,
-          updatedAt: new Date(),
+          updatedAt: new Date(dbSavedAtMs),
           socialPayload: {
             kind: 'message',
             conversation: committed.conversation,
             message: committed.message,
             version: committed.version,
+            timing: {
+              webhookReceivedAtMs: input.webhookReceivedAtMs,
+              dbSavedAtMs,
+            },
           },
         });
       } catch {}
+    }
+
+    if (input.pendingMediaJob) {
+      void processPendingSocialMediaJobs().catch(() => {});
     }
 
     return {
       success: true,
       conversation: committed.conversation,
       message: committed.message,
+      dbSavedAtMs,
     };
   } catch (err: any) {
-    console.error('[recordInboundSocialMessageInternal] Error:', err);
+    console.error('[recordInboundSocialMessageInternal] Error:', {
+      channel: input.channel,
+      reason: String(err?.message || 'unknown_error').slice(0, 160),
+    });
     return { success: false, error: err?.message || 'Failed to record inbound message' };
   }
 }
@@ -1365,20 +1750,35 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
   customerId?: string | null;
   text: string;
   imageUrls?: string[];
+  attachments?: SocialMessageAttachment[];
+  pendingMediaJob?: PendingSocialMediaJobInput;
   senderName?: string;
   messageId?: string;
+  externalMessageId?: string;
+  deliveryMethod?: SocialMessage['deliveryMethod'];
   createdAt?: string;
   isHistorySync?: boolean;
+  webhookReceivedAtMs?: number;
 }) {
   try {
     await ensureSocialInboxSchemaAndMigrate();
 
-    if (input.isHistorySync && input.messageId) {
-      const dup = await prisma.socialMessage.findUnique({
-        where: { id: input.messageId },
+    // Always deduplicate by messageId or externalMessageId (e.g. wamid...) so Cloud API sends
+    // echoed back via `smb_message_echoes` or webhook retries NEVER create duplicate bubbles!
+    const dedupOr: any[] = [];
+    if (input.messageId) dedupOr.push({ id: input.messageId });
+    if (input.externalMessageId) dedupOr.push({ externalMessageId: input.externalMessageId });
+    if (dedupOr.length > 0) {
+      const dup = await prisma.socialMessage.findFirst({
+        where: { OR: dedupOr },
         select: { id: true },
       });
-      if (dup) return { success: true, deduped: true };
+      if (dup) {
+        if (!input.isHistorySync && input.externalContactId) {
+          await syncExternalReadStatesInternal(input.channel, [input.externalContactId]);
+        }
+        return { success: true, deduped: true };
+      }
     }
 
     const nowIso = new Date().toISOString();
@@ -1439,11 +1839,14 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
       };
     }
 
-    const attachments: SocialMessageAttachment[] = (input.imageUrls || []).map((url) => ({
-      type: 'image',
-      url,
-      name: 'WhatsApp Photo',
-    }));
+    const combinedAttachments: SocialMessageAttachment[] = [
+      ...(input.attachments || []),
+      ...(input.imageUrls || []).map((url) => ({
+        type: 'image' as const,
+        url,
+        name: 'WhatsApp Photo',
+      })),
+    ];
 
     const msgId =
       input.messageId || `msg_sys_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
@@ -1454,10 +1857,12 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
       channel: input.channel,
       direction: 'outbound',
       text: input.text,
-      attachments: attachments.length > 0 ? attachments : undefined,
+      attachments: combinedAttachments.length > 0 ? combinedAttachments : undefined,
       senderName: input.senderName || 'LINE OA Bot',
       status: 'delivered',
-      deliveryMethod: input.channel === 'line' ? 'line_api' : 'social_api',
+      deliveryMethod:
+        input.deliveryMethod || (input.channel === 'line' ? 'line_api' : 'social_api'),
+      externalMessageId: input.externalMessageId,
       createdAt: msgIso,
     };
 
@@ -1465,7 +1870,28 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
       message: outboundMsg,
       conversation: conv,
       incrementUnread: false,
+      clearUnreadOnOutbound: !input.isHistorySync,
+      pendingMediaJob: input.pendingMediaJob,
     });
+
+    if (committed.deduped) {
+      return { success: true, deduped: true };
+    }
+
+    const dbSavedAtMs = Date.now();
+    if (input.webhookReceivedAtMs) {
+      console.info(
+        '[SocialInboxTiming]',
+        JSON.stringify({
+          stage: 'db_saved',
+          msgId: committed.message.id,
+          channel: input.channel,
+          direction: 'outbound',
+          hasMediaJob: Boolean(input.pendingMediaJob),
+          webhookToDbMs: dbSavedAtMs - input.webhookReceivedAtMs,
+        })
+      );
+    }
 
     if (!input.isHistorySync) {
       try {
@@ -1473,25 +1899,37 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
         await publishOrderEvent({
           type: 'social.updated',
           jobId: `__SOCIAL_MSG_${committed.message.id}`,
-          updatedAt: new Date(),
+          updatedAt: new Date(dbSavedAtMs),
           socialPayload: {
             kind: 'message',
             conversation: committed.conversation,
             message: committed.message,
             version: committed.version,
+            timing: {
+              webhookReceivedAtMs: input.webhookReceivedAtMs,
+              dbSavedAtMs,
+            },
           },
         });
       } catch {}
+    }
+
+    if (input.pendingMediaJob) {
+      void processPendingSocialMediaJobs().catch(() => {});
     }
 
     return {
       success: true,
       conversation: committed.conversation,
       message: committed.message,
+      dbSavedAtMs,
     };
   } catch (err: any) {
-    console.warn('[recordOutboundSocialMessageFromSystemInternal] Non-fatal error:', err);
-    return { success: false, error: err?.message };
+    console.error('[recordOutboundSocialMessageFromSystemInternal] Error:', {
+      channel: input.channel,
+      reason: String(err?.message || 'unknown_error').slice(0, 160),
+    });
+    return { success: false, error: err?.message || 'Failed to record outbound message' };
   }
 }
 
@@ -1506,7 +1944,7 @@ export async function updateOutboundSocialMessageStatusInternal(input: {
   externalMessageId: string;
   status: 'sent' | 'delivered' | 'read' | 'failed';
   errorText?: string;
-}): Promise<{ updated: boolean }> {
+}): Promise<{ updated: boolean; error?: string }> {
   const extId = (input.externalMessageId || '').trim();
   if (!extId) return { updated: false };
 
@@ -1550,8 +1988,10 @@ export async function updateOutboundSocialMessageStatusInternal(input: {
     } catch {}
 
     return { updated: true };
-  } catch (err) {
-    console.warn('[updateOutboundSocialMessageStatusInternal] Error:', err);
-    return { updated: false };
+  } catch (err: any) {
+    console.error('[updateOutboundSocialMessageStatusInternal] Error:', {
+      reason: String(err?.message || 'unknown_error').slice(0, 160),
+    });
+    return { updated: false, error: err?.message || 'Failed to update message status' };
   }
 }

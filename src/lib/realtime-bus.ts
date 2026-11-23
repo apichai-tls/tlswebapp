@@ -28,9 +28,18 @@ export interface RealtimeOrderEvent {
     kind: 'message' | 'read' | 'read_all';
     conversation?: any;
     message?: any;
+    conversationId?: string;
     readConversationIds?: string[];
+    readById?: string | null;
+    readByName?: string | null;
+    readAt?: string;
     channel?: string;
     version?: string;
+    refreshRequired?: boolean;
+    timing?: {
+      webhookReceivedAtMs?: number;
+      dbSavedAtMs: number;
+    };
   };
   instanceId: string;
 }
@@ -427,33 +436,80 @@ export async function publishOrderEvent(params: {
       changedFields: params.changedFields,
       actorId: params.actorId || null,
       actorName: params.actorName || null,
-      ...(params.socialPayload
-        ? {
-            socialPayload:
-              JSON.stringify(params.socialPayload).length <= 5500
-                ? params.socialPayload
-                : { kind: params.socialPayload.kind, version: params.socialPayload.version },
-          }
-        : {}),
+      ...(params.socialPayload ? { socialPayload: params.socialPayload } : {}),
       instanceId: bus.instanceId,
     };
 
-    // 1. Dispatch immediately to local SSE clients on this instance (0ms synchronous)
+    // 1. Dispatch full event immediately to local SSE clients on this instance (0ms synchronous)
     recordAndDispatchLocal(event, false);
 
-    // 2. Broadcast to all other Cloud Run instances via PostgreSQL NOTIFY (non-blocking)
-    const payloadStr = JSON.stringify(event);
+    // 2. Broadcast to all other instances via PostgreSQL NOTIFY (hard limit: 8,000 UTF-8 bytes)
+    const PG_NOTIFY_SAFE_MAX_BYTES = 7500;
+    let pgPayloadStr = JSON.stringify(event);
+    let pgByteLength = Buffer.byteLength(pgPayloadStr, 'utf8');
+
+    if (pgByteLength > PG_NOTIFY_SAFE_MAX_BYTES) {
+      const compactEvent: RealtimeOrderEvent = params.socialPayload
+        ? {
+            ...event,
+            socialPayload: {
+              kind: params.socialPayload.kind,
+              version: params.socialPayload.version,
+              channel:
+                params.socialPayload.channel ||
+                params.socialPayload.conversation?.channel ||
+                params.socialPayload.message?.channel,
+              conversationId:
+                params.socialPayload.conversationId ||
+                params.socialPayload.conversation?.id ||
+                params.socialPayload.message?.conversationId,
+              refreshRequired: true,
+              timing: params.socialPayload.timing,
+            },
+          }
+        : {
+            eventId: event.eventId,
+            type: event.type,
+            jobId: event.jobId,
+            customerId: event.customerId,
+            revision: event.revision,
+            updatedAt: event.updatedAt,
+            action: event.action,
+            instanceId: event.instanceId,
+          };
+      pgPayloadStr = JSON.stringify(compactEvent);
+      pgByteLength = Buffer.byteLength(pgPayloadStr, 'utf8');
+    }
+
+    const logPgNotifyFailure = (source: string, err: any) => {
+      console.error('[RealtimeBus] pg_notify failed:', {
+        source,
+        eventId: event.eventId,
+        type: event.type,
+        byteLength: pgByteLength,
+        code: err?.code || undefined,
+        reason: String(err?.message || 'unknown_error').slice(0, 160),
+      });
+    };
+
     if (bus.pgClient && bus.pgConnected) {
-      bus.pgClient.query('SELECT pg_notify($1, $2)', [PG_CHANNEL, payloadStr]).catch(() => {
-        prisma.$executeRaw`SELECT pg_notify(${PG_CHANNEL}, ${payloadStr})`.catch(() => {});
+      bus.pgClient.query('SELECT pg_notify($1, $2)', [PG_CHANNEL, pgPayloadStr]).catch((pgErr) => {
+        logPgNotifyFailure('pgClient', pgErr);
+        prisma.$executeRaw`SELECT pg_notify(${PG_CHANNEL}, ${pgPayloadStr})`.catch((fallbackErr) => {
+          logPgNotifyFailure('prismaFallback', fallbackErr);
+        });
       });
     } else {
-      prisma.$executeRaw`SELECT pg_notify(${PG_CHANNEL}, ${payloadStr})`.catch((err) => {
-        console.warn('[RealtimeBus] Failed to pg_notify order event:', err);
+      prisma.$executeRaw`SELECT pg_notify(${PG_CHANNEL}, ${pgPayloadStr})`.catch((err) => {
+        logPgNotifyFailure('prismaDirect', err);
       });
     }
-  } catch (err) {
-    console.warn('[RealtimeBus] Failed to publish order event:', err);
+  } catch (err: any) {
+    console.error('[RealtimeBus] Failed to publish order event:', {
+      type: params.type || 'job.updated',
+      jobId: params.jobId || undefined,
+      reason: String(err?.message || 'unknown_error').slice(0, 160),
+    });
   }
 }
 

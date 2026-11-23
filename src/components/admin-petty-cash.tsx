@@ -337,6 +337,8 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
 
   // Replenishment Report Review & Approval Modal (Accounting reviews report, approves bills & disburses top-up)
   const [reviewReportTarget, setReviewReportTarget] = useState<PettyCashReplenishmentReport | null>(null);
+  const [claimsStatusFilter, setClaimsStatusFilter] = useState<"ALL" | "PENDING_APPROVAL" | "DISBURSED" | "REJECTED">("ALL");
+  const [claimsHolderFilter, setClaimsHolderFilter] = useState<string>("ALL");
   const [reviewApprovedAmount, setReviewApprovedAmount] = useState<string>("");
   const [reviewTopupChannel, setReviewTopupChannel] = useState<string>("Bank Account");
   const [reviewSourceHolderId, setReviewSourceHolderId] = useState<string>("");
@@ -419,7 +421,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
   const canApproveOrTopUp = useMemo(() => {
     if (!currentUser) return false;
     const role = (currentUser.role || "").toLowerCase();
-    if (role === "admin" || role === "superadmin" || role === "accounting") return true;
+    if (role === "admin" || role === "superadmin" || role === "accounting" || role === "account") return true;
     const perms = parsePermissionsList(currentUser.permissions);
     return perms.includes("approve-petty-cash");
   }, [currentUser, parsePermissionsList]);
@@ -1983,9 +1985,9 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     };
   }, [filteredTransactions, vehiclePlates, fuelIncludeMaintenance]);
 
-  // Export CSV (Full Executive Summary + Custodian Summary + Category Summary + Transaction Ledger)
+  // Export CSV (Clean Detailed Transaction Ledger)
   const handleExportCsv = () => {
-    if (filteredTransactions.length === 0 && dashboardDetails.visibleHolderSummaries.length === 0) {
+    if (filteredTransactions.length === 0) {
       toast.error("ไม่มีรายการสำหรับ Export");
       return;
     }
@@ -1996,106 +1998,37 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       ["วันที่ส่งออก (Exported At)", format(new Date(), "dd/MM/yyyy HH:mm")],
       ["ผู้ส่งออก (Exported By)", currentUser?.name || currentUser?.email || "-"],
       [],
-      ["1. สรุปภาพรวมการเติมเงินและเบิกจ่าย (EXECUTIVE SUMMARY)"],
-      ["หัวข้อ (Metric)", "จำนวนเงิน (THB)", "หมายเหตุ (Details)"],
-      ["วงเงินรวมทั้งหมด (Total Quota Limit)", dashboardDetails.totalLimitAll.toFixed(2), `${holderSummaries.length} กระเป๋า`],
-      ["ยอดคงเหลือรวมปัจจุบัน (Current Total Balance)", dashboardDetails.totalWalletBalanceAll.toFixed(2), `ฝ่ายบัญชี ฿${kpiStats.accountingPoolBalance.toFixed(2)} | หน้าร้าน ฿${kpiStats.storePoolBalance.toFixed(2)}`],
-      ["ยอดเติมเงินเข้าจากบริษัทในงวด (+Company Top-up)", kpiStats.companyTopupTotal.toFixed(2), `${dashboardDetails.topupTxCount} รายการ`],
-      ["ยอดโอนเติมให้หน้าร้านในงวด (Transferred to Stores)", kpiStats.transferredToStoreTotal.toFixed(2), `${dashboardDetails.transferTxCount} รายการ`],
-      ["ยอดใช้จ่ายจริงรวมในงวด (-Total Real Expenses)", (-kpiStats.realExpenseTotal).toFixed(2), `${dashboardDetails.expenseTxCount} รายการ (อนุมัติแล้ว ฿${dashboardDetails.approvedExpenseTotal.toFixed(2)})`],
-      ["ยอดต้องเบิกชดเชยคืนเข้าวงเงิน (Replenishment Needed)", dashboardDetails.totalShortfallAll.toFixed(2), `รอตรวจบิล ${kpiStats.pendingCount} รายการ (฿${kpiStats.pendingAmount.toFixed(2)})`],
-      [],
-      ["2. ตารางสรุปแยกตามผู้ถือเงินสดย่อย (CUSTODIAN WALLET SUMMARY)"],
-      [
-        "ผู้ถือเงินสดย่อย (Custodian)",
-        "แผนก (Department)",
-        "สาขา (Branch)",
-        "วงเงินตั้งต้น (Quota Limit)",
-        "ยอดยกมาต้นงวด (Opening Balance)",
-        "เติมจากบริษัท (+Company Top-up)",
-        "รับโอนจากบัญชี (+Transfer In)",
-        "รวมรับเข้าในงวด (+Total Received)",
-        "โอนให้สาขา (-Transfer Out)",
-        "ใช้จ่ายจริงในงวด (-Real Expenses)",
-        "คงเหลือปัจจุบัน (Current Balance)",
-        "ต้องเติมเพิ่มให้เต็มวงเงิน (Shortfall / To Replenish)",
-        "บิลรอตรวจ (Pending Bills)",
-      ],
-      ...dashboardDetails.visibleHolderSummaries.map((h) => {
-        const limit = getHolderLimit(h.holderId, h.isAccounting);
-        const shortfall = Math.max(0, Math.round((limit - h.currentBalance) * 100) / 100);
-        return [
-          h.holderName,
-          h.department || h.roleLabel,
-          getBranchDisplayName(h.branchId),
-          limit.toFixed(2),
-          h.openingBalance.toFixed(2),
-          h.companyTopup.toFixed(2),
-          h.transferIn.toFixed(2),
-          h.totalTopup.toFixed(2),
-          (-h.transferOut).toFixed(2),
-          (-h.totalExpense).toFixed(2),
-          h.currentBalance.toFixed(2),
-          shortfall.toFixed(2),
-          h.pendingCount,
-        ];
-      }),
-      [],
-      ["3. สรุปค่าใช้จ่ายแยกตามหมวดหมู่ (EXPENSE BREAKDOWN BY CATEGORY)"],
-      ["หมวดหมู่ (Category)", "จำนวนรายการ (Count)", "ยอดใช้จ่าย (THB)", "สัดส่วน (%)"],
-      ...dashboardDetails.categoryBreakdown.map((c) => {
-        const pct = kpiStats.realExpenseTotal > 0 ? ((c.amount / kpiStats.realExpenseTotal) * 100).toFixed(1) : "0.0";
-        return [c.category, c.count, c.amount.toFixed(2), `${pct}%`];
-      }),
-      [],
-      ["4. รายการเดินบัญชีละเอียด (DETAILED TRANSACTION LEDGER)"],
+      ["รายการเดินบัญชีละเอียด (DETAILED TRANSACTION LEDGER)"],
     ];
 
     const headers = [
       "Tx No.",
       "Date",
-      "Holder (ผู้ถือเงินสดย่อย)",
-      "Branch",
-      "Type",
       "Category",
       "Vehicle Plate (ทะเบียนรถ)",
       "Description",
-      "Vendor / ร้านค้า",
-      "Invoice / เลขที่บิล",
       "Method",
-      "Direction",
       "Amount (THB)",
       "Balance Before",
       "Balance After",
-      "Status",
       "Created By",
       "Approved By",
-      "Receipt Files",
       "Slip Files",
     ];
     const rows = filteredTransactions.map((t) => {
-      const branchName = getBranchDisplayName(t.branchId);
       const signedAmt = t.direction === "CREDIT" ? t.amount : -t.amount;
       return [
         t.txNumber || t.id,
         format(new Date(t.transactionDate), "dd/MM/yyyy HH:mm"),
-        t.holderName,
-        branchName,
-        t.type,
         t.category,
         t.vehiclePlate || "-",
         t.description,
-        t.vendorName || "-",
-        t.invoiceNo || "-",
         t.paymentMethod || "-",
-        t.direction,
         signedAmt.toFixed(2),
         t.balanceBefore.toFixed(2),
         t.balanceAfter.toFixed(2),
-        t.status,
         t.createdByName || "-",
         t.approvedByName || "-",
-        (t.receiptUrls || []).join(" | "),
         (t.slipUrls || []).join(" | "),
       ];
     });
@@ -2966,25 +2899,80 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       {/* ── TAB: REPLENISHMENT CLAIMS (สรุป Report การใช้จ่ายเพื่อขอเบิกเงินสดย่อย) ── */}
       {activeViewTab === "claims" && (
         <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xs overflow-hidden">
-          <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <Files size={16} className="text-indigo-600" />
-                <span>Replenishment Reports & Approval (ใบสรุปการใช้จ่ายเพื่อขอเบิกเงินสดย่อย)</span>
-              </h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                ผู้ถือเงินสดย่อยสรุปบิลค่าใช้จ่ายในรอบนั้นส่งให้ฝ่ายบัญชีตรวจสอบและ Approve ก่อนโอนเติมเงินชดเชย
-              </p>
+          <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Files size={16} className="text-indigo-600" />
+                  <span>Replenishment Reports & Approval (ใบสรุปการใช้จ่ายเพื่อขอเบิกเงินสดย่อย)</span>
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {canApproveOrTopUp
+                    ? "แสดงรายการขอเบิกเงินสดย่อยของพนักงานทุกคน เพื่อตรวจสอบและ Approve ก่อนโอนเติมเงินชดเชย"
+                    : "ผู้ถือเงินสดย่อยสรุปบิลค่าใช้จ่ายในรอบนั้นส่งให้ฝ่ายบัญชีตรวจสอบและ Approve ก่อนโอนเติมเงินชดเชย"}
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => handleOpenSubmitReportModal()}
+                className="h-9 px-3.5 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-1.5 shadow-2xs cursor-pointer self-start sm:self-auto"
+              >
+                <Plus size={14} />
+                <span>+ Create Replenishment Report (สร้างใบสรุปขอเบิก)</span>
+              </Button>
             </div>
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => handleOpenSubmitReportModal()}
-              className="h-9 px-3.5 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-1.5 shadow-2xs cursor-pointer self-start sm:self-auto"
-            >
-              <Plus size={14} />
-              <span>+ Create Replenishment Report (สร้างใบสรุปขอเบิก)</span>
-            </Button>
+
+            {canApproveOrTopUp && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {(
+                    [
+                      { id: "ALL", label: `All (${replenishmentReports.length})` },
+                      {
+                        id: "PENDING_APPROVAL",
+                        label: `Pending (${replenishmentReports.filter((r) => r.status === "PENDING_APPROVAL").length})`,
+                      },
+                      {
+                        id: "DISBURSED",
+                        label: `Approved & Replenished (${replenishmentReports.filter((r) => r.status === "DISBURSED" || r.status === "APPROVED").length})`,
+                      },
+                      {
+                        id: "REJECTED",
+                        label: `Rejected (${replenishmentReports.filter((r) => r.status === "REJECTED").length})`,
+                      },
+                    ] as const
+                  ).map((st) => (
+                    <button
+                      key={st.id}
+                      type="button"
+                      onClick={() => setClaimsStatusFilter(st.id)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
+                        claimsStatusFilter === st.id
+                          ? "bg-slate-900 text-white border-slate-900"
+                          : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                      }`}
+                    >
+                      {st.label}
+                    </button>
+                  ))}
+                </div>
+                <select
+                  value={claimsHolderFilter}
+                  onChange={(e) => setClaimsHolderFilter(e.target.value)}
+                  className="h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500"
+                >
+                  <option value="ALL">All Custodians (ทุกคน)</option>
+                  {Array.from(new Map(replenishmentReports.map((r) => [r.holderId, r.holderName])).entries()).map(
+                    ([hId, hName]) => (
+                      <option key={hId} value={hId}>
+                        {hName}
+                      </option>
+                    )
+                  )}
+                </select>
+              </div>
+            )}
           </div>
 
           <div className="overflow-x-auto">
@@ -3004,7 +2992,15 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 {(() => {
                   const visibleReports = replenishmentReports.filter((r) => {
                     if (!canApproveOrTopUp) return r.holderId === currentUser?.id;
-                    if (holderFilter !== "ALL" && r.holderId !== holderFilter) return false;
+                    if (claimsHolderFilter !== "ALL" && r.holderId !== claimsHolderFilter) return false;
+                    if (claimsStatusFilter === "PENDING_APPROVAL" && r.status !== "PENDING_APPROVAL") return false;
+                    if (
+                      claimsStatusFilter === "DISBURSED" &&
+                      r.status !== "DISBURSED" &&
+                      r.status !== "APPROVED"
+                    )
+                      return false;
+                    if (claimsStatusFilter === "REJECTED" && r.status !== "REJECTED") return false;
                     return true;
                   });
 
@@ -5917,8 +5913,13 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                                   className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 shrink-0"
                                 />
                                 <div className="min-w-0">
-                                  <div className="font-semibold text-slate-900 truncate">
-                                    {tx.description}
+                                  <div className="font-semibold text-slate-900 truncate flex items-center gap-1.5">
+                                    {tx.type === "TRANSFER_OUT" && (
+                                      <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 text-[9.5px] font-extrabold shrink-0">
+                                        Transfer → {tx.counterpartyName || "Staff"}
+                                      </span>
+                                    )}
+                                    <span className="truncate">{tx.description}</span>
                                   </div>
                                   <div className="text-[10.5px] text-slate-500 flex items-center gap-1.5 flex-wrap">
                                     <span className="font-mono">
@@ -5947,6 +5948,39 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                       </div>
                     )}
                   </div>
+
+                  {/* Direct Expenses vs Staff Transfers Breakdown (Model 1: Accounting Sub-Custodian Replenishment) */}
+                  {(() => {
+                    const directTxs = selectedTxs.filter((t) => t.type !== "TRANSFER_OUT");
+                    const transferTxs = selectedTxs.filter((t) => t.type === "TRANSFER_OUT");
+                    if (transferTxs.length === 0) return null;
+                    const directSum = directTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    const transferSum = transferTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    return (
+                      <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+                        <div className="bg-white rounded-lg px-2.5 py-1.5 border border-indigo-100">
+                          <span className="text-[10px] text-slate-500 block">Direct Expenses ({directTxs.length} bills)</span>
+                          <span className="font-mono font-bold text-rose-600">
+                            ฿{directSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <div className="bg-white rounded-lg px-2.5 py-1.5 border border-indigo-100">
+                          <span className="text-[10px] text-indigo-600 font-semibold block">
+                            Transfers to Staff ({transferTxs.length})
+                          </span>
+                          <span className="font-mono font-bold text-indigo-700">
+                            ฿{transferSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <div className="bg-white rounded-lg px-2.5 py-1.5 border border-emerald-200">
+                          <span className="text-[10px] text-emerald-700 font-semibold block">Total Replenishment Claim</span>
+                          <span className="font-mono font-extrabold text-emerald-700">
+                            ฿{(directSum + transferSum).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Category Summary Preview */}
                   {catPreviewList.length > 0 && (
@@ -6112,6 +6146,39 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                     </div>
                   </div>
 
+                  {/* Direct Expenses vs Staff Transfers Breakdown (if any TRANSFER_OUT included) */}
+                  {(() => {
+                    const directTxs = includedTxs.filter((t) => t.type !== "TRANSFER_OUT");
+                    const transferTxs = includedTxs.filter((t) => t.type === "TRANSFER_OUT");
+                    if (transferTxs.length === 0) return null;
+                    const directSum = directTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    const transferSum = transferTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    return (
+                      <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] min-w-0">
+                        <div className="bg-white rounded-lg px-2.5 py-1.5 border border-indigo-100 min-w-0">
+                          <span className="text-[10px] text-slate-500 block truncate">Direct Expenses ({directTxs.length} bills)</span>
+                          <span className="font-mono font-bold text-rose-600">
+                            ฿{directSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <div className="bg-white rounded-lg px-2.5 py-1.5 border border-indigo-100 min-w-0">
+                          <span className="text-[10px] text-indigo-600 font-semibold block truncate">
+                            Staff Wallet Transfers ({transferTxs.length})
+                          </span>
+                          <span className="font-mono font-bold text-indigo-700">
+                            ฿{transferSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <div className="bg-white rounded-lg px-2.5 py-1.5 border border-emerald-200 min-w-0">
+                          <span className="text-[10px] text-emerald-700 font-semibold block truncate">Total Replenishment</span>
+                          <span className="font-mono font-extrabold text-emerald-700">
+                            ฿{(directSum + transferSum).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* Category Breakdown */}
                   {(reviewReportTarget.categorySummary || []).length > 0 && (
                     <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 space-y-1.5 min-w-0">
@@ -6150,8 +6217,13 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                             className="p-2.5 flex items-center justify-between gap-2 hover:bg-slate-50 min-w-0"
                           >
                             <div className="min-w-0 flex-1">
-                              <div className="font-semibold text-slate-900 truncate">
-                                {tx.description}
+                              <div className="font-semibold text-slate-900 truncate flex items-center gap-1.5">
+                                {tx.type === "TRANSFER_OUT" && (
+                                  <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 text-[9.5px] font-extrabold shrink-0">
+                                    Transfer → {tx.counterpartyName || "Staff"}
+                                  </span>
+                                )}
+                                <span className="truncate">{tx.description}</span>
                               </div>
                               <div className="text-[10.5px] text-slate-500 flex items-center gap-1.5 flex-wrap">
                                 <span className="font-mono">

@@ -27,6 +27,7 @@ export interface LineContactRecord {
   pictureUrl?: string;
   statusMessage?: string;
   lastInteractionAt: string;
+  followedAt?: string;
   lastMessageText?: string;
   linkedCustomerId?: string | null;
   linkedCustomerName?: string | null;

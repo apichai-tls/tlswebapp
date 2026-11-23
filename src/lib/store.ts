@@ -611,16 +611,19 @@ export const jobStore = {
     return this.updateJobDetails(id, updates, actorDetails);
   },
 
-  async updateJobDetails(id: string, updates: Partial<Job>, actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {
+  async updateJobDetails(id: string, updates: Partial<Job>, actorDetails?: { actorId?: string, actorName?: string, actorRole?: string, _riderMetrics?: Record<string, any> }) {
     const jobs = api.sync.getJobs();
     const job = jobs.find(j => j.id === id);
 
     // Auto-hydrate actor details from updates or localStorage on client side if not provided
-    let finalActorDetails = {
+    let finalActorDetails: Record<string, any> = {
       actorId: actorDetails?.actorId || (updates as any).actorId,
       actorName: actorDetails?.actorName || (updates as any).actorName,
       actorRole: actorDetails?.actorRole || (updates as any).actorRole,
     };
+    if (actorDetails?._riderMetrics) {
+      finalActorDetails._riderMetrics = actorDetails._riderMetrics;
+    }
     if (!finalActorDetails.actorId && !finalActorDetails.actorName && typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('authUser');
@@ -786,7 +789,7 @@ export const jobStore = {
     }, actorDetails);
   },
 
-  async completeJob(id: string, proofImageUrl?: string, legType?: "pickup" | "delivery", actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {
+  async completeJob(id: string, proofImageUrl?: string, legType?: "pickup" | "delivery", actorDetails?: { actorId?: string, actorName?: string, actorRole?: string, _riderMetrics?: Record<string, any> }) {
     const jobs = api.sync.getJobs();
     const job = jobs.find(j => j.id === id);
     if (!job) return;

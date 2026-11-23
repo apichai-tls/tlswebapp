@@ -3205,7 +3205,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         setLastProformaCartHash(currentCartHash);
       } else if (!targetProformaNum) {
         // New job — proforma will be generated after addJob() using finalJob.id (see below)
-      } else if (cartChangedAfterProforma) {
+      } else if (cartChangedAfterProforma && willBeShopPaid) {
         effectiveRevision = (proformaRevision !== null ? proformaRevision : 0) + 1;
         setProformaRevision(effectiveRevision);
         setLastProformaCartHash(currentCartHash);
@@ -3578,8 +3578,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
       setLatestJob(finalJob);
 
-      // [AUTO-PROFORMA for POS] If proforma snapshot not yet captured, auto-capture in background (including Beam online orders)
-      if (finalJob && targetProformaNum) {
+      // [AUTO-PROFORMA for POS] Only auto-capture when Pay (willBeShopPaid) is triggered; unpaid edits require explicit Proforma button confirmation
+      if (finalJob && targetProformaNum && willBeShopPaid) {
         const cleanBaseProforma = cleanProformaNumber(targetProformaNum);
         const effectiveRev = effectiveRevision || 0;
         const proformaFilename = `proforma-${cleanBaseProforma}-rev${effectiveRev}.png`;

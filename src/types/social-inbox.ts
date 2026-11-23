@@ -68,6 +68,8 @@ export interface SocialConversation {
   status: 'open' | 'pending' | 'resolved';
   unreadCount: number;
   lastReadAt?: string;
+  lastReadById?: string | null;
+  lastReadByName?: string | null;
   assignedStaffId?: string | null;
   assignedStaffName?: string | null;
   tags?: string[];

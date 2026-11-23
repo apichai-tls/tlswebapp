@@ -2012,17 +2012,20 @@ export const api = {
     if (!isSilentMediaUpdate) {
       const dirtySet = pendingFieldEdits.get(id) || new Set<string>();
       for (const k of Object.keys(cleanUpdates)) {
-        if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName', 'isExplicitImageDelete'].includes(k)) {
+        if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo', 'isAutoReceiptWorker', 'systemActorName', 'isExplicitImageDelete', '_riderMetrics'].includes(k)) {
           dirtySet.add(k);
         }
       }
       pendingFieldEdits.set(id, dirtySet);
     }
 
+    const optimisticPatch = { ...cleanUpdates };
+    delete (optimisticPatch as any)._riderMetrics;
+
     // Mark local state as saving (unconfirmed) until server responds (unless silent background media attachment)
     const optimisticJob: Job = {
       ...existingJob,
-      ...cleanUpdates,
+      ...optimisticPatch,
       updatedAt: new Date(),
     };
     if (!isSilentMediaUpdate) {

@@ -566,6 +566,18 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const [selectedBrand, setSelectedBrand] = useState<"ALL" | "that_laundry_shop" | "noname_laundry">("ALL");
   const [paymentChannelFilter, setPaymentChannelFilter] = useState<string>("ALL");
   const [csoPaidFilter, setCsoPaidFilter] = useState<"ALL" | "PAID" | "UNPAID" | "SHOP_UNPAID" | "CSO_PAID_SHOP_UNPAID" | "RIDER_CASH">("ALL");
+  const [expressFilter, setExpressFilter] = useState<"ALL" | "EXP50" | "EXP100">("ALL");
+  const [isAfterSixPm, setIsAfterSixPm] = useState<boolean>(() => new Date().getHours() >= 18);
+
+  useEffect(() => {
+    const checkClock = () => {
+      const after = new Date().getHours() >= 18;
+      setIsAfterSixPm((prev) => (prev === after ? prev : after));
+    };
+    checkClock();
+    const timer = setInterval(checkClock, 30000);
+    return () => clearInterval(timer);
+  }, []);
   const [selectedRiderId, setSelectedRiderId] = useState<string>("ALL");
   const [startDate, setStartDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
   const [endDate, setEndDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
@@ -1620,8 +1632,12 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     let riderCashTotal = 0;
     let riderCashPendingTotal = 0;
     let riderCashPendingAmount = 0;
+    let exp50Total = 0;
+    let exp100Total = 0;
 
     for (const j of scopedOverviewJobs) {
+      if (j.remark?.includes("Express 50%") || j.serviceSpeed === "express_50") exp50Total++;
+      if (j.remark?.includes("Express 100%") || j.serviceSpeed === "express_100") exp100Total++;
       const breakdown = getJobPaymentBreakdown(j);
       const isShopPaid = breakdown.isFullyPaid || Boolean(j.isShopPaid);
 
@@ -1652,6 +1668,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       riderCashTotal,
       riderCashPendingTotal,
       riderCashPendingAmount,
+      exp50Total,
+      exp100Total,
     };
   }, [scopedOverviewJobs]);
 
@@ -1683,6 +1701,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         if (!job.isPaid || breakdown.isFullyPaid || job.isShopPaid) return false;
       }
       if (csoPaidFilter === "RIDER_CASH" && !isRiderCashDeliveryJob(job)) return false;
+
+      // Express Speed Quick Filter (Exp50 / Exp100)
+      if (expressFilter === "EXP50" && !(job.remark?.includes("Express 50%") || job.serviceSpeed === "express_50")) return false;
+      if (expressFilter === "EXP100" && !(job.remark?.includes("Express 100%") || job.serviceSpeed === "express_100")) return false;
 
       // Specific Rider Filter
       if (selectedRiderId !== "ALL") {
@@ -1805,7 +1827,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     });
   }, [
     scopedOverviewJobs, shiftOnlyFilter, currentBranchShift, currentBranchShiftStats.shiftJobIds,
-    stuckOnly, showCompleted, csoPaidFilter, selectedRiderId,
+    stuckOnly, showCompleted, csoPaidFilter, expressFilter, selectedRiderId,
     billingFilterMode, paymentChannelFilter, deferredSearchTerm, riders, customers,
     shopLocations
   ]);
@@ -2864,25 +2886,109 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                 </span>
               </button>
 
-              {/* 3. CSO Paid • Shop Unpaid (Teal) */}
-              <button
-                type="button"
-                onClick={() => setCsoPaidFilter(prev => prev === "CSO_PAID_SHOP_UNPAID" ? "ALL" : "CSO_PAID_SHOP_UNPAID")}
-                className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-[11px] font-bold border transition-all cursor-pointer ${
-                  csoPaidFilter === "CSO_PAID_SHOP_UNPAID"
-                    ? "bg-teal-600 text-white border-teal-600 shadow-xs"
-                    : "bg-teal-50/90 text-teal-800 border-teal-200/90 hover:bg-teal-100/80"
-                }`}
-                title="Customer has paid CSO, waiting for Shop settlement (CSO รับเงินแล้ว • หน้าร้านรอเคลียร์เงิน)"
-              >
-                <Wallet size={12} className={csoPaidFilter === "CSO_PAID_SHOP_UNPAID" ? "text-white" : "text-teal-600"} />
-                <span>CSO Paid • Shop Unpaid</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
-                  csoPaidFilter === "CSO_PAID_SHOP_UNPAID" ? "bg-white/20 text-white" : "bg-teal-200/90 text-teal-950"
-                }`}>
-                  {csoOverviewCounts.csoPaidShopUnpaidTotal}
-                </span>
-              </button>
+              {/* 3. CSO Paid • Shop Unpaid (3-state Siren/Alert ONLY for Branch Managers; standard Teal pill for other roles) */}
+              {(() => {
+                const hasPendingShopPay = csoOverviewCounts.csoPaidShopUnpaidTotal > 0;
+                const isSelected = csoPaidFilter === "CSO_PAID_SHOP_UNPAID";
+                const showManagerAlertStyle = isBranchManager && !isAdmin;
+                const isSirenMode = showManagerAlertStyle && hasPendingShopPay && isAfterSixPm;
+
+                if (!showManagerAlertStyle) {
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => setCsoPaidFilter(prev => prev === "CSO_PAID_SHOP_UNPAID" ? "ALL" : "CSO_PAID_SHOP_UNPAID")}
+                      className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-[11px] font-bold border transition-all cursor-pointer ${
+                        isSelected
+                          ? "bg-teal-600 text-white border-teal-600 shadow-xs"
+                          : "bg-teal-50/90 text-teal-800 border-teal-200/90 hover:bg-teal-100/80"
+                      }`}
+                      title="Customer has paid CSO, waiting for Shop settlement (CSO รับเงินแล้ว • หน้าร้านรอเคลียร์เงิน)"
+                    >
+                      <Wallet size={12} className={isSelected ? "text-white" : "text-teal-600"} />
+                      <span>CSO Paid • Shop Unpaid</span>
+                      <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                        isSelected ? "bg-white/20 text-white" : "bg-teal-200/90 text-teal-950"
+                      }`}>
+                        {csoOverviewCounts.csoPaidShopUnpaidTotal}
+                      </span>
+                    </button>
+                  );
+                }
+
+                return (
+                  <>
+                    {isSirenMode && (
+                      <style>{`
+                        @keyframes tlsCsoShopSirenStrobe {
+                          0%, 100% {
+                            background-color: #dc2626;
+                            border-color: #ef4444;
+                            color: #ffffff;
+                            box-shadow: 0 0 24px 7px rgba(239, 68, 68, 0.88), 0 0 0 3px rgba(248, 113, 113, 0.55);
+                            transform: scale(1.02);
+                          }
+                          50% {
+                            background-color: #facc15;
+                            border-color: #f59e0b;
+                            color: #7f1d1d;
+                            box-shadow: 0 0 28px 9px rgba(250, 204, 21, 0.95), 0 0 0 5px rgba(251, 191, 36, 0.6);
+                            transform: scale(1.05);
+                          }
+                        }
+                        .tls-cso-shop-siren {
+                          animation: tlsCsoShopSirenStrobe 0.65s infinite steps(2, jump-none);
+                        }
+                      `}</style>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setCsoPaidFilter(prev => prev === "CSO_PAID_SHOP_UNPAID" ? "ALL" : "CSO_PAID_SHOP_UNPAID")}
+                      className={`relative inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-[11px] border transition-all cursor-pointer ${
+                        !hasPendingShopPay
+                          ? isSelected
+                            ? "font-extrabold bg-emerald-950 text-white border-emerald-950 ring-2 ring-emerald-700 ring-offset-1 shadow-xs"
+                            : "font-extrabold bg-emerald-800 hover:bg-emerald-900 text-emerald-50 border-emerald-900 shadow-xs"
+                          : isSirenMode
+                            ? `font-black border-2 tls-cso-shop-siren ${isSelected ? "ring-2 ring-red-900 ring-offset-1" : ""}`
+                            : isSelected
+                              ? "font-bold bg-rose-600 text-white border-rose-600 shadow-xs"
+                              : "font-bold bg-rose-50/95 hover:bg-rose-100/90 text-rose-700 border-rose-200/90"
+                      }`}
+                      title={
+                        !hasPendingShopPay
+                          ? "เคลียร์ครบแล้ว: ไม่มีบิล CSO Paid ที่ค้างกด Pay หน้าร้าน"
+                          : isSirenMode
+                            ? `🚨 หลัง 18:00 น.! ยังมี ${csoOverviewCounts.csoPaidShopUnpaidTotal} บิลที่ CSO รับเงินแล้ว แต่หน้าร้านยังไม่ได้กด Pay!`
+                            : `มี ${csoOverviewCounts.csoPaidShopUnpaidTotal} บิลที่ CSO รับเงินแล้ว รอหน้าร้านกด Pay`
+                      }
+                    >
+                      {isSirenMode && (
+                        <span className="pointer-events-none absolute -inset-1 rounded-xl border-2 border-red-500 animate-ping opacity-75" />
+                      )}
+                      {!hasPendingShopPay ? (
+                        <CheckCircle2 size={13} className="text-emerald-300 shrink-0" />
+                      ) : isSirenMode ? (
+                        <AlertCircle size={13} className="shrink-0" />
+                      ) : (
+                        <Wallet size={12} className={isSelected ? "text-white" : "text-rose-500"} />
+                      )}
+                      <span>CSO Paid • Shop Unpaid</span>
+                      <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                        !hasPendingShopPay
+                          ? "bg-emerald-950/60 text-emerald-100"
+                          : isSirenMode
+                            ? "bg-white text-red-700 shadow-xs"
+                            : isSelected
+                              ? "bg-white/20 text-white"
+                              : "bg-rose-200/80 text-rose-900"
+                      }`}>
+                        {csoOverviewCounts.csoPaidShopUnpaidTotal}
+                      </span>
+                    </button>
+                  </>
+                );
+              })()}
 
               {/* 4. Rider Cash (Emerald Green) */}
               <button
@@ -2901,6 +3007,46 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                   csoPaidFilter === "RIDER_CASH" ? "bg-white/20 text-white" : "bg-emerald-200/90 text-emerald-950"
                 }`}>
                   {csoOverviewCounts.riderCashTotal}
+                </span>
+              </button>
+
+              {/* 4b. Express 50% (Exp50) */}
+              <button
+                type="button"
+                onClick={() => setExpressFilter(prev => prev === "EXP50" ? "ALL" : "EXP50")}
+                className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-[11px] font-bold border transition-all cursor-pointer ${
+                  expressFilter === "EXP50"
+                    ? "bg-amber-500 text-white border-amber-500 shadow-xs"
+                    : "bg-amber-50/90 text-amber-900 border-amber-200/90 hover:bg-amber-100/80"
+                }`}
+                title="Show Express 50% Surcharge orders (งานด่วน 50%)"
+              >
+                <Zap size={13} className={expressFilter === "EXP50" ? "text-white" : "text-amber-600"} />
+                <span>Exp50</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                  expressFilter === "EXP50" ? "bg-white/20 text-white" : "bg-amber-200/90 text-amber-950"
+                }`}>
+                  {csoOverviewCounts.exp50Total}
+                </span>
+              </button>
+
+              {/* 4c. Express 100% (Exp100) */}
+              <button
+                type="button"
+                onClick={() => setExpressFilter(prev => prev === "EXP100" ? "ALL" : "EXP100")}
+                className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-[11px] font-bold border transition-all cursor-pointer ${
+                  expressFilter === "EXP100"
+                    ? "bg-rose-600 text-white border-rose-600 shadow-xs"
+                    : "bg-rose-50/90 text-rose-800 border-rose-200/90 hover:bg-rose-100/80"
+                }`}
+                title="Show Express 100% Surcharge orders (งานด่วนพิเศษ 100%)"
+              >
+                <Zap size={13} className={expressFilter === "EXP100" ? "text-white" : "text-rose-600"} />
+                <span>Exp100</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                  expressFilter === "EXP100" ? "bg-white/20 text-white" : "bg-rose-200/90 text-rose-950"
+                }`}>
+                  {csoOverviewCounts.exp100Total}
                 </span>
               </button>
 
@@ -3068,7 +3214,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                 ))}
               </select>
 
-              {(searchTerm || statusFilter !== "all" || paymentChannelFilter !== "ALL" || billingFilterMode !== "ALL" || stuckOnly || csoPaidFilter !== "ALL" || jobSourceFilter !== "ALL" || selectedRiderId !== "ALL") && (
+              {(searchTerm || statusFilter !== "all" || paymentChannelFilter !== "ALL" || billingFilterMode !== "ALL" || stuckOnly || csoPaidFilter !== "ALL" || expressFilter !== "ALL" || jobSourceFilter !== "ALL" || selectedRiderId !== "ALL") && (
                 <button
                   type="button"
                   onClick={() => {
@@ -3077,6 +3223,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                     setPaymentChannelFilter("ALL");
                     setBillingFilterMode("ALL");
                     setCsoPaidFilter("ALL");
+                    setExpressFilter("ALL");
                     setSelectedRiderId("ALL");
                     setStuckOnly(false);
                     setJobSourceFilter("ALL");

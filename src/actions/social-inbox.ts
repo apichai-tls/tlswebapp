@@ -59,6 +59,8 @@ import {
   insertSocialMessageAndTouchConversation,
   deleteSocialConversationAndMessages,
   markSocialConversationsReadInDb,
+  processPendingSocialMediaJobs,
+  mapDbRowToConversation,
 } from '@/lib/social-inbox-internal';
 import {
   getWhatsAppQrStatus,
@@ -428,6 +430,136 @@ export async function getConversationMessagesAction(conversationId: string): Pro
     return { success: true, messages: threadMsgs };
   } catch (err: any) {
     return { success: false, messages: [], error: err?.message || 'Failed to load thread messages' };
+  }
+}
+
+/**
+ * Fast lookup of all Social Inbox conversations (WhatsApp, LINE OA, Messenger, IG, Telegram)
+ * belonging to a specific customer inside the Edit Job 5th column.
+ */
+export async function getCustomerJobChatThreadsAction(input: {
+  customerId?: string | null;
+  customerPhone?: string | null;
+  secondaryPhone?: string | null;
+  customerName?: string | null;
+  lineUserId?: string | null;
+  whatsappId?: string | null;
+  preferredConversationId?: string | null;
+}): Promise<{
+  success: boolean;
+  conversations: SocialConversation[];
+  activeConversationId: string | null;
+  messages: SocialMessage[];
+  error?: string;
+}> {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    await ensureSocialInboxSchemaAndMigrate();
+
+    const orFilters: any[] = [];
+    const custId = (input.customerId || '').trim();
+    if (custId) {
+      orFilters.push({ customerId: custId });
+    }
+
+    const lineUid = (input.lineUserId || '').trim();
+    if (lineUid) {
+      orFilters.push({ externalContactId: lineUid });
+    }
+
+    const phoneCandidates = new Set<string>();
+    for (const rawPhone of [input.customerPhone, input.secondaryPhone, input.whatsappId]) {
+      if (!rawPhone) continue;
+      const parts = String(rawPhone)
+        .split(/[\/,;]+/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+      for (const part of parts) {
+        const norm = normalizePhoneKey(part);
+        if (norm && norm.length >= 7) {
+          phoneCandidates.add(norm);
+        }
+        const digitsOnly = part.replace(/\D/g, '');
+        if (digitsOnly.length >= 8) {
+          phoneCandidates.add(digitsOnly.slice(-9));
+        }
+      }
+    }
+
+    for (const phoneKey of phoneCandidates) {
+      orFilters.push({ contactPhone: { contains: phoneKey } });
+      orFilters.push({ externalContactId: { contains: phoneKey } });
+    }
+
+    const rawName = (input.customerName || '').trim();
+    const cleanedName = cleanNameForLineMatch(rawName);
+    if (
+      rawName.length >= 3 &&
+      !/^(walk[\s-]*in|guest|customer|test)$/i.test(rawName)
+    ) {
+      orFilters.push({ contactName: { equals: rawName, mode: 'insensitive' } });
+      if (cleanedName && cleanedName.length >= 3 && cleanedName !== rawName.toLowerCase()) {
+        orFilters.push({ contactName: { equals: cleanedName, mode: 'insensitive' } });
+      }
+    }
+
+    if (orFilters.length === 0) {
+      return {
+        success: true,
+        conversations: [],
+        activeConversationId: null,
+        messages: [],
+      };
+    }
+
+    const rows = await prisma.socialConversation.findMany({
+      where: { OR: orFilters },
+      orderBy: { lastMessageAt: 'desc' },
+      take: 12,
+    });
+
+    const conversations: SocialConversation[] = rows.map((row) => {
+      const conv = mapDbRowToConversation(row);
+      if (!conv.customerId && custId) {
+        conv.customerId = custId;
+      }
+      return conv;
+    });
+
+    // Auto-backfill customerId in DB if matched by phone/LINE and not yet linked
+    if (custId && rows.some((r) => !r.customerId)) {
+      const unlinkedIds = rows.filter((r) => !r.customerId).map((r) => r.id);
+      void prisma.socialConversation
+        .updateMany({
+          where: { id: { in: unlinkedIds }, customerId: null },
+          data: { customerId: custId },
+        })
+        .catch(() => {});
+    }
+
+    const preferred =
+      (input.preferredConversationId &&
+        conversations.find((c) => c.id === input.preferredConversationId)) ||
+      conversations[0] ||
+      null;
+
+    const messages = preferred ? await queryConversationMessages(preferred.id, 300) : [];
+
+    return {
+      success: true,
+      conversations,
+      activeConversationId: preferred?.id || null,
+      messages,
+    };
+  } catch (err: any) {
+    console.error('[getCustomerJobChatThreadsAction] Error:', err);
+    return {
+      success: false,
+      conversations: [],
+      activeConversationId: null,
+      messages: [],
+      error: err?.message || 'Failed to load customer chat threads',
+    };
   }
 }
 
@@ -2037,7 +2169,8 @@ export async function updateSocialConversationAction(input: {
   error?: string;
 }> {
   try {
-    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const readerName = authUser.name || authUser.email || 'Staff';
 
     const existing = await findSocialConversationById(input.conversationId);
     if (!existing) {
@@ -2047,6 +2180,10 @@ export async function updateSocialConversationAction(input: {
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
     const conv: SocialConversation = { ...existing };
+    const wasUnread = (existing.unreadCount || 0) > 0;
+    const shouldRecordFirstReader = Boolean(
+      input.markAsRead && (wasUnread || !existing.lastReadByName)
+    );
     const hasMetadataEdit =
       input.status !== undefined ||
       input.customerId !== undefined ||
@@ -2058,7 +2195,13 @@ export async function updateSocialConversationAction(input: {
     if (input.status) conv.status = input.status;
     if (input.markAsRead) {
       conv.unreadCount = 0;
-      conv.lastReadAt = nowIso;
+      if (shouldRecordFirstReader) {
+        conv.lastReadAt = nowIso;
+        conv.lastReadById = authUser.id;
+        conv.lastReadByName = readerName;
+      } else if (!conv.lastReadAt) {
+        conv.lastReadAt = nowIso;
+      }
       recordSocialReadWatermark(conv.id, conv.channel, conv.externalContactId, nowMs);
     }
     if (input.contactName !== undefined) conv.contactName = input.contactName;
@@ -2110,6 +2253,8 @@ export async function updateSocialConversationAction(input: {
         data: {
           unreadCount: 0,
           lastReadAt: new Date(nowMs),
+          lastReadById: authUser.id,
+          lastReadByName: readerName,
           updatedAt: new Date(nowMs),
         },
       });
@@ -2117,6 +2262,28 @@ export async function updateSocialConversationAction(input: {
 
     const upserted = await upsertSocialConversationRow(conv, true);
     const version = upserted.version || (await getSocialStoreVersion());
+
+    if (wasUnread && input.markAsRead) {
+      void prisma.activityLog
+        .create({
+          data: {
+            entityId: conv.id,
+            entityType: 'social_conversation',
+            action: 'SOCIAL_CHAT_READ',
+            userId: authUser.id,
+            userName: readerName,
+            details: JSON.stringify({
+              channel: conv.channel,
+              contactName: conv.contactName,
+              contactPhone: conv.contactPhone || conv.externalContactId,
+              previousUnreadCount: existing.unreadCount,
+              lastMessageText: existing.lastMessageText,
+              readAt: nowIso,
+            }),
+          },
+        })
+        .catch(() => {});
+    }
 
     if (input.markAsRead && conv.channel === 'whatsapp') {
       markWhatsAppChatReadOnDevice(conv.externalContactId || conv.contactPhone).catch(() => {});
@@ -2152,7 +2319,15 @@ export async function updateSocialConversationAction(input: {
         jobId: `__SOCIAL_CONV_${conv.id}_${nowMs}`,
         updatedAt: new Date(nowMs),
         socialPayload: input.markAsRead && !hasMetadataEdit
-          ? { kind: 'read', readConversationIds: [conv.id], channel: conv.channel, version }
+          ? {
+              kind: 'read',
+              readConversationIds: [conv.id],
+              readById: upserted.conversation.lastReadById,
+              readByName: upserted.conversation.lastReadByName,
+              readAt: upserted.conversation.lastReadAt,
+              channel: conv.channel,
+              version,
+            }
           : { kind: 'message', conversation: upserted.conversation, version },
       });
     } catch {}
@@ -2184,20 +2359,49 @@ export async function markAllSocialConversationsAsReadAction(
   error?: string;
 }> {
   try {
-    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const readerName = authUser.name || authUser.email || 'Staff';
 
-    const { clearedCount, version } = await markSocialConversationsReadInDb({ channel });
+    const { clearedCount, version } = await markSocialConversationsReadInDb({
+      channel,
+      actorId: authUser.id,
+      actorName: readerName,
+    });
     const conversations = await querySocialConversations(1000);
 
     if (clearedCount > 0) {
       const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      void prisma.activityLog
+        .create({
+          data: {
+            entityId: `read_all_${channel}`,
+            entityType: 'social_conversation',
+            action: 'SOCIAL_CHAT_READ_ALL',
+            userId: authUser.id,
+            userName: readerName,
+            details: JSON.stringify({
+              channel,
+              clearedCount,
+              readAt: nowIso,
+            }),
+          },
+        })
+        .catch(() => {});
       try {
         const { publishOrderEvent } = await import('@/lib/realtime-bus');
         await publishOrderEvent({
           type: 'social.updated',
           jobId: `__SOCIAL_READALL_${channel}_${nowMs}`,
           updatedAt: new Date(nowMs),
-          socialPayload: { kind: 'read_all', channel, version },
+          socialPayload: {
+            kind: 'read_all',
+            channel,
+            readById: authUser.id,
+            readByName: readerName,
+            readAt: nowIso,
+            version,
+          },
         });
       } catch {}
     }
@@ -2371,6 +2575,7 @@ async function pollLiveChannelUpdatesInternal(opts?: {
 
     if (shouldRunExternalPoll) {
       globalForExternalPoll.__tlsLastExternalSocialPollAt = nowMs;
+      void processPendingSocialMediaJobs().catch(() => {});
     }
 
     // 1. Live Telegram Bot API Polling (throttled every 12s so it never blocks 2s UI sync)
@@ -2888,4 +3093,731 @@ export async function disconnectWhatsAppQrAction(): Promise<{
   await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   const state = await disconnectWhatsAppQrSession(true);
   return { success: true, state };
+}
+
+export interface LineNewFollowerItem {
+  userId: string;
+  displayName: string;
+  pictureUrl?: string;
+  statusMessage?: string;
+  followedAt: string;
+  monthKey: string; // YYYY-MM
+  hasChatted: boolean;
+  lastMessageText: string;
+  lastInteractionAt: string;
+  linkedCustomerId?: string | null;
+  linkedCustomerName?: string | null;
+  linkedCustomerPhone?: string | null;
+  customerMemberId?: string | null;
+  leadType: 'new_lead' | 'existing_customer';
+  existingSinceAt?: string | null;
+  orderCount: number;
+  paidRevenue: number;
+}
+
+export interface LineFollowersMonthlyBucket {
+  monthKey: string; // YYYY-MM
+  newFollowersCount: number;
+  trueNewLeadsCount: number;
+  existingCustomerCount: number;
+  chattedCount: number;
+  silentCount: number;
+  linkedCrmCount: number;
+}
+
+export interface WhatsAppNewContactItem {
+  id: string;
+  externalContactId: string;
+  displayName: string;
+  contactPhone: string;
+  pictureUrl?: string;
+  firstContactAt: string;
+  monthKey: string; // YYYY-MM
+  lastMessageText: string;
+  lastMessageAt: string;
+  lastMessageDirection: 'inbound' | 'outbound';
+  linkedCustomerId?: string | null;
+  linkedCustomerName?: string | null;
+  linkedCustomerPhone?: string | null;
+  customerMemberId?: string | null;
+  leadType: 'new_lead' | 'existing_customer';
+  existingSinceAt?: string | null;
+  orderCount: number;
+  paidRevenue: number;
+}
+
+export interface WhatsAppMonthlyBucket {
+  monthKey: string; // YYYY-MM
+  newContactsCount: number;
+  trueNewLeadsCount: number;
+  existingCustomerCount: number;
+  inboundActiveCount: number;
+  linkedCrmCount: number;
+}
+
+/**
+ * Returns verified new LINE OA followers and WhatsApp contacts grouped by month (YYYY-MM),
+ * along with total pool sizes, True New Lead vs Existing Returning Customer classification,
+ * and chat/CRM conversion status.
+ */
+export async function getLineFollowersMarketingReportAction(): Promise<{
+  success: boolean;
+  totalFollowerPoolCount: number;
+  followers: LineNewFollowerItem[];
+  monthlySummary: LineFollowersMonthlyBucket[];
+  totalWhatsappPoolCount: number;
+  whatsappContacts: WhatsAppNewContactItem[];
+  whatsappMonthlySummary: WhatsAppMonthlyBucket[];
+  error?: string;
+}> {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    await ensureSocialInboxSchemaAndMigrate();
+
+    const roLiveDb = getReadOnlyLiveLineDb();
+
+    const normTail = (p?: string | null): string => {
+      const d = String(p || '').replace(/\D/g, '');
+      return d.length >= 8 ? d.slice(-9) : d;
+    };
+
+    const [
+      localLineRow,
+      liveLineRow,
+      localFollowMsgs,
+      liveFollowMsgs,
+      localCustomers,
+      liveCustomers,
+      localJobs,
+      liveJobs,
+    ] = await Promise.all([
+      prisma.setting.findUnique({ where: { key: 'lineOaContacts' } }),
+      roLiveDb
+        ? roLiveDb.setting.findUnique({ where: { key: 'lineOaContacts' } }).catch(() => null)
+        : Promise.resolve(null),
+      prisma.socialMessage.findMany({
+        where: {
+          channel: 'line',
+          text: { in: ['[Followed LINE Official Account]', '[Followed LINE OA]'] },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          conversationId: true,
+          senderName: true,
+          createdAt: true,
+        },
+      }),
+      roLiveDb
+        ? roLiveDb.socialMessage
+            .findMany({
+              where: {
+                channel: 'line',
+                text: { in: ['[Followed LINE Official Account]', '[Followed LINE OA]'] },
+              },
+              orderBy: { createdAt: 'desc' },
+              select: {
+                id: true,
+                conversationId: true,
+                senderName: true,
+                createdAt: true,
+              },
+            })
+            .catch(() => [])
+        : Promise.resolve([]),
+      prisma.customer.findMany({
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          memberId: true,
+          lineId: true,
+          createdAt: true,
+        },
+      }),
+      roLiveDb
+        ? roLiveDb.customer
+            .findMany({
+              select: {
+                id: true,
+                name: true,
+                phone: true,
+                memberId: true,
+                lineId: true,
+                createdAt: true,
+              },
+            })
+            .catch(() => [])
+        : Promise.resolve([]),
+      prisma.job.findMany({
+        where: { status: { not: 'cancel' } },
+        select: {
+          id: true,
+          customerId: true,
+          customerPhone: true,
+          totalAmount: true,
+          isPaid: true,
+          isShopPaid: true,
+          createdAt: true,
+        },
+      }),
+      roLiveDb
+        ? roLiveDb.job
+            .findMany({
+              where: { status: { not: 'cancel' } },
+              select: {
+                id: true,
+                customerId: true,
+                customerPhone: true,
+                totalAmount: true,
+                isPaid: true,
+                isShopPaid: true,
+                createdAt: true,
+              },
+            })
+            .catch(() => [])
+        : Promise.resolve([]),
+    ]);
+
+    // Merge CRM Customers & Jobs from Local + Live Read-Only DB so history is 100% complete
+    const custById = new Map<string, (typeof localCustomers)[number]>();
+    const custByLineId = new Map<string, (typeof localCustomers)[number]>();
+    const custByPhoneTail = new Map<string, (typeof localCustomers)[number]>();
+
+    for (const c of [...liveCustomers, ...localCustomers]) {
+      if (!c?.id) continue;
+      const existing = custById.get(c.id);
+      if (!existing || new Date(c.createdAt) < new Date(existing.createdAt)) {
+        custById.set(c.id, c);
+      }
+      if (c.lineId && c.lineId.trim()) {
+        const lid = c.lineId.trim();
+        const prevLine = custByLineId.get(lid);
+        if (!prevLine || new Date(c.createdAt) < new Date(prevLine.createdAt)) {
+          custByLineId.set(lid, c);
+        }
+      }
+      const tail = normTail(c.phone);
+      if (tail.length >= 7) {
+        const prevTail = custByPhoneTail.get(tail);
+        if (!prevTail || new Date(c.createdAt) < new Date(prevTail.createdAt)) {
+          custByPhoneTail.set(tail, c);
+        }
+      }
+    }
+
+    const dedupedJobs = new Map<string, (typeof localJobs)[number]>();
+    for (const j of [...liveJobs, ...localJobs]) {
+      if (!j?.id || j.id.startsWith('T2026')) continue;
+      if (!dedupedJobs.has(j.id)) {
+        dedupedJobs.set(j.id, j);
+      }
+    }
+
+    const jobStatsByCustId = new Map<
+      string,
+      { earliestMs: number; count: number; paidRevenue: number }
+    >();
+    const jobStatsByPhoneTail = new Map<
+      string,
+      { earliestMs: number; count: number; paidRevenue: number }
+    >();
+
+    for (const j of dedupedJobs.values()) {
+      const jMs = new Date(j.createdAt).getTime();
+      const paidAmt = j.isPaid || j.isShopPaid ? Number(j.totalAmount) || 0 : 0;
+
+      if (j.customerId) {
+        const cur = jobStatsByCustId.get(j.customerId) || {
+          earliestMs: jMs,
+          count: 0,
+          paidRevenue: 0,
+        };
+        if (jMs < cur.earliestMs) cur.earliestMs = jMs;
+        cur.count += 1;
+        cur.paidRevenue += paidAmt;
+        jobStatsByCustId.set(j.customerId, cur);
+      }
+
+      const tail = normTail(j.customerPhone);
+      if (tail.length >= 7) {
+        const cur = jobStatsByPhoneTail.get(tail) || {
+          earliestMs: jMs,
+          count: 0,
+          paidRevenue: 0,
+        };
+        if (jMs < cur.earliestMs) cur.earliestMs = jMs;
+        cur.count += 1;
+        cur.paidRevenue += paidAmt;
+        jobStatsByPhoneTail.set(tail, cur);
+      }
+    }
+
+    const contactByUid = new Map<string, LineContactRecord>();
+    for (const raw of [liveLineRow?.value, localLineRow?.value]) {
+      if (!raw) continue;
+      try {
+        const parsed: LineContactRecord[] = JSON.parse(raw);
+        if (!Array.isArray(parsed)) continue;
+        for (const c of parsed) {
+          if (!c?.userId) continue;
+          const existing = contactByUid.get(c.userId);
+          if (!existing) {
+            contactByUid.set(c.userId, c);
+          } else {
+            contactByUid.set(c.userId, {
+              ...existing,
+              ...c,
+              followedAt: c.followedAt || existing.followedAt,
+              linkedCustomerId: c.linkedCustomerId || existing.linkedCustomerId,
+              linkedCustomerName: c.linkedCustomerName || existing.linkedCustomerName,
+              linkedCustomerPhone: c.linkedCustomerPhone || existing.linkedCustomerPhone,
+            });
+          }
+        }
+      } catch {}
+    }
+
+    const allContacts = Array.from(contactByUid.values());
+    const byMinuteCount: Record<string, number> = {};
+    for (const c of allContacts) {
+      const minKey = (c.lastInteractionAt || '').slice(0, 16);
+      if (minKey) {
+        byMinuteCount[minKey] = (byMinuteCount[minKey] || 0) + 1;
+      }
+    }
+
+    const combinedFollowMsgs = [...localFollowMsgs, ...liveFollowMsgs];
+    const convIds = Array.from(new Set(combinedFollowMsgs.map((m) => m.conversationId)));
+
+    const [localConvs, liveConvs] = await Promise.all([
+      convIds.length > 0
+        ? prisma.socialConversation.findMany({
+            where: { id: { in: convIds } },
+            select: {
+              id: true,
+              externalContactId: true,
+              contactName: true,
+              contactAvatar: true,
+              contactPhone: true,
+              customerId: true,
+              customerName: true,
+              lastMessageText: true,
+              lastMessageAt: true,
+            },
+          })
+        : Promise.resolve([]),
+      roLiveDb && convIds.length > 0
+        ? roLiveDb.socialConversation
+            .findMany({
+              where: { id: { in: convIds } },
+              select: {
+                id: true,
+                externalContactId: true,
+                contactName: true,
+                contactAvatar: true,
+                contactPhone: true,
+                customerId: true,
+                customerName: true,
+                lastMessageText: true,
+                lastMessageAt: true,
+              },
+            })
+            .catch(() => [])
+        : Promise.resolve([]),
+    ]);
+
+    const convById = new Map<string, (typeof localConvs)[number]>();
+    for (const c of [...liveConvs, ...localConvs]) {
+      convById.set(c.id, c);
+    }
+
+    const classifyLeadAndCrm = (params: {
+      customerId?: string | null;
+      lineId?: string | null;
+      phone?: string | null;
+      firstTouchMs: number;
+    }) => {
+      const tail = normTail(params.phone);
+      const matchedCust =
+        (params.customerId ? custById.get(params.customerId) : undefined) ||
+        (params.lineId ? custByLineId.get(params.lineId.trim()) : undefined) ||
+        (tail.length >= 7 ? custByPhoneTail.get(tail) : undefined) ||
+        null;
+
+      const effectiveCustId = matchedCust?.id || params.customerId || null;
+      const jobStats =
+        (effectiveCustId ? jobStatsByCustId.get(effectiveCustId) : undefined) ||
+        (tail.length >= 7 ? jobStatsByPhoneTail.get(tail) : undefined) ||
+        undefined;
+
+      const custCreatedMs = matchedCust ? new Date(matchedCust.createdAt).getTime() : null;
+      const earliestJobMs = jobStats?.earliestMs || null;
+      const earliestKnownCustomerMs =
+        custCreatedMs && earliestJobMs
+          ? Math.min(custCreatedMs, earliestJobMs)
+          : custCreatedMs || earliestJobMs || null;
+
+      // Determine start of the month (Bangkok time UTC+7) of the first touch
+      const bkkFirstTouch = new Date(params.firstTouchMs + 7 * 60 * 60 * 1000);
+      const bkkMonthKey = bkkFirstTouch.toISOString().slice(0, 7);
+      const monthStartMs = new Date(`${bkkMonthKey}-01T00:00:00+07:00`).getTime();
+
+      // A contact is an EXISTING customer if they were already in CRM or had a job
+      // BEFORE the start of the first-touch month, OR >24 hours before their first chat/follow in the inbox.
+      const isExistingCustomer =
+        earliestKnownCustomerMs !== null &&
+        (earliestKnownCustomerMs < monthStartMs ||
+          earliestKnownCustomerMs < params.firstTouchMs - 24 * 3600 * 1000);
+
+      return {
+        linkedCustomerId: effectiveCustId,
+        linkedCustomerName: matchedCust?.name || null,
+        linkedCustomerPhone: matchedCust?.phone || params.phone || null,
+        customerMemberId: matchedCust?.memberId || null,
+        leadType: (isExistingCustomer ? 'existing_customer' : 'new_lead') as
+          | 'new_lead'
+          | 'existing_customer',
+        existingSinceAt: earliestKnownCustomerMs
+          ? new Date(earliestKnownCustomerMs).toISOString()
+          : null,
+        orderCount: jobStats?.count || 0,
+        paidRevenue: Math.round((jobStats?.paidRevenue || 0) * 100) / 100,
+      };
+    };
+
+    const followerMap = new Map<string, LineNewFollowerItem>();
+
+    // 1. Authoritative webhook follow messages from SocialMessage
+    for (const m of combinedFollowMsgs) {
+      const conv = convById.get(m.conversationId);
+      const uid = conv?.externalContactId?.trim();
+      if (!uid) continue;
+
+      const contact = contactByUid.get(uid);
+      const followedIso = m.createdAt.toISOString();
+      const existing = followerMap.get(uid);
+      if (existing && new Date(existing.followedAt).getTime() <= m.createdAt.getTime()) {
+        continue;
+      }
+
+      const lastMsg =
+        contact?.lastMessageText ||
+        conv?.lastMessageText ||
+        '[Followed LINE Official Account]';
+      const isFollowPlaceholder =
+        lastMsg === '[Followed LINE OA]' ||
+        lastMsg === '[Followed LINE Official Account]' ||
+        lastMsg === 'Connected via LINE Official Account (@thatlaundryshop)';
+
+      const bkkDate = new Date(m.createdAt.getTime() + 7 * 60 * 60 * 1000);
+      const monthKey = bkkDate.toISOString().slice(0, 7);
+
+      const crmInfo = classifyLeadAndCrm({
+        customerId: contact?.linkedCustomerId || conv?.customerId || null,
+        lineId: uid,
+        phone: contact?.linkedCustomerPhone || conv?.contactPhone || null,
+        firstTouchMs: m.createdAt.getTime(),
+      });
+
+      followerMap.set(uid, {
+        userId: uid,
+        displayName: contact?.displayName || conv?.contactName || m.senderName || uid,
+        pictureUrl: contact?.pictureUrl || conv?.contactAvatar || undefined,
+        statusMessage: contact?.statusMessage,
+        followedAt: followedIso,
+        monthKey,
+        hasChatted: !isFollowPlaceholder,
+        lastMessageText: isFollowPlaceholder ? 'เพิ่งกดติดตาม (ยังไม่ได้ส่งข้อความ)' : lastMsg,
+        lastInteractionAt:
+          contact?.lastInteractionAt ||
+          (conv?.lastMessageAt ? conv.lastMessageAt.toISOString() : followedIso),
+        linkedCustomerId: crmInfo.linkedCustomerId,
+        linkedCustomerName:
+          crmInfo.linkedCustomerName || contact?.linkedCustomerName || conv?.customerName || null,
+        linkedCustomerPhone: crmInfo.linkedCustomerPhone,
+        customerMemberId: crmInfo.customerMemberId,
+        leadType: crmInfo.leadType,
+        existingSinceAt: crmInfo.existingSinceAt,
+        orderCount: crmInfo.orderCount,
+        paidRevenue: crmInfo.paidRevenue,
+      });
+    }
+
+    // 2. Include contacts from lineOaContacts that have explicit followedAt or non-bulk-imported [Followed LINE OA]
+    for (const c of allContacts) {
+      if (!c?.userId || followerMap.has(c.userId)) continue;
+      const minKey = (c.lastInteractionAt || '').slice(0, 16);
+      const isBulkSyncBurst = (byMinuteCount[minKey] || 0) > 20;
+      const hasRealFollowEvent =
+        Boolean(c.followedAt) ||
+        (c.lastMessageText === '[Followed LINE OA]' && !isBulkSyncBurst);
+
+      if (!hasRealFollowEvent) continue;
+
+      const followedIso = c.followedAt || c.lastInteractionAt;
+      const followedDate = new Date(followedIso);
+      if (isNaN(followedDate.getTime())) continue;
+
+      const lastMsg = c.lastMessageText || '[Followed LINE OA]';
+      const isFollowPlaceholder =
+        lastMsg === '[Followed LINE OA]' ||
+        lastMsg === '[Followed LINE Official Account]' ||
+        lastMsg === 'Connected via LINE Official Account (@thatlaundryshop)';
+
+      const bkkDate = new Date(followedDate.getTime() + 7 * 60 * 60 * 1000);
+      const monthKey = bkkDate.toISOString().slice(0, 7);
+
+      const crmInfo = classifyLeadAndCrm({
+        customerId: c.linkedCustomerId || null,
+        lineId: c.userId,
+        phone: c.linkedCustomerPhone || null,
+        firstTouchMs: followedDate.getTime(),
+      });
+
+      followerMap.set(c.userId, {
+        userId: c.userId,
+        displayName: c.displayName || c.userId,
+        pictureUrl: c.pictureUrl,
+        statusMessage: c.statusMessage,
+        followedAt: followedDate.toISOString(),
+        monthKey,
+        hasChatted: !isFollowPlaceholder,
+        lastMessageText: isFollowPlaceholder ? 'เพิ่งกดติดตาม (ยังไม่ได้ส่งข้อความ)' : lastMsg,
+        lastInteractionAt: c.lastInteractionAt || followedDate.toISOString(),
+        linkedCustomerId: crmInfo.linkedCustomerId,
+        linkedCustomerName: crmInfo.linkedCustomerName || c.linkedCustomerName || null,
+        linkedCustomerPhone: crmInfo.linkedCustomerPhone,
+        customerMemberId: crmInfo.customerMemberId,
+        leadType: crmInfo.leadType,
+        existingSinceAt: crmInfo.existingSinceAt,
+        orderCount: crmInfo.orderCount,
+        paidRevenue: crmInfo.paidRevenue,
+      });
+    }
+
+    const followers = Array.from(followerMap.values()).sort(
+      (a, b) => new Date(b.followedAt).getTime() - new Date(a.followedAt).getTime()
+    );
+
+    const monthMap = new Map<string, LineFollowersMonthlyBucket>();
+    for (const f of followers) {
+      const cur = monthMap.get(f.monthKey) || {
+        monthKey: f.monthKey,
+        newFollowersCount: 0,
+        trueNewLeadsCount: 0,
+        existingCustomerCount: 0,
+        chattedCount: 0,
+        silentCount: 0,
+        linkedCrmCount: 0,
+      };
+      cur.newFollowersCount += 1;
+      if (f.leadType === 'new_lead') cur.trueNewLeadsCount += 1;
+      else cur.existingCustomerCount += 1;
+      if (f.hasChatted) cur.chattedCount += 1;
+      else cur.silentCount += 1;
+      if (f.linkedCustomerId || f.orderCount > 0) cur.linkedCrmCount += 1;
+      monthMap.set(f.monthKey, cur);
+    }
+
+    const monthlySummary = Array.from(monthMap.values()).sort((a, b) =>
+      b.monthKey.localeCompare(a.monthKey)
+    );
+
+    // 3. Load WhatsApp conversations & earliest message timestamp per conversation
+    const [localWaConvs, liveWaConvs, localWaMinMsgs, liveWaMinMsgs] = await Promise.all([
+      prisma.socialConversation.findMany({
+        where: { channel: 'whatsapp' },
+        orderBy: { lastMessageAt: 'desc' },
+        select: {
+          id: true,
+          externalContactId: true,
+          contactName: true,
+          contactPhone: true,
+          contactAvatar: true,
+          customerId: true,
+          customerName: true,
+          customerMemberId: true,
+          lastMessageText: true,
+          lastMessageAt: true,
+          lastMessageDirection: true,
+          createdAt: true,
+        },
+      }),
+      roLiveDb
+        ? roLiveDb.socialConversation
+            .findMany({
+              where: { channel: 'whatsapp' },
+              orderBy: { lastMessageAt: 'desc' },
+              select: {
+                id: true,
+                externalContactId: true,
+                contactName: true,
+                contactPhone: true,
+                contactAvatar: true,
+                customerId: true,
+                customerName: true,
+                customerMemberId: true,
+                lastMessageText: true,
+                lastMessageAt: true,
+                lastMessageDirection: true,
+                createdAt: true,
+              },
+            })
+            .catch(() => [])
+        : Promise.resolve([]),
+      prisma.socialMessage.groupBy({
+        by: ['conversationId'],
+        where: { channel: 'whatsapp' },
+        _min: { createdAt: true },
+      }),
+      roLiveDb
+        ? roLiveDb.socialMessage
+            .groupBy({
+              by: ['conversationId'],
+              where: { channel: 'whatsapp' },
+              _min: { createdAt: true },
+            })
+            .catch(() => [])
+        : Promise.resolve([]),
+    ]);
+
+    const earliestWaMsgByConvId = new Map<string, Date>();
+    for (const g of [...liveWaMinMsgs, ...localWaMinMsgs]) {
+      if (!g.conversationId || !g._min?.createdAt) continue;
+      const prev = earliestWaMsgByConvId.get(g.conversationId);
+      if (!prev || g._min.createdAt.getTime() < prev.getTime()) {
+        earliestWaMsgByConvId.set(g.conversationId, g._min.createdAt);
+      }
+    }
+
+    const waContactByPhoneKey = new Map<string, WhatsAppNewContactItem>();
+    for (const row of [...liveWaConvs, ...localWaConvs]) {
+      const rawPhone = row.contactPhone || row.externalContactId || '';
+      const digits = rawPhone.replace(/\D/g, '');
+      const phoneKey = digits.length >= 8 ? digits.slice(-9) : (row.externalContactId || row.id);
+      if (!phoneKey) continue;
+
+      const earliestMsgDate = earliestWaMsgByConvId.get(row.id);
+      const candidates = [
+        earliestMsgDate?.getTime(),
+        row.createdAt?.getTime(),
+        row.lastMessageAt?.getTime(),
+      ].filter((ms): ms is number => typeof ms === 'number' && Number.isFinite(ms) && ms > 946684800000);
+
+      const firstContactMs = candidates.length > 0 ? Math.min(...candidates) : Date.now();
+      const firstContactDate = new Date(firstContactMs);
+      const bkkDate = new Date(firstContactMs + 7 * 60 * 60 * 1000);
+      const monthKey = bkkDate.toISOString().slice(0, 7);
+      const displayPhone =
+        row.contactPhone ||
+        (digits ? formatDisplayPhone(digits, '66') : row.externalContactId);
+
+      const existing = waContactByPhoneKey.get(phoneKey);
+      const effectiveFirstMs = existing
+        ? Math.min(firstContactMs, new Date(existing.firstContactAt).getTime())
+        : firstContactMs;
+
+      const crmInfo = classifyLeadAndCrm({
+        customerId: existing?.linkedCustomerId || row.customerId || null,
+        phone: displayPhone || rawPhone,
+        firstTouchMs: effectiveFirstMs,
+      });
+
+      if (!existing) {
+        waContactByPhoneKey.set(phoneKey, {
+          id: row.id,
+          externalContactId: row.externalContactId,
+          displayName: row.contactName || displayPhone || row.externalContactId,
+          contactPhone: displayPhone,
+          pictureUrl: row.contactAvatar || undefined,
+          firstContactAt: firstContactDate.toISOString(),
+          monthKey,
+          lastMessageText: row.lastMessageText || '-',
+          lastMessageAt: row.lastMessageAt.toISOString(),
+          lastMessageDirection: (row.lastMessageDirection as 'inbound' | 'outbound') || 'inbound',
+          linkedCustomerId: crmInfo.linkedCustomerId,
+          linkedCustomerName: crmInfo.linkedCustomerName || row.customerName || null,
+          linkedCustomerPhone: crmInfo.linkedCustomerPhone || displayPhone || null,
+          customerMemberId: crmInfo.customerMemberId || row.customerMemberId || null,
+          leadType: crmInfo.leadType,
+          existingSinceAt: crmInfo.existingSinceAt,
+          orderCount: crmInfo.orderCount,
+          paidRevenue: crmInfo.paidRevenue,
+        });
+      } else {
+        const isEarlier = firstContactMs < new Date(existing.firstContactAt).getTime();
+        const isNewerLast = row.lastMessageAt.getTime() > new Date(existing.lastMessageAt).getTime();
+        waContactByPhoneKey.set(phoneKey, {
+          ...existing,
+          firstContactAt: isEarlier ? firstContactDate.toISOString() : existing.firstContactAt,
+          monthKey: isEarlier ? monthKey : existing.monthKey,
+          lastMessageText: isNewerLast ? row.lastMessageText || existing.lastMessageText : existing.lastMessageText,
+          lastMessageAt: isNewerLast ? row.lastMessageAt.toISOString() : existing.lastMessageAt,
+          lastMessageDirection: isNewerLast
+            ? ((row.lastMessageDirection as 'inbound' | 'outbound') || existing.lastMessageDirection)
+            : existing.lastMessageDirection,
+          linkedCustomerId: crmInfo.linkedCustomerId,
+          linkedCustomerName:
+            crmInfo.linkedCustomerName || existing.linkedCustomerName || row.customerName || null,
+          customerMemberId:
+            crmInfo.customerMemberId || existing.customerMemberId || row.customerMemberId || null,
+          leadType: crmInfo.leadType,
+          existingSinceAt: crmInfo.existingSinceAt,
+          orderCount: crmInfo.orderCount,
+          paidRevenue: crmInfo.paidRevenue,
+        });
+      }
+    }
+
+    const whatsappContacts = Array.from(waContactByPhoneKey.values()).sort(
+      (a, b) => new Date(b.firstContactAt).getTime() - new Date(a.firstContactAt).getTime()
+    );
+
+    const waMonthMap = new Map<string, WhatsAppMonthlyBucket>();
+    for (const w of whatsappContacts) {
+      const cur = waMonthMap.get(w.monthKey) || {
+        monthKey: w.monthKey,
+        newContactsCount: 0,
+        trueNewLeadsCount: 0,
+        existingCustomerCount: 0,
+        inboundActiveCount: 0,
+        linkedCrmCount: 0,
+      };
+      cur.newContactsCount += 1;
+      if (w.leadType === 'new_lead') cur.trueNewLeadsCount += 1;
+      else cur.existingCustomerCount += 1;
+      if (w.lastMessageDirection === 'inbound' || Boolean(w.lastMessageText)) {
+        cur.inboundActiveCount += 1;
+      }
+      if (w.linkedCustomerId || w.orderCount > 0) cur.linkedCrmCount += 1;
+      waMonthMap.set(w.monthKey, cur);
+    }
+
+    const whatsappMonthlySummary = Array.from(waMonthMap.values()).sort((a, b) =>
+      b.monthKey.localeCompare(a.monthKey)
+    );
+
+    return {
+      success: true,
+      totalFollowerPoolCount: allContacts.length,
+      followers,
+      monthlySummary,
+      totalWhatsappPoolCount: whatsappContacts.length,
+      whatsappContacts,
+      whatsappMonthlySummary,
+    };
+  } catch (err: any) {
+    console.error('[getLineFollowersMarketingReportAction] Error:', err);
+    return {
+      success: false,
+      totalFollowerPoolCount: 0,
+      followers: [],
+      monthlySummary: [],
+      totalWhatsappPoolCount: 0,
+      whatsappContacts: [],
+      whatsappMonthlySummary: [],
+      error: err?.message || 'Failed to load LINE & WhatsApp followers report',
+    };
+  }
 }

@@ -58,6 +58,7 @@ import { AdminLiveMap } from "@/components/map-loader";
 import { FitScreenToggle } from "@/components/fit-screen-toggle";
 import { NotificationBell } from "@/components/notification-bell";
 import { RiderCancelAlertModal } from "@/components/rider-cancel-alert-modal";
+import { JobCustomerChatPanel } from "@/components/job-customer-chat-panel";
 import type { SplitPaymentLine } from "@/components/split-payment-dialog";
 import type { CalculatorOrderPayload } from "@/components/admin-fee-calculator";
 
@@ -492,7 +493,7 @@ function AdminPageContent() {
        (originalJobRef.current?.id === editingJobId ? originalJobRef.current : null))
     : null;
   const [showJobLogs, setShowJobLogs] = useState(false);
-  const [modalLayoutCols, setModalLayoutCols] = useState<"4" | "2">("4");
+  const [modalLayoutCols, setModalLayoutCols] = useState<"5" | "4" | "2">("5");
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [editingSubStatus, setEditingSubStatus] = useState<"billing" | "wash" | "dry" | "iron" | "ready" | null>(null);
   const [laundryTypes, setLaundryTypes] = useState<string[]>([]);
@@ -7654,7 +7655,7 @@ function AdminPageContent() {
                       <span className="sm:hidden">New Job</span>
                     </Button>
                   </motion.div>
-                  <DialogContent className="w-full max-w-[98vw] 2xl:max-w-[1740px] xl:max-w-[97vw] p-0 overflow-hidden bg-slate-100/80 rounded-2xl border border-slate-200/90 shadow-2xl flex flex-col h-[95vh]">
+                  <DialogContent className={`w-full max-w-[98vw] ${modalLayoutCols === "5" ? "2xl:max-w-[98.5vw] xl:max-w-[98vw]" : "2xl:max-w-[1740px] xl:max-w-[97vw]"} p-0 overflow-hidden bg-slate-100/80 rounded-2xl border border-slate-200/90 shadow-2xl flex flex-col h-[95vh]`}>
                     {isVersionOutdated && (
                       <div className="sticky top-0 z-50 flex items-center justify-between gap-2 px-4 py-2 bg-amber-500 text-slate-950 text-xs font-bold shadow-md shrink-0">
                         <div className="flex items-center gap-2">
@@ -7765,15 +7766,23 @@ function AdminPageContent() {
                       variant="outline"
                       size="sm"
                       onClick={() => {
-                        const nextCols = modalLayoutCols === "4" ? "2" : "4";
+                        const nextCols = modalLayoutCols === "5" ? "4" : modalLayoutCols === "4" ? "2" : "5";
                         setModalLayoutCols(nextCols);
-                        toast.success(nextCols === "2" ? "2-Column layout active (เหมาะกับจอเล็ก)" : "4-Column layout active (แบบเต็ม 4 คอลัมน์)");
+                        toast.success(
+                          nextCols === "5"
+                            ? "5-Column layout active (รวมคอลัมน์แชทลูกค้า)"
+                            : nextCols === "4"
+                            ? "4-Column layout active (ซ่อนคอลัมน์แชท)"
+                            : "2-Column layout active (เหมาะกับจอเล็ก)"
+                        );
                       }}
                       className="h-8 px-2.5 text-xs flex items-center gap-1.5 font-semibold rounded-xl border-slate-200/90 bg-slate-50/80 text-slate-700 hover:bg-slate-100 shadow-2xs cursor-pointer shrink-0"
-                      title={modalLayoutCols === "4" ? "Switch to 2-Column Wide View (for smaller laptop screens)" : "Switch to 4-Column Compact View"}
+                      title="Switch between 5-Column (with Customer Chat), 4-Column, and 2-Column view"
                     >
                       <Columns size={13} className="text-slate-500" />
-                      <span className="hidden sm:inline">{modalLayoutCols === "4" ? "4 Cols" : "2 Cols"}</span>
+                      <span className="hidden sm:inline">
+                        {modalLayoutCols === "5" ? "5 Cols + Chat" : modalLayoutCols === "4" ? "4 Cols" : "2 Cols"}
+                      </span>
                     </Button>
 
                     <div className="relative w-full sm:w-auto sm:min-w-[300px] z-50">
@@ -8460,7 +8469,7 @@ function AdminPageContent() {
                 {/* Main Content Grid */}
                 <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3.5 min-h-0 flex flex-col">
                   {!showJobLogs ? (
-                    <div className={`grid grid-cols-1 ${modalLayoutCols === "2" ? "lg:grid-cols-2" : "md:grid-cols-2 xl:grid-cols-4"} gap-3.5 h-auto ${modalLayoutCols === "2" ? "overflow-y-auto" : "xl:h-full overflow-y-auto xl:overflow-hidden"}`}>
+                    <div className={`grid grid-cols-1 ${modalLayoutCols === "2" ? "lg:grid-cols-2" : modalLayoutCols === "5" ? "md:grid-cols-2 xl:grid-cols-5" : "md:grid-cols-2 xl:grid-cols-4"} gap-3 h-auto ${modalLayoutCols === "2" ? "overflow-y-auto" : "xl:h-full overflow-y-auto xl:overflow-hidden"}`}>
                     
                     {/* COL 1: Customer Profile, Origin Branch & Scheduling */}
                     <motion.div
@@ -12342,6 +12351,30 @@ function AdminPageContent() {
                     </motion.div>
   </>
 )}
+                    {/* COL 5: Customer Live Chat (WhatsApp / LINE OA / Social Inbox) */}
+                    {modalLayoutCols === "5" && (
+                      <motion.div
+                        className="col-span-1 flex flex-col min-w-0 h-full overflow-hidden"
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.22, duration: 0.3 }}
+                      >
+                        <JobCustomerChatPanel
+                          jobId={editingJobId || null}
+                          jobDisplayId={editingJobId ? formatJobDisplayId(editingJobId) : null}
+                          customerId={selectedProfileCustomer?.id || activeJob?.customerId || null}
+                          customerName={customerName || selectedProfileCustomer?.name || activeJob?.customerName || null}
+                          customerPhone={customerPhone || selectedProfileCustomer?.phone || activeJob?.customerPhone || null}
+                          secondaryPhone={selectedProfileCustomer?.secondaryPhone || null}
+                          lineUserId={(selectedProfileCustomer as any)?.lineUserId || null}
+                          whatsappId={(selectedProfileCustomer as any)?.whatsappId || null}
+                          branchId={activeShopConfig?.id || activeJob?.branchId || null}
+                          branchName={activeShopConfig?.name || null}
+                          totalAmount={dialogTotal}
+                          billImageUrls={billImageUrls}
+                        />
+                      </motion.div>
+                    )}
                   </div>
                   ) : (
                     <div className="h-full w-full bg-slate-50 rounded-xl border border-slate-200 overflow-hidden flex flex-col min-h-0">

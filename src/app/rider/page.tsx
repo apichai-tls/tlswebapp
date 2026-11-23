@@ -66,13 +66,21 @@ import {
   Camera,
   Paperclip,
   AlertTriangle,
-  RotateCcw
+  RotateCcw,
+  Download
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
 import { useAuth } from "@/providers/auth-provider";
 import { FitScreenToggle } from "@/components/fit-screen-toggle";
 import { optimizeRiderRoute, calculateEstimatedDistanceKm, getTaskExpressPriorityTier } from "@/lib/route-optimizer";
+import {
+  compressRiderImage,
+  uploadRiderPhotoWithFallback,
+  revokePhotoEntries,
+  type CapturedPhotoEntry,
+  type RiderUploadBatchMetrics,
+} from "@/lib/rider-image-upload";
 
 // Framer Motion variants
 const pageVariants = {
@@ -668,9 +676,26 @@ export default function RiderPage() {
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const [activeTab, setActiveTab] = useState("myjobs");
   const [expandedMap, setExpandedMap] = useState<string | null>(null);
-  const [capturedImages, setCapturedImages] = useState<Record<string, string[]>>({});
-  const [capturedFiles, setCapturedFiles] = useState<Record<string, File[]>>({});
+  const [capturedPhotos, setCapturedPhotos] = useState<Record<string, CapturedPhotoEntry[]>>({});
+  const capturedPhotosRef = useRef<Record<string, CapturedPhotoEntry[]>>({});
+  const photoSeqRef = useRef<Record<string, number>>({});
+  const [isNativeApp, setIsNativeApp] = useState(false);
   const [showOnlinePopup, setShowOnlinePopup] = useState(false);
+
+  useEffect(() => {
+    capturedPhotosRef.current = capturedPhotos;
+  }, [capturedPhotos]);
+
+  useEffect(() => {
+    import("@capacitor/core")
+      .then(({ Capacitor }) => {
+        setIsNativeApp(Capacitor.isNativePlatform());
+      })
+      .catch(() => {});
+    return () => {
+      Object.values(capturedPhotosRef.current).forEach(revokePhotoEntries);
+    };
+  }, []);
   const [gpsActive, setGpsActive] = useState(false);
   const { user, logout } = useAuth();
   // ✅ FIX: Track the status the rider intentionally set in this session.
@@ -872,29 +897,17 @@ export default function RiderPage() {
     if (!file || !jobId) return;
 
     setIsUploadingChatImage(true);
+    let tempPreviewUrl = "";
     try {
-      const actualContentType = file.type || 'image/jpeg';
-      const response = await fetch("/api/upload-url", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          entityType: "job",
-          entityId: jobId,
-          subType: `chat-${Date.now()}`,
-          contentType: actualContentType,
-        }),
+      const compressed = await compressRiderImage(file, {
+        fileName: `${jobId}-chat-${Date.now()}`,
       });
-
-      if (!response.ok) throw new Error("Failed to get upload authorization");
-      const { uploadUrl, publicUrl } = await response.json();
-
-      const uploadResponse = await fetch(uploadUrl, {
-        method: "PUT",
-        headers: { "Content-Type": actualContentType },
-        body: file,
+      tempPreviewUrl = compressed.previewUrl;
+      const { url: publicUrl } = await uploadRiderPhotoWithFallback({
+        file: compressed.file,
+        jobId,
+        subType: `chat-${Date.now()}`,
       });
-
-      if (!uploadResponse.ok) throw new Error("Upload failed");
 
       const newLog: AdminNoteLog = {
         id: Math.random().toString(36).substring(7),
@@ -923,6 +936,11 @@ export default function RiderPage() {
       console.error(err);
       toast.error("Failed to send photo: " + (err.message || "Unknown error"));
     } finally {
+      if (tempPreviewUrl && tempPreviewUrl.startsWith("blob:")) {
+        try {
+          URL.revokeObjectURL(tempPreviewUrl);
+        } catch {}
+      }
       setIsUploadingChatImage(false);
       if (e.target) e.target.value = "";
     }
@@ -1302,12 +1320,13 @@ export default function RiderPage() {
     };
   }, [activeRider?.id, isRiderOffline]); // ✅ Start/stop GPS when rider goes online/offline
 
-  const allTasks: RiderTask[] = [];
-  if (activeRider) {
+  const allTasks: RiderTask[] = useMemo(() => {
+    const list: RiderTask[] = [];
+    if (!activeRider) return list;
     jobs.forEach(j => {
       if (j.pickupRiderId === activeRider.id || (!j.pickupRiderId && j.riderId === activeRider.id)) {
         const isPickupCompleted = ["picked_up", "billing", "active", "ready_to_wash", "washed", "delivery", "completed", "cancel"].includes(j.status);
-        allTasks.push({
+        list.push({
           taskId: `${j.id}-pickup`,
           job: j,
           legType: "pickup",
@@ -1342,7 +1361,7 @@ export default function RiderPage() {
         const isTerminal = ["delivered", "completed", "cancel"].includes(j.status) || isDeliveredStage || j.legs?.deliveryOutbound?.status === "completed";
         const isDeliveryActive =
           !["tba", "pending", "pickup", "cancel", "return", "topup"].includes(j.status);
-        allTasks.push({
+        list.push({
           taskId: `${j.id}-delivery`,
           job: j,
           legType: "delivery",
@@ -1363,39 +1382,42 @@ export default function RiderPage() {
         });
       }
     });
-  }
+    return list;
+  }, [jobs, activeRider?.id]);
 
   const [routeSortMode, setRouteSortMode] = useState<"time" | "optimized">("optimized");
   const [showRouteTimeline, setShowRouteTimeline] = useState<boolean>(false);
   const [isDemoPreviewMode, setIsDemoPreviewMode] = useState<boolean>(false);
 
-  const myJobs = allTasks
-    .filter(t => {
-      if (!t.isActive || t.isCompleted) return false;
+  const myJobs = useMemo(() => {
+    return allTasks
+      .filter(t => {
+        if (!t.isActive || t.isCompleted) return false;
 
-      // Hide active delivery tasks if they are stuck
-      if (t.legType === "delivery" && t.job.isStuck) {
-        return false;
-      }
+        // Hide active delivery tasks if they are stuck
+        if (t.legType === "delivery" && t.job.isStuck) {
+          return false;
+        }
 
-      // Hide future tasks (both pickup and delivery) from the rider until the scheduled date arrives
-      const scheduledDate = new Date(t.scheduledAt);
-      const today = new Date();
-      
-      // Clear time to compare only the calendar dates
-      today.setHours(0, 0, 0, 0);
-      scheduledDate.setHours(0, 0, 0, 0);
-      
-      if (scheduledDate > today) {
-        return false;
-      }
-      return true;
-    })
-    .sort((a, b) => {
-      const tierDiff = getTaskExpressPriorityTier(b) - getTaskExpressPriorityTier(a);
-      if (tierDiff !== 0) return tierDiff;
-      return a.scheduledAt.getTime() - b.scheduledAt.getTime();
-    });
+        // Hide future tasks (both pickup and delivery) from the rider until the scheduled date arrives
+        const scheduledDate = new Date(t.scheduledAt);
+        const today = new Date();
+        
+        // Clear time to compare only the calendar dates
+        today.setHours(0, 0, 0, 0);
+        scheduledDate.setHours(0, 0, 0, 0);
+        
+        if (scheduledDate > today) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const tierDiff = getTaskExpressPriorityTier(b) - getTaskExpressPriorityTier(a);
+        if (tierDiff !== 0) return tierDiff;
+        return a.scheduledAt.getTime() - b.scheduledAt.getTime();
+      });
+  }, [allTasks]);
 
   const effectiveMyJobs: RiderTask[] = useMemo(() => {
     if (!isDemoPreviewMode) return myJobs;
@@ -1556,7 +1578,14 @@ export default function RiderPage() {
   }, [isDemoPreviewMode, myJobs]);
 
   // Optimize rider route from their live GPS coordinates (or assigned branch)
-  const riderOrigin = activeRider?.currentLocation || (activeRider?.branchId ? shopLocations.find(s => s.id === activeRider.branchId)?.coords : null) || { lat: 13.736717, lng: 100.523186 };
+  // Snap GPS origin to ~50m increments so micro GPS jitter does not re-run TSP optimization on every render
+  const rawRiderOrigin = activeRider?.currentLocation || (activeRider?.branchId ? shopLocations.find(s => s.id === activeRider.branchId)?.coords : null) || { lat: 13.736717, lng: 100.523186 };
+  const snappedOriginLat = Math.round(rawRiderOrigin.lat * 2000) / 2000;
+  const snappedOriginLng = Math.round(rawRiderOrigin.lng * 2000) / 2000;
+  const riderOrigin = useMemo(
+    () => ({ lat: snappedOriginLat, lng: snappedOriginLng }),
+    [snappedOriginLat, snappedOriginLng]
+  );
 
   // Strictly optimize only orders whose status is ready (not pending / billing / process)
   const readyOptimizableJobs = useMemo(() => {
@@ -1652,90 +1681,224 @@ export default function RiderPage() {
 
   const [isUploadingProof, setIsUploadingProof] = useState(false);
 
-  async function handleComplete(taskId: string) {
-    const jobId = taskId.replace(/-pickup$|-delivery$/, '');
-    const proofUrls = capturedImages[taskId];
-    const proofFiles = capturedFiles[taskId];
-    if (!proofUrls || proofUrls.length === 0 || !proofFiles || proofFiles.length === 0) {
+  function resolveJobAndSubTypeForCapture(captureKey: string, seq: number): { jobId: string; subType: string } {
+    const isLoadFlow = captureKey.endsWith("-load");
+    const jobId = captureKey
+      .replace(/-(pickup|delivery)-load$/, "")
+      .replace(/-load$/, "")
+      .replace(/-(pickup|delivery)$/, "");
+    const subType = isLoadFlow ? `proofs-load-${Date.now()}-${seq}` : `proofs-${seq}`;
+    return { jobId, subType };
+  }
+
+  function removeCapturedPhoto(captureKey: string, entryId: string) {
+    setCapturedPhotos((prev) => {
+      const existing = prev[captureKey] || [];
+      const removed = existing.find((p) => p.id === entryId);
+      if (removed) revokePhotoEntries([removed]);
+      const nextList = existing.filter((p) => p.id !== entryId);
+      const copy = { ...prev, [captureKey]: nextList };
+      capturedPhotosRef.current = copy;
+      return copy;
+    });
+  }
+
+  function clearCapturedPhotosForKey(captureKey: string) {
+    setCapturedPhotos((prev) => {
+      const existing = prev[captureKey];
+      if (existing) revokePhotoEntries(existing);
+      const copy = { ...prev };
+      delete copy[captureKey];
+      capturedPhotosRef.current = copy;
+      return copy;
+    });
+  }
+
+  async function addCapturedPhotoAndPreUpload(captureKey: string, rawInput: File | Blob, fileBaseName: string) {
+    const seq = photoSeqRef.current[captureKey] || 0;
+    photoSeqRef.current[captureKey] = seq + 1;
+    const { jobId, subType } = resolveJobAndSubTypeForCapture(captureKey, seq);
+
+    const compressed = await compressRiderImage(rawInput, {
+      fileName: `${fileBaseName}-${seq}`,
+    });
+
+    const entryId = `${captureKey}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const entry: CapturedPhotoEntry = {
+      id: entryId,
+      previewUrl: compressed.previewUrl,
+      file: compressed.file,
+      subType,
+      jobId,
+      originalBytes: compressed.originalBytes,
+      compressedBytes: compressed.compressedBytes,
+      compressMs: compressed.compressMs,
+      status: "uploading",
+    };
+
+    const uploadPromise = uploadRiderPhotoWithFallback({
+      file: compressed.file,
+      jobId,
+      subType,
+    }).then(
+      (res) => {
+        setCapturedPhotos((prev) => {
+          const currentList = prev[captureKey];
+          if (!currentList || !currentList.some((item) => item.id === entryId)) {
+            return prev;
+          }
+          const updated = {
+            ...prev,
+            [captureKey]: currentList.map((item) =>
+              item.id === entryId
+                ? {
+                    ...item,
+                    status: "uploaded" as const,
+                    uploadedUrl: res.url,
+                    uploadMs: res.uploadMs,
+                    viaFallback: res.viaFallback,
+                    uploadPromise: undefined,
+                  }
+                : item
+            ),
+          };
+          capturedPhotosRef.current = updated;
+          return updated;
+        });
+        return res.url;
+      },
+      (err) => {
+        // Silent background failure (e.g. inside elevator without signal) — Confirm button will retry automatically
+        console.warn("[RiderPreUpload] Background pre-upload deferred to Confirm:", err?.message || err);
+        setCapturedPhotos((prev) => {
+          const currentList = prev[captureKey];
+          if (!currentList || !currentList.some((item) => item.id === entryId)) {
+            return prev;
+          }
+          const updated = {
+            ...prev,
+            [captureKey]: currentList.map((item) =>
+              item.id === entryId
+                ? { ...item, status: "pending_retry" as const, uploadPromise: undefined }
+                : item
+            ),
+          };
+          capturedPhotosRef.current = updated;
+          return updated;
+        });
+        throw err;
+      }
+    );
+
+    // Prevent unhandled rejection noise when background pre-upload fails silently
+    uploadPromise.catch(() => {});
+    entry.uploadPromise = uploadPromise;
+
+    setCapturedPhotos((prev) => {
+      const nextList = [...(prev[captureKey] || []), entry];
+      const updated = { ...prev, [captureKey]: nextList };
+      capturedPhotosRef.current = updated;
+      return updated;
+    });
+  }
+
+  async function finalizePhotoUploads(
+    captureKey: string,
+    flow: RiderUploadBatchMetrics["flow"]
+  ): Promise<{ urls: string[]; metrics: RiderUploadBatchMetrics }> {
+    const entries = capturedPhotosRef.current[captureKey] || capturedPhotos[captureKey] || [];
+    const preUploadedCount = entries.filter((e) => e.status === "uploaded" && Boolean(e.uploadedUrl)).length;
+    const waitStartedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+    let fallbackCount = entries.filter((e) => Boolean(e.viaFallback)).length;
+
+    const urls = await Promise.all(
+      entries.map(async (entry) => {
+        if (entry.uploadedUrl) {
+          return entry.uploadedUrl;
+        }
+        if (entry.uploadPromise) {
+          try {
+            return await entry.uploadPromise;
+          } catch {
+            // Retry immediately on explicit Confirm click
+          }
+        }
+        const retryRes = await uploadRiderPhotoWithFallback({
+          file: entry.file,
+          jobId: entry.jobId,
+          subType: entry.subType,
+        });
+        if (retryRes.viaFallback) fallbackCount += 1;
+        return retryRes.url;
+      })
+    );
+
+    const confirmUploadWaitMs = Math.round(
+      (typeof performance !== "undefined" ? performance.now() : Date.now()) - waitStartedAt
+    );
+    const totalOriginalBytes = entries.reduce((sum, e) => sum + (e.originalBytes || 0), 0);
+    const totalCompressedBytes = entries.reduce((sum, e) => sum + (e.compressedBytes || 0), 0);
+    const totalCompressMs = entries.reduce((sum, e) => sum + (e.compressMs || 0), 0);
+
+    return {
+      urls,
+      metrics: {
+        flow,
+        photoCount: entries.length,
+        preUploadedCount,
+        fallbackCount,
+        originalKB: Math.round(totalOriginalBytes / 1024),
+        compressedKB: Math.round(totalCompressedBytes / 1024),
+        compressMs: totalCompressMs,
+        confirmUploadWaitMs,
+      },
+    };
+  }
+
+  async function handleComplete(taskId: string): Promise<boolean> {
+    const jobId = taskId.replace(/-pickup$|-delivery$/, "");
+    const entries = capturedPhotosRef.current[taskId] || capturedPhotos[taskId];
+    if (!entries || entries.length === 0) {
       toast.error("Please take at least one photo as proof of delivery!");
-      return;
+      return false;
     }
-    
+
+    const confirmStartedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
     setIsUploadingProof(true);
-    let finalProofUrls: string[] = [];
 
     try {
-      if (proofFiles && proofFiles.length > 0) {
-        // Upload all files in parallel
-        const uploadPromises = proofFiles.map(async (proofFile, index) => {
-          const actualContentType = proofFile.type || 'image/jpeg';
-          const subType = `proofs-${index}`;
-          try {
-            const response = await fetch("/api/upload-url", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", ...getClientAuthHeaders() },
-              body: JSON.stringify({
-                entityType: "job",
-                entityId: jobId,
-                subType,
-                contentType: actualContentType,
-              }),
-            });
-
-            if (!response.ok) throw new Error("Failed to get upload authorization for a photo");
-
-            const { uploadUrl, publicUrl, filePath } = await response.json();
-
-            const uploadResponse = await fetch(uploadUrl, {
-              method: "PUT",
-              headers: { "Content-Type": actualContentType },
-              body: proofFile,
-            });
-
-            if (!uploadResponse.ok) throw new Error("Upload failed: " + uploadResponse.statusText);
-
-            return publicUrl || filePath;
-          } catch (gcsErr: any) {
-            console.warn("[handleCompleteJob] Direct GCS upload failed, falling back to /api/upload-local:", gcsErr?.message || gcsErr);
-            const localFormData = new FormData();
-            localFormData.append("file", proofFile);
-            localFormData.append("entityType", "job");
-            localFormData.append("entityId", jobId);
-            localFormData.append("subType", subType);
-
-            const fallbackRes = await fetch("/api/upload-local", {
-              method: "POST",
-              headers: { ...getClientAuthHeaders() },
-              body: localFormData,
-            });
-            if (!fallbackRes.ok) {
-              const errData = await fallbackRes.json().catch(() => ({}));
-              throw new Error(errData.error || "Upload fallback failed");
-            }
-            const fallbackData = await fallbackRes.json();
-            return fallbackData.publicUrl;
-          }
-        });
-
-        finalProofUrls = await Promise.all(uploadPromises);
-      }
-      
-      const jsonProofUrls = JSON.stringify(finalProofUrls);
       const legType = taskId.endsWith("-pickup") ? "pickup" : "delivery";
-      
+      const { urls: finalProofUrls, metrics } = await finalizePhotoUploads(
+        taskId,
+        legType === "pickup" ? "complete_pickup" : "complete_delivery"
+      );
+
+      const jsonProofUrls = JSON.stringify(finalProofUrls);
       await jobStore.completeJob(jobId, jsonProofUrls, legType, {
         actorId: user?.id || activeRider?.id,
         actorName: activeRider?.name || user?.name || user?.email || "Rider",
-        actorRole: user?.role || "rider"
+        actorRole: user?.role || "rider",
+        _riderMetrics: metrics,
       });
+
+      const totalConfirmMs = Math.round(
+        (typeof performance !== "undefined" ? performance.now() : Date.now()) - confirmStartedAt
+      );
+      console.info("[RiderTiming]", { jobId, taskId, ...metrics, totalConfirmMs });
+
+      // Free Object URLs & RAM immediately after completion
+      clearCapturedPhotosForKey(taskId);
+
       toast.success("Job marked as completed! 🎉");
       // Return to online status if no other active jobs
-      if (activeRider && myJobs.filter(t => !t.isCompleted).length <= 1) {
-         riderStore.updateRider(activeRider.id, { status: "online" });
+      if (activeRider && myJobs.filter((t) => !t.isCompleted && t.taskId !== taskId).length === 0) {
+        riderStore.updateRider(activeRider.id, { status: "online" });
       }
+      return true;
     } catch (error) {
       console.error(error);
       toast.error(`Failed to upload proof: ${error instanceof Error ? error.message : "Unknown error"}`);
+      return false;
     } finally {
       setIsUploadingProof(false);
     }
@@ -1744,67 +1907,18 @@ export default function RiderPage() {
   async function handleConfirmVehicleLoad(task: RiderTask) {
     const captureKey = `${task.taskId}-load`;
     const jobId = task.job.id;
-    const loadUrls = capturedImages[captureKey];
-    const loadFiles = capturedFiles[captureKey];
+    const entries = capturedPhotosRef.current[captureKey] || capturedPhotos[captureKey];
 
-    if (!loadUrls || loadUrls.length === 0 || !loadFiles || loadFiles.length === 0) {
+    if (!entries || entries.length === 0) {
       toast.error("Please take at least 1 loading photo first (กรุณาถ่ายรูปขึ้นรถอย่างน้อย 1 รูป)");
       return;
     }
 
+    const confirmStartedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
     setIsUploadingVehicleLoad(true);
-    let finalLoadUrls: string[] = [];
 
     try {
-      const uploadPromises = loadFiles.map(async (loadFile, index) => {
-        const actualContentType = loadFile.type || "image/jpeg";
-        const subType = `proofs-load-${Date.now()}-${index}`;
-        try {
-          const response = await fetch("/api/upload-url", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...getClientAuthHeaders() },
-            body: JSON.stringify({
-              entityType: "job",
-              entityId: jobId,
-              subType,
-              contentType: actualContentType,
-            }),
-          });
-
-          if (!response.ok) throw new Error("Failed to get upload authorization for vehicle loading photo");
-          const { uploadUrl, publicUrl, filePath } = await response.json();
-
-          const uploadResponse = await fetch(uploadUrl, {
-            method: "PUT",
-            headers: { "Content-Type": actualContentType },
-            body: loadFile,
-          });
-
-          if (!uploadResponse.ok) throw new Error("Upload failed: " + uploadResponse.statusText);
-          return publicUrl || filePath;
-        } catch (gcsErr: any) {
-          console.warn("[handleConfirmVehicleLoad] Direct GCS upload failed, falling back to /api/upload-local:", gcsErr?.message || gcsErr);
-          const localFormData = new FormData();
-          localFormData.append("file", loadFile);
-          localFormData.append("entityType", "job");
-          localFormData.append("entityId", jobId);
-          localFormData.append("subType", subType);
-
-          const fallbackRes = await fetch("/api/upload-local", {
-            method: "POST",
-            headers: { ...getClientAuthHeaders() },
-            body: localFormData,
-          });
-          if (!fallbackRes.ok) {
-            const errData = await fallbackRes.json().catch(() => ({}));
-            throw new Error(errData.error || "Upload fallback failed");
-          }
-          const fallbackData = await fallbackRes.json();
-          return fallbackData.publicUrl;
-        }
-      });
-
-      finalLoadUrls = await Promise.all(uploadPromises);
+      const { urls: finalLoadUrls, metrics } = await finalizePhotoUploads(captureKey, "vehicle_load");
 
       const nowIso = new Date().toISOString();
       const riderIdVal = activeRider?.id || user?.id || "rider";
@@ -1864,20 +1978,17 @@ export default function RiderPage() {
           actorId: riderIdVal,
           actorName: riderNameVal,
           actorRole: user?.role || "rider",
+          _riderMetrics: metrics,
         }
       );
 
-      // Clear temporary capture state
-      setCapturedImages((prev) => {
-        const copy = { ...prev };
-        delete copy[captureKey];
-        return copy;
-      });
-      setCapturedFiles((prev) => {
-        const copy = { ...prev };
-        delete copy[captureKey];
-        return copy;
-      });
+      const totalConfirmMs = Math.round(
+        (typeof performance !== "undefined" ? performance.now() : Date.now()) - confirmStartedAt
+      );
+      console.info("[RiderTiming]", { jobId, captureKey, ...metrics, totalConfirmMs });
+
+      // Clear temporary capture state & revoke Object URLs
+      clearCapturedPhotosForKey(captureKey);
 
       if (selectedJob && selectedJob.job.id === jobId) {
         setSelectedJob({
@@ -2014,32 +2125,27 @@ export default function RiderPage() {
     }
   }
 
-  function handleCapture(taskId: string, event: React.ChangeEvent<HTMLInputElement>) {
+  async function handleCapture(taskId: string, event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
+    if (event.target) event.target.value = "";
     if (!file) return;
 
-    // Store file for upload
-    setCapturedFiles(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), file] }));
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const dataUrl = reader.result as string;
-      setCapturedImages(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), dataUrl] }));
-    };
-    reader.readAsDataURL(file);
-
-    // Save photo to device gallery
-    savePhotoToDevice(file, `${taskId}-proof.jpg`);
+    try {
+      await addCapturedPhotoAndPreUpload(taskId, file, `${taskId}-proof`);
+    } catch (err) {
+      console.error("[Camera] Web capture processing failed:", err);
+      toast.error("Could not process photo. Please try again.");
+    }
   }
 
   async function takePhotoNative(taskId: string) {
     try {
       // Dynamically import Capacitor plugins to avoid SSR issues
       const { Camera, CameraResultType, CameraSource } = await import('@capacitor/camera');
-      const { Filesystem, Directory } = await import('@capacitor/filesystem');
 
       // Use Uri resultType — this is the ONLY mode where saveToGallery actually works on Android
       const photo = await Camera.getPhoto({
-        quality: 90,
+        quality: 88,
         allowEditing: false,
         resultType: CameraResultType.Uri,
         source: CameraSource.Camera,
@@ -2050,30 +2156,38 @@ export default function RiderPage() {
 
       if (!photo.path && !photo.webPath) return;
 
-      // Read file content as base64 so we can display & upload it
-      let dataUrl: string;
-      try {
-        // Try reading via Filesystem plugin (works reliably on native)
-        const fileData = await Filesystem.readFile({
-          path: photo.path!,
-        });
-        const base64 = typeof fileData.data === 'string' ? fileData.data : '';
-        dataUrl = `data:image/jpeg;base64,${base64}`;
-      } catch {
-        // Fallback: use webPath (works in browser/PWA mode)
-        dataUrl = photo.webPath || '';
+      let rawBlob: Blob | null = null;
+
+      // 1. Fast path: stream via webPath directly into Blob without allocating multi-MB Base64 strings
+      if (photo.webPath) {
+        try {
+          const webRes = await fetch(photo.webPath);
+          if (webRes.ok) {
+            rawBlob = await webRes.blob();
+          }
+        } catch {
+          rawBlob = null;
+        }
       }
 
-      if (!dataUrl) return;
+      // 2. Fallback: read via Capacitor Filesystem plugin when webPath is inaccessible on remote server.url
+      if (!rawBlob && photo.path) {
+        const { Filesystem } = await import('@capacitor/filesystem');
+        const fileData = await Filesystem.readFile({ path: photo.path });
+        const base64 = typeof fileData.data === 'string' ? fileData.data : '';
+        if (base64) {
+          const binaryStr = atob(base64);
+          const bytes = new Uint8Array(binaryStr.length);
+          for (let i = 0; i < binaryStr.length; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+          }
+          rawBlob = new Blob([bytes], { type: 'image/jpeg' });
+        }
+      }
 
-      // Convert dataUrl → File for upload
-      const res = await fetch(dataUrl);
-      const blob = await res.blob();
-      const file = new File([blob], `${taskId}-proof.jpg`, { type: 'image/jpeg' });
+      if (!rawBlob) return;
 
-      setCapturedFiles(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), file] }));
-      setCapturedImages(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), dataUrl] }));
-
+      await addCapturedPhotoAndPreUpload(taskId, rawBlob, `${taskId}-proof`);
       toast.success('Photo saved to gallery ✅');
     } catch (err: any) {
       if (err?.message?.includes('cancelled') || err?.message?.includes('cancel') || err?.message?.includes('User cancelled')) return;
@@ -3324,13 +3438,14 @@ export default function RiderPage() {
 
       {/* Camera Proof Modal */}
       <Dialog open={!!jobToComplete} onOpenChange={(open) => {
-        if (!open) {
+        if (!open && !isUploadingProof) {
           setJobToComplete(null);
         }
       }}>
         <DialogContent className="sm:max-w-md w-[95vw] rounded-2xl mx-auto p-0 bg-white border-none shadow-2xl overflow-hidden flex flex-col">
           {jobToComplete && (() => {
-            const previewUrl = capturedImages[jobToComplete.taskId];
+            const currentEntries = capturedPhotos[jobToComplete.taskId] || [];
+            const allPreUploaded = currentEntries.length > 0 && currentEntries.every((e) => e.status === "uploaded");
             return (
               <>
                 <DialogHeader className="p-4 border-b border-slate-100">
@@ -3340,23 +3455,39 @@ export default function RiderPage() {
                 </DialogHeader>
                 <div className="p-4">
                   <p className="text-sm font-medium text-slate-600 mb-3 text-center">
-                    Take up to 3 photos ({(capturedImages[jobToComplete.taskId] || []).length}/3)
+                    Take up to 3 photos ({currentEntries.length}/3)
                   </p>
                   <div className="grid grid-cols-2 gap-3">
-                    {(capturedImages[jobToComplete.taskId] || []).map((url, index) => (
-                      <div key={index} className="relative aspect-square rounded-xl overflow-hidden border border-slate-200">
-                        <img src={url} className="w-full h-full object-cover" alt={`Proof ${index + 1}`} />
-                        <button 
-                          onClick={() => {
-                            setCapturedImages(prev => ({
-                              ...prev,
-                              [jobToComplete.taskId]: prev[jobToComplete.taskId].filter((_, i) => i !== index)
-                            }));
-                            setCapturedFiles(prev => ({
-                              ...prev,
-                              [jobToComplete.taskId]: prev[jobToComplete.taskId].filter((_, i) => i !== index)
-                            }));
-                          }}
+                    {currentEntries.map((entry, index) => (
+                      <div key={entry.id} className="relative aspect-square rounded-xl overflow-hidden border border-slate-200">
+                        <img src={entry.previewUrl} className="w-full h-full object-cover" alt={`Proof ${index + 1}`} />
+                        {entry.status === "uploading" && (
+                          <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-full bg-slate-900/70 text-white text-[10px] font-semibold flex items-center gap-1 backdrop-blur-xs">
+                            <Loader2 size={10} className="animate-spin" />
+                            <span>Syncing</span>
+                          </div>
+                        )}
+                        {entry.status === "uploaded" && (
+                          <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-full bg-emerald-600/85 text-white text-[10px] font-semibold flex items-center gap-1 backdrop-blur-xs">
+                            <CheckCircle2 size={10} />
+                            <span>Ready</span>
+                          </div>
+                        )}
+                        {!isNativeApp && (
+                          <button
+                            type="button"
+                            disabled={isUploadingProof}
+                            onClick={() => savePhotoToDevice(entry.file, `${jobToComplete.taskId}-proof-${index + 1}.jpg`)}
+                            title="Save photo to phone"
+                            className="absolute bottom-2 right-2 h-7 w-7 rounded-full bg-slate-900/65 hover:bg-slate-900/85 text-white flex items-center justify-center shadow backdrop-blur-xs"
+                          >
+                            <Download size={13} />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={isUploadingProof}
+                          onClick={() => removeCapturedPhoto(jobToComplete.taskId, entry.id)}
                           className="absolute top-2 right-2 h-7 w-7 rounded-full bg-red-500/90 text-white flex items-center justify-center shadow-lg backdrop-blur"
                         >
                           <X size={14} />
@@ -3364,10 +3495,11 @@ export default function RiderPage() {
                       </div>
                     ))}
                     
-                    {(capturedImages[jobToComplete.taskId] || []).length < 3 && (
+                    {currentEntries.length < 3 && (
                       <div
                         className="aspect-square rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 flex flex-col items-center justify-center cursor-pointer hover:bg-slate-100 transition-colors group"
                         onClick={async () => {
+                          if (isUploadingProof) return;
                           const { Capacitor } = await import('@capacitor/core');
                           if (Capacitor.isNativePlatform()) {
                             await takePhotoNative(jobToComplete.taskId);
@@ -3397,14 +3529,16 @@ export default function RiderPage() {
                 <DialogFooter className="p-4 pt-0">
                   <Button
                     className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-sm h-14 rounded-xl text-base disabled:opacity-50"
-                    disabled={!(capturedImages[jobToComplete.taskId] || []).length || isUploadingProof}
+                    disabled={!currentEntries.length || isUploadingProof}
                     onClick={async () => {
-                      await handleComplete(jobToComplete.taskId);
-                      setJobToComplete(null);
+                      const ok = await handleComplete(jobToComplete.taskId);
+                      if (ok) {
+                        setJobToComplete(null);
+                      }
                     }}
                   >
                     {isUploadingProof ? <Loader2 size={20} className="mr-2 animate-spin" /> : <CheckCircle2 size={20} className="mr-2" />}
-                    {isUploadingProof ? "Uploading..." : "Confirm Completion"}
+                    {isUploadingProof ? (allPreUploaded ? "Saving..." : "Uploading...") : "Confirm Completion"}
                   </Button>
                 </DialogFooter>
               </>
@@ -3425,7 +3559,8 @@ export default function RiderPage() {
         <DialogContent className="sm:max-w-md w-[95vw] rounded-2xl mx-auto p-0 bg-white border-none shadow-2xl overflow-hidden flex flex-col">
           {jobToLoadVehicle && (() => {
             const captureKey = `${jobToLoadVehicle.taskId}-load`;
-            const currentPhotos = capturedImages[captureKey] || [];
+            const currentPhotos = capturedPhotos[captureKey] || [];
+            const allLoadPreUploaded = currentPhotos.length > 0 && currentPhotos.every((e) => e.status === "uploaded");
             return (
               <>
                 <DialogHeader className="p-4 bg-amber-50 border-b border-amber-200">
@@ -3443,21 +3578,36 @@ export default function RiderPage() {
                     Take up to 3 photos of loaded laundry ({currentPhotos.length}/3) • ถ่ายรูปผ้าที่ขึ้นรถแล้ว
                   </p>
                   <div className="grid grid-cols-2 gap-3">
-                    {currentPhotos.map((url, index) => (
-                      <div key={index} className="relative aspect-square rounded-xl overflow-hidden border border-slate-200">
-                        <img src={url} className="w-full h-full object-cover" alt={`Vehicle Load ${index + 1}`} />
+                    {currentPhotos.map((entry, index) => (
+                      <div key={entry.id} className="relative aspect-square rounded-xl overflow-hidden border border-slate-200">
+                        <img src={entry.previewUrl} className="w-full h-full object-cover" alt={`Vehicle Load ${index + 1}`} />
+                        {entry.status === "uploading" && (
+                          <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-full bg-slate-900/70 text-white text-[10px] font-semibold flex items-center gap-1 backdrop-blur-xs">
+                            <Loader2 size={10} className="animate-spin" />
+                            <span>Syncing</span>
+                          </div>
+                        )}
+                        {entry.status === "uploaded" && (
+                          <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-full bg-emerald-600/85 text-white text-[10px] font-semibold flex items-center gap-1 backdrop-blur-xs">
+                            <CheckCircle2 size={10} />
+                            <span>Ready</span>
+                          </div>
+                        )}
+                        {!isNativeApp && (
+                          <button
+                            type="button"
+                            disabled={isUploadingVehicleLoad}
+                            onClick={() => savePhotoToDevice(entry.file, `${captureKey}-${index + 1}.jpg`)}
+                            title="Save photo to phone"
+                            className="absolute bottom-2 right-2 h-7 w-7 rounded-full bg-slate-900/65 hover:bg-slate-900/85 text-white flex items-center justify-center shadow backdrop-blur-xs cursor-pointer"
+                          >
+                            <Download size={13} />
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => {
-                            setCapturedImages((prev) => ({
-                              ...prev,
-                              [captureKey]: (prev[captureKey] || []).filter((_, i) => i !== index),
-                            }));
-                            setCapturedFiles((prev) => ({
-                              ...prev,
-                              [captureKey]: (prev[captureKey] || []).filter((_, i) => i !== index),
-                            }));
-                          }}
+                          disabled={isUploadingVehicleLoad}
+                          onClick={() => removeCapturedPhoto(captureKey, entry.id)}
                           className="absolute top-2 right-2 h-7 w-7 rounded-full bg-red-500/90 text-white flex items-center justify-center shadow-lg backdrop-blur cursor-pointer"
                         >
                           <X size={14} />
@@ -3469,6 +3619,7 @@ export default function RiderPage() {
                       <div
                         className="aspect-square rounded-xl border-2 border-dashed border-amber-300 bg-amber-50/50 flex flex-col items-center justify-center cursor-pointer hover:bg-amber-100/60 transition-colors group"
                         onClick={async () => {
+                          if (isUploadingVehicleLoad) return;
                           const { Capacitor } = await import("@capacitor/core");
                           if (Capacitor.isNativePlatform()) {
                             await takePhotoNative(captureKey);
@@ -3507,7 +3658,9 @@ export default function RiderPage() {
                       <CheckCircle2 size={18} className="mr-2" />
                     )}
                     {isUploadingVehicleLoad
-                      ? "Uploading... (กำลังบันทึก...)"
+                      ? allLoadPreUploaded
+                        ? "Saving... (กำลังบันทึก...)"
+                        : "Uploading... (กำลังบันทึก...)"
                       : "Confirm Loaded (ยืนยันขึ้นรถแล้ว)"}
                   </Button>
                   <Button

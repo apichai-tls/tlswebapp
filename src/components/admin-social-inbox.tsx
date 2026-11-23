@@ -738,12 +738,16 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
           setMessages((prev) => {
             const existingIdx = prev.findIndex((m) => m.id === incomingMsg.id);
             if (existingIdx >= 0) {
-              // Update status/deliveryMethod/externalError in place (e.g. sent -> delivered -> read)
+              // Update status/deliveryMethod/externalError/attachments in place (e.g. sent -> delivered -> read, or background GCS media ready)
               const existing = prev[existingIdx];
+              const sameAttachments =
+                JSON.stringify(existing.attachments || null) ===
+                JSON.stringify(incomingMsg.attachments || null);
               if (
                 existing.status === incomingMsg.status &&
                 existing.externalError === incomingMsg.externalError &&
-                existing.text === incomingMsg.text
+                existing.text === incomingMsg.text &&
+                sameAttachments
               ) {
                 return prev;
               }
@@ -762,16 +766,59 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
             }
             return [...prev, incomingMsg];
           });
+
+          if (sp.timing && typeof window !== 'undefined') {
+            const sseReceivedAtMs = Date.now();
+            window.requestAnimationFrame(() => {
+              const browserDisplayedAtMs = Date.now();
+              const webhookToDbMs = sp.timing.webhookReceivedAtMs
+                ? sp.timing.dbSavedAtMs - sp.timing.webhookReceivedAtMs
+                : null;
+              const dbToBrowserDisplayMs = browserDisplayedAtMs - sp.timing.dbSavedAtMs;
+              const totalWebhookToDisplayMs = sp.timing.webhookReceivedAtMs
+                ? browserDisplayedAtMs - sp.timing.webhookReceivedAtMs
+                : null;
+              const metric = {
+                msgId: incomingMsg.id,
+                channel: incomingMsg.channel,
+                direction: incomingMsg.direction,
+                webhookToDbMs,
+                sseTransitMs: sseReceivedAtMs - sp.timing.dbSavedAtMs,
+                dbToBrowserDisplayMs,
+                totalWebhookToDisplayMs,
+              };
+              (window as any).__tlsLastSocialSyncTiming = metric;
+              console.info(
+                '[SocialInboxTiming]',
+                JSON.stringify({ stage: 'browser_displayed', ...metric })
+              );
+            });
+          }
         }
 
         if (incomingConv?.id) {
+          const isOutboundReply = incomingMsg?.direction === 'outbound';
+          if (isOutboundReply) {
+            recentlyReadConvIdsRef.current.set(incomingConv.id, Date.now());
+          }
           setConversations((prev) => {
             const isCurrentlyOpen = incomingConv.id === selectedConvIdRef.current;
-            const normalizedConv: SocialConversation =
-              isCurrentlyOpen && incomingMsg?.direction !== 'inbound'
-                ? { ...incomingConv, unreadCount: 0 }
-                : incomingConv;
-            const rest = prev.filter((c) => c.id !== normalizedConv.id);
+            const shouldZeroUnread =
+              isOutboundReply || (isCurrentlyOpen && incomingMsg?.direction !== 'inbound');
+            const normalizedConv: SocialConversation = shouldZeroUnread
+              ? { ...incomingConv, unreadCount: 0 }
+              : incomingConv;
+            const rest = prev
+              .filter((c) => c.id !== normalizedConv.id)
+              .map((c) =>
+                isOutboundReply &&
+                c.channel === normalizedConv.channel &&
+                c.externalContactId &&
+                c.externalContactId === normalizedConv.externalContactId &&
+                c.unreadCount > 0
+                  ? { ...c, unreadCount: 0 }
+                  : c
+              );
             return [normalizedConv, ...rest];
           });
         }
@@ -784,7 +831,17 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         const nowMs = Date.now();
         for (const id of readSet) recentlyReadConvIdsRef.current.set(id, nowMs);
         setConversations((prev) =>
-          prev.map((c) => (readSet.has(c.id) && c.unreadCount > 0 ? { ...c, unreadCount: 0 } : c))
+          prev.map((c) =>
+            readSet.has(c.id)
+              ? {
+                  ...c,
+                  unreadCount: 0,
+                  lastReadById: sp.readById ?? c.lastReadById,
+                  lastReadByName: sp.readByName ?? c.lastReadByName,
+                  lastReadAt: sp.readAt ?? c.lastReadAt,
+                }
+              : c
+          )
         );
         return;
       }
@@ -797,7 +854,13 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
           prev.map((c) => {
             if ((ch === 'all' || c.channel === ch) && c.unreadCount > 0) {
               recentlyReadConvIdsRef.current.set(c.id, nowMs);
-              return { ...c, unreadCount: 0 };
+              return {
+                ...c,
+                unreadCount: 0,
+                lastReadById: sp.readById ?? c.lastReadById,
+                lastReadByName: sp.readByName ?? c.lastReadByName,
+                lastReadAt: sp.readAt ?? c.lastReadAt,
+              };
             }
             return c;
           })
@@ -805,7 +868,21 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         return;
       }
 
-      // Fallback for generic social.updated events without inline payload (do NOT advance storeVersionRef before fetching!)
+      // Fallback for compact/oversized social.updated events (>7.5KB PG NOTIFY) without inline payload
+      if (sp?.conversationId && sp.conversationId === selectedConvIdRef.current) {
+        getConversationMessagesAction(sp.conversationId)
+          .then((res) => {
+            if (res.success && Array.isArray(res.messages)) {
+              setMessages((prev) => {
+                const byId = new Map<string, SocialMessage>();
+                for (const m of prev) byId.set(m.id, m);
+                for (const m of res.messages) byId.set(m.id, m);
+                return Array.from(byId.values());
+              });
+            }
+          })
+          .catch(() => {});
+      }
       syncLiveInboxNow(false);
     };
 
@@ -872,6 +949,22 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
     })
       .then((res: any) => {
         if (res?.version) storeVersionRef.current = res.version;
+        if (res?.success && res?.conversation) {
+          const updatedConv: SocialConversation = res.conversation;
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === updatedConv.id
+                ? {
+                    ...c,
+                    unreadCount: 0,
+                    lastReadAt: updatedConv.lastReadAt ?? c.lastReadAt,
+                    lastReadById: updatedConv.lastReadById ?? c.lastReadById,
+                    lastReadByName: updatedConv.lastReadByName ?? c.lastReadByName,
+                  }
+                : c
+            )
+          );
+        }
         if (res.success && res.conversations) {
           const nowMs = Date.now();
           setConversations(
@@ -1330,6 +1423,16 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                 {conv.status === 'resolved' && (
                   <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-slate-100 text-slate-500">
                     Resolved
+                  </span>
+                )}
+                {conv.unreadCount === 0 && conv.lastReadByName && (
+                  <span
+                    className="text-[9px] font-semibold px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 border border-slate-200/80 truncate max-w-[120px]"
+                    title={`Opened/read by ${conv.lastReadByName}${
+                      conv.lastReadAt ? ` at ${new Date(conv.lastReadAt).toLocaleString()}` : ''
+                    }`}
+                  >
+                    👁️ {conv.lastReadByName}
                   </span>
                 )}
                 {conv.unreadCount > 0 && (
@@ -1958,6 +2061,16 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
     return [...matched, ...synthesizedFromChat].slice(0, 8);
   }, [activeConversation, linkedCustomer, jobs, activeMessages]);
+
+  const activeOpenCustomerJobs = useMemo(() => {
+    return customerJobs.filter((j) => {
+      const st = String(j.status || '').toLowerCase();
+      return (
+        st &&
+        !['completed', 'delivered', 'cancel', 'cancelled', 'return', 'topup'].includes(st)
+      );
+    });
+  }, [customerJobs]);
 
   // Filtered customers for WhatsApp modal picker
   const filteredWaCustomers = useMemo(() => {
@@ -3040,6 +3153,28 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                           UID: {activeConversation.externalContactId.slice(0, 10)}…
                         </button>
                       )}
+                      {activeConversation.lastReadByName && (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md bg-sky-50 text-sky-800 border border-sky-200/80 shrink-0"
+                          title={
+                            activeConversation.lastReadAt
+                              ? `Read at ${new Date(activeConversation.lastReadAt).toLocaleString()}`
+                              : 'Last read by staff'
+                          }
+                        >
+                          <span>👁️ Read by {activeConversation.lastReadByName}</span>
+                          {activeConversation.lastReadAt && (
+                            <span className="text-sky-600 font-medium">
+                              (
+                              {new Date(activeConversation.lastReadAt).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                              )
+                            </span>
+                          )}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -3958,6 +4093,67 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                       </div>
                     </div>
                   </div>
+
+                  {/* Active / Open Orders (Not yet completed/closed) — Clickable to open Edit Job */}
+                  {activeOpenCustomerJobs.length > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-slate-100">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-amber-700 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                          <span>Active Open Orders ({activeOpenCustomerJobs.length})</span>
+                        </span>
+                        <span className="text-[9.5px] font-semibold text-slate-400">
+                          Click to Edit Job
+                        </span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {activeOpenCustomerJobs.map((job) => {
+                          const displayAmount = job.totalAmount ?? job.totalPrice;
+                          return (
+                            <button
+                              key={`open-${job.id}`}
+                              type="button"
+                              onClick={() => onEditJob && onEditJob(job)}
+                              className="w-full text-left p-2.5 rounded-xl border border-amber-200 bg-amber-50/60 hover:bg-amber-50 hover:border-amber-300 transition-all space-y-1 shadow-2xs cursor-pointer group"
+                            >
+                              <div className="flex items-center justify-between gap-1.5">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="font-mono text-xs font-black text-indigo-700 group-hover:underline truncate">
+                                    #{job.id}
+                                  </span>
+                                  {job.billNo && job.billNo !== '--' && job.billNo !== '-' && (
+                                    <span className="text-[9.5px] font-mono bg-white border border-amber-200 px-1 py-0.2 rounded text-slate-700 truncate">
+                                      {job.billNo}
+                                    </span>
+                                  )}
+                                </div>
+                                <Badge
+                                  variant="outline"
+                                  className="text-[9px] font-bold uppercase px-1.5 py-0 bg-white text-amber-800 border-amber-300 shrink-0"
+                                >
+                                  {job.status}
+                                  {job.subStatus ? ` · ${job.subStatus}` : ''}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center justify-between gap-2 text-[11px] text-slate-700">
+                                <span className="truncate">{job.serviceType || 'Laundry'}</span>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {displayAmount !== undefined && Number(displayAmount) > 0 && (
+                                    <span className="font-black text-slate-900">
+                                      ฿{Number(displayAmount).toLocaleString()}
+                                    </span>
+                                  )}
+                                  <span className="text-[10px] font-bold text-indigo-600 group-hover:translate-x-0.5 transition-transform inline-flex items-center gap-0.5">
+                                    Edit <ExternalLink size={10} />
+                                  </span>
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Customer's Laundry Orders */}
                   <div className="space-y-2 pt-2 border-t border-slate-100">

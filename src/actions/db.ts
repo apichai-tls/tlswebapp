@@ -1942,7 +1942,7 @@ export async function addJobAction(data: any) {
 
       const shouldAutoProforma = Boolean(
         (data as any).autoAssignProforma ||
-        ((data.isPaid || data.isShopPaid) && Array.isArray(data.items) && data.items.length > 0)
+        (data.isShopPaid && Array.isArray(data.items) && data.items.length > 0)
       );
       const resolvedProformaNumber =
         (data.proformaNumber && data.proformaNumber !== 'DRAFT' ? data.proformaNumber : null) ||
@@ -1997,7 +1997,52 @@ export async function addJobAction(data: any) {
       }
 
       let resolvedBranchId = data.branchId || null;
-      if (resolvedBranchId && String(resolvedBranchId).trim().toUpperCase() === 'ONLINE') {
+      const isOnlineBranch = Boolean(resolvedBranchId && String(resolvedBranchId).trim().toUpperCase() === 'ONLINE');
+      const targetLat = Number(data.pickupCoords?.lat || data.dropoffCoords?.lat || 0);
+      const targetLng = Number(data.pickupCoords?.lng || data.dropoffCoords?.lng || 0);
+      const hasValidCoords = Number.isFinite(targetLat) && Number.isFinite(targetLng) && Math.abs(targetLat) > 1 && Math.abs(targetLng) > 1;
+      const isWalkInPosCreate = data.source === 'pos' || (data.type as string) === 'in_store';
+
+      if (hasValidCoords && !isWalkInPosCreate) {
+        const allShops = await tx.shopLocation.findMany({
+          select: { id: true, lat: true, lng: true },
+        });
+        const calcKm = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+          const R = 6371;
+          const dLat = ((lat2 - lat1) * Math.PI) / 180;
+          const dLng = ((lng2 - lng1) * Math.PI) / 180;
+          const a =
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos((lat1 * Math.PI) / 180) *
+              Math.cos((lat2 * Math.PI) / 180) *
+              Math.sin(dLng / 2) *
+              Math.sin(dLng / 2);
+          return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        };
+        let nearestShop: { id: string; distKm: number } | null = null;
+        let selectedShopDistKm: number | null = null;
+        for (const s of allShops) {
+          if (!Number.isFinite(s.lat) || !Number.isFinite(s.lng) || (s.lat === 0 && s.lng === 0)) continue;
+          const dKm = calcKm(targetLat, targetLng, s.lat, s.lng);
+          if (resolvedBranchId && s.id === resolvedBranchId) {
+            selectedShopDistKm = dKm;
+          }
+          if (!nearestShop || dKm < nearestShop.distKm) {
+            nearestShop = { id: s.id, distKm: dKm };
+          }
+        }
+        // Auto-resolve branch to nearest shop if missing, ONLINE, or selected branch is >50 km away (cross-region mismatch e.g. BKK vs PTY)
+        if (
+          nearestShop &&
+          (!resolvedBranchId ||
+            isOnlineBranch ||
+            (selectedShopDistKm !== null && selectedShopDistKm > 50 && nearestShop.distKm < selectedShopDistKm))
+        ) {
+          resolvedBranchId = nearestShop.id;
+        }
+      }
+
+      if (!resolvedBranchId || String(resolvedBranchId).trim().toUpperCase() === 'ONLINE') {
         const hqShop =
           (await tx.shopLocation.findUnique({ where: { id: 'shop-head' }, select: { id: true } })) ||
           (await tx.shopLocation.findFirst({ select: { id: true } }));
@@ -3141,6 +3186,7 @@ async function updateJobActionInternal(id: string, updates: any) {
   // perform all merges (adminNotesJson, legsJson, billImageUrl, proformaRevision, etc.) against freshJob,
   // check field-level OCC conflicts, and persist update atomically.
   let shouldVoidRewardVouchersPostCommit = false;
+  const serverActionStartedAt = Date.now();
   const { updatedJob, effectiveChanges, previousJob } = await prisma.$transaction(async (tx) => {
     await lockJobRowForUpdate(tx, id);
     const freshJob = await tx.job.findUnique({ where: { id } });
@@ -3877,7 +3923,7 @@ async function updateJobActionInternal(id: string, updates: any) {
     data,
   });
 
-  if (Object.keys(changes).length > 0) {
+  if (Object.keys(changes).length > 0 || (updates._riderMetrics && typeof updates._riderMetrics === 'object')) {
     try {
       const riderKeys = ['pickupRiderId', 'deliveryRiderId', 'riderId'];
       const rawRiderIds = riderKeys.map(k => changes[k]).filter(Boolean);
@@ -3894,19 +3940,33 @@ async function updateJobActionInternal(id: string, updates: any) {
           } catch {}
       }
 
-        await tx.activityLog.create({
+      const logDetailsObj: Record<string, any> = { ...changes };
+      if (updates._riderMetrics && typeof updates._riderMetrics === 'object') {
+        const serverTxMs = Date.now() - serverActionStartedAt;
+        logDetailsObj._riderMetrics = {
+          ...updates._riderMetrics,
+          serverTxMs,
+        };
+        console.info('[RiderTiming]', JSON.stringify({
+          jobId: id,
+          actorName: updates.actorName || null,
+          ...logDetailsObj._riderMetrics,
+        }));
+      }
+
+      await tx.activityLog.create({
         data: {
           entityId: id,
           entityType: 'job',
           action: 'update',
-          details: JSON.stringify(changes),
+          details: JSON.stringify(logDetailsObj),
           userId: updates.actorId || null,
           userName: updates.actorName || null,
-            createdAt: saved.updatedAt,
+          createdAt: saved.updatedAt,
         }
       });
-      } catch (logErr: any) {
-        console.warn("[updateJobActionInternal] Failed to create activityLog in tx:", logErr?.message || logErr);
+    } catch (logErr: any) {
+      console.warn("[updateJobActionInternal] Failed to create activityLog in tx:", logErr?.message || logErr);
     }
   }
 
