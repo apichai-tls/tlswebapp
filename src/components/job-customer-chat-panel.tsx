@@ -199,23 +199,8 @@ export function JobCustomerChatPanel({
           setConversations(res.conversations);
           setActiveConversationId(res.activeConversationId ?? null);
           setMessages(res.messages);
-          if (res.activeConversationId) {
-            const matched = res.conversations.find((c) => c.id === res.activeConversationId);
-            if (matched && matched.unreadCount > 0) {
-              void updateSocialConversationAction({
-                conversationId: matched.id,
-                markAsRead: true,
-              })
-                .then((r) => {
-                  if (r?.success && r.conversation) {
-                    setConversations((prev) =>
-                      prev.map((c) => (c.id === r.conversation!.id ? r.conversation! : c))
-                    );
-                  }
-                })
-                .catch(() => {});
-            }
-          }
+          // Do NOT auto-mark conversations as read on initial panel open;
+          // staff must explicitly click a thread or send a reply so shop staff viewing Edit Job never clear Unread badges accidentally.
         }
       } catch (err) {
         console.warn('[JobCustomerChatPanel] Failed to load threads:', err);

@@ -853,20 +853,28 @@ export async function findSocialConversationForContact(opts: {
 }): Promise<SocialConversation | null> {
   await ensureSocialInboxSchemaAndMigrate();
   const ext = (opts.externalContactId || '').trim();
-  const orConds: any[] = [];
-  if (ext) {
-    orConds.push({ channel: opts.channel, externalContactId: ext });
-  }
-  if (opts.customerId) {
-    orConds.push({ channel: opts.channel, customerId: opts.customerId });
-  }
 
-  if (orConds.length > 0) {
-    const direct = await prisma.socialConversation.findFirst({
-      where: { OR: orConds },
+  // 1. ALWAYS match exact (channel + externalContactId) FIRST so distinct LINE UIDs / Group IDs
+  //    or distinct WhatsApp phones NEVER collide or hijack another contact's conversation!
+  if (ext) {
+    const exactMatch = await prisma.socialConversation.findFirst({
+      where: { channel: opts.channel, externalContactId: ext },
       orderBy: { lastMessageAt: 'desc' },
     });
-    if (direct) return mapDbRowToConversation(direct);
+    if (exactMatch) return mapDbRowToConversation(exactMatch);
+  }
+
+  // 2. For LINE, if ext is a valid LINE Target ID (U... / C... / R...), do NOT fall back to customerId
+  //    because two different LINE accounts or a Group ID must NEVER be merged into another UID's thread!
+  const isDistinctLineTarget =
+    opts.channel === 'line' && /^[UCR][0-9a-f]{32}$/i.test(ext);
+
+  if (opts.customerId && !isDistinctLineTarget) {
+    const byCustomer = await prisma.socialConversation.findFirst({
+      where: { channel: opts.channel, customerId: opts.customerId },
+      orderBy: { lastMessageAt: 'desc' },
+    });
+    if (byCustomer) return mapDbRowToConversation(byCustomer);
   }
 
   if (opts.channel === 'whatsapp') {
@@ -964,6 +972,7 @@ export async function insertSocialMessageAndTouchConversation(opts: {
   message: SocialMessage;
   version: string;
   deduped?: boolean;
+  mutated?: boolean;
 }> {
   await ensureSocialInboxSchemaAndMigrate();
   const msgData = mapMessageToDbData(opts.message);
@@ -984,7 +993,7 @@ export async function insertSocialMessageAndTouchConversation(opts: {
     if (msgData.externalMessageId) {
       dedupConds.push({ externalMessageId: msgData.externalMessageId });
     }
-    const existingMsg = await tx.socialMessage.findFirst({
+    let existingMsg = await tx.socialMessage.findFirst({
       where: { OR: dedupConds },
     });
 
@@ -993,7 +1002,7 @@ export async function insertSocialMessageAndTouchConversation(opts: {
         where: { id: existingMsg.conversationId },
       });
       if (existingConvRow) {
-        return { savedConv: existingConvRow, savedMsg: existingMsg, deduped: true };
+        return { savedConv: existingConvRow, savedMsg: existingMsg, deduped: true, mutated: false };
       }
     }
 
@@ -1012,6 +1021,97 @@ export async function insertSocialMessageAndTouchConversation(opts: {
       if (existingConv) {
         convData.id = existingConv.id;
         msgData.conversationId = existingConv.id;
+      }
+    }
+
+    // Dual-Sync Cross-Source Deduplication for WhatsApp (Cloud API + Baileys QR Bridge):
+    // When both Meta Cloud API Webhook (`wamid.HBg...`) and Linked WhatsApp QR Bridge (`3EB0...` / `A5...`)
+    // deliver the exact same inbound or outbound message within ±15 seconds, deduplicate by
+    // (conversationId + direction + normalized text + timestamp window) so they NEVER collide or create duplicate bubbles!
+    if (!existingMsg && existingConv && msgData.channel === 'whatsapp' && msgData.text) {
+      const windowStart = new Date(msgData.createdAt.getTime() - 15_000);
+      const windowEnd = new Date(msgData.createdAt.getTime() + 15_000);
+      const isPhotoPlaceholder =
+        msgData.text.startsWith('📷 [') ||
+        msgData.text.startsWith('🎨 [') ||
+        msgData.text.startsWith('🎥 [') ||
+        msgData.text.startsWith('🎤 [');
+
+      const candidates = await tx.socialMessage.findMany({
+        where: {
+          conversationId: existingConv.id,
+          direction: msgData.direction,
+          createdAt: { gte: windowStart, lte: windowEnd },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      });
+
+      const normalizeWaText = (t: string | null | undefined) =>
+        (t || '').replace(/\r\n/g, '\n').trim();
+      const normText = normalizeWaText(msgData.text);
+      const matchedDup = candidates.find((c) => {
+        if (normalizeWaText(c.text) === normText) return true;
+        if (
+          isPhotoPlaceholder &&
+          ((c.text || '').startsWith('📷 [') ||
+            (c.text || '').startsWith('🎨 [') ||
+            (c.text || '').startsWith('🎥 [') ||
+            (c.text || '').startsWith('🎤 [')) &&
+          Math.abs(c.createdAt.getTime() - msgData.createdAt.getTime()) <= 15_000
+        ) {
+          return true;
+        }
+        return false;
+      });
+
+      if (matchedDup) {
+        // Enrich the existing row if the newly arrived source carries wamid or resolved attachments
+        const needsEnrich =
+          (!matchedDup.externalMessageId && Boolean(msgData.externalMessageId)) ||
+          (!matchedDup.attachmentsJson && Boolean(msgData.attachmentsJson));
+        const enrichedMsg = needsEnrich
+          ? await tx.socialMessage.update({
+              where: { id: matchedDup.id },
+              data: {
+                externalMessageId: matchedDup.externalMessageId || msgData.externalMessageId,
+                attachmentsJson: matchedDup.attachmentsJson || msgData.attachmentsJson,
+              },
+            })
+          : matchedDup;
+
+        // If this is an outbound reply echo arriving on a conversation that still had unreadCount > 0, clear it
+        let finalConvRow = existingConv;
+        let didClearUnread = false;
+        if (
+          msgData.direction === 'outbound' &&
+          opts.clearUnreadOnOutbound &&
+          existingConv.unreadCount > 0
+        ) {
+          didClearUnread = true;
+          const readNowDate = new Date(Math.max(Date.now(), msgData.createdAt.getTime()));
+          finalConvRow = await tx.socialConversation.update({
+            where: { id: existingConv.id },
+            data: {
+              unreadCount: 0,
+              lastReadAt: readNowDate,
+              lastReadById: existingConv.lastReadById || msgData.senderId || null,
+              lastReadByName:
+                existingConv.lastReadByName || msgData.senderName || 'Admin (WhatsApp App)',
+            },
+          });
+        }
+
+        const didMutate = needsEnrich || didClearUnread;
+        if (didMutate) {
+          await tx.setting.upsert({
+            where: { key: SOCIAL_VERSION_KEY },
+            update: { value: nextVersion },
+            create: { key: SOCIAL_VERSION_KEY, value: nextVersion },
+          });
+        }
+
+        return { savedConv: finalConvRow, savedMsg: enrichedMsg, deduped: true, mutated: didMutate };
       }
     }
 
@@ -1142,7 +1242,7 @@ export async function insertSocialMessageAndTouchConversation(opts: {
       create: { key: SOCIAL_VERSION_KEY, value: nextVersion },
     });
 
-    return { savedConv, savedMsg, deduped: false };
+    return { savedConv, savedMsg, deduped: false, mutated: true };
   });
 
   if (opts.message.direction === 'outbound' && (!opts.incrementUnread)) {
@@ -1155,15 +1255,17 @@ export async function insertSocialMessageAndTouchConversation(opts: {
     );
   }
 
-  if (!result.deduped) {
+  const shouldBumpState = !result.deduped || Boolean(result.mutated);
+  if (shouldBumpState) {
     invalidateSocialStoreCache();
   }
-  const curVersion = result.deduped ? await getSocialStoreVersion() : nextVersion;
+  const curVersion = shouldBumpState ? nextVersion : await getSocialStoreVersion();
   return {
     conversation: applyReadWatermarks([mapDbRowToConversation(result.savedConv)])[0],
     message: mapDbRowToMessage(result.savedMsg),
     version: curVersion,
     deduped: result.deduped,
+    mutated: result.mutated,
   };
 }
 
@@ -1566,6 +1668,7 @@ export async function recordInboundSocialMessageInternal(input: {
   contactName?: string;
   contactPhone?: string;
   contactAvatar?: string;
+  senderName?: string;
   text: string;
   attachments?: SocialMessageAttachment[];
   pendingMediaJob?: PendingSocialMediaJobInput;
@@ -1668,7 +1771,7 @@ export async function recordInboundSocialMessageInternal(input: {
       direction: 'inbound',
       text: input.text,
       attachments: input.attachments,
-      senderName: conv.contactName,
+      senderName: input.senderName || conv.contactName,
       status: 'delivered',
       deliveryMethod: input.deliveryMethod,
       externalMessageId: input.externalMessageId,
@@ -1682,11 +1785,35 @@ export async function recordInboundSocialMessageInternal(input: {
       pendingMediaJob: input.pendingMediaJob,
     });
 
-    if (committed.deduped) {
+    if (committed.deduped && !committed.mutated) {
       return { success: true, deduped: true };
     }
 
     const dbSavedAtMs = Date.now();
+    if (committed.deduped && committed.mutated) {
+      if (!input.isHistorySync) {
+        try {
+          const { publishOrderEvent } = await import('@/lib/realtime-bus');
+          await publishOrderEvent({
+            type: 'social.updated',
+            jobId: `__SOCIAL_MSG_${committed.message.id}`,
+            updatedAt: new Date(dbSavedAtMs),
+            socialPayload: {
+              kind: 'message',
+              conversation: committed.conversation,
+              message: committed.message,
+              version: committed.version,
+            },
+          });
+        } catch {}
+      }
+      return {
+        success: true,
+        deduped: true,
+        conversation: committed.conversation,
+        message: committed.message,
+      };
+    }
     if (input.webhookReceivedAtMs) {
       console.info(
         '[SocialInboxTiming]',
@@ -1874,11 +2001,35 @@ export async function recordOutboundSocialMessageFromSystemInternal(input: {
       pendingMediaJob: input.pendingMediaJob,
     });
 
-    if (committed.deduped) {
+    if (committed.deduped && !committed.mutated) {
       return { success: true, deduped: true };
     }
 
     const dbSavedAtMs = Date.now();
+    if (committed.deduped && committed.mutated) {
+      if (!input.isHistorySync) {
+        try {
+          const { publishOrderEvent } = await import('@/lib/realtime-bus');
+          await publishOrderEvent({
+            type: 'social.updated',
+            jobId: `__SOCIAL_MSG_${committed.message.id}`,
+            updatedAt: new Date(dbSavedAtMs),
+            socialPayload: {
+              kind: 'message',
+              conversation: committed.conversation,
+              message: committed.message,
+              version: committed.version,
+            },
+          });
+        } catch {}
+      }
+      return {
+        success: true,
+        deduped: true,
+        conversation: committed.conversation,
+        message: committed.message,
+      };
+    }
     if (input.webhookReceivedAtMs) {
       console.info(
         '[SocialInboxTiming]',

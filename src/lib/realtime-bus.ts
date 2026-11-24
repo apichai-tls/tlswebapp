@@ -106,9 +106,13 @@ function recordAndDispatchLocal(event: RealtimeOrderEvent, fromRemoteInstance: b
   }
 
   // If received from another Cloud Run instance via PG LISTEN/NOTIFY,
-  // evict stale single-job micro-cache entry and warm/patch only that single job in dbCache.payload
+  // evict stale single-job micro-cache entry (or social RAM cache for social.updated events)
   if (fromRemoteInstance) {
-    if (event.jobId) {
+    if (event.type === 'social.updated') {
+      import('@/lib/social-inbox-internal')
+        .then((m) => m.invalidateSocialStoreCache())
+        .catch(() => {});
+    } else if (event.jobId) {
       const existingMicro = dbCache.jobRevisionCache.get(event.jobId);
       if (existingMicro && existingMicro.revision < event.revision) {
         dbCache.jobRevisionCache.delete(event.jobId);

@@ -668,8 +668,16 @@ function AdminPageContent() {
     return true;
   };
 
-  const updateClosestStoreAsync = async (coords: LatLng | null | undefined, address?: string) => {
-    if (!isRealCustomerCoords(coords, address) || !coords) return;
+  const updateClosestStoreAsync = async (coords: LatLng | null | undefined, address?: string, fallbackBranchId?: string | null) => {
+    if (!isRealCustomerCoords(coords, address) || !coords) {
+      if (fallbackBranchId && String(fallbackBranchId).trim().toUpperCase() !== "ONLINE") {
+        const fbIdx = shopLocations.findIndex(s => s.id === fallbackBranchId);
+        if (fbIdx >= 0) {
+          setSelectedStoreIndex(fbIdx);
+        }
+      }
+      return;
+    }
     try {
       const closestId = await getClosestShopByRoute(coords, shopLocations, address);
       if (closestId) {
@@ -3367,6 +3375,7 @@ function AdminPageContent() {
     let cancelled = false;
     const pollWiseForDialogJob = async () => {
       if (cancelled) return;
+      if (typeof document !== "undefined" && document.hidden) return;
       try {
         const res = await checkWiseJobPaymentStatusAction({
           jobId: editingJobId,
@@ -3397,8 +3406,8 @@ function AdminPageContent() {
       } catch {}
     };
 
-    const initialTimer = setTimeout(pollWiseForDialogJob, 1500);
-    const interval = setInterval(pollWiseForDialogJob, 5000);
+    const initialTimer = setTimeout(pollWiseForDialogJob, 3000);
+    const interval = setInterval(pollWiseForDialogJob, 15000);
     return () => {
       cancelled = true;
       clearTimeout(initialTimer);
@@ -4072,8 +4081,8 @@ function AdminPageContent() {
       return;
     }
     
-    const shop = (editingJobId && existingJob?.branchId ? shopLocations.find(s => s.id === existingJob.branchId) : null)
-      || shopLocations[selectedStoreIndex]
+    const shop = shopLocations[selectedStoreIndex]
+      || (editingJobId && existingJob?.branchId ? shopLocations.find(s => s.id === existingJob.branchId) : null)
       || shopLocations[0];
     const branchShift = getBranchOpenShift(shop?.id);
 
@@ -7875,7 +7884,9 @@ function AdminPageContent() {
                                       setPickupCoords(validCustCoords);
                                       setDeliveryLoc(cleanCustAddr);
                                       setDeliveryCoords(validCustCoords);
-                                      updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
+                                      updateClosestStoreAsync(c.defaultCoords, c.defaultAddress, c.branchId);
+                                    } else if (!validCustCoords && c.branchId) {
+                                      updateClosestStoreAsync(null, undefined, c.branchId);
                                     }
                                     setPickupRoom(custRoomVal);
                                     setDeliveryRoom(custRoomVal);
@@ -7890,7 +7901,7 @@ function AdminPageContent() {
                                     setDifferentDeliveryAddress(false);
                                     setIsDeliveryDirty(false);
                                     setIsFreeDelivery(false);
-                                    updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
+                                    updateClosestStoreAsync(c.defaultCoords, c.defaultAddress, c.branchId);
                                     setEditingFeeLock(null);
                                   }
                                   
@@ -8977,8 +8988,28 @@ function AdminPageContent() {
                                     disabled={isLogisticsLocked}
                                     onChange={(e) => {
                                       if (isLogisticsLocked) return;
-                                      setIsDelivery(e.target.checked);
-                                      if (e.target.checked && isPickup) setIsWalkIn(false);
+                                      const nextChecked = e.target.checked;
+                                      setIsDelivery(nextChecked);
+                                      if (nextChecked && isPickup) setIsWalkIn(false);
+                                      if (nextChecked && !deliveryLoc.trim()) {
+                                        const fallbackAddr =
+                                          pickupLoc.trim() ||
+                                          (selectedProfileCustomer?.defaultAddress || "").replace(/\s*\(Room\s*[^)]+\)$/i, "").trim();
+                                        if (fallbackAddr) {
+                                          setDeliveryLoc(fallbackAddr);
+                                          if (!deliveryRoom.trim()) {
+                                            setDeliveryRoom(pickupRoom || selectedProfileCustomer?.roomNo || "");
+                                          }
+                                          if (!deliveryCoords && (pickupCoords || selectedProfileCustomer?.defaultCoords)) {
+                                            setDeliveryCoords(pickupCoords || selectedProfileCustomer?.defaultCoords || null);
+                                          }
+                                          if (!deliveryDist && pickupDist) {
+                                            setDeliveryDist(pickupDist);
+                                          }
+                                          setDifferentDeliveryAddress(false);
+                                          setIsDeliveryDirty(false);
+                                        }
+                                      }
                                       setEditingFeeLock(null);
                                     }}
                                     className="rounded text-indigo-600 w-3 h-3 border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -12366,8 +12397,8 @@ function AdminPageContent() {
                           customerName={customerName || selectedProfileCustomer?.name || activeJob?.customerName || null}
                           customerPhone={customerPhone || selectedProfileCustomer?.phone || activeJob?.customerPhone || null}
                           secondaryPhone={selectedProfileCustomer?.secondaryPhone || null}
-                          lineUserId={(selectedProfileCustomer as any)?.lineUserId || null}
-                          whatsappId={(selectedProfileCustomer as any)?.whatsappId || null}
+                          lineUserId={dialogLineProfileId.trim() || selectedProfileCustomer?.lineId || (selectedProfileCustomer as any)?.lineUserId || null}
+                          whatsappId={dialogWhatsappId.trim() || selectedProfileCustomer?.whatsappId || null}
                           branchId={activeShopConfig?.id || activeJob?.branchId || null}
                           branchName={activeShopConfig?.name || null}
                           totalAmount={dialogTotal}
@@ -13390,7 +13421,7 @@ function AdminPageContent() {
             initialAddress={dialogOpen && !selectedProfileCustomer ? stripRoomSuffix(pickupLoc || deliveryLoc || "") : undefined}
             initialCoords={dialogOpen && !selectedProfileCustomer ? (pickupCoords || deliveryCoords) : undefined}
             initialRoomNo={dialogOpen && !selectedProfileCustomer ? (pickupRoom || deliveryRoom) : undefined}
-            initialBranchId=""
+            initialBranchId={shopLocations[selectedStoreIndex]?.id || ""}
             initialIsVip={dialogOpen && !selectedProfileCustomer ? Boolean(selectedVIPLabel) : undefined}
             onTopUpCustomer={(c) => {
               setTopUpCustomer(c);
@@ -13448,7 +13479,9 @@ function AdminPageContent() {
                   setPickupCoords(validCustCoords);
                   setDeliveryLoc(cleanCustAddr);
                   setDeliveryCoords(validCustCoords);
-                  updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
+                  updateClosestStoreAsync(c.defaultCoords, c.defaultAddress, c.branchId);
+                } else if (!validCustCoords && c.branchId) {
+                  updateClosestStoreAsync(null, undefined, c.branchId);
                 }
                 setPickupRoom(custRoomVal);
                 setDeliveryRoom(custRoomVal);
@@ -13464,7 +13497,7 @@ function AdminPageContent() {
                 
                 setIsDeliveryDirty(false);
                 setIsFreeDelivery(false);
-                updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
+                updateClosestStoreAsync(c.defaultCoords, c.defaultAddress, c.branchId);
                 setEditingFeeLock(null);
               }
               

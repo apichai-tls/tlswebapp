@@ -43,7 +43,10 @@ export async function getStoredWiseCredentials(): Promise<{ token: string; profi
   }
 }
 
-export async function fetchWiseRecentTransactionsInternal(limit: number = 20): Promise<{
+export async function fetchWiseRecentTransactionsInternal(
+  limit: number = 20,
+  options?: { forceRefresh?: boolean }
+): Promise<{
   success: boolean;
   activities?: WiseActivityItem[];
   error?: string;
@@ -58,20 +61,23 @@ export async function fetchWiseRecentTransactionsInternal(limit: number = 20): P
     }
 
     try {
-      const activities = await fetchWiseActivities(token, profileId, limit);
+      const activities = await fetchWiseActivities(token, profileId, limit, options);
       return {
         success: true,
         activities,
       };
     } catch (primaryErr: any) {
-      // If a stale WISE_API_TOKEN / WISE_PROFILE_ID env var or DB setting fails with 401/403,
-      // automatically fall back to the verified default business token + profileId!
-      if (token !== DEFAULT_WISE_TOKEN || String(profileId) !== DEFAULT_WISE_PROFILE_ID) {
+      // Only fall back to the verified default business token + profileId on 401/403 auth errors,
+      // NEVER on 429 rate-limit / WAF blocks (retrying immediately makes rate-limiting worse).
+      const errMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr || '');
+      const isAuthError = /\(401\)|\(403\)/.test(errMsg);
+      if (isAuthError && (token !== DEFAULT_WISE_TOKEN || String(profileId) !== DEFAULT_WISE_PROFILE_ID)) {
         try {
           const fallbackActivities = await fetchWiseActivities(
             DEFAULT_WISE_TOKEN,
             DEFAULT_WISE_PROFILE_ID,
-            limit
+            limit,
+            options
           );
           return {
             success: true,
@@ -375,6 +381,7 @@ export async function checkWiseJobPaymentStatusInternal(params: {
   jobId: string;
   expectedAmount: number;
   dialogOpenedAtIso?: string;
+  forceRefresh?: boolean;
 }): Promise<{
   success: boolean;
   isPaid: boolean;
@@ -384,22 +391,23 @@ export async function checkWiseJobPaymentStatusInternal(params: {
   error?: string;
 }> {
   try {
-    const { jobId, expectedAmount } = params;
+    const { jobId, expectedAmount, forceRefresh } = params;
     const job = await prisma.job.findUnique({
       where: { id: jobId },
     });
 
-    const txRes = await fetchWiseRecentTransactionsInternal(20);
-    const activities = txRes.activities || [];
-
+    // Short-circuit before calling Wise API if the job is already paid
     if (job?.isPaid && job?.isShopPaid) {
       return {
         success: true,
         isPaid: true,
         job,
-        activities,
+        activities: [],
       };
     }
+
+    const txRes = await fetchWiseRecentTransactionsInternal(20, { forceRefresh });
+    const activities = txRes.activities || [];
 
     if (!txRes.success || activities.length === 0) {
       return {

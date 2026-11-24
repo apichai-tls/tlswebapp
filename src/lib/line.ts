@@ -123,6 +123,27 @@ export function isValidLineUserId(val?: string | null): boolean {
   return /^U[0-9a-f]{32}$/i.test(val.trim());
 }
 
+export function isValidLineGroupId(val?: string | null): boolean {
+  if (!val) return false;
+  return /^C[0-9a-f]{32}$/i.test(val.trim());
+}
+
+export function isValidLineRoomId(val?: string | null): boolean {
+  if (!val) return false;
+  return /^R[0-9a-f]{32}$/i.test(val.trim());
+}
+
+export function isValidLineTargetId(val?: string | null): boolean {
+  if (!val) return false;
+  return /^[UCR][0-9a-f]{32}$/i.test(val.trim());
+}
+
+export interface LineGroupSummary {
+  groupId: string;
+  groupName: string;
+  pictureUrl?: string;
+}
+
 export function verifyLineWebhookSignature(
   rawBody: string,
   signature: string | null,
@@ -179,6 +200,77 @@ export async function getLineUserProfile(
   }
 }
 
+export async function getLineGroupSummary(
+  channelAccessToken: string,
+  groupId: string
+): Promise<LineGroupSummary | null> {
+  const token = channelAccessToken.trim();
+  if (!token || !isValidLineGroupId(groupId)) return null;
+  try {
+    const res = await fetch(`${LINE_API_BASE}/group/${encodeURIComponent(groupId.trim())}/summary`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function getLineGroupMemberProfile(
+  channelAccessToken: string,
+  groupId: string,
+  userId: string
+): Promise<LineUserProfile | null> {
+  const token = channelAccessToken.trim();
+  if (!token || !isValidLineGroupId(groupId) || !isValidLineUserId(userId)) return null;
+  try {
+    const res = await fetch(
+      `${LINE_API_BASE}/group/${encodeURIComponent(groupId.trim())}/member/${encodeURIComponent(userId.trim())}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+      }
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function getLineRoomMemberProfile(
+  channelAccessToken: string,
+  roomId: string,
+  userId: string
+): Promise<LineUserProfile | null> {
+  const token = channelAccessToken.trim();
+  if (!token || !isValidLineRoomId(roomId) || !isValidLineUserId(userId)) return null;
+  try {
+    const res = await fetch(
+      `${LINE_API_BASE}/room/${encodeURIComponent(roomId.trim())}/member/${encodeURIComponent(userId.trim())}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+      }
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 export async function sendLinePushMessage(
   channelAccessToken: string,
   to: string,
@@ -189,10 +281,10 @@ export async function sendLinePushMessage(
   if (!token) {
     return { ok: false, error: "LINE Channel Access Token is not configured." };
   }
-  if (!isValidLineUserId(recipient)) {
+  if (!isValidLineTargetId(recipient)) {
     return {
       ok: false,
-      error: `Invalid LINE User ID "${recipient}". Must be a 33-character ID starting with 'U'.`,
+      error: `Invalid LINE Target ID "${recipient}". Must be a 33-character ID starting with 'U', 'C', or 'R'.`,
     };
   }
   if (!messages.length) {

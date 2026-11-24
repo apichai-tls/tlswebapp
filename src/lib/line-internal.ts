@@ -6,6 +6,9 @@ import {
   getLineBotInfo,
   getLineUserProfile,
   sendLinePushMessage,
+  isValidLineGroupId,
+  isValidLineRoomId,
+  isValidLineTargetId,
   isValidLineUserId,
   issueLineChannelAccessTokenFromCredentials,
   fetchLineFollowerIdsPage,
@@ -569,6 +572,7 @@ export async function sendDeliveryProofViaLineInternal(params: {
   overrideLineUserId?: string;
   customMessage?: string;
   actorName?: string;
+  isAutoSend?: boolean;
 }): Promise<{
   success: boolean;
   sentToUserId?: string;
@@ -594,7 +598,8 @@ export async function sendDeliveryProofViaLineInternal(params: {
     }
 
     const targetName = (customer?.name || job.customerName || "").trim();
-    if ((!customer || !isValidLineUserId(customer.lineId)) && targetName.length >= 2) {
+    // In strict Auto-Send mode, NEVER guess a sibling customer's LINE UID by name!
+    if (!params.isAutoSend && (!customer || !isValidLineTargetId(customer.lineId)) && targetName.length >= 2) {
       const siblingWithLine = await prisma.customer.findFirst({
         where: {
           name: { equals: targetName, mode: "insensitive" },
@@ -647,13 +652,30 @@ export async function sendDeliveryProofViaLineInternal(params: {
     }
 
     let jobLineIdFromNotes = "";
+    let jobContactChannel = "";
     if (job.adminNotesJson) {
       try {
         const parsedNotes = JSON.parse(job.adminNotesJson);
         if (parsedNotes && typeof parsedNotes.customerLineId === "string") {
           jobLineIdFromNotes = parsedNotes.customerLineId.trim();
         }
+        if (parsedNotes && typeof parsedNotes.contactChannel === "string") {
+          jobContactChannel = parsedNotes.contactChannel.trim().toLowerCase();
+        }
       } catch {}
+    }
+
+    // In strict Auto-Send mode, if this job's contactChannel is explicitly WhatsApp and has no job-level LINE ID,
+    // never fire a LINE auto-notification unexpectedly!
+    if (
+      params.isAutoSend &&
+      jobContactChannel === "whatsapp" &&
+      !isValidLineTargetId(jobLineIdFromNotes)
+    ) {
+      return {
+        success: false,
+        error: "Skipped LINE auto-send: job contact channel is WhatsApp without an explicit LINE ID.",
+      };
     }
 
     if (jobLineIdFromNotes && isValidLineUserId(jobLineIdFromNotes) && !params.overrideLineUserId) {
@@ -680,13 +702,15 @@ export async function sendDeliveryProofViaLineInternal(params: {
 
     let lineUserId = (
       params.overrideLineUserId ||
-      (isValidLineUserId(jobLineIdFromNotes) ? jobLineIdFromNotes : "") ||
+      (isValidLineTargetId(jobLineIdFromNotes) ? jobLineIdFromNotes : "") ||
       customer?.lineId ||
       jobLineIdFromNotes ||
       ""
     ).trim();
 
-    if (!isValidLineUserId(lineUserId)) {
+    // In strict Auto-Send mode, NEVER guess a LINE recipient from displayName/handle in lineOaContacts!
+    // Only send automatically when a verified LINE UID (`U...`) or Group ID (`C...`/`R...`) is already explicitly linked.
+    if (!params.isAutoSend && !isValidLineTargetId(lineUserId)) {
       const contactsRes = await getLineOaContactsInternal();
       const normSavedLineHandle = normalizeHandle(jobLineIdFromNotes || customer?.lineId);
       const normCustomerName = normalizeHandle(customer?.name || job.customerName);
@@ -731,17 +755,18 @@ export async function sendDeliveryProofViaLineInternal(params: {
       }
     }
 
-    if (!isValidLineUserId(lineUserId)) {
+    if (!isValidLineTargetId(lineUserId)) {
       return {
         success: false,
-        error:
-          "Could not find a linked LINE ID for this customer yet. Please select their LINE profile from the dropdown below.",
+        error: params.isAutoSend
+          ? "Skipped LINE auto-send: no verified LINE UID or LINE Group linked (name-guessing disabled for safety)."
+          : "Could not find a linked LINE ID or LINE Group for this customer yet. Please select their LINE profile from the dropdown below.",
       };
     }
 
     if (
       params.overrideLineUserId &&
-      isValidLineUserId(params.overrideLineUserId) &&
+      isValidLineTargetId(params.overrideLineUserId) &&
       customer &&
       customer.lineId !== lineUserId
     ) {
@@ -863,14 +888,17 @@ export async function sendDeliveryProofViaLineInternal(params: {
     });
 
     try {
+      const isGroupTarget = isValidLineGroupId(lineUserId) || isValidLineRoomId(lineUserId);
       await recordOutboundSocialMessageFromSystemInternal({
         channel: "line",
         externalContactId: lineUserId,
-        contactName: customer?.name || job.customerName || undefined,
-        contactPhone: isValidPhoneNumber(customer?.phone || job.customerPhone)
-          ? customer?.phone || job.customerPhone || ""
-          : "",
-        customerId: customer?.id || job.customerId || null,
+        contactName: isGroupTarget ? undefined : customer?.name || job.customerName || undefined,
+        contactPhone: isGroupTarget
+          ? ""
+          : isValidPhoneNumber(customer?.phone || job.customerPhone)
+            ? customer?.phone || job.customerPhone || ""
+            : "",
+        customerId: isGroupTarget ? null : customer?.id || job.customerId || null,
         text: textMessage,
         imageUrls: rawPhotos.slice(0, 4),
         senderName: params.actorName || "LINE OA Bot",
@@ -925,6 +953,7 @@ export async function tryAutoSendLineDeliveryProofOnUpload(jobId: string): Promi
     const res = await sendDeliveryProofViaLineInternal({
       jobId,
       actorName: "LINE OA Auto-Send",
+      isAutoSend: true,
     });
 
     if (res.success) {

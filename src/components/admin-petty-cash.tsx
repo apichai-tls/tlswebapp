@@ -730,15 +730,19 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     [holderSummaries]
   );
 
-  // Default Wallet filter to the currently logged-in user's wallet (if they have one) on initial load
+  // Default Wallet filter:
+  // - Accounting & Admin (canApproveOrTopUp) default to "ALL" so they see all custodians' transactions immediately.
+  // - Regular store custodians default to their own wallet.
   useEffect(() => {
     if (hasInitializedDefaultWalletRef.current) return;
     if (!currentUser?.id || holderSummaries.length === 0) return;
     hasInitializedDefaultWalletRef.current = true;
-    if (holderSummaries.some((h) => h.holderId === currentUser.id)) {
+    if (!canApproveOrTopUp && holderSummaries.some((h) => h.holderId === currentUser.id)) {
       setHolderFilter(currentUser.id);
+    } else {
+      setHolderFilter("ALL");
     }
-  }, [currentUser?.id, holderSummaries]);
+  }, [currentUser?.id, holderSummaries, canApproveOrTopUp]);
   const storeCustodians = useMemo(
     () => holderSummaries.filter((h) => !h.isAccounting),
     [holderSummaries]
@@ -1586,21 +1590,23 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     return t.direction === "CREDIT" ? -amt : amt;
   }, []);
 
-  // Unclaimed & APPROVED (not yet attached to a replenishment report) transactions for a holder
+  // Unclaimed & APPROVED (or PENDING for Accounting custodians/submitters) transactions for a holder
   // Includes both DEBIT (EXPENSE / TRANSFER_OUT / ADJUST_DEDUCT) and non-TOPUP CREDIT returns (TRANSFER_IN / RETURN / ADJUST_ADD)
   // so Net Replenishment always reconciles 1:1 with Quota - Current Balance.
   const getUnclaimedExpenseTxsForHolder = useCallback(
     (targetHolderId: string): PettyCashTx[] => {
       if (!targetHolderId) return [];
+      const targetSummary = holderSummaries.find((h) => h.holderId === targetHolderId);
+      const allowPendingForAccounting = Boolean(targetSummary?.isAccounting || canApproveOrTopUp);
       return transactions.filter(
         (t) =>
           t.holderId === targetHolderId &&
-          t.status === "APPROVED" &&
+          (t.status === "APPROVED" || (allowPendingForAccounting && t.status === "PENDING")) &&
           !t.replenishmentReportId &&
           (t.direction === "DEBIT" || t.type === "TRANSFER_IN" || t.type === "RETURN" || t.type === "ADJUST_ADD")
       );
     },
-    [transactions]
+    [transactions, holderSummaries, canApproveOrTopUp]
   );
 
   // Open Submit Replenishment Report Modal
@@ -2847,61 +2853,220 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
           })}
         </div>
 
-        {/* Quick Custodian Filter Pills when in Ledger view */}
-        {canApproveOrTopUp && activeViewTab === "ledger" && holderSummaries.length > 0 && (
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
-            <button
-              type="button"
-              onClick={() => setHolderFilter("ALL")}
-              className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-all shrink-0 cursor-pointer ${
-                holderFilter === "ALL"
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-              }`}
-            >
-              All Wallets
-            </button>
+        {/* Quick Reset / Active Filter Indicator on Tab Bar */}
+        {canApproveOrTopUp && (holderFilter !== "ALL" || branchFilter !== "ALL" || statusFilter !== "ALL" || typeFilter !== "ALL" || dateFrom || dateTo || searchQuery.trim()) && (
+          <button
+            type="button"
+            onClick={() => {
+              setHolderFilter("ALL");
+              setBranchFilter("ALL");
+              setCategoryFilter("ALL");
+              setStatusFilter("ALL");
+              setTypeFilter("ALL");
+              setDateFrom("");
+              setDateTo("");
+              setSearchQuery("");
+            }}
+            className="px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 transition-colors cursor-pointer self-start sm:self-auto"
+          >
+            ล้างตัวกรองทั้งหมด (Show All Transactions)
+          </button>
+        )}
+      </div>
+
+      {/* ── 3B. CLEAR WALLET SELECTOR BAR (คลิกเลือกกระเป๋าเพื่อดูรายการเดินบัญชีของแต่ละคน) ── */}
+      {canApproveOrTopUp && holderSummaries.length > 0 && (activeViewTab === "ledger" || activeViewTab === "report" || activeViewTab === "fuel" || activeViewTab === "claims") && (
+        <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-2xs space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
+                <Wallet size={14} className="text-indigo-600" />
+                <span>เลือกกระเป๋าเงินสดย่อย (Select Wallet to View Transactions):</span>
+              </span>
+              <span className="text-[11px] text-slate-500">
+                คลิกที่ชื่อเพื่อกรองดูรายการเดินบัญชีของคนนั้น หรือเลือก &ldquo;ดูรวมทุกกระเป๋า&rdquo;
+              </span>
+            </div>
+            {holderFilter !== "ALL" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setHolderFilter("ALL");
+                  setClaimsHolderFilter("ALL");
+                  setBranchFilter("ALL");
+                }}
+                className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[11px] font-bold border border-indigo-200 cursor-pointer"
+              >
+                ← ดูรวมทุกกระเป๋า (Show All {transactions.length} Transactions)
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-2.5">
+            {/* Card 0: All Wallets Combined */}
+            {(() => {
+              const isAllSelected = holderFilter === "ALL";
+              const totalTxCount = holderSummaries.reduce((s, h) => s + h.txCount, 0);
+              const totalPending = holderSummaries.reduce((s, h) => s + h.pendingCount, 0);
+              return (
+                <div
+                  onClick={() => {
+                    setHolderFilter("ALL");
+                    setClaimsHolderFilter("ALL");
+                    setBranchFilter("ALL");
+                  }}
+                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2 ${
+                    isAllSelected
+                      ? "bg-slate-900 text-white border-slate-900 shadow-sm ring-2 ring-slate-900/15"
+                      : "bg-slate-50/70 hover:bg-white text-slate-800 border-slate-200/90 hover:border-slate-300"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-extrabold flex items-center gap-1.5">
+                        <span>ดูรวมทุกกระเป๋า</span>
+                        {isAllSelected && (
+                          <span className="px-1.5 py-0.2 rounded bg-emerald-500 text-white text-[9.5px] font-bold">
+                            กำลังดู
+                          </span>
+                        )}
+                      </div>
+                      <div className={`text-[10.5px] mt-0.5 ${isAllSelected ? "text-slate-300" : "text-slate-500"}`}>
+                        All Wallets ({holderSummaries.length} คน)
+                      </div>
+                    </div>
+                    <span
+                      className={`px-1.5 py-0.5 rounded-md font-mono text-[10.5px] font-bold ${
+                        isAllSelected ? "bg-white/15 text-white" : "bg-slate-200/80 text-slate-700"
+                      }`}
+                    >
+                      {totalTxCount} รายการ
+                    </span>
+                  </div>
+
+                  <div className="flex items-end justify-between gap-2 pt-1 border-t border-slate-200/20">
+                    <div>
+                      <span className={`text-[10px] block ${isAllSelected ? "text-slate-300" : "text-slate-400"}`}>
+                        ยอดคงเหลือรวม
+                      </span>
+                      <span className="font-mono font-extrabold text-sm">
+                        ฿{dashboardDetails.totalWalletBalanceAll.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    {totalPending > 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500 text-white text-[10px] font-bold">
+                        ⏳ {totalPending} รอตรวจ
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Individual Custodian Cards */}
             {holderSummaries.map((h) => {
               const isSelected = holderFilter === h.holderId;
+              const limit = getHolderLimit(h.holderId, h.isAccounting);
+              const branchName = getBranchDisplayName(h.branchId);
               return (
                 <div
                   key={h.holderId}
-                  onClick={() => setHolderFilter(isSelected ? "ALL" : h.holderId)}
-                  className={`pl-2.5 pr-1.5 py-1 rounded-xl text-xs border transition-all shrink-0 flex items-center gap-2 cursor-pointer ${
+                  onClick={() => {
+                    const nextHolder = isSelected ? "ALL" : h.holderId;
+                    setHolderFilter(nextHolder);
+                    setClaimsHolderFilter(nextHolder);
+                    setBranchFilter("ALL");
+                  }}
+                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2 ${
                     isSelected
-                      ? "bg-indigo-50 border-indigo-400 text-indigo-950 font-bold"
-                      : "bg-white border-slate-200/90 text-slate-700 hover:border-slate-300"
+                      ? "bg-indigo-50/90 border-indigo-500 text-indigo-950 shadow-sm ring-2 ring-indigo-500/20"
+                      : "bg-white hover:bg-slate-50/80 border-slate-200/90 hover:border-slate-300 text-slate-800"
                   }`}
                 >
-                  <span className="truncate max-w-[110px] font-semibold">{h.holderName}</span>
-                  <span
-                    className={`font-mono text-[11px] font-bold ${
-                      h.currentBalance <= 0 ? "text-amber-600" : "text-emerald-600"
-                    }`}
-                  >
-                    ฿{h.currentBalance.toLocaleString()}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleOpenCreateModal("TOPUP", {
-                        id: h.holderId,
-                        name: h.holderName,
-                        branchId: h.branchId,
-                      });
-                    }}
-                    className="w-5 h-5 rounded-md bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
-                    title={`Top-up ${h.holderName}`}
-                  >
-                    <Plus size={11} />
-                  </button>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-xs font-extrabold truncate flex items-center gap-1.5">
+                        <span className="truncate">{h.holderName}</span>
+                        {isSelected && (
+                          <span className="px-1.5 py-0.2 rounded bg-indigo-600 text-white text-[9.5px] font-bold shrink-0">
+                            กำลังดู
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10.5px] text-slate-500 truncate mt-0.5 flex items-center gap-1">
+                        <span
+                          className={`px-1.5 py-0.1 rounded text-[9.5px] font-bold ${
+                            h.isAccounting ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"
+                          }`}
+                        >
+                          {h.isAccounting ? "Accounting" : "Store"}
+                        </span>
+                        <span className="truncate">• {branchName}</span>
+                      </div>
+                    </div>
+                    <span
+                      className={`px-1.5 py-0.5 rounded-md font-mono text-[10.5px] font-bold shrink-0 ${
+                        isSelected ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-700"
+                      }`}
+                    >
+                      {h.txCount} รายการ
+                    </span>
+                  </div>
+
+                  <div className="flex items-end justify-between gap-2 pt-1 border-t border-slate-100">
+                    <div>
+                      <span className="text-[10px] text-slate-400 block">
+                        คงเหลือ / วงเงิน ฿{limit.toLocaleString()}
+                      </span>
+                      <span
+                        className={`font-mono font-extrabold text-sm ${
+                          h.currentBalance <= 0 ? "text-amber-600" : "text-emerald-600"
+                        }`}
+                      >
+                        ฿{h.currentBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      {h.pendingCount > 0 && (
+                        <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold">
+                          ⏳ {h.pendingCount}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenSubmitReportModal(h.holderId);
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white text-[10px] font-bold border border-indigo-200 transition-colors cursor-pointer"
+                        title={`สร้างใบสรุปเบิกเงินสดย่อยของ ${h.holderName}`}
+                      >
+                        สรุปเบิก
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenCreateModal("TOPUP", {
+                            id: h.holderId,
+                            name: h.holderName,
+                            branchId: h.branchId,
+                          });
+                        }}
+                        className="w-5 h-5 rounded bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white flex items-center justify-center border border-emerald-200 transition-colors cursor-pointer"
+                        title={`Top-up เติมเงินให้ ${h.holderName}`}
+                      >
+                        <Plus size={11} />
+                      </button>
+                    </div>
+                  </div>
                 </div>
               );
             })}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* ── TAB: REPLENISHMENT CLAIMS (สรุป Report การใช้จ่ายเพื่อขอเบิกเงินสดย่อย) ── */}
       {activeViewTab === "claims" && (
@@ -2966,7 +3131,10 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 </div>
                 <select
                   value={claimsHolderFilter}
-                  onChange={(e) => setClaimsHolderFilter(e.target.value)}
+                  onChange={(e) => {
+                    setClaimsHolderFilter(e.target.value);
+                    setHolderFilter(e.target.value);
+                  }}
                   className="h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500"
                 >
                   <option value="ALL">All Custodians (ทุกคน)</option>
@@ -3858,6 +4026,56 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       {/* ── TAB 1 (DEFAULT): STREAMLINED TRANSACTIONS LEDGER ─────────────────── */}
       {activeViewTab === "ledger" && (
         <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xs overflow-hidden">
+          {/* Active Wallet Context Banner */}
+          {canApproveOrTopUp && holderFilter !== "ALL" && (() => {
+            const activeHolder = holderSummaries.find((h) => h.holderId === holderFilter);
+            if (!activeHolder) return null;
+            const limit = getHolderLimit(activeHolder.holderId, activeHolder.isAccounting);
+            return (
+              <div className="px-4 py-2.5 bg-indigo-50/80 border-b border-indigo-200/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="px-2 py-0.5 rounded-md bg-indigo-600 text-white font-bold text-[10.5px]">
+                    กำลังดูเฉพาะกระเป๋า
+                  </span>
+                  <strong className="text-indigo-950 font-extrabold text-sm">
+                    {activeHolder.holderName}
+                  </strong>
+                  <span className="text-indigo-700 font-medium">
+                    ({activeHolder.isAccounting ? "Accounting" : "Store"} • {getBranchDisplayName(activeHolder.branchId)})
+                  </span>
+                  <span className="text-slate-600">
+                    • คงเหลือ <strong className="font-mono text-emerald-700">฿{activeHolder.currentBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> / วงเงิน <strong className="font-mono">฿{limit.toLocaleString()}</strong>
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleOpenCreateModal(
+                        "EXPENSE",
+                        { id: activeHolder.holderId, name: activeHolder.holderName, branchId: activeHolder.branchId },
+                        "EXPENSE_DOC"
+                      )
+                    }
+                    className="px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold text-[11px] cursor-pointer"
+                  >
+                    + เบิกจ่ายในชื่อ {activeHolder.holderName}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHolderFilter("ALL");
+                      setBranchFilter("ALL");
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] cursor-pointer"
+                  >
+                    แสดงทุกกระเป๋า (Show All Wallets)
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Clean Filter Bar */}
           <div className="p-3.5 border-b border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
             {/* Left: Type Pills */}
@@ -3897,6 +4115,8 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                 categoryFilter !== "ALL" ||
                 statusFilter !== "ALL" ||
                 typeFilter !== "ALL" ||
+                dateFrom !== "" ||
+                dateTo !== "" ||
                 searchQuery.trim() !== "") && (
                 <button
                   type="button"
@@ -3906,11 +4126,13 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                     setCategoryFilter("ALL");
                     setStatusFilter("ALL");
                     setTypeFilter("ALL");
+                    setDateFrom("");
+                    setDateTo("");
                     setSearchQuery("");
                   }}
                   className="px-2.5 py-1.5 rounded-xl text-xs font-semibold text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
                 >
-                  Reset
+                  Reset All
                 </button>
               )}
             </div>
@@ -3928,19 +4150,51 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
               </div>
 
               {canApproveOrTopUp && (
-                <select
-                  value={branchFilter}
-                  onChange={(e) => setBranchFilter(e.target.value)}
-                  className="h-8.5 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 outline-none focus:border-slate-400 cursor-pointer"
-                >
-                  <option value="ALL">All Branches</option>
-                  <option value="HQ">Head Quarter</option>
-                  {shops.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+                <>
+                  <select
+                    value={holderFilter}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setHolderFilter(val);
+                      if (val !== "ALL") setBranchFilter("ALL");
+                    }}
+                    className={`h-8.5 rounded-xl border px-2.5 text-xs font-semibold outline-none cursor-pointer ${
+                      holderFilter !== "ALL"
+                        ? "border-indigo-400 bg-indigo-50 text-indigo-900"
+                        : "border-slate-200 bg-white text-slate-700"
+                    }`}
+                  >
+                    <option value="ALL">All Wallets (ทุกกระเป๋า)</option>
+                    {holderSummaries.map((h) => (
+                      <option key={h.holderId} value={h.holderId}>
+                        {h.holderName} ({h.txCount} รายการ • ฿{h.currentBalance.toLocaleString()})
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={branchFilter}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setBranchFilter(val);
+                      if (val !== "ALL" && holderFilter !== "ALL") {
+                        const curH = holderSummaries.find((h) => h.holderId === holderFilter);
+                        if (curH && (curH.branchId || "HQ") !== val) {
+                          setHolderFilter("ALL");
+                        }
+                      }
+                    }}
+                    className="h-8.5 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 outline-none focus:border-slate-400 cursor-pointer"
+                  >
+                    <option value="ALL">All Branches</option>
+                    <option value="HQ">Head Quarter</option>
+                    {shops.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </>
               )}
 
               <select
@@ -3994,8 +4248,30 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                   </tr>
                 ) : filteredTransactions.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-12 text-center text-slate-400">
-                      No transactions found for the selected filters.
+                    <td colSpan={7} className="py-12 text-center text-slate-500 space-y-2.5">
+                      <div className="font-semibold text-slate-700">
+                        ไม่พบรายการเดินบัญชีตามตัวกรองที่เลือก (No transactions found for the selected filters)
+                      </div>
+                      {(holderFilter !== "ALL" || branchFilter !== "ALL" || categoryFilter !== "ALL" || statusFilter !== "ALL" || typeFilter !== "ALL" || dateFrom || dateTo || searchQuery.trim()) && (
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setHolderFilter("ALL");
+                              setBranchFilter("ALL");
+                              setCategoryFilter("ALL");
+                              setStatusFilter("ALL");
+                              setTypeFilter("ALL");
+                              setDateFrom("");
+                              setDateTo("");
+                              setSearchQuery("");
+                            }}
+                            className="mt-1 px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold cursor-pointer"
+                          >
+                            ล้างตัวกรองเพื่อดูรายการทั้งหมด ({transactions.length} รายการ)
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ) : (
@@ -4024,8 +4300,19 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
 
                         {/* 2. Custodian & Branch */}
                         <td className="py-3 px-4 whitespace-nowrap">
-                          <div className="font-semibold text-slate-900">{tx.holderName}</div>
-                          <div className="text-[11px] text-slate-400">{branchName}</div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!canApproveOrTopUp) return;
+                              setHolderFilter(holderFilter === tx.holderId ? "ALL" : tx.holderId);
+                              setBranchFilter("ALL");
+                            }}
+                            className={`text-left ${canApproveOrTopUp ? "hover:text-indigo-600 cursor-pointer" : ""}`}
+                            title={canApproveOrTopUp ? `คลิกเพื่อกรองดูเฉพาะกระเป๋าของ ${tx.holderName}` : undefined}
+                          >
+                            <div className="font-semibold text-slate-900 hover:underline">{tx.holderName}</div>
+                            <div className="text-[11px] text-slate-400">{branchName}</div>
+                          </button>
                         </td>
 
                         {/* 3. Details & Category */}
@@ -5921,6 +6208,11 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                                 />
                                 <div className="min-w-0">
                                   <div className="font-semibold text-slate-900 truncate flex items-center gap-1.5">
+                                    {tx.status === "PENDING" && (
+                                      <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9.5px] font-extrabold shrink-0">
+                                        PENDING • Auto-Approve
+                                      </span>
+                                    )}
                                     {tx.type === "TRANSFER_OUT" && (
                                       <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 text-[9.5px] font-extrabold shrink-0">
                                         Transfer → {tx.counterpartyName || "Staff"}
@@ -6024,8 +6316,8 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                             <span className="truncate font-medium text-slate-700">
                               {c.category} ({c.count})
                             </span>
-                            <span className="font-mono font-bold text-rose-600 shrink-0">
-                              ฿{c.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            <span className={`font-mono font-bold shrink-0 ${Number(c.amount) < 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                              ฿{Math.abs(Number(c.amount)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                             </span>
                           </div>
                         ))}
@@ -6237,7 +6529,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                               {c.category} ({c.count} บิล)
                             </span>
                             <span className={`font-mono font-bold shrink-0 ${Number(c.amount) < 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                              {Number(c.amount) < 0 ? "-" : ""}฿{Math.abs(Number(c.amount)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              ฿{Math.abs(Number(c.amount)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                             </span>
                           </div>
                         ))}

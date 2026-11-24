@@ -10939,13 +10939,33 @@ export async function submitPettyCashReplenishmentReportAction(data: {
       return { success: false, error: "ยอดขอเบิกชดเชยต้องมากกว่า 0 บาท" };
     }
 
-    // Prevent duplicate submission and ensure only APPROVED expenses (never PENDING / REJECTED / VOID) are included
-    const invalidTxRows: any[] = await prisma.$queryRaw`
-      SELECT "id", "status", "replenishmentReportId" FROM "PettyCashTransaction"
-      WHERE "id" = ANY(${txIds}::text[])
-        AND ("replenishmentReportId" IS NOT NULL OR "status" <> 'APPROVED')
-      LIMIT 1
+    // Prevent duplicate submission and ensure only APPROVED (or PENDING when submitted for/by Accounting) expenses are included (never REJECTED / VOID)
+    const submitterRole = (authUser.role || "").toLowerCase();
+    const isSubmitterAccountingOrAdmin =
+      submitterRole === "admin" ||
+      submitterRole === "superadmin" ||
+      submitterRole === "accounting" ||
+      (authUser.permissions || []).includes("approve-petty-cash");
+    const targetHolderRows: any[] = await prisma.$queryRaw`
+      SELECT "role" FROM "AdminUser" WHERE "id" = ${data.holderId} LIMIT 1
     `;
+    const isTargetHolderAccounting =
+      String(targetHolderRows[0]?.role || "").toLowerCase() === "accounting";
+    const allowPendingInReport = isSubmitterAccountingOrAdmin || isTargetHolderAccounting;
+
+    const invalidTxRows: any[] = allowPendingInReport
+      ? await prisma.$queryRaw`
+          SELECT "id", "status", "replenishmentReportId" FROM "PettyCashTransaction"
+          WHERE "id" = ANY(${txIds}::text[])
+            AND ("replenishmentReportId" IS NOT NULL OR "status" NOT IN ('APPROVED', 'PENDING'))
+          LIMIT 1
+        `
+      : await prisma.$queryRaw`
+          SELECT "id", "status", "replenishmentReportId" FROM "PettyCashTransaction"
+          WHERE "id" = ANY(${txIds}::text[])
+            AND ("replenishmentReportId" IS NOT NULL OR "status" <> 'APPROVED')
+          LIMIT 1
+        `;
     if (invalidTxRows.length > 0) {
       const invalid = invalidTxRows[0];
       if (invalid.replenishmentReportId) {
@@ -10956,7 +10976,9 @@ export async function submitPettyCashReplenishmentReportAction(data: {
       }
       return {
         success: false,
-        error: "ไม่สามารถดึงรายการที่ยังไม่ผ่านการอนุมัติ (PENDING), ถูกปฏิเสธ (REJECTED) หรือยกเลิก (VOID) เข้าใบสรุปเบิกเงินสดย่อยได้",
+        error: allowPendingInReport
+          ? "ไม่สามารถดึงรายการที่ถูกปฏิเสธ (REJECTED) หรือยกเลิก (VOID) เข้าใบสรุปเบิกเงินสดย่อยได้"
+          : "ไม่สามารถดึงรายการที่ยังไม่ผ่านการอนุมัติ (PENDING), ถูกปฏิเสธ (REJECTED) หรือยกเลิก (VOID) เข้าใบสรุปเบิกเงินสดย่อยได้",
       };
     }
 

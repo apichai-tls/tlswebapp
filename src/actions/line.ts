@@ -3,7 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { patchSettingsInCache, primeCustomerCache } from "@/lib/db-cache";
 import { assertServerActionAuthorized, canUserAccessJob, canAccessCustomerRecords } from "@/lib/server-auth";
-import { isValidLineUserId, type LineBotInfo, type LineContactRecord } from "@/lib/line";
+import { isValidLineTargetId, type LineBotInfo, type LineContactRecord } from "@/lib/line";
 import {
   DEFAULT_LINE_BASIC_ID,
   DEFAULT_LINE_BOT_NAME,
@@ -183,10 +183,10 @@ export async function linkLineUserToCustomerAction(params: {
     });
     const lineUserId = (params.lineUserId || "").trim();
     const customerId = (params.customerId || "").trim();
-    if (!isValidLineUserId(lineUserId)) {
+    if (!isValidLineTargetId(lineUserId)) {
       return {
         success: false,
-        error: "Invalid LINE User ID (must start with 'U' followed by 32 hex characters).",
+        error: "Invalid LINE ID (must start with 'U', 'C', or 'R' followed by 32 hex characters).",
       };
     }
     if (!customerId) {

@@ -868,7 +868,25 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         return;
       }
 
-      // Fallback for compact/oversized social.updated events (>7.5KB PG NOTIFY) without inline payload
+      // Fallback for compact/oversized social.updated events (>7.5KB PG NOTIFY) or history_sync events
+      if (sp?.kind === 'history_sync' && selectedConvIdRef.current) {
+        getConversationMessagesAction(selectedConvIdRef.current)
+          .then((res) => {
+            if (res.success && Array.isArray(res.messages)) {
+              setMessages((prev) => {
+                const byId = new Map<string, SocialMessage>();
+                for (const m of prev) byId.set(m.id, m);
+                for (const m of res.messages) byId.set(m.id, m);
+                return Array.from(byId.values()).sort(
+                  (a, b) =>
+                    new Date(a.createdAt || 0).getTime() -
+                    new Date(b.createdAt || 0).getTime()
+                );
+              });
+            }
+          })
+          .catch(() => {});
+      }
       if (sp?.conversationId && sp.conversationId === selectedConvIdRef.current) {
         getConversationMessagesAction(sp.conversationId)
           .then((res) => {
@@ -877,7 +895,11 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                 const byId = new Map<string, SocialMessage>();
                 for (const m of prev) byId.set(m.id, m);
                 for (const m of res.messages) byId.set(m.id, m);
-                return Array.from(byId.values());
+                return Array.from(byId.values()).sort(
+                  (a, b) =>
+                    new Date(a.createdAt || 0).getTime() -
+                    new Date(b.createdAt || 0).getTime()
+                );
               });
             }
           })
@@ -902,7 +924,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       // SSE (tls-social-updated) still pushes live messages in <50ms while hidden.
       if (isHidden || (typeof document !== 'undefined' && document.hidden)) return;
       syncLiveInboxNow(false);
-    }, 2500);
+    }, 1500);
 
     return () => {
       window.removeEventListener('tls-social-updated', handleSseSocialUpdate);
@@ -1015,6 +1037,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       .catch(() => {})
       .finally(() => {
         prefetchingThreadsRef.current.delete(convId);
+        setLoadingThreadId((curr) => (curr === convId ? null : curr));
       });
   }, []);
 
@@ -1025,38 +1048,51 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       if (conv.unreadCount > 0) {
         markConversationAsRead(conv.id);
       }
-      // On-demand full thread history fetch (~5KB from server hot RAM cache)
-      // If already prefetched on hover, this is a 0ms no-op!
-      if (!loadedFullThreadsRef.current.has(conv.id)) {
+      // Always fetch fresh thread messages on click (only show loading spinner on first load of this thread)
+      // so any external replies or backfilled messages are guaranteed 100% up-to-date!
+      // Skip if an identical hover-prefetch request for this conversation is already in flight.
+      const isFirstLoad = !loadedFullThreadsRef.current.has(conv.id);
+      if (isFirstLoad) {
         setLoadingThreadId(conv.id);
-        prefetchingThreadsRef.current.add(conv.id);
-        getConversationMessagesAction(conv.id)
-          .then((res) => {
-            loadedFullThreadsRef.current.add(conv.id);
-            if (res?.success && Array.isArray(res.messages) && res.messages.length > 0) {
-              setMessages((prev) => {
-                const byId = new Map<string, SocialMessage>();
-                for (const m of prev) byId.set(m.id, m);
-                let added = false;
-                for (const m of res.messages!) {
-                  if (!byId.has(m.id)) added = true;
-                  byId.set(m.id, m);
-                }
-                if (!added) return prev;
-                return Array.from(byId.values()).sort(
-                  (a, b) =>
-                    new Date(a.createdAt || 0).getTime() -
-                    new Date(b.createdAt || 0).getTime()
-                );
-              });
-            }
-          })
-          .catch(() => {})
-          .finally(() => {
-            prefetchingThreadsRef.current.delete(conv.id);
-            setLoadingThreadId((curr) => (curr === conv.id ? null : curr));
-          });
       }
+      if (prefetchingThreadsRef.current.has(conv.id)) {
+        return;
+      }
+      prefetchingThreadsRef.current.add(conv.id);
+      getConversationMessagesAction(conv.id)
+        .then((res) => {
+          loadedFullThreadsRef.current.add(conv.id);
+          if (res?.success && Array.isArray(res.messages) && res.messages.length > 0) {
+            setMessages((prev) => {
+              const byId = new Map<string, SocialMessage>();
+              for (const m of prev) byId.set(m.id, m);
+              let changed = false;
+              for (const m of res.messages!) {
+                const ex = byId.get(m.id);
+                if (
+                  !ex ||
+                  ex.status !== m.status ||
+                  ex.text !== m.text ||
+                  JSON.stringify(ex.attachments || null) !== JSON.stringify(m.attachments || null)
+                ) {
+                  changed = true;
+                }
+                byId.set(m.id, m);
+              }
+              if (!changed) return prev;
+              return Array.from(byId.values()).sort(
+                (a, b) =>
+                  new Date(a.createdAt || 0).getTime() -
+                  new Date(b.createdAt || 0).getTime()
+              );
+            });
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          prefetchingThreadsRef.current.delete(conv.id);
+          setLoadingThreadId((curr) => (curr === conv.id ? null : curr));
+        });
     },
     [markConversationAsRead]
   );
@@ -1382,15 +1418,22 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
             {/* Name, Preview & Compact Metadata */}
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-1.5">
-                <p
-                  className={`${fontScale.convName} truncate ${
-                    conv.unreadCount > 0
-                      ? 'font-black text-slate-950'
-                      : 'font-bold text-slate-800'
-                  }`}
-                >
-                  {conv.contactName}
-                </p>
+                <div className="flex items-center gap-1 min-w-0">
+                  <p
+                    className={`${fontScale.convName} truncate ${
+                      conv.unreadCount > 0
+                        ? 'font-black text-slate-950'
+                        : 'font-bold text-slate-800'
+                    }`}
+                  >
+                    {conv.contactName}
+                  </p>
+                  {conv.channel === 'line' && /^[CR][0-9a-f]{32}$/i.test(conv.externalContactId || '') && (
+                    <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      👥 Group
+                    </span>
+                  )}
+                </div>
                 <span className={`${fontScale.convMeta} font-medium text-slate-400 shrink-0`}>
                   {timeLabel}
                 </span>
@@ -2654,18 +2697,25 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                     handleStartWhatsAppQr(false);
                   }
                 }}
-                className={`hidden md:inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border cursor-pointer transition-colors ${
+                className={`inline-flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-0.5 rounded-full border cursor-pointer transition-colors ${
                   waQrState?.status === 'connected'
                     ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
-                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                    : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300 animate-pulse'
                 }`}
-                title="WhatsApp QR 2-Way Live Sync (including read receipts)"
+                title={
+                  waQrState?.status === 'connected'
+                    ? 'Dual-Sync Active: WhatsApp Mobile App, WhatsApp Web & Omnichannel Hub are 100% synced in real time'
+                    : 'Click to scan QR so replies sent from external WhatsApp Web or Mobile App sync into this hub'
+                }
               >
-                <QrCode size={11} className="text-[#25D366]" />
+                <QrCode
+                  size={11}
+                  className={waQrState?.status === 'connected' ? 'text-[#25D366]' : 'text-amber-600'}
+                />
                 <span>
                   {waQrState?.status === 'connected'
-                    ? `WA Linked (${waQrState.connectedPhone || 'Live'})`
-                    : 'Link WhatsApp QR'}
+                    ? `WA Dual-Sync (${waQrState.connectedPhone || 'Linked'})`
+                    : '⚠️ Link WA QR (ซิงค์ข้อความที่ตอบจาก WA Web/มือถือ)'}
                 </span>
               </button>
             </div>
@@ -3102,6 +3152,12 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                       >
                         {SOCIAL_CHANNEL_META[activeConversation.channel].shortLabel}
                       </span>
+                      {activeConversation.channel === 'line' &&
+                        /^[CR][0-9a-f]{32}$/i.test(activeConversation.externalContactId || '') && (
+                          <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
+                            👥 LINE Group
+                          </span>
+                        )}
                       {activeConversation.customerMemberId && (
                         <span className="font-mono text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200/70 px-1.5 py-0.2 rounded-md font-bold shrink-0">
                           #{activeConversation.customerMemberId}
@@ -3527,13 +3583,23 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                       }
                     }}
                     rows={1}
-                    placeholder={`Message ${activeConversation.contactName} via ${
-                      SOCIAL_CHANNEL_META[activeConversation.channel].shortLabel
-                    }... (Enter to send • Ctrl+V to paste photo)`}
+                    placeholder={
+                      activeConversation.channel === 'line' &&
+                      /^[CR][0-9a-f]{32}$/i.test(activeConversation.externalContactId || '')
+                        ? `ตอบเข้ากลุ่ม ${activeConversation.contactName} (LINE Group — ทุกคนในกลุ่มจะเห็น)...`
+                        : `Message ${activeConversation.contactName} via ${
+                            SOCIAL_CHANNEL_META[activeConversation.channel].shortLabel
+                          }... (Enter to send • Ctrl+V to paste photo)`
+                    }
                     className={`flex-1 min-h-[38px] max-h-24 rounded-xl border border-slate-200 bg-slate-50/90 focus:bg-white px-3 py-2 ${fontScale.input} text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none`}
                   />
 
-                  {activeConversation.channel === 'whatsapp' && waQrState?.status !== 'connected' && (
+                  {activeConversation.channel === 'whatsapp' &&
+                    waQrState?.status !== 'connected' &&
+                    !(
+                      config?.whatsapp?.mode === 'cloud_api' &&
+                      Boolean(config?.whatsapp?.phoneNumberId)
+                    ) && (
                     <Button
                       type="button"
                       size="sm"
@@ -3574,7 +3640,24 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                     {waQrState?.status === 'connected' ? (
                       <span className="inline-flex items-center gap-1.5 text-emerald-700 font-semibold">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                        Direct WhatsApp QR Connected ({waQrState.connectedPhone || 'Linked Device'}) — Messages send directly to customer
+                        Dual-Sync Active ({waQrState.connectedPhone || 'Linked Device'}) — ซิงค์ตรงกัน 100% ทั้งเว็บนี้, WhatsApp Web และแอปมือถือ
+                      </span>
+                    ) : config?.whatsapp?.mode === 'cloud_api' &&
+                      Boolean(config?.whatsapp?.phoneNumberId) ? (
+                      <span className="inline-flex items-center gap-1.5 text-amber-700 font-semibold">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                        Official Cloud API Active — หากพนักงานมีการตอบจาก WhatsApp Web/มือถือข้างนอก กรุณากด{' '}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsSettingsOpen(true);
+                            handleStartWhatsAppQr(false);
+                          }}
+                          className="underline font-black text-amber-900 hover:text-emerald-700 cursor-pointer"
+                        >
+                          สแกน Link WA QR
+                        </button>{' '}
+                        เพื่อดึงข้อความที่ตอบจากข้างนอกเข้ามาในระบบอัตโนมัติ
                       </span>
                     ) : (
                       <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">

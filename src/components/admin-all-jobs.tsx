@@ -1596,22 +1596,26 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       if (j.isStuck && (showCompleted || !['completed', 'cancel', 'return'].includes(j.status))) {
         stuckCount++;
       }
-      const breakdown = getJobPaymentBreakdown(j);
-      const isShopPaid = breakdown.isFullyPaid || Boolean(j.isShopPaid);
+      // Never include cancelled orders in CSO Paid / Shop Unpaid / Rider Cash payment counts or alerts
+      const isCancelledJob = j.status === 'cancel' || (j.status as string) === 'cancelled';
+      if (!isCancelledJob) {
+        const breakdown = getJobPaymentBreakdown(j);
+        const isShopPaid = breakdown.isFullyPaid || Boolean(j.isShopPaid);
 
-      if (j.isPaid) {
-        csoPaidCount++;
-        if (!isShopPaid) {
-          csoPaidShopUnpaidCount++;
+        if (j.isPaid) {
+          csoPaidCount++;
+          if (!isShopPaid) {
+            csoPaidShopUnpaidCount++;
+          }
         }
-      }
 
-      if (!isShopPaid) {
-        shopUnpaidCount++;
-      }
+        if (!isShopPaid) {
+          shopUnpaidCount++;
+        }
 
-      if (isRiderCashDeliveryJob(j)) {
-        riderCashCount++;
+        if (isRiderCashDeliveryJob(j)) {
+          riderCashCount++;
+        }
       }
 
       // Billing alerts: only relevant for in-shop and delivery stages (not tba, pending, pickup, completed, cancel, return, topup)
@@ -1636,6 +1640,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     let exp100Total = 0;
 
     for (const j of scopedOverviewJobs) {
+      // Never include cancelled orders in CSO Paid / Shop Unpaid / Rider Cash payment alerts or quick counts
+      if (j.status === 'cancel' || (j.status as string) === 'cancelled') continue;
+
       if (j.remark?.includes("Express 50%") || j.serviceSpeed === "express_50") exp50Total++;
       if (j.remark?.includes("Express 100%") || j.serviceSpeed === "express_100") exp100Total++;
       const breakdown = getJobPaymentBreakdown(j);
@@ -1689,7 +1696,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       // Stuck Filter: when checked, show ONLY stuck jobs (exclude completed/cancelled unless showCompleted is checked)
       if (stuckOnly && (!job.isStuck || (!showCompleted && ['completed', 'cancel', 'return'].includes(job.status)))) return false;
 
-      // CSO, Shop & Rider Payment Quick Filter
+      // CSO, Shop & Rider Payment Quick Filter (always exclude cancelled jobs)
+      const isJobCancelled = job.status === "cancel" || (job.status as string) === "cancelled";
+      if (csoPaidFilter !== "ALL" && isJobCancelled) return false;
       if (csoPaidFilter === "PAID" && !job.isPaid) return false;
       if (csoPaidFilter === "UNPAID" && job.isPaid) return false;
       if (csoPaidFilter === "SHOP_UNPAID") {
@@ -1728,6 +1737,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       }
 
       // Payment Channel & CSO / Shop Status Filter
+      if (paymentChannelFilter.startsWith("STATUS_") && isJobCancelled) return false;
       if (paymentChannelFilter === "STATUS_CSO_PAID") {
         if (!job.isPaid) return false;
       } else if (paymentChannelFilter === "STATUS_CSO_UNPAID") {

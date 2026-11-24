@@ -5,7 +5,7 @@ import { format, isToday, addDays, isSameDay, addMonths, isSameMonth, startOfDay
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
-import { addJobLogAction, updateJobAction } from "@/actions/db";
+import { addJobLogAction, updateJobAction, getRiderTransactionsAction, getJobsByIdsAction } from "@/actions/db";
 import { getClientAuthHeaders } from "@/lib/client-auth";
 import { useJobs } from "@/lib/use-jobs";
 import { jobStore, Job, type AdminNoteLog } from "@/lib/store";
@@ -1644,28 +1644,153 @@ export default function RiderPage() {
     return [...orderedReady, ...nonReadyJobs];
   }, [routeSortMode, optimizedRouteResult, chronologicalRouteMeta, nonReadyJobs]);
 
-  const historyJobs = allTasks
-    .filter(t => {
-      if (t.job.status === "cancel") return false;
-      // Show tasks that are "done" (pickup completed, or delivery completed)
-      if (!t.isCompleted) return false;
-      // Use completedAt if available, otherwise fall back to scheduledAt for date matching
-      const jobDate = t.completedAt || t.scheduledAt;
-      if (historyMode === "daily") {
-        if (!isSameDay(jobDate, historyDate)) return false;
-      } else {
-        if (!isSameMonth(jobDate, historyDate) || jobDate.getFullYear() !== historyDate.getFullYear()) return false;
-      }
-      return true;
-    })
-    .sort((a, b) => {
-      const aTime = a.completedAt?.getTime() || a.scheduledAt.getTime();
-      const bTime = b.completedAt?.getTime() || b.scheduledAt.getTime();
-      return bTime - aTime;
-    });
+  const [riderTransactions, setRiderTransactions] = useState<any[]>([]);
+  const [txHistoryJobs, setTxHistoryJobs] = useState<Job[]>([]);
+
+  useEffect(() => {
+    if (!activeRider?.id) {
+      setRiderTransactions([]);
+      return;
+    }
+    getRiderTransactionsAction(activeRider.id)
+      .then((data) => {
+        setRiderTransactions(Array.isArray(data) ? data : []);
+      })
+      .catch((err) => {
+        console.error("Failed to load rider transactions:", err);
+      });
+  }, [activeRider?.id, activeTab, jobs.length]);
+
+  useEffect(() => {
+    if (riderTransactions.length === 0) return;
+    const knownIds = new Set([
+      ...jobs.map((j) => j.id),
+      ...txHistoryJobs.map((j) => j.id),
+    ]);
+    const missingIds = Array.from(
+      new Set(
+        riderTransactions
+          .map((t) => t.jobId)
+          .filter((id): id is string => Boolean(id && !knownIds.has(id)))
+      )
+    );
+    if (missingIds.length === 0) return;
+    getJobsByIdsAction(missingIds)
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          const normalized = data.map((raw: any) => ({
+            ...raw,
+            laundryTypes:
+              typeof raw.laundryTypes === "string"
+                ? raw.laundryTypes.split(",").filter(Boolean)
+                : Array.isArray(raw.laundryTypes)
+                  ? raw.laundryTypes
+                  : [],
+            pickupCoords:
+              raw.pickupCoords ||
+              (raw.pickupLat && raw.pickupLng
+                ? { lat: raw.pickupLat, lng: raw.pickupLng }
+                : undefined),
+            dropoffCoords:
+              raw.dropoffCoords ||
+              (raw.dropoffLat && raw.dropoffLng
+                ? { lat: raw.dropoffLat, lng: raw.dropoffLng }
+                : undefined),
+          })) as Job[];
+          setTxHistoryJobs((prev) => {
+            const byId = new Map(prev.map((j) => [j.id, j]));
+            normalized.forEach((j) => byId.set(j.id, j));
+            return Array.from(byId.values());
+          });
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to fetch historical jobs for rider transactions:", err);
+      });
+  }, [riderTransactions, jobs, txHistoryJobs]);
+
+  const historyJobs: RiderTask[] = useMemo(() => {
+    if (showCommission) {
+      const targetMonthYear = format(historyDate, "MMMM yyyy");
+      const filteredTxs = riderTransactions
+        .filter((t) => {
+          if (!t?.createdAt) return false;
+          const txDate = new Date(t.createdAt);
+          if (isNaN(txDate.getTime())) return false;
+          if (historyMode === "daily") {
+            return isSameDay(txDate, historyDate);
+          }
+          return format(txDate, "MMMM yyyy") === targetMonthYear;
+        })
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      const jobLookup = new Map<string, Job>();
+      txHistoryJobs.forEach((j) => jobLookup.set(j.id, j));
+      jobs.forEach((j) => jobLookup.set(j.id, j));
+
+      return filteredTxs.map((t): RiderTask => {
+        const matchedJob = t.jobId ? jobLookup.get(t.jobId) : undefined;
+        const legType: "pickup" | "delivery" =
+          typeof t.type === "string" && t.type.includes("pickup") ? "pickup" : "delivery";
+        const txDate = new Date(t.createdAt);
+        const fallbackJob: Job = matchedJob || ({
+          id: t.jobId || t.id,
+          customerName: t.detail || `Job #${t.jobId || "-"}`,
+          customerPhone: "",
+          pickupLocation: t.detail || "-",
+          dropoffLocation: t.detail || "-",
+          status: "completed",
+          laundryTypes: [],
+          totalAmount: 0,
+          isPaid: true,
+          scheduledAt: txDate,
+          createdAt: txDate,
+        } as any);
+
+        return {
+          taskId: `${t.jobId || t.id}-${legType}-${t.id}`,
+          job: fallbackJob,
+          legType,
+          isCompleted: true,
+          isActive: false,
+          scheduledAt: txDate,
+          completedAt: txDate,
+          targetLocation:
+            legType === "pickup"
+              ? fallbackJob.pickupLocation || t.detail || "-"
+              : fallbackJob.dropoffLocation || t.detail || "-",
+          targetCoords:
+            legType === "pickup" ? fallbackJob.pickupCoords : fallbackJob.dropoffCoords,
+          distance:
+            legType === "pickup"
+              ? fallbackJob.pickupDistance || fallbackJob.distance || 0
+              : fallbackJob.deliveryDistance || fallbackJob.distance || 0,
+          commission: Number(t.amount) || 0,
+        };
+      });
+    }
+
+    return allTasks
+      .filter((t) => {
+        if (t.job.status === "cancel") return false;
+        if (!t.isCompleted) return false;
+        const jobDate = t.completedAt || t.scheduledAt;
+        if (historyMode === "daily") {
+          if (!isSameDay(jobDate, historyDate)) return false;
+        } else {
+          if (!isSameMonth(jobDate, historyDate) || jobDate.getFullYear() !== historyDate.getFullYear()) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const aTime = a.completedAt?.getTime() || a.scheduledAt.getTime();
+        const bTime = b.completedAt?.getTime() || b.scheduledAt.getTime();
+        return bTime - aTime;
+      });
+  }, [showCommission, riderTransactions, historyDate, historyMode, jobs, txHistoryJobs, allTasks]);
 
   const totalHistoryJobs = historyJobs.length;
-  const totalCommission = historyJobs.reduce((acc, t) => acc + t.commission, 0);
+  const totalCommission = Math.round(historyJobs.reduce((acc, t) => acc + t.commission, 0) * 100) / 100;
 
   function handleAccept(jobId: string) {
     if (!activeRider) return;

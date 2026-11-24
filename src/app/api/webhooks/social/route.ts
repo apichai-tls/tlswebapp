@@ -140,6 +140,11 @@ function extractWhatsAppCloudMessageContent(
     textBody = String(
       msg?.template?.name ? `📋 [Template: ${msg.template.name}]` : '📋 [WhatsApp Template]'
     );
+  } else if (msgType === 'unsupported') {
+    const errDetail = msg?.errors?.[0]?.error_data?.details || msg?.errors?.[0]?.title || '';
+    textBody = `⚠️ [ข้อความพิเศษจาก WhatsApp (เช่น แก้ไข/ลบข้อความ, Poll หรือ View-Once)${
+      errDetail ? ` — ${errDetail}` : ''
+    }]`;
   } else {
     textBody = `📷 [WhatsApp ${msgType} message]`;
   }
@@ -211,7 +216,7 @@ export async function POST(req: NextRequest) {
   const webhookReceivedAtMs = Date.now();
   try {
     const clientIp = getRequestClientIp(req);
-    const rate = checkRateLimit(`social-webhook:${clientIp}`, 120, 60 * 1000);
+    const rate = checkRateLimit(`social-webhook:${clientIp}`, 600, 60 * 1000);
     if (!rate.allowed) {
       return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
     }

@@ -22,6 +22,7 @@ import {
   normalizePhoneKey,
 } from '@/lib/social-helpers';
 import {
+  isValidLineTargetId,
   isValidLineUserId,
   sendLinePushMessage,
   getLineBotInfo,
@@ -462,7 +463,16 @@ export async function getCustomerJobChatThreadsAction(input: {
       orFilters.push({ customerId: custId });
     }
 
-    const lineUid = (input.lineUserId || '').trim();
+    let lineUid = (input.lineUserId || '').trim();
+    if (!lineUid && custId) {
+      const custLineRow = await prisma.customer.findUnique({
+        where: { id: custId },
+        select: { lineId: true },
+      });
+      if (custLineRow?.lineId) {
+        lineUid = custLineRow.lineId.trim();
+      }
+    }
     if (lineUid) {
       orFilters.push({ externalContactId: lineUid });
     }
@@ -1621,8 +1631,8 @@ export async function createMultiChannelChatAction(input: {
       let status: SocialMessage['status'] = 'sent';
       let externalError: string | undefined;
 
-      // If LINE OA and valid U-userId, push message via real LINE Messaging API!
-      if (input.channel === 'line' && isValidLineUserId(conversation.externalContactId)) {
+      // If LINE OA and valid U-userId / C-groupId / R-roomId, push message via real LINE Messaging API!
+      if (input.channel === 'line' && isValidLineTargetId(conversation.externalContactId)) {
         const lineSettings = await getStoredLineOaSettings(conversation.brand);
         if (lineSettings.channelAccessToken) {
           const pushRes = await sendLinePushMessage(
@@ -1729,10 +1739,12 @@ export async function sendSocialMessageAction(input: {
         : text;
 
     const waCreds = resolveWhatsAppCloudCredentials(config.whatsapp);
-    const isWaCloudMode = conv.channel === 'whatsapp' && config.whatsapp.mode === 'cloud_api' && waCreds.isConfigured;
-    const waQr = isWaCloudMode || conv.channel !== 'whatsapp'
-      ? { status: 'disconnected' as const }
-      : await getWhatsAppQrStatusAsync(false);
+    // Always check QR Linked Device status even when Cloud API is active so Dual-Sync
+    // (Cloud API + Linked WhatsApp QR Bridge) works seamlessly without disabling QR!
+    const waQr =
+      conv.channel === 'whatsapp'
+        ? await getWhatsAppQrStatusAsync(true)
+        : { status: 'disconnected' as const };
     const useWaCloudApi =
       conv.channel === 'whatsapp' &&
       waCreds.isConfigured &&
@@ -1775,12 +1787,18 @@ export async function sendSocialMessageAction(input: {
     // 1. Real LINE OA API Delivery (@thatlaundryshop & @050ehvzb)
     if (conv.channel === 'line') {
       deliveryMethod = 'line_api';
-      if (isValidLineUserId(conv.externalContactId)) {
+      if (isValidLineTargetId(conv.externalContactId)) {
         const lineSettings = await getStoredLineOaSettings(conv.brand);
         if (lineSettings.channelAccessToken) {
           const lineMsgs: LineMessageObject[] = [];
-          if (outboundTextWithQuote) {
-            lineMsgs.push({ type: 'text', text: outboundTextWithQuote });
+          const fileLinksText = resolvedFileAttachments
+            .map((f) => `📎 ${f.name || 'Document'}: ${f.url}`)
+            .join('\n');
+          const combinedLineText = [outboundTextWithQuote, fileLinksText]
+            .filter(Boolean)
+            .join('\n\n');
+          if (combinedLineText) {
+            lineMsgs.push({ type: 'text', text: combinedLineText });
           }
           for (const httpsImg of resolvedImageUrls.slice(0, 4)) {
             lineMsgs.push({
@@ -2900,7 +2918,7 @@ export async function checkChannelsLiveStatusAction(): Promise<{
   const config = await loadSocialChannelConfig();
   const lineSettings = await getStoredLineOaSettings('that_laundry_shop');
 
-  const waQr = await getWhatsAppQrStatusAsync();
+  const waQr = await getWhatsAppQrStatusAsync(true);
   const isWaQrConnected = waQr.status === 'connected';
   const waCreds = resolveWhatsAppCloudCredentials(config.whatsapp);
   const isWaCloudPreferred = config.whatsapp.mode === 'cloud_api' && waCreds.isConfigured;
@@ -2909,27 +2927,33 @@ export async function checkChannelsLiveStatusAction(): Promise<{
     whatsapp: {
       channel: 'whatsapp',
       connected: true,
-      modeLabel: isWaCloudPreferred
-        ? 'Live Cloud API'
-        : isWaQrConnected
-        ? 'Direct QR Connected'
-        : waCreds.isConfigured
-        ? 'Live Cloud API'
-        : config.whatsapp.mode === 'gateway_api' && config.whatsapp.gatewayUrl
-        ? 'Live QR Gateway API'
-        : 'Live App & Web Bridge',
+      modeLabel:
+        isWaCloudPreferred && isWaQrConnected
+          ? 'Dual-Sync: Cloud API + QR Live'
+          : isWaCloudPreferred
+          ? 'Live Cloud API'
+          : isWaQrConnected
+          ? 'Direct QR Connected'
+          : waCreds.isConfigured
+          ? 'Live Cloud API'
+          : config.whatsapp.mode === 'gateway_api' && config.whatsapp.gatewayUrl
+          ? 'Live QR Gateway API'
+          : 'Live App & Web Bridge',
       accountName: isWaQrConnected && !isWaCloudPreferred
         ? `${waQr.connectedName || 'WhatsApp'} (${waQr.connectedPhone || ''})`
         : config.whatsapp.businessPhoneNumber || '+66 WhatsApp Direct',
-      details: isWaCloudPreferred
-        ? 'Connected to Official Meta WhatsApp Business Cloud API'
-        : isWaQrConnected
-        ? 'Direct Linked Device Active (Free 100% • 2-Way Live Sync)'
-        : waCreds.isConfigured
-        ? 'Connected to Meta WhatsApp Cloud API'
-        : config.whatsapp.mode === 'gateway_api' && config.whatsapp.gatewayUrl
-        ? `Connected to Gateway (${config.whatsapp.gatewayUrl})`
-        : 'Instant Click-to-Chat, Companion Window & Native WhatsApp App active',
+      details:
+        isWaCloudPreferred && isWaQrConnected
+          ? 'Dual-Sync Active: Official Meta Cloud API + 2-Way Mobile/WhatsApp Web QR Sync'
+          : isWaCloudPreferred
+          ? 'Connected to Official Meta WhatsApp Business Cloud API'
+          : isWaQrConnected
+          ? 'Direct Linked Device Active (Free 100% • 2-Way Live Sync)'
+          : waCreds.isConfigured
+          ? 'Connected to Meta WhatsApp Cloud API'
+          : config.whatsapp.mode === 'gateway_api' && config.whatsapp.gatewayUrl
+          ? `Connected to Gateway (${config.whatsapp.gatewayUrl})`
+          : 'Instant Click-to-Chat, Companion Window & Native WhatsApp App active',
       lastCheckedAt: nowIso,
     },
     line: {
@@ -3020,13 +3044,17 @@ export async function checkChannelsLiveStatusAction(): Promise<{
       });
       if (waVerify.connected) {
         statuses.whatsapp.connected = true;
-        statuses.whatsapp.modeLabel = 'Verified Meta Cloud API';
+        statuses.whatsapp.modeLabel = isWaQrConnected
+          ? 'Dual-Sync: Cloud API + QR Live'
+          : 'Verified Meta Cloud API';
         statuses.whatsapp.accountName = `${waVerify.verifiedName || 'WhatsApp Business'} (${
           waVerify.displayPhoneNumber || config.whatsapp.businessPhoneNumber || waCreds.phoneNumberId
         })`;
-        statuses.whatsapp.details = `Verified Live Meta WhatsApp Cloud API${
-          waVerify.qualityRating ? ` • Quality: ${waVerify.qualityRating}` : ''
-        }`;
+        statuses.whatsapp.details = isWaQrConnected
+          ? `Dual-Sync Active: Meta Cloud API + Mobile/Web QR (${waQr.connectedPhone || 'Linked'})`
+          : `Verified Live Meta WhatsApp Cloud API${
+              waVerify.qualityRating ? ` • Quality: ${waVerify.qualityRating}` : ''
+            }`;
       }
     } catch {}
   }

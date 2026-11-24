@@ -1740,6 +1740,7 @@ export interface SuggestRiderOptions {
   allowLateIfUnavoidable?: boolean;
   taskBkkZone?: Exclude<BkkRiderZone, "AUTO"> | null;
   allowCrossZoneFallback?: boolean;
+  enableZoneOverflowBalance?: boolean;
   useHistoricalPatterns?: boolean;
   historicalPatternProfile?: HistoricalDispatchProfile | null;
 }
@@ -1941,9 +1942,11 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
     shiftCutoffMs = cutoff.getTime();
   }
 
-  // Compute minimum dayCount & minimum commission among eligible online riders in the same area
+  // Compute minimum dayCount & minimum commission among eligible online riders in the same area,
+  // plus minimum dayCount among eligible riders dedicated to the task's BKK zone (for Option A overflow).
   let minDayCountInArea = Infinity;
   let minCommissionInArea = Infinity;
+  let dedicatedZoneMinDayCount = Infinity;
   for (const cand of candidates) {
     if (options.allowedRiderIds && options.allowedRiderIds.length > 0 && !options.allowedRiderIds.includes(cand.riderId)) {
       continue;
@@ -1957,9 +1960,21 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
     if (dc < minDayCountInArea) minDayCountInArea = dc;
     const comm = cand.totalCommissionBaht ?? 0;
     if (comm < minCommissionInArea) minCommissionInArea = comm;
+    if (effectiveTaskZone && cand.assignedBkkZone === effectiveTaskZone && dc < dedicatedZoneMinDayCount) {
+      dedicatedZoneMinDayCount = dc;
+    }
   }
   if (!Number.isFinite(minDayCountInArea)) minDayCountInArea = 0;
   if (!Number.isFinite(minCommissionInArea)) minCommissionInArea = 0;
+
+  // Option A (Primary Zone + Boundary Overflow + Nearby Express Assist):
+  // Central BKK transition hub (Sukhumvit Soi 15: Asoke / Nana / Ploenchit / Chidlom / Phrom Phong / Phetchaburi)
+  const enableZoneOverflowBalance = options.enableZoneOverflowBalance !== false;
+  const BKK_BOUNDARY_HUB: LatLng = { lat: 13.743, lng: 100.56 };
+  const distTaskFromCentralHubKm =
+    effectiveTaskZone && hasNonZeroCoords(task.targetCoords)
+      ? calculateEstimatedDistanceKm(BKK_BOUNDARY_HUB, task.targetCoords)
+      : Infinity;
 
   let best: RiderAutoAssignSuggestion | null = null;
 
@@ -1982,9 +1997,6 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
     const isExplicitZoneMismatch = Boolean(
       effectiveTaskZone && candZone !== "AUTO" && candZone !== effectiveTaskZone
     );
-    if (isExplicitZoneMismatch && !options.allowCrossZoneFallback) {
-      continue; // Rider is locked to a different BKK zone!
-    }
 
     const distFromRiderKm = hasNonZeroCoords(cand.origin)
       ? calculateEstimatedDistanceKm(cand.origin, task.targetCoords)
@@ -2014,6 +2026,39 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
     const distFromZoneCentroidKm = zoneCentroid
       ? calculateEstimatedDistanceKm(zoneCentroid, task.targetCoords)
       : distFromRiderKm;
+
+    // Option A Smart Overflow for underloaded zone riders (measured by daily cumulative job count):
+    // 1) Boundary Overflow (รอยต่อกลางเมือง): if rider trails the task's dedicated zone by >= 3 daily jobs,
+    //    unlock tasks within <= 3.0 km of Soi 15 hub or <= 2.5 km of the rider's current cluster (and <= 7.5 km from rider).
+    // 2) Nearby Express Assist (งานด่วนใกล้เคียง): if rider STILL trails by >= 4 daily jobs and task is Express,
+    //    unlock Express tasks within <= 4.5 km of Soi 15 hub or <= 3.8 km of the rider's cluster (and <= 7.5 km from rider).
+    const dayCountDeficitVsZone =
+      Number.isFinite(dedicatedZoneMinDayCount) ? Math.max(0, dedicatedZoneMinDayCount - dayCount) : 0;
+    const riderLocalMinDistKm = Math.min(distFromRiderKm, distFromZoneCentroidKm, distToNearestStopKm);
+    const isWithinDeadheadCap = ignoreRadiusLimit || distFromRiderKm <= 7.5 || distToNearestStopKm <= 3.5;
+    const isBoundaryOverflowEligible = Boolean(
+      enableZoneOverflowBalance &&
+        isExplicitZoneMismatch &&
+        !cand.isDedicatedReserveRider &&
+        dayCountDeficitVsZone >= 3 &&
+        isWithinDeadheadCap &&
+        (distTaskFromCentralHubKm <= 3.0 || riderLocalMinDistKm <= 2.5)
+    );
+    const isExpressOverflowEligible = Boolean(
+      enableZoneOverflowBalance &&
+        isExplicitZoneMismatch &&
+        !cand.isDedicatedReserveRider &&
+        !isBoundaryOverflowEligible &&
+        taskExpLevel > 0 &&
+        dayCountDeficitVsZone >= 4 &&
+        isWithinDeadheadCap &&
+        (distTaskFromCentralHubKm <= 4.5 || riderLocalMinDistKm <= 3.8)
+    );
+    const isSmartZoneOverflow = isBoundaryOverflowEligible || isExpressOverflowEligible;
+
+    if (isExplicitZoneMismatch && !options.allowCrossZoneFallback && !isSmartZoneOverflow) {
+      continue; // Rider is locked to a different BKK zone!
+    }
 
     // Bidirectional Branch Corridor Check (Soi 15 <-> PK, <= 2.5 km corridor detour):
     // Allows a rider heading from Home Branch -> Remote Branch (or vice-versa) to carry morning
@@ -2057,8 +2102,9 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
       cand.currentTasks.length > 0
         ? Math.min(distToNearestStopKm, distFromZoneCentroidKm)
         : distFromRiderKm;
-    const effectiveRadiusForZone = isExactZoneMatch ? Math.max(maxRadiusKm * 2.8, 16) : maxRadiusKm;
-    if (!ignoreRadiusLimit && !isCorridorEnRoute && !hasSameBuildingStop && minDirectDist > effectiveRadiusForZone * 1.35) continue;
+    const effectiveRadiusForZone =
+      isExactZoneMatch || isSmartZoneOverflow ? Math.max(maxRadiusKm * 2.8, 16) : maxRadiusKm;
+    if (!ignoreRadiusLimit && !isCorridorEnRoute && !hasSameBuildingStop && !isSmartZoneOverflow && minDirectDist > effectiveRadiusForZone * 1.35) continue;
 
     const baseEval =
       cand.baseEval ||
@@ -2134,6 +2180,7 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
       isCorridorEnRoute ||
       hasSameBuildingStop ||
       isExactZoneMatch ||
+      isSmartZoneOverflow ||
       (cand.currentTasks.length === 0
         ? distFromRiderKm <= maxRadiusKm
         : distToNearestStopKm <= maxRadiusKm ||
@@ -2351,11 +2398,15 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
 
     const bkkZoneAssignmentBonus = isExactZoneMatch
       ? -9.5
-      : isExplicitZoneMismatch
-        ? 18.0
-        : hasDedicatedZoneRiderInPool
-          ? 14.0
-          : 0;
+      : isBoundaryOverflowEligible
+        ? -9.5 - Math.min(8.5, (dayCountDeficitVsZone - 2) * 2.8)
+        : isExpressOverflowEligible
+          ? -9.5 - Math.min(10.0, (dayCountDeficitVsZone - 3) * 3.8)
+          : isExplicitZoneMismatch
+            ? 18.0
+            : hasDedicatedZoneRiderInPool
+              ? 14.0
+              : 0;
     const score =
       detourKm * 1.0 +
       Math.min(distFromRiderKm, distToNearestStopKm) * 0.30 +
@@ -2378,6 +2429,10 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
     let reason = "";
     if (hasSameBuildingStop) {
       reason = "Same building/condo bundle (รวบตึกเดียวกันไปพร้อมกัน)";
+    } else if (isBoundaryOverflowEligible && effectiveTaskZone) {
+      reason = `ช่วยโซนรอยต่อ ${getBkkZoneLabel(effectiveTaskZone)} (งานสะสมน้อยกว่า ${dayCountDeficitVsZone} งาน • +${detourKm} km)`;
+    } else if (isExpressOverflowEligible && effectiveTaskZone) {
+      reason = `ช่วยงานด่วนใกล้เคียง ${getBkkZoneLabel(effectiveTaskZone)} (งานสะสมน้อยกว่า ${dayCountDeficitVsZone} งาน • +${detourKm} km)`;
     } else if (isExactZoneMatch && effectiveTaskZone) {
       reason = `Zone ${getBkkZoneLabel(effectiveTaskZone)} (+${detourKm} km)`;
     } else if (corridorTag) {

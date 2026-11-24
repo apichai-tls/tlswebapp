@@ -131,7 +131,7 @@ export function AutoReceiptWorker() {
         const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
         if (now - jobUpdatedTime > 24 * 60 * 60 * 1000) return false;
         const lastCheck = lastBeamCheckMap.current.get(`wise_${job.id}`) || 0;
-        return (now - lastCheck) > 12000; // check every 12s per active Wise job
+        return (now - lastCheck) > 30000; // check every 30s per active Wise job (server cache deduplicates across tabs)
       });
 
       const hasAnyRecentUnpaidOrder = jobs.some((job) => {
@@ -162,8 +162,8 @@ export function AutoReceiptWorker() {
         }).catch((err) => {
           console.warn(`[AutoReceiptWorker] Wise background check failed for Job #${unpaidWiseJob.id}:`, err);
         });
-      } else if (hasAnyRecentUnpaidOrder && now - lastWiseBatchSyncRef.current > 45000) {
-        // Run batch Wise sync at most every 45s when recent unpaid orders exist
+      } else if (hasAnyRecentUnpaidOrder && now - lastWiseBatchSyncRef.current > 120000) {
+        // Run batch Wise sync at most every 120s when recent unpaid orders exist
         lastWiseBatchSyncRef.current = now;
         syncAllPendingWiseJobsAction().then(async (res) => {
           if (res.success && res.paidJobs && res.paidJobs.length > 0) {

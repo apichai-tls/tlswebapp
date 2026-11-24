@@ -105,6 +105,7 @@ export async function checkWiseJobPaymentStatusAction(params: {
   jobId: string;
   expectedAmount: number;
   dialogOpenedAtIso?: string;
+  forceRefresh?: boolean;
 }): Promise<{
   success: boolean;
   isPaid: boolean;

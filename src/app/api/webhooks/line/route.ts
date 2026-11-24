@@ -5,7 +5,14 @@ import { prisma } from "@/lib/prisma";
 import { uploadBufferToGcs } from "@/lib/gcs";
 import { dbCache, primeCustomerCache } from "@/lib/db-cache";
 import {
+  getLineGroupMemberProfile,
+  getLineGroupSummary,
+  getLineRoomMemberProfile,
   getLineUserProfile,
+  isValidLineGroupId,
+  isValidLineRoomId,
+  isValidLineTargetId,
+  isValidLineUserId,
   verifyLineWebhookSignature,
   type LineContactRecord,
 } from "@/lib/line";
@@ -202,31 +209,198 @@ export async function POST(req: NextRequest) {
       return candidatePool;
     };
 
+    const extractLineInboundAttachments = async (
+      event: any,
+      ownerKey: string
+    ): Promise<SocialMessageAttachment[]> => {
+      const inboundAttachments: SocialMessageAttachment[] = [];
+      const msgType = event?.message?.type;
+
+      if (msgType === "image" && event?.message?.id && settings.channelAccessToken) {
+        try {
+          const msgId = String(event.message.id).replace(/[^a-zA-Z0-9_-]/g, "");
+          const imgRes = await fetch(
+            `https://api-data.line.me/v2/bot/message/${encodeURIComponent(msgId)}/content`,
+            {
+              headers: {
+                Authorization: `Bearer ${settings.channelAccessToken.trim()}`,
+              },
+            }
+          );
+          if (imgRes.ok) {
+            const arrBuf = await imgRes.arrayBuffer();
+            const rawBuffer = Buffer.from(arrBuf);
+            const contentType = imgRes.headers.get("content-type") || "image/jpeg";
+            const filename = `line-${msgId}.jpg`;
+
+            let imageUrl = await uploadBufferToGcs(rawBuffer, {
+              entityType: "system",
+              entityId: `line_${ownerKey.slice(-12)}`,
+              subType: "chat",
+              contentType,
+              extension: "jpg",
+              customFileName: filename,
+            });
+
+            if (!imageUrl) {
+              const uploadDir = path.resolve(process.cwd(), "storage", "uploads", "system", "chat");
+              await fs.promises.mkdir(uploadDir, { recursive: true });
+              await fs.promises.writeFile(path.join(uploadDir, filename), rawBuffer);
+              imageUrl = `/uploads/system/chat/${filename}`;
+            }
+
+            inboundAttachments.push({
+              type: "image",
+              url: imageUrl,
+              name: "LINE Customer Photo",
+            });
+          }
+        } catch (e) {
+          console.warn("[LINE Webhook] Failed to download inbound image:", e);
+        }
+      } else if (msgType === "sticker" && event?.message?.stickerId) {
+        const stickerId = String(event.message.stickerId).replace(/\D/g, "");
+        if (stickerId) {
+          inboundAttachments.push({
+            type: "image",
+            url: `https://stickershop.line-scdn.net/stickershop/v1/sticker/${stickerId}/android/sticker.png`,
+            name: "LINE Sticker",
+          });
+        }
+      }
+
+      return inboundAttachments;
+    };
+
     for (const event of events) {
+      const sourceType: string = event?.source?.type || "user";
+      const groupId: string | undefined = event?.source?.groupId;
+      const roomId: string | undefined = event?.source?.roomId;
       const userId: string | undefined = event?.source?.userId;
-      if (!userId || !/^U[0-9a-f]{32}$/i.test(userId)) continue;
 
       const messageText: string =
         event?.type === "message" && event?.message?.type === "text"
           ? String(event.message.text || "").trim()
           : "";
+      const msgType = event?.message?.type;
+      const formatNonTextLineBody = (inGroup: boolean): string => {
+        if (msgType === "image") return inGroup ? "📷 [Sent a photo in LINE Group]" : "📷 [Sent a photo via LINE]";
+        if (msgType === "sticker") return "😊 [Sent a LINE Sticker]";
+        if (msgType === "video") return "🎥 [Sent a video via LINE]";
+        if (msgType === "audio") return "🎤 [Sent a voice message via LINE]";
+        if (msgType === "file") {
+          const fname = String(event?.message?.fileName || "Document").trim();
+          return `📎 [Sent a file via LINE: ${fname}]`;
+        }
+        if (msgType === "location") {
+          const title = String(event?.message?.title || "").trim();
+          const addr = String(event?.message?.address || "").trim();
+          const lat = event?.message?.latitude;
+          const lng = event?.message?.longitude;
+          const label = [title, addr].filter(Boolean).join(" — ");
+          const mapsUrl =
+            lat !== undefined && lng !== undefined
+              ? `https://www.google.com/maps?q=${lat},${lng}`
+              : "";
+          return `📍 Shared Location${label ? `: ${label}` : ""}${mapsUrl ? `\n🗺️ Google Maps: ${mapsUrl}` : ""}`;
+        }
+        return inGroup ? "[Joined LINE Group]" : "[Followed LINE Official Account]";
+      };
+      const isSupportedLineMessageType =
+        msgType === "image" ||
+        msgType === "sticker" ||
+        msgType === "video" ||
+        msgType === "audio" ||
+        msgType === "file" ||
+        msgType === "location";
 
-      const profile = settings.channelAccessToken
-        ? await getLineUserProfile(settings.channelAccessToken, userId)
-        : null;
-      const displayName = profile?.displayName || "LINE User";
+      // Handle LINE Group Chat (`C...`) and Multi-Person Room (`R...`) separately
+      // so replies from Omni Live Chat push back to the GROUP (`C...`/`R...`), NEVER to a single member's DM (`U...`)!
+      if (
+        (sourceType === "group" && isValidLineGroupId(groupId)) ||
+        (sourceType === "room" && isValidLineRoomId(roomId))
+      ) {
+        const targetGroupId = (sourceType === "group" ? groupId : roomId) as string;
+        const shouldRecordGroupEvent =
+          Boolean(messageText) || event?.type === "join" || isSupportedLineMessageType;
+
+        if (!shouldRecordGroupEvent) continue;
+
+        const groupSummary =
+          sourceType === "group" && settings.channelAccessToken
+            ? await getLineGroupSummary(settings.channelAccessToken, targetGroupId)
+            : null;
+        const groupName =
+          groupSummary?.groupName ||
+          (sourceType === "group" ? `LINE Group (${targetGroupId.slice(-6)})` : `LINE Room (${targetGroupId.slice(-6)})`);
+
+        let senderDisplayName = "Group Member";
+        if (userId && isValidLineUserId(userId) && settings.channelAccessToken) {
+          const memberProfile =
+            sourceType === "group"
+              ? await getLineGroupMemberProfile(settings.channelAccessToken, targetGroupId, userId)
+              : await getLineRoomMemberProfile(settings.channelAccessToken, targetGroupId, userId);
+          const fallbackProfile = memberProfile || (await getLineUserProfile(settings.channelAccessToken, userId));
+          if (fallbackProfile?.displayName) {
+            senderDisplayName = fallbackProfile.displayName;
+          }
+        }
+
+        const inboundAttachments = await extractLineInboundAttachments(event, targetGroupId);
+        const rawBodyText = messageText || formatNonTextLineBody(true);
+
+        await recordInboundSocialMessageInternal({
+          channel: "line",
+          externalContactId: targetGroupId,
+          contactName: groupName,
+          contactAvatar: groupSummary?.pictureUrl,
+          senderName: event?.type === "join" ? groupName : senderDisplayName,
+          text: rawBodyText,
+          attachments: inboundAttachments.length > 0 ? inboundAttachments : undefined,
+          customerId: null,
+          externalMessageId: event?.message?.id ? `line_${event.message.id}` : undefined,
+        }).catch(() => {});
+
+        continue;
+      }
+
+      if (!userId || !isValidLineUserId(userId)) continue;
+
+      // Fast path: reuse cached LINE profile if seen within the last 24h (saves ~200-400ms HTTPS round-trip per message!)
+      const cachedContact = contacts.find((c) => c.userId === userId);
+      const cachedFresh =
+        Boolean(cachedContact?.displayName && cachedContact.displayName !== "LINE User") &&
+        Boolean(cachedContact?.lastInteractionAt) &&
+        Date.now() - new Date(cachedContact!.lastInteractionAt).getTime() < 24 * 60 * 60 * 1000;
+
+      const profile =
+        cachedFresh
+          ? {
+              userId,
+              displayName: cachedContact!.displayName,
+              pictureUrl: cachedContact!.pictureUrl,
+              statusMessage: cachedContact!.statusMessage,
+            }
+          : settings.channelAccessToken
+          ? await getLineUserProfile(settings.channelAccessToken, userId)
+          : null;
+      const displayName = profile?.displayName || cachedContact?.displayName || "LINE User";
 
       let matchedCustomer = prelinkedByLineId.get(userId) || null;
 
       if (!matchedCustomer) {
-        const allCustomers = await loadCandidatePool();
+        // NEVER auto-link or overwrite a customer who already has a real LINE UID/Group ID (`U...`/`C...`/`R...`)!
+        // This prevents two different people with the same display name (e.g. "Gabriel") from hijacking each other's CRM profile.
+        const allCustomers = (await loadCandidatePool()).filter(
+          (c) => !isValidLineTargetId(c.lineId)
+        );
 
         if (displayName) {
           const normDisplay = normalizeHandle(displayName);
           const lineIdMatches = allCustomers.filter(
             (c) =>
               c.lineId &&
-              !/^U[0-9a-f]{32}$/i.test(c.lineId) &&
+              !isValidLineTargetId(c.lineId) &&
               normalizeHandle(c.lineId) === normDisplay
           );
           if (lineIdMatches.length === 1) {
@@ -320,62 +494,8 @@ export async function POST(req: NextRequest) {
       }
       contacts.unshift(updatedRecord);
 
-      const msgType = event?.message?.type;
-      if (messageText || event.type === "follow" || msgType === "image" || msgType === "sticker") {
-        const inboundAttachments: SocialMessageAttachment[] = [];
-
-        if (msgType === "image" && event?.message?.id && settings.channelAccessToken) {
-          try {
-            const msgId = String(event.message.id).replace(/[^a-zA-Z0-9_-]/g, "");
-            const imgRes = await fetch(
-              `https://api-data.line.me/v2/bot/message/${encodeURIComponent(msgId)}/content`,
-              {
-                headers: {
-                  Authorization: `Bearer ${settings.channelAccessToken.trim()}`,
-                },
-              }
-            );
-            if (imgRes.ok) {
-              const arrBuf = await imgRes.arrayBuffer();
-              const rawBuffer = Buffer.from(arrBuf);
-              const contentType = imgRes.headers.get("content-type") || "image/jpeg";
-              const filename = `line-${msgId}.jpg`;
-
-              let imageUrl = await uploadBufferToGcs(rawBuffer, {
-                entityType: "system",
-                entityId: `line_${userId.slice(-12)}`,
-                subType: "chat",
-                contentType,
-                extension: "jpg",
-                customFileName: filename,
-              });
-
-              if (!imageUrl) {
-                const uploadDir = path.resolve(process.cwd(), "storage", "uploads", "system", "chat");
-                await fs.promises.mkdir(uploadDir, { recursive: true });
-                await fs.promises.writeFile(path.join(uploadDir, filename), rawBuffer);
-                imageUrl = `/uploads/system/chat/${filename}`;
-              }
-
-              inboundAttachments.push({
-                type: "image",
-                url: imageUrl,
-                name: "LINE Customer Photo",
-              });
-            }
-          } catch (e) {
-            console.warn("[LINE Webhook] Failed to download inbound image:", e);
-          }
-        } else if (msgType === "sticker" && event?.message?.stickerId) {
-          const stickerId = String(event.message.stickerId).replace(/\D/g, "");
-          if (stickerId) {
-            inboundAttachments.push({
-              type: "image",
-              url: `https://stickershop.line-scdn.net/stickershop/v1/sticker/${stickerId}/android/sticker.png`,
-              name: "LINE Sticker",
-            });
-          }
-        }
+      if (messageText || event.type === "follow" || isSupportedLineMessageType) {
+        const inboundAttachments = await extractLineInboundAttachments(event, userId);
 
         await recordInboundSocialMessageInternal({
           channel: "line",
@@ -383,15 +503,10 @@ export async function POST(req: NextRequest) {
           contactName: updatedRecord.displayName,
           contactPhone: updatedRecord.linkedCustomerPhone || undefined,
           contactAvatar: updatedRecord.pictureUrl,
-          text:
-            messageText ||
-            (msgType === "image"
-              ? "📷 [Sent a photo via LINE]"
-              : msgType === "sticker"
-              ? "😊 [Sent a LINE Sticker]"
-              : "[Followed LINE Official Account]"),
+          text: messageText || formatNonTextLineBody(false),
           attachments: inboundAttachments.length > 0 ? inboundAttachments : undefined,
           customerId: updatedRecord.linkedCustomerId,
+          externalMessageId: event?.message?.id ? `line_${event.message.id}` : undefined,
         }).catch(() => {});
       }
     }

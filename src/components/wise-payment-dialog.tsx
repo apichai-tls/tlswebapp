@@ -152,12 +152,14 @@ export function WisePaymentDialog({
   // Check recent incoming transfers from Wise API via server action (with deduplication & reference matching)
   const handleCheckWisePayment = async (isManual = false) => {
     if (!job || isPaidSuccess) return;
+    if (!isManual && typeof document !== "undefined" && document.hidden) return;
     if (isManual) setIsCheckingStatus(true);
 
     try {
       const res = await checkWiseJobPaymentStatusAction({
         jobId: job.id,
         expectedAmount: amountToPay,
+        forceRefresh: isManual,
       });
 
       if (res.activities) {
@@ -269,8 +271,9 @@ export function WisePaymentDialog({
     checkWiseFnRef.current(false);
 
     pollTimerRef.current = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
       checkWiseFnRef.current(false);
-    }, 3000);
+    }, 10000);
 
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);

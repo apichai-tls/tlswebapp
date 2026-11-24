@@ -844,7 +844,7 @@ export async function startWhatsAppQrConnection(
               rememberLidMapping(ch?.id, ch?.pnJid || ch?.lidJid);
             }
           }
-          // Backfill any missed messages from the last 72 hours (e.g. sent during Cloud Run restart/deploy)
+          // Backfill any missed messages from the last 72 hours (e.g. sent during Cloud Run restart/deploy or while QR was unlinked)
           if (Array.isArray(payload?.messages) && payload.messages.length > 0) {
             const cutoffMs = Date.now() - 72 * 60 * 60 * 1000;
             const recentMsgs = payload.messages
@@ -858,10 +858,27 @@ export async function startWhatsAppQrConnection(
                   new Date(extractWhatsAppMessageTimestampIso(a)).getTime() -
                   new Date(extractWhatsAppMessageTimestampIso(b)).getTime()
               )
-              .slice(-200);
+              .slice(-400);
             for (const m of recentMsgs) {
               await ingestWhatsAppMessage(m, { isHistorySync: true });
             }
+            // Broadcast a live social.updated refresh event after history backfill completes
+            // so open browser tabs immediately see all backfilled replies without manual reload!
+            try {
+              const { bumpSocialStoreVersion } = await import('@/lib/social-inbox-internal');
+              const { publishOrderEvent } = await import('@/lib/realtime-bus');
+              const version = await bumpSocialStoreVersion();
+              await publishOrderEvent({
+                type: 'social.updated',
+                jobId: `__SOCIAL_WA_HISTORY_${Date.now()}`,
+                updatedAt: new Date(),
+                socialPayload: {
+                  kind: 'history_sync' as any,
+                  channel: 'whatsapp',
+                  version,
+                },
+              });
+            } catch {}
           }
           if (Array.isArray(payload?.chats) && payload.chats.length > 0) {
             await syncClearedWhatsAppChats(payload.chats);
