@@ -1581,16 +1581,23 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     }
   };
 
-  // Unclaimed & APPROVED (not yet attached to a replenishment report) expense transactions for a holder
+  const getNetClaimDelta = useCallback((t: PettyCashTx): number => {
+    const amt = Number(t.amount) || 0;
+    return t.direction === "CREDIT" ? -amt : amt;
+  }, []);
+
+  // Unclaimed & APPROVED (not yet attached to a replenishment report) transactions for a holder
+  // Includes both DEBIT (EXPENSE / TRANSFER_OUT / ADJUST_DEDUCT) and non-TOPUP CREDIT returns (TRANSFER_IN / RETURN / ADJUST_ADD)
+  // so Net Replenishment always reconciles 1:1 with Quota - Current Balance.
   const getUnclaimedExpenseTxsForHolder = useCallback(
     (targetHolderId: string): PettyCashTx[] => {
       if (!targetHolderId) return [];
       return transactions.filter(
         (t) =>
           t.holderId === targetHolderId &&
-          t.direction === "DEBIT" &&
           t.status === "APPROVED" &&
-          !t.replenishmentReportId
+          !t.replenishmentReportId &&
+          (t.direction === "DEBIT" || t.type === "TRANSFER_IN" || t.type === "RETURN" || t.type === "ADJUST_ADD")
       );
     },
     [transactions]
@@ -1603,7 +1610,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     const unclaimed = getUnclaimedExpenseTxsForHolder(targetId);
     const ids = unclaimed.map((t) => t.id);
     setReportSelectedTxIds(ids);
-    const totalExp = Math.round(unclaimed.reduce((s, t) => s + (Number(t.amount) || 0), 0) * 100) / 100;
+    const totalExp = Math.round(unclaimed.reduce((s, t) => s + getNetClaimDelta(t), 0) * 100) / 100;
     const hSum = holderSummaries.find((h) => h.holderId === targetId);
     const limit = getHolderLimit(targetId, hSum?.isAccounting);
     const shortfall = Math.max(0, Math.round((limit - (hSum?.currentBalance ?? 0)) * 100) / 100);
@@ -1626,7 +1633,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       return;
     }
 
-    const totalExp = Math.round(selectedTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0) * 100) / 100;
+    const totalExp = Math.round(selectedTxs.reduce((s, t) => s + getNetClaimDelta(t), 0) * 100) / 100;
     const reqAmt = parseFloat(reportRequestedAmount);
     if (isNaN(reqAmt) || reqAmt <= 0) {
       toast.error("กรุณาระบุยอดเงินที่ต้องการขอเบิกชดเชย (> 0)");
@@ -1640,7 +1647,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     selectedTxs.forEach((t) => {
       const cat = t.category || "Uncategorized";
       const cur = catMap.get(cat) || { category: cat, amount: 0, count: 0 };
-      cur.amount = Math.round((cur.amount + (Number(t.amount) || 0)) * 100) / 100;
+      cur.amount = Math.round((cur.amount + getNetClaimDelta(t)) * 100) / 100;
       cur.count += 1;
       catMap.set(cat, cur);
 
@@ -5748,7 +5755,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
             const unclaimedTxs = getUnclaimedExpenseTxsForHolder(reportHolderId);
             const selectedTxs = unclaimedTxs.filter((t) => reportSelectedTxIds.includes(t.id));
             const totalSelectedSpent =
-              Math.round(selectedTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0) * 100) / 100;
+              Math.round(selectedTxs.reduce((s, t) => s + getNetClaimDelta(t), 0) * 100) / 100;
             const hSum = holderSummaries.find((h) => h.holderId === reportHolderId);
             const limit = getHolderLimit(reportHolderId, hSum?.isAccounting);
             const currentBal = hSum?.currentBalance ?? 0;
@@ -5758,7 +5765,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
             selectedTxs.forEach((t) => {
               const cat = t.category || "Uncategorized";
               const cur = catPreviewMap.get(cat) || { category: cat, amount: 0, count: 0 };
-              cur.amount = Math.round((cur.amount + (Number(t.amount) || 0)) * 100) / 100;
+              cur.amount = Math.round((cur.amount + getNetClaimDelta(t)) * 100) / 100;
               cur.count += 1;
               catPreviewMap.set(cat, cur);
             });
@@ -5797,7 +5804,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                             setReportSelectedTxIds(nextUnclaimed.map((t) => t.id));
                             const nextExp =
                               Math.round(
-                                nextUnclaimed.reduce((s, t) => s + (Number(t.amount) || 0), 0) * 100
+                                nextUnclaimed.reduce((s, t) => s + getNetClaimDelta(t), 0) * 100
                               ) / 100;
                             const nextSum = holderSummaries.find((h) => h.holderId === nextId);
                             const nextLim = getHolderLimit(nextId, nextSum?.isAccounting);
@@ -5865,7 +5872,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                               setReportSelectedTxIds(allIds);
                               const sumAll =
                                 Math.round(
-                                  unclaimedTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0) * 100
+                                  unclaimedTxs.reduce((s, t) => s + getNetClaimDelta(t), 0) * 100
                                 ) / 100;
                               setReportRequestedAmount(sumAll.toFixed(2));
                             }
@@ -5906,7 +5913,7 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                                       Math.round(
                                         unclaimedTxs
                                           .filter((item) => nextIds.includes(item.id))
-                                          .reduce((s, item) => s + (Number(item.amount) || 0), 0) * 100
+                                          .reduce((s, item) => s + getNetClaimDelta(item), 0) * 100
                                       ) / 100;
                                     setReportRequestedAmount(nextSum.toFixed(2));
                                   }}
@@ -5917,6 +5924,11 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                                     {tx.type === "TRANSFER_OUT" && (
                                       <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 text-[9.5px] font-extrabold shrink-0">
                                         Transfer → {tx.counterpartyName || "Staff"}
+                                      </span>
+                                    )}
+                                    {tx.direction === "CREDIT" && (
+                                      <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[9.5px] font-extrabold shrink-0">
+                                        Return ← {tx.counterpartyName || "Store"}
                                       </span>
                                     )}
                                     <span className="truncate">{tx.description}</span>
@@ -5939,8 +5951,8 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                                   </div>
                                 </div>
                               </div>
-                              <div className="font-mono font-bold text-rose-600 shrink-0">
-                                -฿{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              <div className={`font-mono font-bold shrink-0 ${tx.direction === "CREDIT" ? "text-emerald-600" : "text-rose-600"}`}>
+                                {tx.direction === "CREDIT" ? "+" : "-"}฿{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                               </div>
                             </label>
                           );
@@ -5949,33 +5961,48 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                     )}
                   </div>
 
-                  {/* Direct Expenses vs Staff Transfers Breakdown (Model 1: Accounting Sub-Custodian Replenishment) */}
+                  {/* Direct Expenses vs Staff Transfers Out vs Returned In Breakdown */}
                   {(() => {
-                    const directTxs = selectedTxs.filter((t) => t.type !== "TRANSFER_OUT");
-                    const transferTxs = selectedTxs.filter((t) => t.type === "TRANSFER_OUT");
-                    if (transferTxs.length === 0) return null;
+                    const directTxs = selectedTxs.filter((t) => t.direction === "DEBIT" && t.type !== "TRANSFER_OUT");
+                    const transferOutTxs = selectedTxs.filter((t) => t.type === "TRANSFER_OUT");
+                    const returnInTxs = selectedTxs.filter((t) => t.direction === "CREDIT");
+                    if (transferOutTxs.length === 0 && returnInTxs.length === 0) return null;
                     const directSum = directTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
-                    const transferSum = transferTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    const transferOutSum = transferOutTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    const returnInSum = returnInTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    const netClaim = Math.round((directSum + transferOutSum - returnInSum) * 100) / 100;
                     return (
-                      <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+                      <div className={`p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-200/80 grid grid-cols-1 ${returnInTxs.length > 0 && transferOutTxs.length > 0 ? "sm:grid-cols-4" : "sm:grid-cols-3"} gap-2 text-[11px]`}>
                         <div className="bg-white rounded-lg px-2.5 py-1.5 border border-indigo-100">
-                          <span className="text-[10px] text-slate-500 block">Direct Expenses ({directTxs.length} bills)</span>
+                          <span className="text-[10px] text-slate-500 block">Direct Expenses ({directTxs.length})</span>
                           <span className="font-mono font-bold text-rose-600">
-                            ฿{directSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            -฿{directSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                           </span>
                         </div>
-                        <div className="bg-white rounded-lg px-2.5 py-1.5 border border-indigo-100">
-                          <span className="text-[10px] text-indigo-600 font-semibold block">
-                            Transfers to Staff ({transferTxs.length})
-                          </span>
-                          <span className="font-mono font-bold text-indigo-700">
-                            ฿{transferSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                          </span>
-                        </div>
+                        {transferOutTxs.length > 0 && (
+                          <div className="bg-white rounded-lg px-2.5 py-1.5 border border-indigo-100">
+                            <span className="text-[10px] text-indigo-600 font-semibold block">
+                              Transfers Out ({transferOutTxs.length})
+                            </span>
+                            <span className="font-mono font-bold text-indigo-700">
+                              -฿{transferOutSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                        )}
+                        {returnInTxs.length > 0 && (
+                          <div className="bg-white rounded-lg px-2.5 py-1.5 border border-emerald-100">
+                            <span className="text-[10px] text-emerald-700 font-semibold block">
+                              Returned In ({returnInTxs.length})
+                            </span>
+                            <span className="font-mono font-bold text-emerald-600">
+                              +฿{returnInSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                        )}
                         <div className="bg-white rounded-lg px-2.5 py-1.5 border border-emerald-200">
-                          <span className="text-[10px] text-emerald-700 font-semibold block">Total Replenishment Claim</span>
+                          <span className="text-[10px] text-emerald-700 font-semibold block">Net Replenishment</span>
                           <span className="font-mono font-extrabold text-emerald-700">
-                            ฿{(directSum + transferSum).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            ฿{netClaim.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                           </span>
                         </div>
                       </div>
@@ -6146,33 +6173,48 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                     </div>
                   </div>
 
-                  {/* Direct Expenses vs Staff Transfers Breakdown (if any TRANSFER_OUT included) */}
+                  {/* Direct Expenses vs Staff Transfers Out vs Returned In Breakdown */}
                   {(() => {
-                    const directTxs = includedTxs.filter((t) => t.type !== "TRANSFER_OUT");
-                    const transferTxs = includedTxs.filter((t) => t.type === "TRANSFER_OUT");
-                    if (transferTxs.length === 0) return null;
+                    const directTxs = includedTxs.filter((t) => t.direction === "DEBIT" && t.type !== "TRANSFER_OUT");
+                    const transferOutTxs = includedTxs.filter((t) => t.type === "TRANSFER_OUT");
+                    const returnInTxs = includedTxs.filter((t) => t.direction === "CREDIT");
+                    if (transferOutTxs.length === 0 && returnInTxs.length === 0) return null;
                     const directSum = directTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
-                    const transferSum = transferTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    const transferOutSum = transferOutTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    const returnInSum = returnInTxs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    const netClaim = Math.round((directSum + transferOutSum - returnInSum) * 100) / 100;
                     return (
-                      <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] min-w-0">
+                      <div className={`p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-200/80 grid grid-cols-1 ${returnInTxs.length > 0 && transferOutTxs.length > 0 ? "sm:grid-cols-4" : "sm:grid-cols-3"} gap-2 text-[11px] min-w-0`}>
                         <div className="bg-white rounded-lg px-2.5 py-1.5 border border-indigo-100 min-w-0">
-                          <span className="text-[10px] text-slate-500 block truncate">Direct Expenses ({directTxs.length} bills)</span>
+                          <span className="text-[10px] text-slate-500 block truncate">Direct Expenses ({directTxs.length})</span>
                           <span className="font-mono font-bold text-rose-600">
-                            ฿{directSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            -฿{directSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                           </span>
                         </div>
-                        <div className="bg-white rounded-lg px-2.5 py-1.5 border border-indigo-100 min-w-0">
-                          <span className="text-[10px] text-indigo-600 font-semibold block truncate">
-                            Staff Wallet Transfers ({transferTxs.length})
-                          </span>
-                          <span className="font-mono font-bold text-indigo-700">
-                            ฿{transferSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                          </span>
-                        </div>
+                        {transferOutTxs.length > 0 && (
+                          <div className="bg-white rounded-lg px-2.5 py-1.5 border border-indigo-100 min-w-0">
+                            <span className="text-[10px] text-indigo-600 font-semibold block truncate">
+                              Transfers Out ({transferOutTxs.length})
+                            </span>
+                            <span className="font-mono font-bold text-indigo-700">
+                              -฿{transferOutSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                        )}
+                        {returnInTxs.length > 0 && (
+                          <div className="bg-white rounded-lg px-2.5 py-1.5 border border-emerald-100 min-w-0">
+                            <span className="text-[10px] text-emerald-700 font-semibold block truncate">
+                              Returned In ({returnInTxs.length})
+                            </span>
+                            <span className="font-mono font-bold text-emerald-600">
+                              +฿{returnInSum.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                        )}
                         <div className="bg-white rounded-lg px-2.5 py-1.5 border border-emerald-200 min-w-0">
-                          <span className="text-[10px] text-emerald-700 font-semibold block truncate">Total Replenishment</span>
+                          <span className="text-[10px] text-emerald-700 font-semibold block truncate">Net Replenishment</span>
                           <span className="font-mono font-extrabold text-emerald-700">
-                            ฿{(directSum + transferSum).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            ฿{netClaim.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                           </span>
                         </div>
                       </div>
@@ -6194,8 +6236,8 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                             <span className="text-slate-700 font-medium truncate">
                               {c.category} ({c.count} บิล)
                             </span>
-                            <span className="font-mono font-bold text-rose-600 shrink-0">
-                              ฿{Number(c.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            <span className={`font-mono font-bold shrink-0 ${Number(c.amount) < 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                              {Number(c.amount) < 0 ? "-" : ""}฿{Math.abs(Number(c.amount)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                             </span>
                           </div>
                         ))}
@@ -6223,6 +6265,11 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                                     Transfer → {tx.counterpartyName || "Staff"}
                                   </span>
                                 )}
+                                {tx.direction === "CREDIT" && (
+                                  <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[9.5px] font-extrabold shrink-0">
+                                    Return ← {tx.counterpartyName || "Store"}
+                                  </span>
+                                )}
                                 <span className="truncate">{tx.description}</span>
                               </div>
                               <div className="text-[10.5px] text-slate-500 flex items-center gap-1.5 flex-wrap">
@@ -6242,8 +6289,8 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                               >
                                 📎 {allFiles.length} file(s)
                               </button>
-                              <span className="font-mono font-bold text-rose-600 whitespace-nowrap">
-                                -฿{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              <span className={`font-mono font-bold whitespace-nowrap ${tx.direction === "CREDIT" ? "text-emerald-600" : "text-rose-600"}`}>
+                                {tx.direction === "CREDIT" ? "+" : "-"}฿{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                               </span>
                             </div>
                           </div>
