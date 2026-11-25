@@ -1710,16 +1710,13 @@ export default function RiderPage() {
   }, [riderTransactions, jobs, txHistoryJobs]);
 
   const historyJobs: RiderTask[] = useMemo(() => {
-    if (showCommission) {
+    if (showCommission && historyMode === "monthly") {
       const targetMonthYear = format(historyDate, "MMMM yyyy");
       const filteredTxs = riderTransactions
         .filter((t) => {
           if (!t?.createdAt) return false;
           const txDate = new Date(t.createdAt);
           if (isNaN(txDate.getTime())) return false;
-          if (historyMode === "daily") {
-            return isSameDay(txDate, historyDate);
-          }
           return format(txDate, "MMMM yyyy") === targetMonthYear;
         })
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
