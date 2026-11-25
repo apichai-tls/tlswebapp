@@ -202,16 +202,18 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
   const isArthidUser = Boolean(
     user && (/\barthid\b/i.test(user.name || "") || /\barthid\b/i.test(user.email || ""))
   );
-  const canManageAutoAssign = Boolean(
-    isAdminUser || isArthidUser || userPermissions.includes("auto-assign-manage")
-  );
+  const canViewAutoAssignLive = Boolean(isAdminUser || isArthidUser);
+  const canManageAutoAssign = canViewAutoAssignLive;
   const [dispatchTab, setDispatchTab] = useState<"calendar" | "board" | "compare" | "auto_sim" | "auto_live">("calendar");
 
   useEffect(() => {
-    if (!isAdminUser && (dispatchTab === "compare" || dispatchTab === "auto_sim")) {
+    if (
+      (!isAdminUser && (dispatchTab === "compare" || dispatchTab === "auto_sim")) ||
+      (!canViewAutoAssignLive && dispatchTab === "auto_live")
+    ) {
       setDispatchTab("calendar");
     }
-  }, [isAdminUser, dispatchTab]);
+  }, [isAdminUser, canViewAutoAssignLive, dispatchTab]);
   const [showOfflineRiders, setShowOfflineRiders] = useState(false);
   const [boardSortMode, setBoardSortMode] = useState<"optimized" | "time">("optimized");
   const [boardDateScope, setBoardDateScope] = useState<"today" | "all_active">("today");
@@ -1173,23 +1175,25 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                 </button>
               )}
 
-              <button
-                type="button"
-                onClick={() => setDispatchTab("auto_live")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
-                  dispatchTab === "auto_live"
-                    ? "bg-emerald-600 text-white shadow-xs"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                <Sparkles size={14} className={dispatchTab === "auto_live" ? "text-amber-300" : "text-emerald-600"} />
-                <span>Auto-Assign Live</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
-                  dispatchTab === "auto_live" ? "bg-white text-emerald-700" : "bg-emerald-100 text-emerald-700"
-                }`}>
-                  {canManageAutoAssign ? "Mgmt" : "Live"}
-                </span>
-              </button>
+              {canViewAutoAssignLive && (
+                <button
+                  type="button"
+                  onClick={() => setDispatchTab("auto_live")}
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                    dispatchTab === "auto_live"
+                      ? "bg-emerald-600 text-white shadow-xs"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  <Sparkles size={14} className={dispatchTab === "auto_live" ? "text-amber-300" : "text-emerald-600"} />
+                  <span>Auto-Assign Live</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                    dispatchTab === "auto_live" ? "bg-white text-emerald-700" : "bg-emerald-100 text-emerald-700"
+                  }`}>
+                    {canManageAutoAssign ? "Mgmt" : "Live"}
+                  </span>
+                </button>
+              )}
             </div>
 
             <div className="flex items-center gap-2.5">
@@ -1528,7 +1532,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
             getRiderOriginCoords={getRiderOriginCoords}
             onOpenJobDetail={openJobDetail}
           />
-        ) : dispatchTab === "auto_live" ? (
+        ) : canViewAutoAssignLive && dispatchTab === "auto_live" ? (
           /* ===================================================================== */
           /* TAB 5: AUTO-ASSIGN LIVE QUEUE (PERMISSION-CONTROLLED MGMT / LIVE VIEW) */
           /* ===================================================================== */
