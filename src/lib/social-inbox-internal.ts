@@ -551,6 +551,7 @@ export async function loadSocialChannelConfig(
       facebook: { ...cached.config.facebook },
       instagram: { ...cached.config.instagram },
       telegram: { ...cached.config.telegram },
+      ...(cached.config.email ? { email: { ...cached.config.email } } : {}),
     };
   }
   let config = getDefaultSocialChannelConfig();
@@ -568,6 +569,7 @@ export async function loadSocialChannelConfig(
           facebook: { ...config.facebook, ...(parsed.facebook || {}) },
           instagram: { ...config.instagram, ...(parsed.instagram || {}) },
           telegram: { ...config.telegram, ...(parsed.telegram || {}) },
+          ...(parsed.email ? { email: { ...parsed.email } } : {}),
         };
       }
     }
@@ -622,6 +624,14 @@ export function maskSocialChannelConfigSecrets(config: SocialChannelConfig): Soc
       ...config.telegram,
       botToken: maskSecretValue(config.telegram?.botToken),
     },
+    ...(config.email
+      ? {
+          email: {
+            ...config.email,
+            appPassword: maskSecretValue(config.email?.appPassword),
+          },
+        }
+      : {}),
   };
 }
 
@@ -2095,7 +2105,13 @@ export async function updateOutboundSocialMessageStatusInternal(input: {
   externalMessageId: string;
   status: 'sent' | 'delivered' | 'read' | 'failed';
   errorText?: string;
-}): Promise<{ updated: boolean; error?: string }> {
+}): Promise<{
+  updated: boolean;
+  message?: SocialMessage;
+  conversation?: SocialConversation | null;
+  alreadyQrFailover?: boolean;
+  error?: string;
+}> {
   const extId = (input.externalMessageId || '').trim();
   if (!extId) return { updated: false };
 
@@ -2105,6 +2121,11 @@ export async function updateOutboundSocialMessageStatusInternal(input: {
       where: { externalMessageId: extId },
     });
     if (!existing) return { updated: false };
+
+    // Never let a late Meta Cloud API `failed` webhook overwrite a message already rescued via QR Bridge!
+    if (input.status === 'failed' && existing.deliveryMethod === 'whatsapp_gateway_api') {
+      return { updated: false, alreadyQrFailover: true };
+    }
 
     const currentRank = STATUS_RANK[existing.status] || 0;
     const incomingRank = STATUS_RANK[input.status] || 0;
@@ -2138,11 +2159,123 @@ export async function updateOutboundSocialMessageStatusInternal(input: {
       });
     } catch {}
 
-    return { updated: true };
+    return { updated: true, message: updatedMsg, conversation: conv };
   } catch (err: any) {
     console.error('[updateOutboundSocialMessageStatusInternal] Error:', {
       reason: String(err?.message || 'unknown_error').slice(0, 160),
     });
     return { updated: false, error: err?.message || 'Failed to update message status' };
+  }
+}
+
+const globalForQrFailover = globalThis as unknown as {
+  __tlsWaQrFailoverAttemptedIds?: Set<string>;
+};
+
+/**
+ * Automatic Dual-Sync Failover:
+ * When Meta WhatsApp Cloud API asynchronously rejects an outbound message via webhook
+ * (e.g. >24h customer service window `131047` or restricted country `130497`/`131049`),
+ * automatically re-deliver the exact message + attachments via Linked WhatsApp QR Bridge
+ * (only once, and only for fresh messages sent within the last 5 minutes).
+ */
+export async function failoverFailedCloudApiMessageToQrInternal(input: {
+  messageId: string;
+  defaultCountryCode?: string;
+}): Promise<{ rescued: boolean; reason?: string }> {
+  const attempted =
+    globalForQrFailover.__tlsWaQrFailoverAttemptedIds ||
+    (globalForQrFailover.__tlsWaQrFailoverAttemptedIds = new Set<string>());
+
+  if (attempted.has(input.messageId)) {
+    return { rescued: false, reason: 'already_attempted' };
+  }
+  attempted.add(input.messageId);
+  if (attempted.size > 500) {
+    const first = attempted.values().next().value;
+    if (first) attempted.delete(first);
+  }
+
+  try {
+    const row = await prisma.socialMessage.findUnique({
+      where: { id: input.messageId },
+    });
+    if (!row) return { rescued: false, reason: 'not_found' };
+    if (
+      row.channel !== 'whatsapp' ||
+      row.direction !== 'outbound' ||
+      row.deliveryMethod !== 'whatsapp_cloud_api'
+    ) {
+      return { rescued: false, reason: 'not_cloud_api_outbound' };
+    }
+    // Safety guard: only auto-failover messages created within the last 5 minutes
+    if (Date.now() - row.createdAt.getTime() > 5 * 60 * 1000) {
+      return { rescued: false, reason: 'too_old' };
+    }
+
+    const { getWhatsAppQrStatusAsync, sendDirectWhatsAppQrMessage } = await import(
+      '@/lib/whatsapp-qr-manager'
+    );
+    const qrStatus = await getWhatsAppQrStatusAsync(true);
+    if (qrStatus.status !== 'connected' && qrStatus.status !== 'connecting') {
+      return { rescued: false, reason: 'qr_not_connected' };
+    }
+
+    const conv = await findSocialConversationById(row.conversationId);
+    const targetPhone = conv?.externalContactId || conv?.contactPhone || '';
+    if (!targetPhone) return { rescued: false, reason: 'no_phone' };
+
+    const msgObj = mapDbRowToMessage(row);
+    const isSyntheticPlaceholder =
+      (msgObj.text === '📷 [Sent Photo / Attachment]' ||
+        msgObj.text === '📷 [Sent a photo via WhatsApp]') &&
+      Boolean(msgObj.attachments && msgObj.attachments.length > 0);
+
+    const qrRes = await sendDirectWhatsAppQrMessage({
+      phone: targetPhone,
+      countryCode: input.defaultCountryCode || '66',
+      text: isSyntheticPlaceholder ? '' : msgObj.text,
+      attachments: msgObj.attachments,
+    });
+
+    if (!qrRes.ok) {
+      console.warn('[WA QR Failover] Resend via QR failed:', qrRes.error);
+      return { rescued: false, reason: qrRes.error };
+    }
+
+    const rescuedRow = await prisma.socialMessage.update({
+      where: { id: row.id },
+      data: {
+        status: 'delivered',
+        deliveryMethod: 'whatsapp_gateway_api',
+        externalError: null,
+      },
+    });
+    const rescuedMsg = mapDbRowToMessage(rescuedRow);
+    const version = await bumpSocialStoreVersion();
+
+    try {
+      const { publishOrderEvent } = await import('@/lib/realtime-bus');
+      await publishOrderEvent({
+        type: 'social.updated',
+        jobId: `__SOCIAL_QR_RESCUE_${rescuedMsg.id}`,
+        updatedAt: new Date(),
+        socialPayload: {
+          kind: 'message',
+          conversation: conv ?? undefined,
+          message: rescuedMsg,
+          version,
+        },
+      });
+    } catch {}
+
+    console.info('[WA QR Failover] Successfully rescued failed Cloud API message via QR Bridge:', {
+      messageId: rescuedMsg.id,
+      phone: targetPhone,
+    });
+    return { rescued: true };
+  } catch (err: any) {
+    console.warn('[WA QR Failover] Unexpected error:', err?.message || err);
+    return { rescued: false, reason: err?.message || 'error' };
   }
 }

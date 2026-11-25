@@ -186,12 +186,29 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
   const [selectedRiderIds, setSelectedRiderIds] = useState<Set<string>>(new Set());
   const [showCompleted, setShowCompleted] = useState(false);
 
-  // Default to "calendar" (Schedule Calendar on Left, Rider Route Board on Right, plus Admin-only Lab tabs)
+  // Default to "calendar" (Schedule Calendar on Left, Rider Route Board on Right, plus Auto-Assign Live)
   const isAdminUser = user?.role === "admin";
+  const userPermissions = useMemo<string[]>(() => {
+    const raw = (user as any)?.permissions;
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw;
+    try {
+      const parsed = JSON.parse(String(raw));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }, [(user as any)?.permissions]);
+  const isArthidUser = Boolean(
+    user && (/\barthid\b/i.test(user.name || "") || /\barthid\b/i.test(user.email || ""))
+  );
+  const canManageAutoAssign = Boolean(
+    isAdminUser || isArthidUser || userPermissions.includes("auto-assign-manage")
+  );
   const [dispatchTab, setDispatchTab] = useState<"calendar" | "board" | "compare" | "auto_sim" | "auto_live">("calendar");
 
   useEffect(() => {
-    if (!isAdminUser && (dispatchTab === "compare" || dispatchTab === "auto_sim" || dispatchTab === "auto_live")) {
+    if (!isAdminUser && (dispatchTab === "compare" || dispatchTab === "auto_sim")) {
       setDispatchTab("calendar");
     }
   }, [isAdminUser, dispatchTab]);
@@ -1137,62 +1154,42 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
               </button>
 
               {isAdminUser && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setDispatchTab("compare")}
-                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
-                      dispatchTab === "compare"
-                        ? "bg-indigo-600 text-white shadow-xs"
-                        : "text-slate-600 hover:text-slate-900"
-                    }`}
-                  >
-                    <FlaskConical size={14} className={dispatchTab === "compare" ? "text-amber-300" : "text-indigo-500"} />
-                    <span>Route Compare</span>
-                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
-                      dispatchTab === "compare" ? "bg-white text-indigo-700" : "bg-indigo-100 text-indigo-700"
-                    }`}>
-                      Lab
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setDispatchTab("auto_sim")}
-                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
-                      dispatchTab === "auto_sim"
-                        ? "bg-violet-600 text-white shadow-xs"
-                        : "text-slate-600 hover:text-slate-900"
-                    }`}
-                  >
-                    <Bot size={14} className={dispatchTab === "auto_sim" ? "text-amber-300" : "text-violet-600"} />
-                    <span>Auto-Assign Sim</span>
-                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
-                      dispatchTab === "auto_sim" ? "bg-white text-violet-700" : "bg-violet-100 text-violet-700"
-                    }`}>
-                      Sim
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setDispatchTab("auto_live")}
-                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
-                      dispatchTab === "auto_live"
-                        ? "bg-emerald-600 text-white shadow-xs"
-                        : "text-slate-600 hover:text-slate-900"
-                    }`}
-                  >
-                    <Sparkles size={14} className={dispatchTab === "auto_live" ? "text-amber-300" : "text-emerald-600"} />
-                    <span>Auto-Assign Live</span>
-                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
-                      dispatchTab === "auto_live" ? "bg-white text-emerald-700" : "bg-emerald-100 text-emerald-700"
-                    }`}>
-                      Live
-                    </span>
-                  </button>
-                </>
+                <button
+                  type="button"
+                  onClick={() => setDispatchTab("compare")}
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                    dispatchTab === "compare"
+                      ? "bg-indigo-600 text-white shadow-xs"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  <FlaskConical size={14} className={dispatchTab === "compare" ? "text-amber-300" : "text-indigo-500"} />
+                  <span>Route Compare</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                    dispatchTab === "compare" ? "bg-white text-indigo-700" : "bg-indigo-100 text-indigo-700"
+                  }`}>
+                    Lab
+                  </span>
+                </button>
               )}
+
+              <button
+                type="button"
+                onClick={() => setDispatchTab("auto_live")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  dispatchTab === "auto_live"
+                    ? "bg-emerald-600 text-white shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Sparkles size={14} className={dispatchTab === "auto_live" ? "text-amber-300" : "text-emerald-600"} />
+                <span>Auto-Assign Live</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                  dispatchTab === "auto_live" ? "bg-white text-emerald-700" : "bg-emerald-100 text-emerald-700"
+                }`}>
+                  {canManageAutoAssign ? "Mgmt" : "Live"}
+                </span>
+              </button>
             </div>
 
             <div className="flex items-center gap-2.5">
@@ -1531,12 +1528,13 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
             getRiderOriginCoords={getRiderOriginCoords}
             onOpenJobDetail={openJobDetail}
           />
-        ) : isAdminUser && dispatchTab === "auto_live" ? (
+        ) : dispatchTab === "auto_live" ? (
           /* ===================================================================== */
-          /* TAB 5: AUTO-ASSIGN LIVE QUEUE (ADMIN ONLY, READ-ONLY PRODUCTION PULL) */
+          /* TAB 5: AUTO-ASSIGN LIVE QUEUE (PERMISSION-CONTROLLED MGMT / LIVE VIEW) */
           /* ===================================================================== */
           <AdminDispatchAutoSim
             mode="live_shadow"
+            canManageAutoAssign={canManageAutoAssign}
             allJobs={allJobs}
             riders={filteredRiders}
             shopLocations={shopLocations}

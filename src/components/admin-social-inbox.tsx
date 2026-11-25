@@ -97,9 +97,17 @@ import {
   getWhatsAppQrStatusAction,
   disconnectWhatsAppQrAction,
   testWhatsAppCloudApiAction,
+  testGmailConnectionAction,
+  syncGmailInboxAction,
+  ensureCustomerForBookingAction,
 } from '@/actions/social-inbox';
 import type { WhatsAppQrState } from '@/lib/whatsapp-qr-manager';
 import type { WhatsAppCloudVerificationResult } from '@/lib/whatsapp-cloud-api';
+import {
+  extractDialCodeFromInternationalPhone,
+  filterWorldCountryCodes,
+  findCountryByDialCode,
+} from '@/lib/world-country-codes';
 import { syncLineOaFollowersAction } from '@/actions/line';
 
 const QUICK_EMOJIS = [
@@ -315,6 +323,8 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
   // Native App Composer State
   const [composerText, setComposerText] = useState('');
+  const [emailReplySubject, setEmailReplySubject] = useState('');
+  const [expandedEmailSigIds, setExpandedEmailSigIds] = useState<Record<string, boolean>>({});
   const [stagedAttachments, setStagedAttachments] = useState<SocialMessageAttachment[]>([]);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [attachmentUrl, setAttachmentUrl] = useState('');
@@ -332,6 +342,8 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
   const [waCustomerSearch, setWaCustomerSearch] = useState('');
   const [waSelectedCustomerId, setWaSelectedCustomerId] = useState<string>('');
   const [waCountryCode, setWaCountryCode] = useState('66');
+  const [waCountryCodeInput, setWaCountryCodeInput] = useState('+66');
+  const [showCountryCodeDropdown, setShowCountryCodeDropdown] = useState(false);
   const [waPhoneInput, setWaPhoneInput] = useState('');
   const [waContactName, setWaContactName] = useState('');
   const [waInitialMessage, setWaInitialMessage] = useState(
@@ -358,6 +370,8 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
   // Modal 4: Channel Settings & Webhook Configuration
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [testingGmail, setTestingGmail] = useState(false);
+  const [syncingGmail, setSyncingGmail] = useState(false);
   const [waQrState, setWaQrState] = useState<WhatsAppQrState | null>(null);
   const [loadingWaQr, setLoadingWaQr] = useState(false);
   const [isDistanceCalOpen, setIsDistanceCalOpen] = useState(false);
@@ -1144,75 +1158,138 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
   // Upload File / Image from Device or Clipboard (`Ctrl+V`) — Uploads directly to Google Cloud Storage first
   const uploadFileToChat = async (file: File) => {
     try {
+      const isVid =
+        file.type.startsWith('video/') ||
+        /\.(mp4|mov|webm)$/i.test(file.name || '');
+      if (isVid && file.size > 16 * 1024 * 1024) {
+        toast.error('ไฟล์วิดีโอใหญ่เกิน 16 MB (ขีดจำกัดของ WhatsApp) กรุณาย่อขนาดก่อนส่ง');
+        return;
+      }
+
       setUploadingFile(true);
       const entityId = activeConversation?.id
         ? activeConversation.id.replace(/[^a-zA-Z0-9_-]/g, '')
         : 'social';
-      let publicUrl = '';
 
-      // 1. Primary: Upload directly to Google Cloud Storage via Signed URL
-      try {
-        const signRes = await fetch('/api/upload-url', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            entityType: 'system',
-            entityId,
-            subType: 'chat',
-            contentType: file.type || 'image/jpeg',
-            filename: file.name || `chat-${Date.now()}.jpg`,
-          }),
-        });
-        if (signRes.ok) {
-          const signData = await signRes.json();
-          if (signData.uploadUrl && signData.publicUrl) {
-            const putRes = await fetch(signData.uploadUrl, {
-              method: 'PUT',
-              headers: { 'Content-Type': file.type || 'image/jpeg' },
-              body: file,
-            });
-            if (putRes.ok) {
-              publicUrl = signData.publicUrl;
+      const uploadSingleToCloud = async (blob: File | Blob, fname: string, ctype: string): Promise<string> => {
+        try {
+          const signRes = await fetch('/api/upload-url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              entityType: 'system',
+              entityId,
+              subType: 'chat',
+              contentType: ctype,
+              filename: fname,
+            }),
+          });
+          if (signRes.ok) {
+            const signData = await signRes.json();
+            if (signData.uploadUrl && signData.publicUrl) {
+              const putRes = await fetch(signData.uploadUrl, {
+                method: 'PUT',
+                headers: { 'Content-Type': ctype },
+                body: blob,
+              });
+              if (putRes.ok) return signData.publicUrl;
             }
           }
-        }
-      } catch {}
+        } catch {}
 
-      // 2. Fallback: Server-side upload via /api/upload-local (which also uploads chat files to GCS on the server)
-      if (!publicUrl) {
         const fd = new FormData();
-        fd.append('file', file);
+        fd.append('file', blob, fname);
         fd.append('entityType', 'system');
         fd.append('subType', 'chat');
         fd.append('entityId', entityId);
+        const res = await fetch('/api/upload-local', { method: 'POST', body: fd });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data?.publicUrl) return data.publicUrl;
+        return '';
+      };
 
-        const res = await fetch('/api/upload-local', {
-          method: 'POST',
-          body: fd,
-        });
-        const data = await res.json();
-        if (res.ok && data?.publicUrl) {
-          publicUrl = data.publicUrl;
-        } else {
-          toast.error(data?.error || 'Failed to upload file');
-          return;
-        }
+      const publicUrl = await uploadSingleToCloud(
+        file,
+        file.name || (isVid ? `chat-${Date.now()}.mp4` : `chat-${Date.now()}.jpg`),
+        file.type || (isVid ? 'video/mp4' : 'image/jpeg')
+      );
+      if (!publicUrl) {
+        toast.error('Failed to upload file');
+        return;
       }
 
-      if (publicUrl) {
-        const isImg =
-          file.type.startsWith('image/') ||
-          /\.(jpg|jpeg|png|webp|gif|heic)$/i.test(file.name || '');
-        setStagedAttachments((prev) => [
-          ...prev,
-          {
-            type: isImg ? 'image' : 'file',
-            url: publicUrl,
-            name: file.name || 'Chat Photo',
-          },
-        ]);
-        toast.success(`Attached ${file.name || 'photo'} ready to send!`);
+      // For videos, capture a lightweight JPEG poster frame so LINE renders a native playable video bubble
+      let previewUrl: string | undefined;
+      if (isVid && typeof document !== 'undefined') {
+        try {
+          const objUrl = URL.createObjectURL(file);
+          const posterBlob = await new Promise<Blob | null>((resolve) => {
+            const v = document.createElement('video');
+            v.preload = 'metadata';
+            v.muted = true;
+            v.playsInline = true;
+            v.src = objUrl;
+            const cleanup = (b: Blob | null) => {
+              URL.revokeObjectURL(objUrl);
+              resolve(b);
+            };
+            const timer = setTimeout(() => cleanup(null), 4000);
+            v.onloadeddata = () => {
+              try {
+                v.currentTime = Math.min(0.2, v.duration || 0);
+              } catch {
+                clearTimeout(timer);
+                cleanup(null);
+              }
+            };
+            v.onseeked = () => {
+              clearTimeout(timer);
+              try {
+                const canvas = document.createElement('canvas');
+                const scale = Math.min(1, 480 / Math.max(v.videoWidth || 480, 1));
+                canvas.width = Math.max(160, Math.round((v.videoWidth || 320) * scale));
+                canvas.height = Math.max(90, Math.round((v.videoHeight || 240) * scale));
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                  ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+                  canvas.toBlob((blob) => cleanup(blob), 'image/jpeg', 0.78);
+                } else {
+                  cleanup(null);
+                }
+              } catch {
+                cleanup(null);
+              }
+            };
+            v.onerror = () => {
+              clearTimeout(timer);
+              cleanup(null);
+            };
+          });
+          if (posterBlob) {
+            const uploadedThumb = await uploadSingleToCloud(
+              posterBlob,
+              `video-thumb-${Date.now()}.jpg`,
+              'image/jpeg'
+            );
+            if (uploadedThumb) previewUrl = uploadedThumb;
+          }
+        } catch {}
       }
+
+      const isImg =
+        !isVid &&
+        (file.type.startsWith('image/') ||
+          /\.(jpg|jpeg|png|webp|gif|heic)$/i.test(file.name || ''));
+      setStagedAttachments((prev) => [
+        ...prev,
+        {
+          type: isVid ? 'video' : isImg ? 'image' : 'file',
+          url: publicUrl,
+          ...(previewUrl ? { previewUrl } : {}),
+          name: file.name || (isVid ? 'Chat Video.mp4' : 'Chat Photo'),
+        },
+      ]);
+      toast.success(`Attached ${file.name || (isVid ? 'video' : 'photo')} ready to send!`);
     } catch (e: any) {
       toast.error('Upload error: ' + e.message);
     } finally {
@@ -1237,14 +1314,15 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
     }
   };
 
-  // Channel Counts & Stats
+  // Channel Counts & Stats (keep `All` focused on live chats; `Mail (Gmail)` has its own dedicated inbox tab)
   const stats = useMemo(() => {
-    // Count unread CHATS (conversations with unreadCount > 0), matching WhatsApp & LINE desktop apps
-    const unreadTotal = conversations.filter((c) => (c.unreadCount || 0) > 0).length;
+    const liveChatConvs = conversations.filter((c) => c.channel !== 'email');
+    const unreadTotal = liveChatConvs.filter((c) => (c.unreadCount || 0) > 0).length;
     const byChannel: Record<string, number> = {
-      all: conversations.length,
+      all: liveChatConvs.length,
       whatsapp: 0,
       line: 0,
+      email: 0,
       facebook: 0,
       instagram: 0,
       telegram: 0,
@@ -1254,6 +1332,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       all: unreadTotal,
       whatsapp: 0,
       line: 0,
+      email: 0,
       facebook: 0,
       instagram: 0,
       telegram: 0,
@@ -1271,6 +1350,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
   // Filtered Conversations List — always sort unread new messages to the top first, then newest lastMessageAt first
   const filteredConversations = useMemo(() => {
     const list = conversations.filter((c) => {
+      if (channelFilter === 'all' && c.channel === 'email') return false;
       if (channelFilter !== 'all' && c.channel !== channelFilter) return false;
       if (statusFilter === 'unread' && (!c.unreadCount || c.unreadCount === 0)) return false;
       if (statusFilter === 'open' && c.status !== 'open') return false;
@@ -1407,6 +1487,8 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                   ? 'WA'
                   : conv.channel === 'line'
                   ? 'LINE'
+                  : conv.channel === 'email'
+                  ? 'MAIL'
                   : conv.channel === 'facebook'
                   ? 'FB'
                   : conv.channel === 'instagram'
@@ -1791,6 +1873,39 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
     }
   };
 
+    // Extract structured Web Booking details from active Email conversation for header quick-action buttons
+  const activeEmailBookingDetails = useMemo(() => {
+    if (!activeConversation || activeConversation.channel !== 'email') return null;
+    const latestInbound =
+      [...activeMessages].reverse().find((m) => m.direction === 'inbound') ||
+      activeMessages[activeMessages.length - 1];
+    const rawText = (latestInbound?.text || activeConversation.lastMessageText || '').replace(/\r\n/g, '\n');
+    const subjMatch = rawText.match(/^📧\s+([^\n]+)(?:\n\n?([\s\S]*))?$/);
+    const subj = subjMatch ? subjMatch[1].trim() : '';
+    const body = (subjMatch ? subjMatch[2] || '' : rawText).trim();
+
+    const phoneMatch = body.match(/Contact:\s*([+\d][\d\s-]{6,20})/i);
+    const phone = (phoneMatch?.[1] || activeConversation.contactPhone || '').trim();
+    const nameMatch =
+      subj.match(/\[New Booking\]\s+(.+?)\s*(?:-\s*That Laundry Shop|$)/i) ||
+      body.match(/^Hi\s+([^,\n]{2,60}),/im);
+    const custName = (
+      nameMatch?.[1] ||
+      activeConversation.contactName.replace(/^📋\s*/, '') ||
+      ''
+    ).trim();
+    const addrMatch = body.match(
+      /Pickup Address\s*\n([\s\S]+?)(?:\n(?:Room\s+[^\n]+|Delivery Address|💡|Need urgent))/i
+    );
+    const addr = addrMatch?.[1]?.replace(/\s*\n\s*/g, ' ').trim() || '';
+    const roomMatch = body.match(/\nRoom\s+([^\n]+)/i);
+    const room = roomMatch?.[1]?.trim() || '';
+    const isBooking = /\[new booking\]/i.test(subj) || /BOOKING REQUEST RECEIVED/i.test(body);
+
+    if (!isBooking && !phone) return null;
+    return { phone, custName, addr, room, isBooking };
+  }, [activeConversation, activeMessages]);
+
     // Also memoize active chat message bubbles isolated from composerText keystrokes for 0ms typing!
   const memoizedMessageBubbles = useMemo(() => {
     if (!activeConversation || activeMessages.length === 0) return null;
@@ -1803,12 +1918,237 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         !prevDateObj ||
         msgDateObj.toDateString() !== prevDateObj.toDateString();
 
+      const isVideoAtt = (a: SocialMessageAttachment) =>
+        Boolean(a.url) &&
+        (a.type === 'video' || /\.(mp4|mov|webm)(\?.*)?$/i.test(a.url || ''));
       const imageAttachments = (msg.attachments || []).filter(
         (a) => a.type === 'image' && a.url
       );
+      const videoAttachments = (msg.attachments || []).filter(isVideoAtt);
       const fileAttachments = (msg.attachments || []).filter(
-        (a) => a.type !== 'image' && a.url
+        (a) => a.type !== 'image' && !isVideoAtt(a) && a.url
       );
+
+      // Dedicated Full-Width Email Reader Card for Gmail / Email threads (clean Gmail-style layout)
+      if (activeConversation.channel === 'email') {
+        const rawText = (msg.text || '').replace(/\r\n/g, '\n');
+        const subjMatch = rawText.match(/^📧\s+([^\n]+)(?:\n\n?([\s\S]*))?$/);
+        const emailSubjectLine = subjMatch ? subjMatch[1].trim() : '';
+        const fullBody = (subjMatch ? subjMatch[2] || '' : rawText).trim();
+
+        // Split email signature (e.g. "Best regards,", "Kind regards,", "--") so it collapses cleanly like Gmail's "•••"
+        const sigMatch = fullBody.match(
+          /\n(?:\s*(?:Best regards|Kind regards|Warm regards|Regards|Sincerely|Thank you & regards|Thanks & regards|Sent from my (?:iPhone|iPad|Android)|--\s*$)[,\s]*\n[\s\S]*)$/i
+        );
+        const mainBody = sigMatch ? fullBody.slice(0, sigMatch.index).trim() : fullBody;
+        const signatureBody = sigMatch ? sigMatch[0].trim() : '';
+        const isSigExpanded = Boolean(expandedEmailSigIds[msg.id]);
+
+        const renderEmailInline = (line: string, lineKey: string) => {
+          // Turn `Label <https://...>` into a clean clickable link, `*Bold*` into bold, and bare URLs into links
+          const tokens: React.ReactNode[] = [];
+          const regex = /([^<|\n]+?)\s*<(https?:\/\/[^\s>]+)>|\*([^*\n]+?)\*|(https?:\/\/[^\s<]+)/g;
+          let lastIdx = 0;
+          let m: RegExpExecArray | null;
+          let partIdx = 0;
+          while ((m = regex.exec(line)) !== null) {
+            if (m.index > lastIdx) {
+              tokens.push(line.slice(lastIdx, m.index));
+            }
+            if (m[1] && m[2]) {
+              tokens.push(
+                <a
+                  key={`${lineKey}-l-${partIdx++}`}
+                  href={m[2]}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sky-700 hover:text-sky-900 underline decoration-sky-300 underline-offset-2 font-semibold"
+                >
+                  {m[1].trim()}
+                </a>
+              );
+            } else if (m[3]) {
+              tokens.push(
+                <strong key={`${lineKey}-b-${partIdx++}`} className="font-bold text-slate-900">
+                  {m[3].trim()}
+                </strong>
+              );
+            } else if (m[4]) {
+              tokens.push(
+                <a
+                  key={`${lineKey}-u-${partIdx++}`}
+                  href={m[4]}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sky-700 hover:text-sky-900 underline break-all"
+                >
+                  {m[4]}
+                </a>
+              );
+            }
+            lastIdx = regex.lastIndex;
+          }
+          if (lastIdx < line.length) {
+            tokens.push(line.slice(lastIdx));
+          }
+          return tokens.length > 0 ? tokens : line;
+        };
+
+        const renderEmailParagraphs = (content: string, prefix: string) =>
+          content
+            .replace(/\n{3,}/g, '\n\n')
+            .split('\n')
+            .map((line, idx) =>
+              line.trim() === '' ? (
+                <div key={`${prefix}-${idx}`} className="h-2.5" />
+              ) : (
+                <p key={`${prefix}-${idx}`} className="text-[13px] leading-6 text-slate-700 break-words">
+                  {renderEmailInline(line, `${prefix}-${idx}`)}
+                </p>
+              )
+            );
+
+        const senderDisplay = isOutbound
+          ? msg.senderName || 'That Laundry Shop'
+          : msg.senderName || activeConversation.contactName;
+        const senderAddr = isOutbound
+          ? config?.email?.emailAddress || 'sales@thatlaundryshop.com'
+          : activeConversation.externalContactId;
+
+        return (
+          <React.Fragment key={msg.id}>
+            <div className="rounded-2xl border border-slate-200/90 bg-white shadow-xs overflow-hidden">
+              {/* Clean Gmail-style Header */}
+              <div className="px-4 py-3 bg-slate-50/70 border-b border-slate-100 flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div
+                    className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-black shrink-0 ${
+                      isOutbound ? 'bg-emerald-600 text-white' : 'bg-[#EA4335] text-white'
+                    }`}
+                  >
+                    {senderDisplay.slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-xs font-extrabold text-slate-900 truncate">
+                        {senderDisplay}
+                      </span>
+                      <span className="text-[11px] text-slate-500 font-mono truncate">
+                        &lt;{senderAddr}&gt;
+                      </span>
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
+                          isOutbound
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-rose-100 text-rose-700'
+                        }`}
+                      >
+                        {isOutbound ? 'Sent' : 'Inbox'}
+                      </span>
+                    </div>
+                    {emailSubjectLine && (
+                      <div className="text-[13px] font-bold text-slate-900 mt-0.5">
+                        {emailSubjectLine}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <span className="text-[11px] font-medium text-slate-400 shrink-0 whitespace-nowrap pt-0.5">
+                  {msgDateObj.toLocaleString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </span>
+              </div>
+
+              {/* Readable Email Body */}
+              <div className="px-5 py-4 space-y-1">
+                {mainBody && <div>{renderEmailParagraphs(mainBody, `main-${msg.id}`)}</div>}
+
+                {signatureBody && (
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedEmailSigIds((prev) => ({
+                          ...prev,
+                          [msg.id]: !prev[msg.id],
+                        }))
+                      }
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 text-[11px] font-bold cursor-pointer transition-colors"
+                      title={isSigExpanded ? 'Hide signature' : 'Show signature'}
+                    >
+                      <span>•••</span>
+                      <span className="text-[10px]">
+                        {isSigExpanded ? 'ซ่อนลายเซ็น' : 'ดูลายเซ็นท้ายเมล'}
+                      </span>
+                    </button>
+                    {isSigExpanded && (
+                      <div className="mt-2 pt-2 border-t border-slate-100 opacity-85">
+                        {renderEmailParagraphs(signatureBody, `sig-${msg.id}`)}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {imageAttachments.length > 0 && (
+                  <div className="pt-3 flex flex-wrap gap-2">
+                    {imageAttachments.map((att, idx) => (
+                      <img
+                        key={idx}
+                        src={att.url}
+                        alt={att.name || 'Attachment'}
+                        onClick={() => setLightboxImageUrl(att.url || null)}
+                        className="max-h-44 rounded-xl border border-slate-200 cursor-pointer hover:opacity-90"
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {videoAttachments.length > 0 && (
+                  <div className="pt-3 space-y-2">
+                    {videoAttachments.map((att, idx) => (
+                      <video
+                        key={idx}
+                        src={att.url}
+                        controls
+                        playsInline
+                        preload="metadata"
+                        className="max-h-60 rounded-xl border border-slate-200 bg-black"
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {fileAttachments.length > 0 && (
+                  <div className="pt-3 flex flex-wrap gap-1.5">
+                    {fileAttachments.map((att, idx) => (
+                      <a
+                        key={idx}
+                        href={att.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold border border-slate-200"
+                      >
+                        <Paperclip size={12} />
+                        <span>{att.name || 'Download Attachment'}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
+
+                {isOutbound && msg.status === 'failed' && (
+                  <div className="text-[11px] font-bold text-rose-600 pt-2">
+                    ⚠️ Failed to send email{msg.externalError ? `: ${msg.externalError}` : ''}
+                  </div>
+                )}
+              </div>
+            </div>
+          </React.Fragment>
+        );
+      }
 
       return (
         <React.Fragment key={msg.id}>
@@ -1939,6 +2279,27 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                 </div>
               )}
 
+              {/* Inline Playable Video Attachments */}
+              {videoAttachments.length > 0 && (
+                <div className={`${msg.text || imageAttachments.length > 0 ? 'mt-2.5' : ''} space-y-2`}>
+                  {videoAttachments.map((att, idx) => (
+                    <div
+                      key={idx}
+                      className="overflow-hidden rounded-xl border border-black/15 bg-black shadow-2xs max-w-sm"
+                    >
+                      <video
+                        src={att.url}
+                        poster={att.previewUrl}
+                        controls
+                        playsInline
+                        preload="metadata"
+                        className="max-h-64 w-full bg-black"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {/* Other Non-Image File Attachments */}
               {fileAttachments.length > 0 && (
                 <div className="mt-2 space-y-1">
@@ -2004,7 +2365,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         </React.Fragment>
       );
     });
-  }, [activeMessages, activeConversation?.id, activeConversation?.channel, activeConversation?.contactName, fontScale]);
+  }, [activeMessages, activeConversation?.id, activeConversation?.channel, activeConversation?.contactName, fontScale, expandedEmailSigIds, config?.email?.emailAddress]);
 
   // Pre-indexed O(1) Jobs lookup maps (eliminates linear scan over all jobs on every thread switch!)
   const jobsIndex = useMemo(() => {
@@ -2134,18 +2495,15 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
   const handleSelectCustomerForWhatsApp = (cust: any) => {
     setWaSelectedCustomerId(cust.id);
     setWaContactName(cust.name || '');
-    const rawPhone = cust.phone || '';
-    if (rawPhone.startsWith('+')) {
-      const matchedCode = COUNTRY_CODES_LIST.find((cc) =>
-        rawPhone.replace(/\D/g, '').startsWith(cc.code)
-      );
-      if (matchedCode) {
-        setWaCountryCode(matchedCode.code);
-        setWaPhoneInput(rawPhone.replace(/\D/g, '').slice(matchedCode.code.length));
-      } else {
-        setWaPhoneInput(rawPhone);
-      }
+    const rawPhone = String(cust.phone || '').trim();
+    const extracted = extractDialCodeFromInternationalPhone(rawPhone);
+    if (extracted) {
+      setWaCountryCode(extracted.dialCode);
+      setWaCountryCodeInput(`+${extracted.dialCode}`);
+      setWaPhoneInput(extracted.localNumber);
     } else {
+      setWaCountryCode('66');
+      setWaCountryCodeInput('+66');
       setWaPhoneInput(rawPhone);
     }
   };
@@ -2193,6 +2551,9 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         toast.success(`WhatsApp chat ready with ${res.conversation.contactName}`);
 
         // Reset modal fields
+        setWaCountryCode('66');
+        setWaCountryCodeInput('+66');
+        setShowCountryCodeDropdown(false);
         setWaPhoneInput('');
         setWaContactName('');
         setWaSelectedCustomerId('');
@@ -2335,6 +2696,9 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         text: textToSend,
         attachments: allAttachments,
         replyTo: replyRef,
+        ...(activeConversation.channel === 'email' && emailReplySubject.trim()
+          ? { emailSubject: emailReplySubject.trim() }
+          : {}),
       });
 
       if (res.success) {
@@ -2645,11 +3009,11 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden p-2.5 sm:p-3 gap-2.5 w-full">
-      {/* Hidden File Input for Native Photo/Document Upload */}
+      {/* Hidden File Input for Native Photo/Video/Document Upload */}
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,.pdf,.doc,.docx"
+        accept="image/*,video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm,.pdf,.doc,.docx"
         multiple
         className="hidden"
         onChange={async (e) => {
@@ -2830,6 +3194,13 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                   dot: 'bg-[#06C755]',
                 },
                 {
+                  key: 'email',
+                  label: 'Mail (Gmail)',
+                  count: stats.byChannel.email,
+                  unread: stats.unreadByChannel.email,
+                  dot: 'bg-[#EA4335]',
+                },
+                {
                   key: 'facebook',
                   label: 'Messenger',
                   count: stats.byChannel.facebook,
@@ -2881,6 +3252,32 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                 </button>
               );
             })}
+            {channelFilter === 'email' && (
+              <button
+                type="button"
+                disabled={syncingGmail}
+                onClick={async () => {
+                  setSyncingGmail(true);
+                  try {
+                    const res = await syncGmailInboxAction({ limit: 30 });
+                    if (res.ok) {
+                      toast.success(`ซิงค์ Gmail สำเร็จ (ดึงอีเมลใหม่ ${res.imported} ฉบับ)`);
+                      await syncLiveInboxNow(true);
+                    } else {
+                      if ((res.error || '').toLowerCase().includes('not configured')) {
+                        setIsSettingsOpen(true);
+                      }
+                      toast.error(res.error || 'ซิงค์ Gmail ไม่สำเร็จ');
+                    }
+                  } finally {
+                    setSyncingGmail(false);
+                  }
+                }}
+                className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer shrink-0 whitespace-nowrap"
+              >
+                {syncingGmail ? '⏳ Syncing...' : '🔄 Sync Gmail'}
+              </button>
+            )}
           </div>
 
           <button
@@ -3237,6 +3634,109 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
                 {/* Right: Compact Non-Wrapping Action Toolbar */}
                 <div className="flex items-center gap-1 shrink-0">
+                  {activeConversation.channel === 'email' && activeEmailBookingDetails && (
+                    <>
+                      {activeEmailBookingDetails.phone && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => {
+                            const { phone, custName } = activeEmailBookingDetails;
+                            const extracted = extractDialCodeFromInternationalPhone(phone);
+                            if (extracted) {
+                              setWaCountryCode(extracted.dialCode);
+                              setWaCountryCodeInput(`+${extracted.dialCode}`);
+                              setWaPhoneInput(extracted.localNumber);
+                            } else {
+                              setWaCountryCode('66');
+                              setWaCountryCodeInput('+66');
+                              setWaPhoneInput(phone);
+                            }
+                            setWaContactName(custName);
+                            setWaSelectedCustomerId('');
+                            setWaInitialMessage(
+                              `Hello ${custName || 'there'}! 👋 Thank you for your laundry booking with That Laundry Shop. We are confirming your pickup request.`
+                            );
+                            setIsNewWhatsAppOpen(true);
+                          }}
+                          className="h-7.5 px-2.5 text-[11px] font-bold bg-[#25D366] hover:bg-[#1ebe5d] text-white rounded-lg gap-1 cursor-pointer whitespace-nowrap shadow-2xs"
+                          title={`เปิดแชท WhatsApp หา ${activeEmailBookingDetails.phone}`}
+                        >
+                          <span>💬 ทัก WA</span>
+                        </Button>
+                      )}
+                      {onCreateOrderFromCalculator && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={async () => {
+                            const { phone, custName, addr, room } = activeEmailBookingDetails;
+                            const fullPickupName = [addr, room ? `(Room ${room})` : '']
+                              .filter(Boolean)
+                              .join(' ');
+                            let resolvedCustomer = linkedCustomer || undefined;
+                            if (!resolvedCustomer) {
+                              const crmRes = await ensureCustomerForBookingAction({
+                                conversationId: activeConversation.id,
+                                name: custName,
+                                phone,
+                                email: activeConversation.externalContactId.includes('@')
+                                  ? activeConversation.externalContactId
+                                  : undefined,
+                                address: addr,
+                                room,
+                                branchId: activeMiniShop?.id || null,
+                              });
+                              if (crmRes.success && crmRes.customer) {
+                                resolvedCustomer = crmRes.customer;
+                                toast.success(
+                                  crmRes.created
+                                    ? `สร้างโปรไฟล์ลูกค้าใหม่ใน CRM แล้ว (${crmRes.customer.name})`
+                                    : `พบลูกค้าเดิมใน CRM แล้ว — ผูกให้อัตโนมัติ (${crmRes.customer.name})`
+                                );
+                                setConversations((prev) =>
+                                  prev.map((c) =>
+                                    c.id === activeConversation.id
+                                      ? {
+                                          ...c,
+                                          customerId: crmRes.customer.id,
+                                          customerName: crmRes.customer.name,
+                                        }
+                                      : c
+                                  )
+                                );
+                              }
+                            }
+                            onCreateOrderFromCalculator({
+                              branchId: activeMiniShop?.id,
+                              isPickup: true,
+                              isDelivery: true,
+                              isVip: Boolean(resolvedCustomer?.isVIP),
+                              pickupLoc: fullPickupName
+                                ? { name: fullPickupName, address: fullPickupName, coords: { lat: 0, lng: 0 } }
+                                : null,
+                              deliveryLoc: fullPickupName
+                                ? { name: fullPickupName, address: fullPickupName, coords: { lat: 0, lng: 0 } }
+                                : null,
+                              isDeliveryDirty: false,
+                              pickupDist: 0,
+                              deliveryDist: 0,
+                              lockedFee: 0,
+                              customer: resolvedCustomer,
+                              contactName: resolvedCustomer?.name || custName,
+                              contactPhone: resolvedCustomer?.phone || phone,
+                              contactChannel: phone ? 'whatsapp' : null,
+                              customerWhatsappId: phone || undefined,
+                            });
+                          }}
+                          className="h-7.5 px-2.5 text-[11px] font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg gap-1 cursor-pointer whitespace-nowrap shadow-2xs"
+                          title="สร้าง/ผูก CRM อัตโนมัติ แล้วเปิดหน้าสร้างใบงานจากเมล Booking นี้"
+                        >
+                          <span>✨ เปิด Job</span>
+                        </Button>
+                      )}
+                    </>
+                  )}
                   {activeConversation.channel === 'line' && (
                     <Button
                       size="sm"
@@ -3386,8 +3886,8 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Compact Quick Laundry Templates Strip */}
-              {showTemplatesBar && (
+              {/* Compact Quick Laundry Templates Strip (live chats only — keep email view spacious!) */}
+              {showTemplatesBar && activeConversation.channel !== 'email' && (
                 <div className="px-3 py-1.5 bg-slate-50/95 border-t border-slate-200/80 flex items-center gap-2 shrink-0">
                   <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 flex items-center gap-1 shrink-0">
                     <Sparkles size={11} className="text-amber-500" />
@@ -3464,6 +3964,15 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                           alt={att.name || 'Preview'}
                           className="w-10 h-10 rounded-lg object-cover"
                         />
+                      ) : att.type === 'video' && att.url ? (
+                        <video
+                          src={att.url}
+                          poster={att.previewUrl}
+                          muted
+                          playsInline
+                          preload="metadata"
+                          className="w-12 h-10 rounded-lg object-cover bg-black"
+                        />
                       ) : (
                         <Paperclip size={15} className="text-indigo-600" />
                       )}
@@ -3526,6 +4035,27 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
               {/* Message Composer Footer */}
               <div className="p-2.5 bg-white border-t border-slate-200/90 space-y-1.5 shrink-0">
+                {activeConversation.channel === 'email' && (
+                  <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 rounded-xl bg-rose-50/70 border border-rose-200/80 text-xs">
+                    <span className="font-bold text-rose-800 shrink-0">
+                      To: <span className="font-mono font-semibold text-slate-800">{activeConversation.externalContactId}</span>
+                    </span>
+                    <span className="text-rose-300">|</span>
+                    <div className="flex items-center gap-1.5 flex-1 min-w-[180px]">
+                      <span className="font-bold text-rose-800 shrink-0">Subject:</span>
+                      <input
+                        type="text"
+                        value={emailReplySubject}
+                        onChange={(e) => setEmailReplySubject(e.target.value)}
+                        placeholder={(() => {
+                          const subj = (activeConversation.lastMessageText || '').match(/^📧\s+([^\n]+)/)?.[1]?.trim();
+                          return subj ? (subj.toLowerCase().startsWith('re:') ? subj : `Re: ${subj}`) : 'Re: That Laundry Shop';
+                        })()}
+                        className="flex-1 bg-white/90 border border-rose-200 rounded-lg px-2 py-0.5 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-rose-400"
+                      />
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center gap-1.5">
                   {/* Upload Photo/File from Computer */}
                   <Button
@@ -3577,21 +4107,32 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                     onChange={(e) => setComposerText(e.target.value)}
                     onPaste={handleComposerPaste}
                     onKeyDown={(e) => {
+                      if (activeConversation.channel === 'email') {
+                        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                          e.preventDefault();
+                          handleSendMessage();
+                        }
+                        return;
+                      }
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
                         handleSendMessage();
                       }
                     }}
-                    rows={1}
+                    rows={activeConversation.channel === 'email' ? 3 : 1}
                     placeholder={
-                      activeConversation.channel === 'line' &&
-                      /^[CR][0-9a-f]{32}$/i.test(activeConversation.externalContactId || '')
+                      activeConversation.channel === 'email'
+                        ? `พิมพ์อีเมลตอบกลับถึง ${activeConversation.externalContactId}... (Enter ขึ้นบรรทัดใหม่ • Ctrl+Enter เพื่อส่ง)`
+                        : activeConversation.channel === 'line' &&
+                          /^[CR][0-9a-f]{32}$/i.test(activeConversation.externalContactId || '')
                         ? `ตอบเข้ากลุ่ม ${activeConversation.contactName} (LINE Group — ทุกคนในกลุ่มจะเห็น)...`
                         : `Message ${activeConversation.contactName} via ${
                             SOCIAL_CHANNEL_META[activeConversation.channel].shortLabel
                           }... (Enter to send • Ctrl+V to paste photo)`
                     }
-                    className={`flex-1 min-h-[38px] max-h-24 rounded-xl border border-slate-200 bg-slate-50/90 focus:bg-white px-3 py-2 ${fontScale.input} text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none`}
+                    className={`flex-1 ${
+                      activeConversation.channel === 'email' ? 'min-h-[76px] max-h-40' : 'min-h-[38px] max-h-24'
+                    } rounded-xl border border-slate-200 bg-slate-50/90 focus:bg-white px-3 py-2 ${fontScale.input} text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none`}
                   />
 
                   {activeConversation.channel === 'whatsapp' &&
@@ -4429,19 +4970,136 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
             {/* Step 2: Country Code & Phone Number */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-xl bg-emerald-50/50 border border-emerald-200/80">
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-700">Country Code</label>
-                <select
-                  value={waCountryCode}
-                  onChange={(e) => setWaCountryCode(e.target.value)}
-                  className="w-full h-9 rounded-xl border border-slate-200 bg-white px-2 text-xs font-bold text-slate-800"
-                >
-                  {COUNTRY_CODES_LIST.map((cc) => (
-                    <option key={cc.code} value={cc.code}>
-                      {cc.label}
-                    </option>
-                  ))}
-                </select>
+              <div className="space-y-1 relative">
+                <label className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                  <span>Country Code</span>
+                  {(() => {
+                    const matched = findCountryByDialCode(waCountryCode);
+                    return matched ? (
+                      <span className="text-[10px] font-semibold text-emerald-700 truncate max-w-[90px]">
+                        {matched.iso} • {matched.name}
+                      </span>
+                    ) : waCountryCode ? (
+                      <span className="text-[10px] font-semibold text-slate-500">Custom</span>
+                    ) : null;
+                  })()}
+                </label>
+                <div className="relative">
+                  <Input
+                    value={waCountryCodeInput}
+                    onFocus={() => setShowCountryCodeDropdown(true)}
+                    onBlur={() => {
+                      setTimeout(() => {
+                        setShowCountryCodeDropdown(false);
+                        setWaCountryCodeInput((curr) => {
+                          const d = curr.replace(/\D/g, '').slice(0, 4);
+                          if (d) {
+                            setWaCountryCode(d);
+                            return `+${d}`;
+                          }
+                          return waCountryCode ? `+${waCountryCode}` : '+66';
+                        });
+                      }, 150);
+                    }}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setWaCountryCodeInput(val);
+                      setShowCountryCodeDropdown(true);
+                      const digits = val.replace(/\D/g, '').slice(0, 4);
+                      if (digits) {
+                        setWaCountryCode(digits);
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        setShowCountryCodeDropdown(false);
+                      } else if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const matches = filterWorldCountryCodes(waCountryCodeInput, 1);
+                        if (matches.length > 0 && !/^\+?\d+$/.test(waCountryCodeInput.trim())) {
+                          setWaCountryCode(matches[0].code);
+                          setWaCountryCodeInput(`+${matches[0].code}`);
+                        } else {
+                          const d = waCountryCodeInput.replace(/\D/g, '').slice(0, 4) || '66';
+                          setWaCountryCode(d);
+                          setWaCountryCodeInput(`+${d}`);
+                        }
+                        setShowCountryCodeDropdown(false);
+                      }
+                    }}
+                    placeholder="+66 or country..."
+                    className="h-9 text-xs bg-white font-mono font-bold rounded-xl pr-7"
+                  />
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setShowCountryCodeDropdown((v) => !v);
+                    }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-[10px] cursor-pointer"
+                    title="Browse all world country codes"
+                  >
+                    ▾
+                  </button>
+                </div>
+                {showCountryCodeDropdown && (
+                  <div className="absolute left-0 right-0 sm:w-[270px] top-full mt-1 z-50 max-h-52 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg divide-y divide-slate-100">
+                    {(() => {
+                      const matches = filterWorldCountryCodes(waCountryCodeInput, 40);
+                      const typedDigits = waCountryCodeInput.replace(/\D/g, '').slice(0, 4);
+                      return (
+                        <>
+                          {matches.map((cc) => (
+                            <button
+                              key={`${cc.iso}-${cc.code}`}
+                              type="button"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setWaCountryCode(cc.code);
+                                setWaCountryCodeInput(`+${cc.code}`);
+                                setShowCountryCodeDropdown(false);
+                              }}
+                              className={`w-full px-2.5 py-1.5 text-left text-xs flex items-center justify-between gap-2 hover:bg-emerald-50 cursor-pointer ${
+                                waCountryCode === cc.code ? 'bg-emerald-50/70 font-bold text-emerald-900' : 'text-slate-700'
+                              }`}
+                            >
+                              <span className="truncate">
+                                <span className="font-mono text-[10px] font-bold text-slate-400 mr-1.5">
+                                  {cc.iso}
+                                </span>
+                                {cc.name}
+                              </span>
+                              <span className="font-mono text-[11px] font-bold text-emerald-700 shrink-0">
+                                +{cc.code}
+                              </span>
+                            </button>
+                          ))}
+                          {typedDigits && !matches.some((m) => m.code === typedDigits) && (
+                            <button
+                              type="button"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setWaCountryCode(typedDigits);
+                                setWaCountryCodeInput(`+${typedDigits}`);
+                                setShowCountryCodeDropdown(false);
+                              }}
+                              className="w-full px-2.5 py-2 text-left text-xs flex items-center justify-between bg-slate-50 hover:bg-emerald-50 text-slate-800 font-bold cursor-pointer"
+                            >
+                              <span>Use custom code</span>
+                              <span className="font-mono text-emerald-700">+{typedDigits}</span>
+                            </button>
+                          )}
+                          {matches.length === 0 && !typedDigits && (
+                            <div className="px-3 py-2 text-[11px] text-slate-400">
+                              พิมพ์รหัสประเทศ (เช่น +351, 44) หรือชื่อประเทศ
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
               </div>
 
               <div className="sm:col-span-2 space-y-1">
@@ -4455,8 +5113,20 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                 </label>
                 <Input
                   value={waPhoneInput}
-                  onChange={(e) => setWaPhoneInput(e.target.value)}
-                  placeholder="e.g. 081-234-5678 or 812345678"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val.trim().startsWith('+')) {
+                      const extracted = extractDialCodeFromInternationalPhone(val);
+                      if (extracted) {
+                        setWaCountryCode(extracted.dialCode);
+                        setWaCountryCodeInput(`+${extracted.dialCode}`);
+                        setWaPhoneInput(extracted.localNumber);
+                        return;
+                      }
+                    }
+                    setWaPhoneInput(val);
+                  }}
+                  placeholder="e.g. 081-234-5678 or paste +351 918 421 092"
                   className="h-9 text-xs bg-white font-mono font-bold rounded-xl"
                 />
               </div>
@@ -5335,6 +6005,207 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                       className="h-8 text-xs bg-white font-mono"
                     />
                   </div>
+                </div>
+              </div>
+
+              {/* 5. Gmail / Email 2-Way IMAP & SMTP Sync */}
+              <div className="p-3.5 rounded-xl border border-rose-200 bg-rose-50/40 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-xs text-rose-900">
+                      5. Gmail / Email Channel (2-Way IMAP &amp; SMTP Sync)
+                    </span>
+                    <label className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-600 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(config.email?.enabled)}
+                        onChange={(e) =>
+                          setConfig({
+                            ...config,
+                            email: {
+                              emailAddress: config.email?.emailAddress || '',
+                              appPassword: config.email?.appPassword || '',
+                              displayName: config.email?.displayName || 'That Laundry Shop',
+                              imapHost: config.email?.imapHost || 'imap.gmail.com',
+                              smtpHost: config.email?.smtpHost || 'smtp.gmail.com',
+                              enabled: e.target.checked,
+                            },
+                          })
+                        }
+                        className="rounded border-slate-300"
+                      />
+                      <span>Enable</span>
+                    </label>
+                    <label className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-600 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={config.email?.filterAutomatedEmails !== false}
+                        onChange={(e) =>
+                          setConfig({
+                            ...config,
+                            email: {
+                              enabled: config.email?.enabled ?? true,
+                              emailAddress: config.email?.emailAddress || '',
+                              appPassword: config.email?.appPassword || '',
+                              displayName: config.email?.displayName || 'That Laundry Shop',
+                              imapHost: config.email?.imapHost || 'imap.gmail.com',
+                              smtpHost: config.email?.smtpHost || 'smtp.gmail.com',
+                              filterAutomatedEmails: e.target.checked,
+                            },
+                          })
+                        }
+                        className="rounded border-slate-300"
+                      />
+                      <span>กรองเมลโฆษณา / No-Reply</span>
+                    </label>
+                  </div>
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                      config.email?.enabled && config.email?.emailAddress && config.email?.appPassword
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-rose-600 text-white'
+                    }`}
+                  >
+                    {config.email?.enabled && config.email?.emailAddress && config.email?.appPassword
+                      ? 'Gmail Ready'
+                      : 'Setup Required'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-600">
+                      Gmail Address (อีเมลร้าน)
+                    </label>
+                    <Input
+                      value={config.email?.emailAddress || ''}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          email: {
+                            enabled: config.email?.enabled ?? true,
+                            appPassword: config.email?.appPassword || '',
+                            displayName: config.email?.displayName || 'That Laundry Shop',
+                            imapHost: config.email?.imapHost || 'imap.gmail.com',
+                            smtpHost: config.email?.smtpHost || 'smtp.gmail.com',
+                            emailAddress: e.target.value,
+                          },
+                        })
+                      }
+                      placeholder="info@thatlaundryshop.com or xxx@gmail.com"
+                      className="h-8 text-xs bg-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-600">
+                      Sender Name (ชื่อผู้ส่งเวลาตอบกลับ)
+                    </label>
+                    <Input
+                      value={config.email?.displayName || ''}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          email: {
+                            enabled: config.email?.enabled ?? true,
+                            emailAddress: config.email?.emailAddress || '',
+                            appPassword: config.email?.appPassword || '',
+                            imapHost: config.email?.imapHost || 'imap.gmail.com',
+                            smtpHost: config.email?.smtpHost || 'smtp.gmail.com',
+                            displayName: e.target.value,
+                          },
+                        })
+                      }
+                      placeholder="That Laundry Shop"
+                      className="h-8 text-xs bg-white"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-[10px] font-bold text-slate-600">
+                      Gmail App Password (รหัสผ่านแอป 16 หลักจาก Google Account → Security → App Passwords)
+                    </label>
+                    <Input
+                      type="password"
+                      value={config.email?.appPassword || ''}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          email: {
+                            enabled: config.email?.enabled ?? true,
+                            emailAddress: config.email?.emailAddress || '',
+                            displayName: config.email?.displayName || 'That Laundry Shop',
+                            imapHost: config.email?.imapHost || 'imap.gmail.com',
+                            smtpHost: config.email?.smtpHost || 'smtp.gmail.com',
+                            appPassword: e.target.value,
+                          },
+                        })
+                      }
+                      placeholder="xxxx xxxx xxxx xxxx"
+                      className="h-8 text-xs bg-white font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={testingGmail}
+                    onClick={async () => {
+                      setTestingGmail(true);
+                      try {
+                        const res = await testGmailConnectionAction({
+                          emailAddress: config.email?.emailAddress,
+                          appPassword: config.email?.appPassword,
+                          imapHost: config.email?.imapHost,
+                        });
+                        if (res.ok) {
+                          toast.success(
+                            `เชื่อมต่อ Gmail สำเร็จ! พบอีเมลใน INBOX ${res.mailboxCount ?? 0} ฉบับ`
+                          );
+                        } else {
+                          toast.error(res.error || 'เชื่อมต่อ Gmail ไม่สำเร็จ');
+                        }
+                      } finally {
+                        setTestingGmail(false);
+                      }
+                    }}
+                    className="h-7.5 px-3 text-[11px] font-bold rounded-lg border-rose-300 text-rose-700 hover:bg-rose-100 cursor-pointer"
+                  >
+                    {testingGmail ? 'Testing...' : 'Test Gmail Connection'}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={syncingGmail}
+                    onClick={async () => {
+                      setSyncingGmail(true);
+                      try {
+                        const res = await syncGmailInboxAction({
+                          limit: 30,
+                          emailAddress: config.email?.emailAddress,
+                          appPassword: config.email?.appPassword,
+                          displayName: config.email?.displayName,
+                          imapHost: config.email?.imapHost,
+                        });
+                        if (res.ok) {
+                          toast.success(`ซิงค์ Gmail สำเร็จ (ดึงอีเมลใหม่ ${res.imported} ฉบับ)`);
+                          await syncLiveInboxNow(true);
+                        } else {
+                          toast.error(res.error || 'ซิงค์ Gmail ไม่สำเร็จ');
+                        }
+                      } finally {
+                        setSyncingGmail(false);
+                      }
+                    }}
+                    className="h-7.5 px-3 text-[11px] font-bold rounded-lg border-emerald-300 text-emerald-700 hover:bg-emerald-50 cursor-pointer"
+                  >
+                    {syncingGmail ? 'Syncing...' : 'Sync Gmail Now'}
+                  </Button>
+                  <span className="text-[10px] text-slate-500">
+                    เปิด 2-Step Verification ใน Google → สร้าง App Password 16 หลักมาวาง แล้วกด Save
+                  </span>
                 </div>
               </div>
             </div>

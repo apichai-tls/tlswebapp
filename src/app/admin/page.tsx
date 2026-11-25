@@ -4710,8 +4710,8 @@ function AdminPageContent() {
           foldedCount: hasFolded ? Math.max(0, Number(foldedCount) || 0) : 0,
           processingBranchId: (processingBranchId && processingBranchId !== shop.id) ? processingBranchId : null,
           contactChannel: dialogContactChannel || existingParsedNotes?.contactChannel || null,
-          customerLineId: dialogLineProfileId.trim() || existingParsedNotes?.customerLineId || null,
-          customerWhatsappId: dialogWhatsappId.trim() || existingParsedNotes?.customerWhatsappId || null,
+          customerLineId: dialogContactChannel === "whatsapp" ? null : (dialogLineProfileId.trim() || existingParsedNotes?.customerLineId || null),
+          customerWhatsappId: dialogContactChannel === "line" ? null : (dialogWhatsappId.trim() || existingParsedNotes?.customerWhatsappId || null),
           dismissedAutoPromo: isDismissedAutoPromoToSave,
         };
         if (isPayment) {
@@ -8673,8 +8673,8 @@ function AdminPageContent() {
                                 } catch {}
                               }
                               baseObj.contactChannel = nextChannel;
-                              baseObj.customerLineId = trimmedLine || null;
-                              baseObj.customerWhatsappId = trimmedWa || null;
+                              baseObj.customerLineId = nextChannel === "whatsapp" ? null : (trimmedLine || null);
+                              baseObj.customerWhatsappId = nextChannel === "line" ? null : (trimmedWa || null);
                               const nextJson = JSON.stringify(baseObj);
                               if (originalJobRef.current && String(originalJobRef.current.id) === String(activeEditJob.id)) {
                                 originalJobRef.current.adminNotesJson = nextJson;

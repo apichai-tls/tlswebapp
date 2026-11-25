@@ -43,6 +43,11 @@ export type LineMessageObject =
       type: "image";
       originalContentUrl: string;
       previewImageUrl: string;
+    }
+  | {
+      type: "video";
+      originalContentUrl: string;
+      previewImageUrl: string;
     };
 
 let cachedOAuthToken: { token: string; expiresAt: number } | null = null;

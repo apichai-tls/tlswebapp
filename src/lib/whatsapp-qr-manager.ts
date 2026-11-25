@@ -638,13 +638,52 @@ export async function startWhatsAppQrConnection(
           return;
         }
 
-        const phoneDigits = await resolvePhoneDigitsAsync(
+        let phoneDigits = await resolvePhoneDigitsAsync(
           sock,
           remoteJid,
           m.key.remoteJidAlt,
           [m.key.senderPn, m.key.participantAlt, m.key.participant]
         );
         if (!phoneDigits || phoneDigits.length < 6) return;
+
+        // Prevent unresolved WhatsApp @lid (14-15 digit internal Linked Identity like 70046772645922)
+        // from ever creating ghost duplicate threads alongside the customer's real phone number!
+        if (remoteJid.endsWith('@lid')) {
+          const rawLidDigits = remoteJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+          if (rawLidDigits && phoneDigits === rawLidDigits) {
+            const pushName = String(m.pushName || '').trim();
+            let resolvedFromDb = '';
+            if (pushName.length >= 3) {
+              try {
+                const nameMatches = await prisma.socialConversation.findMany({
+                  where: {
+                    channel: 'whatsapp',
+                    contactName: { equals: pushName, mode: 'insensitive' },
+                  },
+                  select: { externalContactId: true },
+                  take: 3,
+                });
+                const realPhoneMatches = nameMatches
+                  .map((r) => String(r.externalContactId || '').replace(/\D/g, ''))
+                  .filter((d) => d.length >= 7 && d.length <= 13);
+                if (realPhoneMatches.length === 1) {
+                  resolvedFromDb = realPhoneMatches[0];
+                }
+              } catch {}
+            }
+
+            if (resolvedFromDb) {
+              phoneDigits = resolvedFromDb;
+              rememberLidMapping(remoteJid, resolvedFromDb);
+            } else if (rawLidDigits.length >= 14) {
+              // Skip creating a ghost +7004... thread; Meta Cloud API delivers the real phone number
+              console.warn(
+                `[WhatsApp QR Bridge] Skipping unresolved @lid (${rawLidDigits}) to prevent ghost duplicate thread.`
+              );
+              return;
+            }
+          }
+        }
 
         const inner = unwrapWhatsAppMessageContent(m.message);
         if (!inner) return;
@@ -988,37 +1027,35 @@ export async function sendDirectWhatsAppQrMessage(params: {
     const jid = `${e164}@s.whatsapp.net`;
     const text = (params.text || '').trim();
     const imageAtts = (params.attachments || []).filter((a) => a.type === 'image' && a.url);
+    const videoAtts = (params.attachments || []).filter((a) => a.type === 'video' && a.url);
 
-    if (imageAtts.length > 0) {
+    const loadAttachmentBuffer = async (urlStr: string): Promise<Buffer | null> => {
+      if (urlStr.startsWith('data:')) {
+        const commaIdx = urlStr.indexOf(',');
+        if (commaIdx > -1) return Buffer.from(urlStr.slice(commaIdx + 1), 'base64');
+      } else if (urlStr.startsWith('/uploads/')) {
+        const rel = urlStr.replace(/^\/+/, '');
+        const candidates = [
+          path.resolve(process.cwd(), 'storage', rel),
+          path.resolve(process.cwd(), 'public', rel),
+        ];
+        const found = candidates.find((p) => fs.existsSync(p));
+        if (found) return fs.promises.readFile(found);
+      } else if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
+        const res = await fetch(urlStr);
+        if (res.ok) return Buffer.from(await res.arrayBuffer());
+      }
+      return null;
+    };
+
+    if (imageAtts.length > 0 || videoAtts.length > 0) {
+      let captionSent = false;
       for (let i = 0; i < imageAtts.length; i++) {
         const att = imageAtts[i];
-        const urlStr = (att.url || '').trim();
-        let imgBuffer: Buffer | null = null;
-
-        if (urlStr.startsWith('data:image/')) {
-          const commaIdx = urlStr.indexOf(',');
-          if (commaIdx > -1) {
-            imgBuffer = Buffer.from(urlStr.slice(commaIdx + 1), 'base64');
-          }
-        } else if (urlStr.startsWith('/uploads/')) {
-          const rel = urlStr.replace(/^\/+/, '');
-          const candidates = [
-            path.resolve(process.cwd(), 'storage', rel),
-            path.resolve(process.cwd(), 'public', rel),
-          ];
-          const found = candidates.find((p) => fs.existsSync(p));
-          if (found) {
-            imgBuffer = await fs.promises.readFile(found);
-          }
-        } else if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
-          const res = await fetch(urlStr);
-          if (res.ok) {
-            imgBuffer = Buffer.from(await res.arrayBuffer());
-          }
-        }
-
+        const imgBuffer = await loadAttachmentBuffer((att.url || '').trim());
         if (imgBuffer) {
-          const caption = i === 0 && text ? text : undefined;
+          const caption = !captionSent && text ? text : undefined;
+          if (caption) captionSent = true;
           const sent = await s.sock.sendMessage(jid, {
             image: imgBuffer,
             ...(caption ? { caption } : {}),
@@ -1027,6 +1064,26 @@ export async function sendDirectWhatsAppQrMessage(params: {
             s.sentMessageIds.add(String(sent.key.id));
           }
         }
+      }
+      for (let i = 0; i < videoAtts.length; i++) {
+        const att = videoAtts[i];
+        const vidBuffer = await loadAttachmentBuffer((att.url || '').trim());
+        if (vidBuffer) {
+          const caption = !captionSent && text ? text : undefined;
+          if (caption) captionSent = true;
+          const sent = await s.sock.sendMessage(jid, {
+            video: vidBuffer,
+            mimetype: 'video/mp4',
+            ...(caption ? { caption } : {}),
+          });
+          if (sent?.key?.id) {
+            s.sentMessageIds.add(String(sent.key.id));
+          }
+        }
+      }
+      if (!captionSent && text) {
+        const sent = await s.sock.sendMessage(jid, { text });
+        if (sent?.key?.id) s.sentMessageIds.add(String(sent.key.id));
       }
       return { ok: true };
     }

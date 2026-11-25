@@ -425,6 +425,7 @@ function createRandomSimTask(
 
 export function AdminDispatchAutoSim({
   mode = "sim",
+  canManageAutoAssign = false,
   allJobs = [],
   riders,
   shopLocations,
@@ -432,8 +433,10 @@ export function AdminDispatchAutoSim({
   isAreaRestricted,
   allowedBranchIds,
   getRiderOriginCoords,
+  onOpenJobDetail,
 }: {
   mode?: "sim" | "live_shadow";
+  canManageAutoAssign?: boolean;
   allJobs?: Job[];
   riders: Rider[];
   shopLocations: ShopLocation[];
@@ -445,6 +448,8 @@ export function AdminDispatchAutoSim({
 }) {
   const customers = useCustomers();
   const isLiveShadow = mode === "live_shadow";
+  const [previewStaffView, setPreviewStaffView] = useState<boolean>(false);
+  const showManagementControls = Boolean(!isLiveShadow || (canManageAutoAssign && !previewStaffView));
   const todayKey = format(new Date(), "yyyy-MM-dd");
   const [viewLiveDateKey, setViewLiveDateKey] = useState<string>(todayKey);
   const isLiveArchiveMode = isLiveShadow && viewLiveDateKey !== todayKey;
@@ -1367,13 +1372,13 @@ export function AdminDispatchAutoSim({
     const blockedUnassigned = unassigned.filter((t) => !isSimTaskRunnable(t));
     const hasPendingCorporate = unassigned.some((t) => isDedicatedCorporateManTask(t));
 
-    // WAVE 1: Dedicated Corporate Runnable Jobs (Prime Syn / Evolve -> Man Only)
+    // WAVE 1: Dedicated Corporate Runnable Jobs (Prime Syn / Evolve -> Man Only, always bypass zone lock)
     const corporateRunnable = runnableUnassigned.filter((t) => isDedicatedCorporateManTask(t));
     for (const corpTask of corporateRunnable) {
       const sug =
-        evalTask(corpTask, candidates, false, false) ||
-        evalTask(corpTask, candidates, true, false) ||
-        evalTask(corpTask, candidates, true, true);
+        evalTask(corpTask, candidates, false, false, true) ||
+        evalTask(corpTask, candidates, true, false, true) ||
+        evalTask(corpTask, candidates, true, true, true);
       if (sug) return commitAssignment(corpTask, sug);
     }
 
@@ -1878,6 +1883,83 @@ export function AdminDispatchAutoSim({
       };
     });
     toast.info(`ยกเลิกงาน #${jobId} จาก ${riderLabel} → ส่งกลับ Unassigned แล้ว (จะไม่จ่ายกลับให้คนเดิม)`);
+  };
+
+  // Open full Edit Job modal for a task by looking up the real job from mergedLiveJobs / allJobs
+  const handleOpenRealJobDetail = (jobId: string, fallbackJob: Job) => {
+    if (!onOpenJobDetail) return;
+    const realJob =
+      mergedLiveJobs.find((j) => String(j.id) === String(jobId)) ||
+      allJobs.find((j) => String(j.id) === String(jobId)) ||
+      fallbackJob;
+    onOpenJobDetail(realJob);
+  };
+
+  // Manual reassign a task to another Rider (or back to Unassigned if targetRiderId is "")
+  const handleManualReassignTask = (
+    task: SimTaskItem,
+    targetRiderId: string,
+    fromRiderId?: string
+  ) => {
+    if (!targetRiderId) {
+      if (fromRiderId) {
+        const fromRider = riders.find((r) => r.id === fromRiderId);
+        handleCancelAssignedTask(
+          task.taskId,
+          fromRiderId,
+          task.job.id,
+          fromRider?.nickname || fromRider?.name || fromRiderId
+        );
+      }
+      return;
+    }
+    if (targetRiderId === fromRiderId) return;
+
+    const targetRider = riders.find((r) => r.id === targetRiderId);
+    if (!targetRider) return;
+    const fromRider = fromRiderId ? riders.find((r) => r.id === fromRiderId) : null;
+    const targetLabel = targetRider.nickname || targetRider.name.split(" ")[0];
+    const fromLabel = fromRider ? fromRider.nickname || fromRider.name.split(" ")[0] : null;
+    const riderOrigin = getRiderOriginCoords(targetRider);
+    const distKm = Math.round(calculateEstimatedDistanceKm(riderOrigin, task.targetCoords) * 10) / 10;
+
+    setSimState((prev) => {
+      const nextAssignments = { ...prev.assignments };
+      nextAssignments[task.taskId] = {
+        taskId: task.taskId,
+        jobId: task.job.id,
+        legType: task.legType,
+        simRiderId: targetRiderId,
+        assignedAt: new Date().toISOString(),
+        reason: fromLabel
+          ? `⇄ โยกงาน Manual จาก ${fromLabel} ➔ ${targetLabel}`
+          : `⇄ จ่ายงาน Manual ➔ ${targetLabel}`,
+        detourKm: distKm,
+        distFromRiderKm: distKm,
+        distToNearestStopKm: distKm,
+        score: 0,
+      };
+      const prevRejected = (prev.rejectedRiderIdsByTask?.[task.taskId] || []).filter(
+        (id) => id !== targetRiderId
+      );
+      if (fromRiderId && !prevRejected.includes(fromRiderId)) {
+        prevRejected.push(fromRiderId);
+      }
+      return {
+        ...prev,
+        assignments: nextAssignments,
+        rejectedRiderIdsByTask: {
+          ...(prev.rejectedRiderIdsByTask || {}),
+          [task.taskId]: prevRejected,
+        },
+      };
+    });
+
+    toast.success(
+      fromLabel
+        ? `โยกงาน #${task.job.id} (${task.legType.toUpperCase()}) จาก ${fromLabel} ➔ ${targetLabel} เรียบร้อยแล้ว`
+        : `จ่ายงาน #${task.job.id} (${task.legType.toUpperCase()}) ให้ ${targetLabel} เรียบร้อยแล้ว`
+    );
   };
 
   // 4. Step (+1)
@@ -2530,7 +2612,11 @@ export function AdminDispatchAutoSim({
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-sm font-black text-slate-900">
-                  {isLiveShadow ? "Auto-Assign Live Queue (Admin)" : "Auto-Assign Simulation Lab"}
+                  {isLiveShadow
+                    ? showManagementControls
+                      ? "Auto-Assign Management (Live)"
+                      : "Auto-Assign Live"
+                    : "Auto-Assign Simulation Lab"}
                 </h3>
                 <Badge
                   className={
@@ -2540,7 +2626,9 @@ export function AdminDispatchAutoSim({
                   }
                 >
                   {isLiveShadow
-                    ? "Production Queue • Read-Only (ไม่ส่งงานจริง)"
+                    ? showManagementControls
+                      ? "Management • Full Controls"
+                      : "Live View • Click Job to Edit / Reassign"
                     : "CRM Sandbox • No Real Jobs"}
                 </Badge>
                 <span
@@ -2621,7 +2709,22 @@ export function AdminDispatchAutoSim({
                   Export Report
                 </Button>
 
-                {!isLiveArchiveMode && (
+                {isLiveShadow && canManageAutoAssign && (
+                  <button
+                    type="button"
+                    onClick={() => setPreviewStaffView((v) => !v)}
+                    className={`h-8 px-2.5 text-[11px] font-bold rounded-xl border transition-colors cursor-pointer ${
+                      previewStaffView
+                        ? "bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100"
+                        : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                    }`}
+                    title="สลับดูมุมมอง Auto-Assign Live แบบพนักงานทั่วไป (ซ่อน Constraints & ปุ่มเคลียร์งาน)"
+                  >
+                    {previewStaffView ? "⚙️ กลับมุมมอง Management" : "👁️ ดูมุมมอง Auto-Assign Live ทั่วไป"}
+                  </button>
+                )}
+
+                {!isLiveArchiveMode && showManagementControls && (
                   <Button
                     type="button"
                     size="sm"
@@ -2854,7 +2957,8 @@ export function AdminDispatchAutoSim({
 
         {/* Tuning & KPI Row */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
-          {/* Tuning Parameters */}
+          {/* Tuning Parameters (Visible only to users with Auto-Assign Management permission) */}
+          {showManagementControls ? (
           <div className="flex flex-wrap items-center gap-2.5 text-xs">
             <span className="inline-flex items-center gap-1 font-bold text-slate-600">
               <SlidersHorizontal size={13} className="text-violet-600" />
@@ -3018,6 +3122,11 @@ export function AdminDispatchAutoSim({
               </select>
             </div>
           </div>
+          ) : (
+            <div className="text-[11px] font-semibold text-slate-500">
+              💡 คลิกที่เลข <strong className="text-slate-700">#Job</strong> หรือชื่อลูกค้าเพื่อเปิดหน้า <strong className="text-indigo-700">Edit Job</strong> • เลือก Dropdown บนการ์ดเพื่อโยกงานให้ Rider คนอื่น
+            </div>
+          )}
 
           {/* Live Simulation KPIs */}
           <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold">
@@ -3078,9 +3187,14 @@ export function AdminDispatchAutoSim({
                     }`}
                   >
                     <div className="flex items-center justify-between gap-1.5">
-                      <span className="font-mono text-[11px] font-black text-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenRealJobDetail(task.job.id, task.job)}
+                        className="font-mono text-[11px] font-black text-slate-800 hover:text-indigo-600 hover:underline cursor-pointer"
+                        title="คลิกเพื่อเปิดหน้า Edit Job"
+                      >
                         #{task.job.id}
-                      </span>
+                      </button>
                       <div className="flex items-center gap-1">
                         {task.expressInfo?.isExpress && (
                           <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-rose-600 text-white inline-flex items-center gap-0.5">
@@ -3108,12 +3222,18 @@ export function AdminDispatchAutoSim({
                         </span>
                       </div>
                     </div>
-                    <p className="text-xs font-bold text-slate-900 truncate">
-                      {task.job.customerName}
-                    </p>
-                    <div className="flex items-start gap-1.5 text-[13px] font-medium text-slate-700 leading-snug">
-                      <MapPin size={13} className="shrink-0 mt-0.5 text-slate-500" />
-                      <span className="line-clamp-2">{task.targetLocation}</span>
+                    <div
+                      onClick={() => handleOpenRealJobDetail(task.job.id, task.job)}
+                      className="cursor-pointer group space-y-1"
+                      title="คลิกเพื่อเปิดหน้า Edit Job"
+                    >
+                      <p className="text-xs font-bold text-slate-900 group-hover:text-indigo-600 truncate">
+                        {task.job.customerName}
+                      </p>
+                      <div className="flex items-start gap-1.5 text-[13px] font-medium text-slate-700 group-hover:text-indigo-700 leading-snug">
+                        <MapPin size={13} className="shrink-0 mt-0.5 text-slate-500" />
+                        <span className="line-clamp-2">{task.targetLocation}</span>
+                      </div>
                     </div>
                     <div className="flex items-center gap-1 text-[10px] font-bold">
                       <span
@@ -3167,12 +3287,29 @@ export function AdminDispatchAutoSim({
                         </div>
                       );
                     })()}
-                    <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-[10px] text-slate-500">
-                      <span className="inline-flex items-center gap-1">
+                    <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-[10px] text-slate-500 gap-1">
+                      <span className="inline-flex items-center gap-1 shrink-0">
                         <Clock size={10} />
                         {format(task.scheduledAt, "HH:mm")}
                       </span>
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1 flex-wrap justify-end">
+                        <select
+                          value=""
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleManualReassignTask(task, e.target.value);
+                            }
+                          }}
+                          className="h-5 text-[9.5px] font-bold bg-white hover:bg-indigo-50 border border-indigo-200 rounded px-1 text-indigo-700 max-w-[115px] truncate cursor-pointer"
+                          title="จ่ายงานนี้ให้ Rider ทันที"
+                        >
+                          <option value="">➔ จ่ายให้ Rider...</option>
+                          {simRiderColumns.map((rc) => (
+                            <option key={rc.rider.id} value={rc.rider.id}>
+                              ➔ {rc.rider.nickname || rc.rider.name.split(" ")[0]}
+                            </option>
+                          ))}
+                        </select>
                         {task.legType === "delivery" && (
                           <button
                             type="button"
@@ -3516,9 +3653,14 @@ export function AdminDispatchAutoSim({
                                   >
                                     {idx + 1}
                                   </span>
-                                  <span className="font-mono text-[11px] font-black text-slate-800">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenRealJobDetail(task.job.id, task.job)}
+                                    className="font-mono text-[11px] font-black text-slate-800 hover:text-indigo-600 hover:underline cursor-pointer"
+                                    title="คลิกเพื่อเปิดหน้า Edit Job"
+                                  >
                                     #{task.job.id}
-                                  </span>
+                                  </button>
                                   {task.isCompleted && (
                                     <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-emerald-600 text-white">
                                       ✓ Done {completedAtStr}
@@ -3553,12 +3695,18 @@ export function AdminDispatchAutoSim({
                                 </div>
                               </div>
 
-                              <p className="text-xs font-bold text-slate-900 truncate">
-                                {task.job.customerName}
-                              </p>
-                              <div className="flex items-start gap-1.5 text-[13px] font-medium text-slate-700 leading-snug">
-                                <MapPin size={13} className="shrink-0 mt-0.5 text-slate-500" />
-                                <span className="line-clamp-2">{task.targetLocation}</span>
+                              <div
+                                onClick={() => handleOpenRealJobDetail(task.job.id, task.job)}
+                                className="cursor-pointer group space-y-1"
+                                title="คลิกเพื่อเปิดหน้า Edit Job"
+                              >
+                                <p className="text-xs font-bold text-slate-900 group-hover:text-indigo-600 truncate">
+                                  {task.job.customerName}
+                                </p>
+                                <div className="flex items-start gap-1.5 text-[13px] font-medium text-slate-700 group-hover:text-indigo-700 leading-snug">
+                                  <MapPin size={13} className="shrink-0 mt-0.5 text-slate-500" />
+                                  <span className="line-clamp-2">{task.targetLocation}</span>
+                                </div>
                               </div>
                               <div className="flex items-center gap-1 text-[10px] font-bold">
                                 <span
@@ -3643,22 +3791,39 @@ export function AdminDispatchAutoSim({
                                       +{record.detourKm} km
                                     </span>
                                     {!task.isCompleted && (
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          handleCancelAssignedTask(
-                                            task.taskId,
-                                            col.rider.id,
-                                            task.job.id,
-                                            col.rider.nickname || col.rider.name
-                                          )
-                                        }
-                                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded font-bold cursor-pointer border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
-                                        title="Cancel งานนี้กลับไป Unassigned (และไม่จ่ายกลับให้ Rider คนเดิม)"
-                                      >
-                                        <X size={10} />
-                                        Cancel
-                                      </button>
+                                      <>
+                                        <select
+                                          value={col.rider.id}
+                                          onChange={(e) =>
+                                            handleManualReassignTask(task, e.target.value, col.rider.id)
+                                          }
+                                          className="h-5 text-[9.5px] font-bold bg-indigo-50/80 hover:bg-indigo-100 border border-indigo-200 rounded px-1 text-indigo-800 max-w-[105px] truncate cursor-pointer"
+                                          title="โยกงานนี้ไปให้ Rider คนอื่น"
+                                        >
+                                          <option value="">-- Unassign --</option>
+                                          {simRiderColumns.map((rc) => (
+                                            <option key={rc.rider.id} value={rc.rider.id}>
+                                              ⇄ {rc.rider.nickname || rc.rider.name.split(" ")[0]}
+                                            </option>
+                                          ))}
+                                        </select>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            handleCancelAssignedTask(
+                                              task.taskId,
+                                              col.rider.id,
+                                              task.job.id,
+                                              col.rider.nickname || col.rider.name
+                                            )
+                                          }
+                                          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded font-bold cursor-pointer border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                                          title="Cancel งานนี้กลับไป Unassigned (และไม่จ่ายกลับให้ Rider คนเดิม)"
+                                        >
+                                          <X size={10} />
+                                          Cancel
+                                        </button>
+                                      </>
                                     )}
                                   </div>
                                 </div>

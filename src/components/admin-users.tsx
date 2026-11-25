@@ -229,6 +229,15 @@ export const ACTION_PERMISSIONS = [
     labelTh: "อนุมัติและโอนเติมเงินสดย่อย (Petty Cash)",
     description: "สิทธิ์ฝ่ายบัญชีในการโอนเติมวงเงินสดย่อยรายบุคคล อนุมัติ/ปฏิเสธรายการเบิกจ่าย และจัดการหมวดหมู่",
   },
+  {
+    id: "auto-assign-manage",
+    label: "Auto-Assign Management",
+    shortLabel: "Auto-Assign Mgmt",
+    icon: "🤖",
+    badgeClass: "text-emerald-800 bg-emerald-100/90 border-emerald-300",
+    labelTh: "จัดการระบบ Auto-Assign Live (Constraints & เคลียร์งาน)",
+    description: "สิทธิ์ในการปรับตั้งค่าเงื่อนไข Constraints และกดปุ่มเคลียร์งานที่จัดในหน้า Auto-Assign Live",
+  },
 ];
 
 /**

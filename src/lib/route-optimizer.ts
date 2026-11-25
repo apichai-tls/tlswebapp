@@ -1992,10 +1992,21 @@ export function suggestBestRiderForTask<T extends { taskId?: string; targetCoord
     if (jobAreaUpper && cand.area && cand.area.toUpperCase() !== jobAreaUpper) continue;
 
     // BKK Explicit Rider Zone Enforcement (Sukhumvit->Bangna / Sathorn-CW / Ratchada-Pratunam):
+    // Bypass zone lock when this rider is explicitly required via allowedRiderIds (e.g. Dedicated Corporate Man for Prime Syndicate / Evolve)
+    const isExplicitlyAllowedRider = Boolean(
+      options.allowedRiderIds &&
+        options.allowedRiderIds.length > 0 &&
+        options.allowedRiderIds.includes(cand.riderId)
+    );
     const candZone = cand.assignedBkkZone || "AUTO";
-    const isExactZoneMatch = Boolean(effectiveTaskZone && candZone === effectiveTaskZone);
+    const isExactZoneMatch = Boolean(
+      isExplicitlyAllowedRider || (effectiveTaskZone && candZone === effectiveTaskZone)
+    );
     const isExplicitZoneMismatch = Boolean(
-      effectiveTaskZone && candZone !== "AUTO" && candZone !== effectiveTaskZone
+      !isExplicitlyAllowedRider &&
+        effectiveTaskZone &&
+        candZone !== "AUTO" &&
+        candZone !== effectiveTaskZone
     );
 
     const distFromRiderKm = hasNonZeroCoords(cand.origin)

@@ -312,6 +312,7 @@ export async function sendWhatsAppCloudApiMessage(opts: {
   customerName?: string;
   text?: string;
   resolvedImageUrls?: string[];
+  videoAttachments?: Array<{ url: string; name?: string }>;
   fileAttachments?: Array<{ url: string; name?: string }>;
   replyToExternalMessageId?: string;
 }): Promise<{
@@ -349,12 +350,13 @@ export async function sendWhatsAppCloudApiMessage(opts: {
   let lastError: string | undefined;
 
   const images = (opts.resolvedImageUrls || []).filter(Boolean);
+  const videos = (opts.videoAttachments || []).filter((v) => Boolean(v?.url));
   const files = (opts.fileAttachments || []).filter((f) => Boolean(f?.url));
   const textBody = (opts.text || '').trim();
 
   try {
     // Case 1: If we have both text and images, send text first (or attach text as caption if single image)
-    if (textBody && images.length === 1 && files.length === 0 && textBody.length <= 1000) {
+    if (textBody && images.length === 1 && videos.length === 0 && files.length === 0 && textBody.length <= 1000) {
       const imgRes = await fetch(endpoint, {
         method: 'POST',
         headers,
@@ -438,6 +440,35 @@ export async function sendWhatsAppCloudApiMessage(opts: {
           data?.error?.error_user_msg ||
           data?.error?.message ||
           `Meta WhatsApp Cloud API image HTTP ${imgRes.status}`;
+      }
+    }
+
+    // Send video attachments
+    for (const vid of videos) {
+      const vidRes = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to,
+          type: 'video',
+          video: {
+            link: vid.url,
+          },
+        }),
+      });
+      const data = await vidRes.json().catch(() => ({}));
+      if (vidRes.ok) {
+        delivered = true;
+        if (!firstExternalMessageId) {
+          firstExternalMessageId = data?.messages?.[0]?.id;
+        }
+      } else if (!lastError) {
+        lastError =
+          data?.error?.error_user_msg ||
+          data?.error?.message ||
+          `Meta WhatsApp Cloud API video HTTP ${vidRes.status}`;
       }
     }
 

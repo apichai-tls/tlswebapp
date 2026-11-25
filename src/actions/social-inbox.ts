@@ -31,6 +31,13 @@ import {
 } from '@/lib/line';
 import { getStoredLineOaSettings } from '@/lib/line-internal';
 import {
+  markGmailEmailsAsReadBySender,
+  resolveGmailCredentials,
+  sendGmailReply,
+  syncGmailInboxMessages,
+  testGmailConnection,
+} from '@/lib/gmail-inbox';
+import {
   SOCIAL_CONVERSATIONS_KEY,
   SOCIAL_MESSAGES_KEY,
   SOCIAL_CONFIG_KEY,
@@ -1709,6 +1716,7 @@ export async function sendSocialMessageAction(input: {
   text: string;
   attachments?: SocialMessageAttachment[];
   replyTo?: SocialMessageReplyRef;
+  emailSubject?: string;
 }) {
   try {
     const text = (input.text || '').trim();
@@ -1756,8 +1764,9 @@ export async function sendSocialMessageAction(input: {
       !useWaCloudApi &&
       (waQr.status === 'connected' || waQr.status === 'connecting');
 
-    // Resolve public HTTPS URLs for any image & file attachments when needed by external HTTP APIs
+    // Resolve public HTTPS URLs for any image, video & file attachments when needed by external HTTP APIs
     const resolvedImageUrls: string[] = [];
+    const resolvedVideoAttachments: Array<{ url: string; previewUrl?: string; name?: string }> = [];
     const resolvedFileAttachments: Array<{ url: string; name?: string }> = [];
     if ((!hasQrLinked || useWaCloudApi) && attachments.length > 0) {
       for (const att of attachments) {
@@ -1765,6 +1774,18 @@ export async function sendSocialMessageAction(input: {
           const httpsUrl = await resolvePublicHttpsImageUrl(att.url);
           if (httpsUrl) {
             resolvedImageUrls.push(httpsUrl);
+          }
+        } else if (att.type === 'video' && att.url) {
+          const httpsUrl = await resolvePublicHttpsImageUrl(att.url);
+          const httpsPreview = att.previewUrl
+            ? await resolvePublicHttpsImageUrl(att.previewUrl)
+            : undefined;
+          if (httpsUrl) {
+            resolvedVideoAttachments.push({
+              url: httpsUrl,
+              previewUrl: httpsPreview || undefined,
+              name: att.name,
+            });
           }
         } else if (att.type === 'file' && att.url) {
           const httpsUrl = await resolvePublicHttpsImageUrl(att.url);
@@ -1791,9 +1812,13 @@ export async function sendSocialMessageAction(input: {
         const lineSettings = await getStoredLineOaSettings(conv.brand);
         if (lineSettings.channelAccessToken) {
           const lineMsgs: LineMessageObject[] = [];
-          const fileLinksText = resolvedFileAttachments
-            .map((f) => `📎 ${f.name || 'Document'}: ${f.url}`)
-            .join('\n');
+          const fallbackVideoLinks = resolvedVideoAttachments
+            .filter((v) => !v.previewUrl)
+            .map((v) => `🎥 ${v.name || 'Video'}: ${v.url}`);
+          const fileLinksText = [
+            ...fallbackVideoLinks,
+            ...resolvedFileAttachments.map((f) => `📎 ${f.name || 'Document'}: ${f.url}`),
+          ].join('\n');
           const combinedLineText = [outboundTextWithQuote, fileLinksText]
             .filter(Boolean)
             .join('\n\n');
@@ -1805,6 +1830,13 @@ export async function sendSocialMessageAction(input: {
               type: 'image',
               originalContentUrl: httpsImg,
               previewImageUrl: httpsImg,
+            });
+          }
+          for (const vid of resolvedVideoAttachments.filter((v) => Boolean(v.previewUrl)).slice(0, 4)) {
+            lineMsgs.push({
+              type: 'video',
+              originalContentUrl: vid.url,
+              previewImageUrl: vid.previewUrl!,
             });
           }
           if (lineMsgs.length > 0) {
@@ -1858,6 +1890,7 @@ export async function sendSocialMessageAction(input: {
           customerName: conv.customerName || conv.contactName,
           text: replyWamid ? text : outboundTextWithQuote,
           resolvedImageUrls,
+          videoAttachments: resolvedVideoAttachments,
           fileAttachments: resolvedFileAttachments,
           replyToExternalMessageId: replyWamid,
         });
@@ -1896,6 +1929,7 @@ export async function sendSocialMessageAction(input: {
           toPhoneE164: e164,
           text: outboundTextWithQuote,
           resolvedImageUrls,
+          videoAttachments: resolvedVideoAttachments,
           fileAttachments: resolvedFileAttachments,
         });
         if (cloudSend.delivered) {
@@ -2007,6 +2041,38 @@ export async function sendSocialMessageAction(input: {
       } else {
         deliveryMethod = 'social_api';
         status = 'delivered';
+      }
+    }
+    // 5. Gmail / Email Live Delivery via SMTP
+    else if (conv.channel === 'email') {
+      deliveryMethod = 'gmail_smtp';
+      const customSubj = (input.emailSubject || '').trim();
+      const rawLastSubj = (conv.lastMessageText || '').match(/^📧\s+([^\n]+)/)?.[1]?.trim();
+      const replySubject = customSubj
+        ? customSubj
+        : rawLastSubj
+        ? rawLastSubj.toLowerCase().startsWith('re:')
+          ? rawLastSubj
+          : `Re: ${rawLastSubj}`
+        : `Re: That Laundry Shop`;
+      const allMailAttachments = [
+        ...resolvedImageUrls.map((url, idx) => ({ url, name: `photo-${idx + 1}.jpg` })),
+        ...resolvedVideoAttachments.map((v, idx) => ({ url: v.url, name: v.name || `video-${idx + 1}.mp4` })),
+        ...resolvedFileAttachments.map((f, idx) => ({ url: f.url, name: f.name || `file-${idx + 1}` })),
+      ];
+      const mailRes = await sendGmailReply({
+        emailCfg: config.email,
+        toEmail: conv.externalContactId,
+        subject: replySubject,
+        text: outboundTextWithQuote || 'Please see attached.',
+        attachments: allMailAttachments,
+      });
+      if (mailRes.ok) {
+        status = 'delivered';
+        externalMessageId = mailRes.externalMessageId;
+      } else {
+        status = 'failed';
+        externalError = mailRes.error;
       }
     }
     // 4. Telegram Live Delivery via Telegram Bot API
@@ -2303,6 +2369,20 @@ export async function updateSocialConversationAction(input: {
         .catch(() => {});
     }
 
+    if (input.markAsRead && conv.channel === 'email') {
+      loadSocialChannelConfig()
+        .then((currentCfg) => {
+          if (currentCfg?.email?.enabled) {
+            return markGmailEmailsAsReadBySender(
+              currentCfg.email,
+              conv.externalContactId,
+              conv.contactName
+            );
+          }
+        })
+        .catch(() => {});
+    }
+
     if (input.markAsRead && conv.channel === 'whatsapp') {
       markWhatsAppChatReadOnDevice(conv.externalContactId || conv.contactPhone).catch(() => {});
 
@@ -2500,6 +2580,16 @@ export async function saveSocialChannelConfigAction(newConfig: SocialChannelConf
         ...newConfig.telegram,
         botToken: resolveSecret(newConfig.telegram?.botToken, existingConfig.telegram?.botToken),
       },
+      email: {
+        enabled: Boolean(newConfig.email?.enabled),
+        emailAddress: (newConfig.email?.emailAddress || '').trim(),
+        displayName: (newConfig.email?.displayName || 'That Laundry Shop').trim(),
+        imapHost: (newConfig.email?.imapHost || 'imap.gmail.com').trim(),
+        smtpHost: (newConfig.email?.smtpHost || 'smtp.gmail.com').trim(),
+        filterAutomatedEmails: newConfig.email?.filterAutomatedEmails !== false,
+        appPassword: resolveSecret(newConfig.email?.appPassword, existingConfig.email?.appPassword),
+        lastSyncedAt: existingConfig.email?.lastSyncedAt,
+      },
     };
 
     await prisma.setting.upsert({
@@ -2508,6 +2598,8 @@ export async function saveSocialChannelConfigAction(newConfig: SocialChannelConf
       create: { key: SOCIAL_CONFIG_KEY, value: JSON.stringify(mergedConfig) },
     });
     invalidateSocialStoreCache();
+    globalForFastSnapshot.__tlsFastSocialSnapshot = undefined;
+    await bumpSocialStoreVersion();
 
     const botToken = mergedConfig?.telegram?.botToken?.trim();
     if (mergedConfig?.telegram?.enabled && botToken) {
@@ -2594,6 +2686,10 @@ async function pollLiveChannelUpdatesInternal(opts?: {
     if (shouldRunExternalPoll) {
       globalForExternalPoll.__tlsLastExternalSocialPollAt = nowMs;
       void processPendingSocialMediaJobs().catch(() => {});
+      const gmailCreds = resolveGmailCredentials(config.email);
+      if (config.email?.enabled && gmailCreds.isConfigured) {
+        void syncGmailInboxMessages(config.email, { force: false, limit: 20 }).catch(() => {});
+      }
     }
 
     // 1. Live Telegram Bot API Polling (throttled every 12s so it never blocks 2s UI sync)
@@ -2994,6 +3090,23 @@ export async function checkChannelsLiveStatusAction(): Promise<{
         : 'Unified Inbox active (Add BotFather Token for live polling)',
       lastCheckedAt: nowIso,
     },
+    email: (() => {
+      const gmailCreds = resolveGmailCredentials(config.email);
+      return {
+        channel: 'email' as const,
+        connected: Boolean(config.email?.enabled && gmailCreds.isConfigured),
+        modeLabel:
+          config.email?.enabled && gmailCreds.isConfigured
+            ? 'Live Gmail IMAP/SMTP'
+            : 'Not Configured',
+        accountName: gmailCreds.emailAddress || 'Gmail Inbox',
+        details:
+          config.email?.enabled && gmailCreds.isConfigured
+            ? `2-Way Gmail Sync active (${gmailCreds.emailAddress})`
+            : 'Add Gmail address & App Password in Settings to sync emails',
+        lastCheckedAt: nowIso,
+      };
+    })(),
     wechat: {
       channel: 'wechat',
       connected: true,
@@ -3847,5 +3960,171 @@ export async function getLineFollowersMarketingReportAction(): Promise<{
       whatsappMonthlySummary: [],
       error: err?.message || 'Failed to load LINE & WhatsApp followers report',
     };
+  }
+}
+
+export async function testGmailConnectionAction(input: {
+  emailAddress?: string;
+  appPassword?: string;
+  imapHost?: string;
+}): Promise<{ ok: boolean; mailboxCount?: number; error?: string }> {
+  try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const existing = await loadSocialChannelConfig();
+    const rawPass = (input.appPassword || '').trim();
+    const effectivePass =
+      !rawPass || rawPass.includes('••••')
+        ? existing.email?.appPassword || process.env.GMAIL_APP_PASSWORD || ''
+        : rawPass;
+    const effectiveEmail =
+      (input.emailAddress || '').trim() ||
+      existing.email?.emailAddress ||
+      process.env.GMAIL_USER ||
+      '';
+    return await testGmailConnection(
+      effectiveEmail,
+      effectivePass,
+      (input.imapHost || existing.email?.imapHost || 'imap.gmail.com').trim()
+    );
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Gmail connection test failed' };
+  }
+}
+
+export async function syncGmailInboxAction(opts?: {
+  limit?: number;
+  emailAddress?: string;
+  appPassword?: string;
+  displayName?: string;
+  imapHost?: string;
+}): Promise<{ ok: boolean; imported: number; error?: string }> {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const config = await loadSocialChannelConfig(true);
+    const rawPass = (opts?.appPassword || '').trim();
+    const effectivePass =
+      !rawPass || rawPass.includes('••••')
+        ? config.email?.appPassword || process.env.GMAIL_APP_PASSWORD || ''
+        : rawPass;
+    const effectiveCfg = {
+      enabled: true,
+      emailAddress: (opts?.emailAddress || config.email?.emailAddress || process.env.GMAIL_USER || '').trim(),
+      appPassword: effectivePass,
+      displayName: (opts?.displayName || config.email?.displayName || 'That Laundry Shop').trim(),
+      imapHost: (opts?.imapHost || config.email?.imapHost || 'imap.gmail.com').trim(),
+      smtpHost: config.email?.smtpHost || 'smtp.gmail.com',
+    };
+    return await syncGmailInboxMessages(effectiveCfg, {
+      force: true,
+      limit: opts?.limit ?? 30,
+    });
+  } catch (err: any) {
+    return { ok: false, imported: 0, error: err?.message || 'Failed to sync Gmail inbox' };
+  }
+}
+
+/**
+ * Finds an existing CRM Customer by phone or email, or creates a new CRM Customer
+ * from a Web Booking email, links it to the conversation, and returns the customer record
+ * ready to pre-fill the Create Laundry Job modal!
+ */
+export async function ensureCustomerForBookingAction(input: {
+  conversationId?: string;
+  name: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  room?: string;
+  branchId?: string | null;
+}): Promise<{
+  success: boolean;
+  customer?: any;
+  created?: boolean;
+  error?: string;
+}> {
+  try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+
+    const cleanName = (input.name || '').trim() || 'New Booking Customer';
+    const cleanPhone = (input.phone || '').trim();
+    const cleanEmail =
+      input.email && input.email.includes('@') ? input.email.trim().toLowerCase() : '';
+    const fullAddress = [
+      (input.address || '').trim(),
+      input.room ? `(Room ${input.room.trim()})` : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    const phoneKey = normalizePhoneKey(cleanPhone);
+    let existing: any = null;
+
+    if (phoneKey.length >= 7) {
+      const candidates = await prisma.customer.findMany({
+        where: {
+          OR: [
+            { phone: { contains: phoneKey.slice(-6) } },
+            { secondaryPhone: { contains: phoneKey.slice(-6) } },
+          ],
+        },
+        take: 20,
+      });
+      existing =
+        candidates.find(
+          (c) =>
+            normalizePhoneKey(c.phone) === phoneKey ||
+            normalizePhoneKey(c.secondaryPhone) === phoneKey
+        ) || null;
+    }
+
+    if (!existing && cleanEmail) {
+      existing = await prisma.customer.findFirst({
+        where: { email: { equals: cleanEmail, mode: 'insensitive' } },
+      });
+    }
+
+    let customer = existing;
+    let created = false;
+
+    if (!customer) {
+      const { primeCustomerCache, invalidateDbCache } = await import('@/lib/db-cache');
+      customer = await prisma.customer.create({
+        data: {
+          name: cleanName,
+          phone: cleanPhone || cleanEmail || '-',
+          email: cleanEmail || null,
+          defaultAddress: fullAddress || null,
+          isWhatsapp: Boolean(cleanPhone),
+          whatsappId: cleanPhone || null,
+          branchId: input.branchId || null,
+          isNew: true,
+        },
+      });
+      created = true;
+      try {
+        primeCustomerCache(customer);
+        invalidateDbCache('customers');
+      } catch {}
+    }
+
+    if (input.conversationId && customer?.id) {
+      await prisma.socialConversation
+        .update({
+          where: { id: input.conversationId },
+          data: {
+            customerId: customer.id,
+            customerName: customer.name,
+            customerMemberId: customer.memberId || null,
+            customerWalletBalance: customer.creditBalance || 0,
+          },
+        })
+        .catch(() => {});
+      invalidateSocialStoreCache();
+    }
+
+    return { success: true, customer, created };
+  } catch (err: any) {
+    console.error('[ensureCustomerForBookingAction] Error:', err);
+    return { success: false, error: err?.message || 'Failed to create or link CRM customer' };
   }
 }

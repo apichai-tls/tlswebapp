@@ -258,6 +258,48 @@ export async function POST(req: NextRequest) {
         } catch (e) {
           console.warn("[LINE Webhook] Failed to download inbound image:", e);
         }
+      } else if (msgType === "video" && event?.message?.id && settings.channelAccessToken) {
+        try {
+          const msgId = String(event.message.id).replace(/[^a-zA-Z0-9_-]/g, "");
+          const vidRes = await fetch(
+            `https://api-data.line.me/v2/bot/message/${encodeURIComponent(msgId)}/content`,
+            {
+              headers: {
+                Authorization: `Bearer ${settings.channelAccessToken.trim()}`,
+              },
+            }
+          );
+          if (vidRes.ok) {
+            const arrBuf = await vidRes.arrayBuffer();
+            const rawBuffer = Buffer.from(arrBuf);
+            const contentType = vidRes.headers.get("content-type") || "video/mp4";
+            const filename = `line-video-${msgId}.mp4`;
+
+            let videoUrl = await uploadBufferToGcs(rawBuffer, {
+              entityType: "system",
+              entityId: `line_${ownerKey.slice(-12)}`,
+              subType: "chat",
+              contentType,
+              extension: "mp4",
+              customFileName: filename,
+            });
+
+            if (!videoUrl) {
+              const uploadDir = path.resolve(process.cwd(), "storage", "uploads", "system", "chat");
+              await fs.promises.mkdir(uploadDir, { recursive: true });
+              await fs.promises.writeFile(path.join(uploadDir, filename), rawBuffer);
+              videoUrl = `/uploads/system/chat/${filename}`;
+            }
+
+            inboundAttachments.push({
+              type: "video",
+              url: videoUrl,
+              name: "LINE Video.mp4",
+            });
+          }
+        } catch (e) {
+          console.warn("[LINE Webhook] Failed to download inbound video:", e);
+        }
       } else if (msgType === "sticker" && event?.message?.stickerId) {
         const stickerId = String(event.message.stickerId).replace(/\D/g, "");
         if (stickerId) {

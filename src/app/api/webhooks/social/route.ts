@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import {
+  failoverFailedCloudApiMessageToQrInternal,
   loadSocialChannelConfig,
   PendingSocialMediaJobInput,
   recordInboundSocialMessageInternal,
@@ -297,6 +298,26 @@ export async function POST(req: NextRequest) {
               });
               if (stRes.error) {
                 storageFailureCount++;
+              }
+
+              // Auto-Failover to WhatsApp QR Bridge when Meta Cloud API rejects asynchronously
+              // (e.g. >24h re-engagement window 131047, restricted country 130497/131049, or API block)
+              if (
+                rawStatus === 'failed' &&
+                stRes.updated &&
+                stRes.message &&
+                !stRes.alreadyQrFailover
+              ) {
+                const errCode = Number(errObj?.code || 0);
+                const isFailoverEligible =
+                  [131047, 130497, 131049, 131026, 131031, 200].includes(errCode) ||
+                  /24 hours|re-engagement|restricted|blocked|country/i.test(errorText || '');
+                if (isFailoverEligible) {
+                  void failoverFailedCloudApiMessageToQrInternal({
+                    messageId: stRes.message.id,
+                    defaultCountryCode: defaultCc,
+                  }).catch(() => {});
+                }
               }
             }
           }

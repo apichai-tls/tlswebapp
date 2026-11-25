@@ -1,6 +1,7 @@
 export type SocialChannel =
   | 'whatsapp'
   | 'line'
+  | 'email'
   | 'facebook'
   | 'instagram'
   | 'telegram'
@@ -11,8 +12,9 @@ export type SocialMessageDirection = 'inbound' | 'outbound';
 export type SocialMessageStatus = 'sent' | 'delivered' | 'read' | 'failed';
 
 export interface SocialMessageAttachment {
-  type: 'image' | 'file' | 'order_card';
+  type: 'image' | 'video' | 'file' | 'order_card';
   url?: string;
+  previewUrl?: string;
   name?: string;
   jobId?: string;
   jobSummary?: string;
@@ -43,6 +45,7 @@ export interface SocialMessage {
     | 'whatsapp_web_bridge'
     | 'meta_graph_api'
     | 'telegram_bot_api'
+    | 'gmail_smtp'
     | 'social_api'
     | 'platform_log';
   externalMessageId?: string;
@@ -124,6 +127,16 @@ export interface SocialChannelConfig {
     botToken?: string;
     lastUpdateId?: number;
   };
+  email?: {
+    enabled: boolean;
+    emailAddress: string;
+    appPassword?: string;
+    displayName?: string;
+    imapHost?: string;
+    smtpHost?: string;
+    filterAutomatedEmails?: boolean;
+    lastSyncedAt?: string;
+  };
 }
 
 export interface SocialChannelLiveStatus {
@@ -177,6 +190,16 @@ export const SOCIAL_CHANNEL_META: Record<
     borderColor: 'border-green-200',
     badgeBg: 'bg-[#06C755] text-white',
     placeholderId: 'LINE User ID (U...) or @Handle',
+  },
+  email: {
+    label: 'Gmail / Email',
+    shortLabel: 'Mail',
+    color: '#EA4335',
+    bgLight: 'bg-rose-50',
+    textColor: 'text-rose-700',
+    borderColor: 'border-rose-200',
+    badgeBg: 'bg-[#EA4335] text-white',
+    placeholderId: 'Customer Email (e.g. guest@gmail.com)',
   },
   facebook: {
     label: 'Facebook Messenger',

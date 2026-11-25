@@ -23,6 +23,7 @@ const ALLOWED_EXTENSIONS = new Set([
   'zip',
   'mp4',
   'mov',
+  'webm',
 ]);
 
 const ALLOWED_ENTITY_TYPES = new Set([

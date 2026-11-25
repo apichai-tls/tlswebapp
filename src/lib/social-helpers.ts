@@ -156,6 +156,13 @@ export function getChannelColorClasses(channel: SocialChannel): {
         border: 'border-green-300',
         lightBg: 'bg-green-50/70 text-green-800',
       };
+    case 'email':
+      return {
+        badge: 'bg-[#EA4335] text-white',
+        dot: 'bg-[#EA4335]',
+        border: 'border-rose-300',
+        lightBg: 'bg-rose-50/70 text-rose-800',
+      };
     case 'facebook':
       return {
         badge: 'bg-[#0084FF] text-white',

@@ -13,6 +13,7 @@ import {
   Loader2,
   Image as ImageIcon,
   Receipt,
+  FileText,
   Sparkles,
   ExternalLink,
   X,
@@ -69,6 +70,13 @@ const CHANNEL_META: Record<
     badgeClass: 'bg-green-50 text-green-700 border-green-200',
     bubbleOutClass: 'bg-[#06C755] text-white',
     dotClass: 'bg-[#06C755]',
+  },
+  email: {
+    label: 'Gmail / Email',
+    shortLabel: 'MAIL',
+    badgeClass: 'bg-rose-50 text-rose-700 border-rose-200',
+    bubbleOutClass: 'bg-[#EA4335] text-white',
+    dotClass: 'bg-[#EA4335]',
   },
   facebook: {
     label: 'Messenger',
@@ -475,22 +483,61 @@ export function JobCustomerChatPanel({
     }
   };
 
-  const handlePrepareBillSummary = () => {
-    const orderTag = jobDisplayId ? `#${jobDisplayId}` : jobId ? `#${jobId}` : '';
-    const amountStr = totalAmount > 0 ? `฿${totalAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}` : '';
-    const latestBillImg =
-      billImageUrls.find((u) => u.includes('receipt-')) ||
-      billImageUrls.find((u) => u.includes('proforma-')) ||
-      billImageUrls[billImageUrls.length - 1];
+  const getLatestProformaUrl = () => {
+    const proformas = billImageUrls.filter((u) => u.toLowerCase().includes('proforma-'));
+    if (proformas.length === 0) return null;
+    if (proformas.length === 1) return proformas[0];
+    return [...proformas].sort((a, b) => {
+      const revA = Number(a.match(/-rev(\d+)/i)?.[1] || 0);
+      const revB = Number(b.match(/-rev(\d+)/i)?.[1] || 0);
+      return revB - revA;
+    })[0];
+  };
 
-    if (latestBillImg && !pendingAttachments.some((a) => a.url === latestBillImg)) {
+  const latestProformaImg = getLatestProformaUrl();
+  const latestReceiptImg =
+    [...billImageUrls].reverse().find((u) => u.toLowerCase().includes('receipt-')) || null;
+  const latestOtherBillImg =
+    [...billImageUrls].reverse().find((u) => {
+      const lower = u.toLowerCase();
+      return !lower.includes('proforma-') && !lower.includes('receipt-');
+    }) || null;
+
+  const handlePrepareBillSummary = (docType: 'inv' | 'rec' | 'bill' = 'bill') => {
+    const orderTag = jobDisplayId ? `#${jobDisplayId}` : jobId ? `#${jobId}` : '';
+    const amountStr =
+      totalAmount > 0
+        ? `฿${totalAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+        : '';
+
+    const targetImg =
+      docType === 'inv'
+        ? latestProformaImg
+        : docType === 'rec'
+          ? latestReceiptImg
+          : latestReceiptImg || latestProformaImg || latestOtherBillImg;
+
+    const fileLabel =
+      docType === 'inv'
+        ? `INV-${orderTag || 'Order'}.png`
+        : docType === 'rec'
+          ? `REC-${orderTag || 'Order'}.png`
+          : `Bill-${orderTag || 'Order'}.png`;
+
+    if (targetImg && !pendingAttachments.some((a) => a.url === targetImg)) {
       setPendingAttachments((prev) => [
         ...prev,
-        { type: 'image', url: latestBillImg, name: `Bill-${orderTag || 'Order'}.png` },
+        { type: 'image', url: targetImg, name: fileLabel },
       ]);
     }
 
-    const template = `Hello${customerName ? ` K.${customerName}` : ''}, here is the laundry summary for order ${orderTag}${amountStr ? ` (Total: ${amountStr})` : ''}. Thank you! 🙏`;
+    const docLabel =
+      docType === 'inv'
+        ? 'Proforma Invoice (INV)'
+        : docType === 'rec'
+          ? 'Receipt (REC)'
+          : 'laundry summary';
+    const template = `Hello${customerName ? ` K.${customerName}` : ''}, here is the ${docLabel} for order ${orderTag}${amountStr ? ` (Total: ${amountStr})` : ''}. Thank you! 🙏`;
     setComposerText((prev) => (prev.trim() ? prev : template));
   };
 
@@ -787,15 +834,39 @@ export function JobCustomerChatPanel({
         <div className="p-2.5 border-t border-slate-200/90 bg-white space-y-2 shrink-0">
           {/* Quick Templates Bar */}
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-            <button
-              type="button"
-              onClick={handlePrepareBillSummary}
-              className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 text-xs font-bold flex items-center gap-1 shrink-0 cursor-pointer"
-              title="Insert order summary & attach latest proforma/receipt image"
-            >
-              <Receipt size={12} />
-              <span>Send Bill</span>
-            </button>
+            {latestProformaImg && (
+              <button
+                type="button"
+                onClick={() => handlePrepareBillSummary('inv')}
+                className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200/80 text-xs font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+                title="Attach Proforma Invoice (INV) image & insert summary"
+              >
+                <FileText size={12} />
+                <span>Send INV</span>
+              </button>
+            )}
+            {latestReceiptImg && (
+              <button
+                type="button"
+                onClick={() => handlePrepareBillSummary('rec')}
+                className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 text-xs font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+                title="Attach Receipt (REC) image & insert summary"
+              >
+                <Receipt size={12} />
+                <span>Send REC</span>
+              </button>
+            )}
+            {!latestProformaImg && !latestReceiptImg && (
+              <button
+                type="button"
+                onClick={() => handlePrepareBillSummary('bill')}
+                className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 text-xs font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+                title="Insert order summary & attach bill image"
+              >
+                <Receipt size={12} />
+                <span>Send Bill</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() =>
@@ -823,23 +894,42 @@ export function JobCustomerChatPanel({
           {/* Pending Attachments Preview */}
           {pendingAttachments.length > 0 && (
             <div className="flex items-center gap-1.5 overflow-x-auto py-1">
-              {pendingAttachments.map((att, idx) => (
-                <div
-                  key={idx}
-                  className="relative w-14 h-14 rounded-lg border border-slate-200 overflow-hidden bg-slate-50 shrink-0"
-                >
-                  <img src={att.url} alt="Pending" className="w-full h-full object-cover" />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPendingAttachments((prev) => prev.filter((_, i) => i !== idx))
-                    }
-                    className="absolute top-0.5 right-0.5 w-4.5 h-4.5 rounded-full bg-rose-600 text-white flex items-center justify-center shadow cursor-pointer"
+              {pendingAttachments.map((att, idx) => {
+                const lowerUrl = (att.url || '').toLowerCase();
+                const docBadge = lowerUrl.includes('proforma-')
+                  ? 'INV'
+                  : lowerUrl.includes('receipt-')
+                    ? 'REC'
+                    : null;
+                return (
+                  <div
+                    key={idx}
+                    className="relative w-14 h-14 rounded-lg border border-slate-200 overflow-hidden bg-slate-50 shrink-0"
                   >
-                    <X size={11} />
-                  </button>
-                </div>
-              ))}
+                    <img src={att.url} alt="Pending" className="w-full h-full object-cover" />
+                    {docBadge && (
+                      <span
+                        className={`absolute bottom-0.5 left-0.5 px-1 py-0 rounded text-[9px] font-black leading-tight shadow ${
+                          docBadge === 'INV'
+                            ? 'bg-amber-500 text-white'
+                            : 'bg-indigo-600 text-white'
+                        }`}
+                      >
+                        {docBadge}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPendingAttachments((prev) => prev.filter((_, i) => i !== idx))
+                      }
+                      className="absolute top-0.5 right-0.5 w-4.5 h-4.5 rounded-full bg-rose-600 text-white flex items-center justify-center shadow cursor-pointer"
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
 

@@ -665,16 +665,12 @@ export async function sendDeliveryProofViaLineInternal(params: {
       } catch {}
     }
 
-    // In strict Auto-Send mode, if this job's contactChannel is explicitly WhatsApp and has no job-level LINE ID,
-    // never fire a LINE auto-notification unexpectedly!
-    if (
-      params.isAutoSend &&
-      jobContactChannel === "whatsapp" &&
-      !isValidLineTargetId(jobLineIdFromNotes)
-    ) {
+    // In strict Auto-Send mode, if this job's contactChannel is explicitly WhatsApp,
+    // NEVER fire a LINE auto-notification (even if an old customerLineId is still present in adminNotesJson)!
+    if (params.isAutoSend && jobContactChannel === "whatsapp") {
       return {
         success: false,
-        error: "Skipped LINE auto-send: job contact channel is WhatsApp without an explicit LINE ID.",
+        error: "Skipped LINE auto-send: job contact channel is explicitly WhatsApp.",
       };
     }
 
@@ -762,6 +758,28 @@ export async function sendDeliveryProofViaLineInternal(params: {
           ? "Skipped LINE auto-send: no verified LINE UID or LINE Group linked (name-guessing disabled for safety)."
           : "Could not find a linked LINE ID or LINE Group for this customer yet. Please select their LINE profile from the dropdown below.",
       };
+    }
+
+    // In strict Auto-Send mode, verify that a linked LINE User ID (U...) is not owned by a DIFFERENT customer in SocialConversation
+    if (params.isAutoSend && isValidLineUserId(lineUserId) && !params.overrideLineUserId) {
+      const linkedLineConv = await prisma.socialConversation.findFirst({
+        where: { channel: "line", externalContactId: lineUserId },
+        select: { customerId: true, contactName: true, customerName: true },
+      });
+      if (linkedLineConv?.customerId && job.customerId && linkedLineConv.customerId !== job.customerId) {
+        const linkedConvCust = await prisma.customer.findUnique({
+          where: { id: linkedLineConv.customerId },
+          select: { name: true },
+        });
+        const jobCustNorm = normalizeHandle(customer?.name || job.customerName);
+        const convCustNorm = normalizeHandle(linkedConvCust?.name || linkedLineConv.customerName);
+        if (jobCustNorm && convCustNorm && jobCustNorm !== convCustNorm) {
+          return {
+            success: false,
+            error: `Skipped LINE auto-send: LINE ID ${lineUserId} belongs to a different customer (${linkedConvCust?.name || linkedLineConv.customerName || linkedLineConv.contactName}) in Live Chat.`,
+          };
+        }
+      }
     }
 
     if (
