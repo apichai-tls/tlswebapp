@@ -1772,6 +1772,49 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     return "ทั้งหมด (All Time)";
   }, [dateFrom, dateTo]);
 
+  // Thai Baht Text Converter (e.g. 2135 -> "สองพันหนึ่งร้อยสามสิบห้าบาทถ้วน")
+  const toThaiBahtText = (amount: number): string => {
+    const abs = Math.abs(Number(amount) || 0);
+    const fixed = abs.toFixed(2);
+    const [intPart, decPart] = fixed.split(".");
+    const numWords = ["ศูนย์", "หนึ่ง", "สอง", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า"];
+    const posWords = ["", "สิบ", "ร้อย", "พัน", "หมื่น", "แสน", "ล้าน"];
+
+    const convertDigits = (digitsStr: string): string => {
+      if (!digitsStr || /^0+$/.test(digitsStr)) return "";
+      let out = "";
+      const len = digitsStr.length;
+      for (let i = 0; i < len; i++) {
+        const d = parseInt(digitsStr[i], 10);
+        const pos = len - i - 1;
+        const modPos = pos % 6;
+        if (d !== 0) {
+          if (modPos === 1 && d === 1) {
+            out += "";
+          } else if (modPos === 1 && d === 2) {
+            out += "ยี่";
+          } else if (modPos === 0 && d === 1 && len > 1 && digitsStr[i - 1] !== "0") {
+            out += "เอ็ด";
+          } else {
+            out += numWords[d];
+          }
+          out += posWords[modPos];
+        }
+        if (pos > 0 && modPos === 0) {
+          out += "ล้าน";
+        }
+      }
+      return out;
+    };
+
+    const bahtWords = convertDigits(intPart) || "ศูนย์";
+    const satangWords = convertDigits(decPart);
+    const prefix = amount < 0 ? "ลบ" : "";
+    return satangWords
+      ? `${prefix}${bahtWords}บาท${satangWords}สตางค์`
+      : `${prefix}${bahtWords}บาทถ้วน`;
+  };
+
   // Extended Analytics for Detailed Modern Dashboard & Reports
   const dashboardDetails = useMemo(() => {
     const totalLimitAll = holderSummaries.reduce(
@@ -1876,6 +1919,188 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     currentUser?.id,
     holderFilter,
     branchFilter,
+  ]);
+
+  // Structured Thai Accounting Petty Cash Report Data (powers both Report Tab & Print/PDF)
+  const thaiAccountingReport = useMemo(() => {
+    const THAI_MONTHS = [
+      "มกราคม",
+      "กุมภาพันธ์",
+      "มีนาคม",
+      "เมษายน",
+      "พฤษภาคม",
+      "มิถุนายน",
+      "กรกฎาคม",
+      "สิงหาคม",
+      "กันยายน",
+      "ตุลาคม",
+      "พฤศจิกายน",
+      "ธันวาคม",
+    ];
+    const fmtThaiDateBE = (d: Date) => {
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const yyyy = d.getFullYear() + 543;
+      return `${dd}/${mm}/${yyyy}`;
+    };
+
+    let thaiPeriodLabel = "ทั้งหมด";
+    try {
+      if (dateFrom && dateTo) {
+        const d1 = new Date(`${dateFrom}T00:00:00`);
+        const d2 = new Date(`${dateTo}T00:00:00`);
+        const isFullMonth =
+          d1.getFullYear() === d2.getFullYear() &&
+          d1.getMonth() === d2.getMonth() &&
+          d1.getDate() === 1 &&
+          d2.getDate() === new Date(d2.getFullYear(), d2.getMonth() + 1, 0).getDate();
+        if (isFullMonth) {
+          thaiPeriodLabel = `${THAI_MONTHS[d1.getMonth()]} ${d1.getFullYear() + 543}`;
+        } else if (dateFrom === dateTo) {
+          thaiPeriodLabel = fmtThaiDateBE(d1);
+        } else {
+          thaiPeriodLabel = `${fmtThaiDateBE(d1)} – ${fmtThaiDateBE(d2)}`;
+        }
+      } else if (dateFrom) {
+        thaiPeriodLabel = `ตั้งแต่ ${fmtThaiDateBE(new Date(`${dateFrom}T00:00:00`))}`;
+      } else if (dateTo) {
+        thaiPeriodLabel = `ถึง ${fmtThaiDateBE(new Date(`${dateTo}T00:00:00`))}`;
+      }
+    } catch {}
+
+    const printedDateBE = fmtThaiDateBE(new Date());
+
+    // Section 1: Expense items only (exclude TOPUP / TRANSFER / RETURN / REJECTED / VOID) sorted chronologically
+    const expenseItems = filteredTransactions
+      .filter((t) => t.type === "EXPENSE" && t.status !== "REJECTED" && t.status !== "VOID")
+      .slice()
+      .sort(
+        (a, b) =>
+          new Date(a.transactionDate).getTime() - new Date(b.transactionDate).getTime()
+      );
+
+    const totalExpenseInPeriod =
+      Math.round(expenseItems.reduce((s, t) => s + (Number(t.amount) || 0), 0) * 100) / 100;
+
+    // Custodians to include in Pivot Matrix (everyone with expenses in this period + active visible wallets)
+    const custodianMap = new Map<
+      string,
+      {
+        holderId: string;
+        holderName: string;
+        shortName: string;
+        limit: number;
+        currentBalance: number;
+        periodExpense: number;
+      }
+    >();
+
+    for (const h of dashboardDetails.visibleHolderSummaries) {
+      const shortName = (h.holderName || "").trim().split(/\s+/)[0] || h.holderName;
+      custodianMap.set(h.holderId, {
+        holderId: h.holderId,
+        holderName: h.holderName,
+        shortName,
+        limit: getHolderLimit(h.holderId, h.isAccounting),
+        currentBalance: Math.round((Number(h.currentBalance) || 0) * 100) / 100,
+        periodExpense: 0,
+      });
+    }
+
+    for (const t of expenseItems) {
+      if (!custodianMap.has(t.holderId)) {
+        const shortName = (t.holderName || "").trim().split(/\s+/)[0] || t.holderName;
+        custodianMap.set(t.holderId, {
+          holderId: t.holderId,
+          holderName: t.holderName,
+          shortName,
+          limit: getHolderLimit(t.holderId, false),
+          currentBalance: 0,
+          periodExpense: 0,
+        });
+      }
+      const cEntry = custodianMap.get(t.holderId)!;
+      cEntry.periodExpense =
+        Math.round((cEntry.periodExpense + (Number(t.amount) || 0)) * 100) / 100;
+    }
+
+    // Prioritize custodians who actually have expenses or balance
+    const custodians = Array.from(custodianMap.values()).filter(
+      (c) =>
+        holderFilter !== "ALL" ||
+        c.periodExpense > 0 ||
+        c.currentBalance !== 0 ||
+        custodianMap.size <= 4
+    );
+
+    const formatCategoryLabel = (t: any) => {
+      if (t.vehiclePlate && !String(t.category || "").includes(t.vehiclePlate)) {
+        return `${t.category}: ${t.vehiclePlate}`;
+      }
+      return t.category || "อื่นๆ";
+    };
+
+    // Section 2: Pivot Matrix (Category x Custodian)
+    const categoryOrder: string[] = [];
+    const pivotByCategory = new Map<string, Record<string, number>>();
+    for (const t of expenseItems) {
+      const catLabel = formatCategoryLabel(t);
+      if (!pivotByCategory.has(catLabel)) {
+        pivotByCategory.set(catLabel, {});
+        categoryOrder.push(catLabel);
+      }
+      const row = pivotByCategory.get(catLabel)!;
+      row[t.holderId] = Math.round(((row[t.holderId] || 0) + (Number(t.amount) || 0)) * 100) / 100;
+    }
+
+    const pivotRows = categoryOrder.map((cat) => {
+      const byHolder = pivotByCategory.get(cat) || {};
+      const rowTotal =
+        Math.round(
+          Object.values(byHolder).reduce((s, v) => s + (Number(v) || 0), 0) * 100
+        ) / 100;
+      return { category: cat, byHolder, rowTotal };
+    });
+
+    const totalQuotaLimit =
+      Math.round(custodians.reduce((s, c) => s + c.limit, 0) * 100) / 100;
+    const totalNetCashBalance =
+      Math.round(custodians.reduce((s, c) => s + c.currentBalance, 0) * 100) / 100;
+
+    const selectedHolderLabel =
+      holderFilter === "ALL"
+        ? "ผู้รับผิดชอบทุกคน"
+        : custodianMap.get(holderFilter)?.holderName ||
+          holderSummaries.find((h) => h.holderId === holderFilter)?.holderName ||
+          holderFilter;
+    const selectedCategoryLabel =
+      categoryFilter === "ALL" ? "ทุกหมวด" : categoryFilter;
+    const isSingleCustodian =
+      holderFilter !== "ALL" || !canApproveOrTopUp || custodians.length === 1;
+
+    return {
+      thaiPeriodLabel,
+      printedDateBE,
+      selectedHolderLabel,
+      selectedCategoryLabel,
+      isSingleCustodian,
+      totalQuotaLimit,
+      totalExpenseInPeriod,
+      totalNetCashBalance,
+      thaiBahtTotalText: toThaiBahtText(totalExpenseInPeriod),
+      expenseItems,
+      custodians,
+      pivotRows,
+      formatCategoryLabel,
+    };
+  }, [
+    dateFrom,
+    dateTo,
+    filteredTransactions,
+    dashboardDetails.visibleHolderSummaries,
+    holderFilter,
+    categoryFilter,
+    holderSummaries,
   ]);
 
   // ── Fuel & Vehicle Analytics (แยกตามทะเบียนรถ + กราฟ) ──────────────────
@@ -2026,7 +2251,6 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
       "Balance After",
       "Created By",
       "Approved By",
-      "Slip Files",
     ];
     const rows = filteredTransactions.map((t) => {
       const signedAmt = t.direction === "CREDIT" ? t.amount : -t.amount;
@@ -2042,7 +2266,6 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         t.balanceAfter.toFixed(2),
         t.createdByName || "-",
         t.approvedByName || "-",
-        (t.slipUrls || []).join(" | "),
       ];
     });
 
@@ -2062,10 +2285,11 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     setExportMenuOpen(false);
   };
 
-  // Export PDF (Includes Top-up vs Spent Executive Summary + Custodian Summary Table + Category Breakdown + Ledger)
+  // Export PDF (Thai Accounting A4 Summary + Pivot Matrix + Baht Text + 3 Signature Boxes)
   const handleExportPdf = () => {
     setExportMenuOpen(false);
-    if (filteredTransactions.length === 0 && dashboardDetails.visibleHolderSummaries.length === 0) {
+    const rep = thaiAccountingReport;
+    if (rep.expenseItems.length === 0 && rep.custodians.length === 0) {
       toast.error("ไม่มีรายการสำหรับ Export PDF");
       return;
     }
@@ -2080,332 +2304,340 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
     const fmtMoney = (n: number) =>
       Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-    const nowStr = format(new Date(), "dd/MM/yyyy HH:mm");
     const fileTitle = `petty-cash-report-${format(new Date(), "yyyyMMdd-HHmm")}`;
+    const isSingle = rep.isSingleCustodian;
+    const colCount = isSingle ? 1 : rep.custodians.length;
+    // Shrink table font cleanly when many custodians are present so A4 portrait never overflows
+    const pivotFontPx = colCount >= 7 ? 7.5 : colCount >= 5 ? 8.5 : 9.5;
+    const pivotPadPx = colCount >= 7 ? "4px 4px" : colCount >= 5 ? "5px 5px" : "6px 8px";
 
-    let sumLimit = 0;
-    let sumOpening = 0;
-    let sumCompanyTopup = 0;
-    let sumTransferIn = 0;
-    let sumTotalTopup = 0;
-    let sumTransferOut = 0;
-    let sumExpense = 0;
-    let sumCurrentBal = 0;
-    let sumShortfall = 0;
-
-    const custodianRowsHtml = dashboardDetails.visibleHolderSummaries
-      .map((h, idx) => {
-        const branchName = getBranchDisplayName(h.branchId);
-        const limit = getHolderLimit(h.holderId, h.isAccounting);
-        const shortfall = Math.max(0, Math.round((limit - h.currentBalance) * 100) / 100);
-        sumLimit += limit;
-        sumOpening += h.openingBalance;
-        sumCompanyTopup += h.companyTopup;
-        sumTransferIn += h.transferIn;
-        sumTotalTopup += h.totalTopup;
-        sumTransferOut += h.transferOut;
-        sumExpense += h.totalExpense;
-        sumCurrentBal += h.currentBalance;
-        sumShortfall += shortfall;
-
-        return `
-          <tr>
-            <td style="text-align:center;color:#64748b;">${idx + 1}</td>
-            <td><strong style="color:#0f172a;">${escapeHtml(h.holderName)}</strong></td>
-            <td><span style="font-weight:600;color:#334155;">${escapeHtml(h.department || h.roleLabel)}</span><br/><span style="color:#64748b;font-size:9.5px;">${escapeHtml(branchName)}</span></td>
-            <td class="num">฿${fmtMoney(limit)}</td>
-            <td class="num" style="color:#475569;">฿${fmtMoney(h.openingBalance)}</td>
-            <td class="num" style="color:#059669;">${h.companyTopup > 0 ? `+฿${fmtMoney(h.companyTopup)}` : "–"}</td>
-            <td class="num" style="color:#0284c7;">${h.transferIn > 0 ? `+฿${fmtMoney(h.transferIn)}` : "–"}</td>
-            <td class="num" style="font-weight:700;color:#059669;">+฿${fmtMoney(h.totalTopup)}</td>
-            <td class="num" style="color:#6366f1;">${h.transferOut > 0 ? `-฿${fmtMoney(h.transferOut)}` : "–"}</td>
-            <td class="num" style="font-weight:700;color:#e11d48;">-฿${fmtMoney(h.totalExpense)}</td>
-            <td class="num" style="font-weight:700;color:${h.currentBalance < 0 ? "#e11d48" : "#0f172a"};">฿${fmtMoney(h.currentBalance)}</td>
-            <td class="num" style="font-weight:700;color:${shortfall > 0 ? "#d97706" : "#059669"};">฿${fmtMoney(shortfall)}</td>
-          </tr>
-        `;
-      })
-      .join("");
-
-    const categoryRowsHtml =
-      dashboardDetails.categoryBreakdown.length > 0
-        ? dashboardDetails.categoryBreakdown
-            .map((c, idx) => {
-              const pct =
-                kpiStats.realExpenseTotal > 0
-                  ? ((c.amount / kpiStats.realExpenseTotal) * 100).toFixed(1)
-                  : "0.0";
-              return `
-                <tr>
-                  <td style="text-align:center;color:#64748b;">${idx + 1}</td>
-                  <td><strong style="color:#0f172a;">${escapeHtml(c.category)}</strong></td>
-                  <td class="num" style="text-align:center;">${c.count} ${c.count === 1 ? "bill" : "bills"}</td>
-                  <td class="num" style="font-weight:700;color:#e11d48;">-฿${fmtMoney(c.amount)}</td>
-                  <td class="num">${pct}%</td>
-                </tr>
-              `;
-            })
-            .join("")
-        : `<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:12px;">No expense transactions recorded in this period.</td></tr>`;
-
-    const rowsHtml =
-      filteredTransactions.length > 0
-        ? filteredTransactions
+    const section1RowsHtml =
+      rep.expenseItems.length > 0
+        ? rep.expenseItems
             .map((t, idx) => {
-              const branchName = getBranchDisplayName(t.branchId);
-              const isCredit = t.direction === "CREDIT";
-              const signedAmt = isCredit ? `+฿${fmtMoney(t.amount)}` : `-฿${fmtMoney(t.amount)}`;
-              const amtColor =
-                t.status === "REJECTED" || t.status === "VOID"
-                  ? "#94a3b8"
-                  : isCredit
-                    ? "#059669"
-                    : "#e11d48";
-              const vendorInvoice = [t.vendorName, t.invoiceNo].filter(Boolean).join(" / ") || "–";
-              const statusStyle =
-                t.status === "APPROVED"
-                  ? "background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;"
-                  : t.status === "PENDING"
-                    ? "background:#fffbeb;color:#b45309;border:1px solid #fde68a;"
-                    : "background:#fff1f2;color:#be123c;border:1px solid #fecdd3;";
+              const catLabel = rep.formatCategoryLabel(t);
+              const dateIso = format(new Date(t.transactionDate), "yyyy-MM-dd");
+              const shortHolder = (t.holderName || "").trim().split(/\s+/)[0] || t.holderName;
+              const vendor = t.vendorName || "–";
+              const billNo = t.invoiceNo || t.txNumber || "–";
               return `
                 <tr>
-                  <td style="text-align:center;color:#64748b;">${idx + 1}</td>
-                  <td class="num" style="white-space:nowrap;font-weight:600;color:#334155;">${escapeHtml(t.txNumber || t.id.slice(0, 8))}</td>
-                  <td class="num" style="white-space:nowrap;color:#475569;">${escapeHtml(format(new Date(t.transactionDate), "dd/MM/yyyy HH:mm"))}</td>
-                  <td><strong style="color:#0f172a;">${escapeHtml(t.holderName)}</strong><br/><span style="color:#64748b;font-size:9.5px;">${escapeHtml(branchName)}</span></td>
-                  <td><span style="font-weight:600;color:#334155;">${escapeHtml(t.type)}</span></td>
-                  <td>${escapeHtml(t.category)}</td>
-                  <td>${escapeHtml(t.description)}</td>
-                  <td style="color:#475569;">${escapeHtml(vendorInvoice)}</td>
-                  <td style="text-align:center;">${escapeHtml(t.paymentMethod || "–")}</td>
-                  <td class="num" style="font-weight:700;color:${amtColor};">${signedAmt}</td>
-                  <td class="num" style="color:#334155;">฿${fmtMoney(t.balanceAfter)}</td>
-                  <td style="text-align:center;"><span class="status-pill" style="${statusStyle}">${escapeHtml(t.status)}</span></td>
+                  <td style="text-align:center;color:#475569;">${idx + 1}</td>
+                  <td style="white-space:nowrap;color:#334155;">${escapeHtml(dateIso)}</td>
+                  ${isSingle ? "" : `<td style="color:#0f172a;font-weight:500;">${escapeHtml(shortHolder)}</td>`}
+                  <td style="color:#0f172a;">${escapeHtml(catLabel)}</td>
+                  <td style="color:#1e293b;">${escapeHtml(t.description || "–")}</td>
+                  <td style="color:#334155;">${escapeHtml(vendor)}</td>
+                  <td style="white-space:nowrap;color:#475569;">${escapeHtml(billNo)}</td>
+                  <td class="num" style="font-weight:600;color:#0f172a;">฿${fmtMoney(t.amount)}</td>
                 </tr>
               `;
             })
             .join("")
-        : `<tr><td colspan="12" style="text-align:center;color:#94a3b8;padding:16px;">No ledger transactions found in this period.</td></tr>`;
+        : `<tr><td colspan="${isSingle ? 7 : 8}" style="text-align:center;color:#94a3b8;padding:14px;">ไม่มีรายการค่าใช้จ่ายในงวดที่เลือก</td></tr>`;
+
+    const pivotHeadersHtml = isSingle
+      ? ""
+      : rep.custodians
+          .map((c, idx) => `<th class="num">${idx + 1}. ${escapeHtml(c.shortName)} (บาท)</th>`)
+          .join("");
+
+    const pivotRowsHtml =
+      rep.pivotRows.length > 0
+        ? rep.pivotRows
+            .map((r) => {
+              const cells = isSingle
+                ? ""
+                : rep.custodians
+                    .map((c) => {
+                      const val = r.byHolder[c.holderId] || 0;
+                      return `<td class="num">${val > 0 ? `฿${fmtMoney(val)}` : "-"}</td>`;
+                    })
+                    .join("");
+              return `
+                <tr>
+                  <td style="color:#0f172a;font-weight:500;">${escapeHtml(r.category)}</td>
+                  ${cells}
+                  <td class="num" style="font-weight:700;color:#0f172a;background:#f8fafc;">฿${fmtMoney(r.rowTotal)}</td>
+                </tr>
+              `;
+            })
+            .join("")
+        : `<tr><td colspan="${isSingle ? 2 : rep.custodians.length + 2}" style="text-align:center;color:#94a3b8;padding:12px;">ไม่มีข้อมูลค่าใช้จ่าย</td></tr>`;
+
+    const pivotExpenseTotalsHtml = isSingle
+      ? ""
+      : rep.custodians
+          .map((c) => `<td class="num" style="font-weight:700;color:#0f172a;">฿${fmtMoney(c.periodExpense)}</td>`)
+          .join("");
+
+    const pivotNetBalanceTotalsHtml = isSingle
+      ? ""
+      : rep.custodians
+          .map(
+            (c) =>
+              `<td class="num" style="font-weight:700;color:${c.currentBalance < 0 ? "#be123c" : "#047857"};">฿${fmtMoney(c.currentBalance)}</td>`
+          )
+          .join("");
 
     const htmlContent = `<!DOCTYPE html>
-<html lang="en">
+<html lang="th">
 <head>
   <meta charset="utf-8" />
   <title>${escapeHtml(fileTitle)}</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    @page { size: A4 landscape; margin: 10mm; }
+    @page { size: A4 portrait; margin: 11mm 12mm; }
     * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     body {
-      font-family: 'Inter', 'Noto Sans Thai', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: 'Noto Sans Thai', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       color: #0f172a;
       margin: 0;
       padding: 0;
-      font-size: 10.5px;
-      line-height: 1.45;
+      font-size: 10px;
+      line-height: 1.4;
       background: #ffffff;
     }
-    .num {
-      text-align: right;
+    th.num, td.num, .num {
+      text-align: right !important;
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
     }
     .header {
       display: flex;
       justify-content: space-between;
-      align-items: flex-end;
-      border-bottom: 2px solid #0f172a;
-      padding-bottom: 10px;
-      margin-bottom: 12px;
+      align-items: flex-start;
+      border-bottom: 1.5px solid #cbd5e1;
+      padding-bottom: 8px;
+      margin-bottom: 10px;
     }
-    .brand-tag {
-      display: inline-block;
-      font-size: 8.5px;
+    .company-name {
+      font-size: 15px;
       font-weight: 800;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #4f46e5;
-      background: #eef2ff;
-      padding: 2px 7px;
-      border-radius: 4px;
-      margin-bottom: 4px;
-    }
-    .title {
-      font-size: 18px;
-      font-weight: 800;
-      letter-spacing: -0.02em;
       color: #0f172a;
-      margin: 0;
+      margin: 0 0 2px 0;
     }
-    .subtitle {
+    .report-sub {
       font-size: 10.5px;
       color: #475569;
-      margin-top: 3px;
+      margin: 0;
     }
-    .meta-box {
+    .period-right {
       text-align: right;
-      font-size: 10px;
-      color: #475569;
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 8px;
-      padding: 6px 10px;
-      line-height: 1.5;
     }
-    .section-title {
-      font-size: 11.5px;
+    .period-pill {
+      display: inline-block;
+      border: 1px solid #94a3b8;
+      border-radius: 5px;
+      padding: 3px 9px;
+      font-size: 10px;
       font-weight: 700;
       color: #0f172a;
-      margin: 14px 0 6px 0;
-      padding-left: 8px;
-      border-left: 3px solid #4f46e5;
-      letter-spacing: -0.01em;
-    }
-    .kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(6, 1fr);
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-    .kpi-card {
-      border: 1px solid #e2e8f0;
-      border-top: 3px solid #cbd5e1;
-      border-radius: 8px;
-      padding: 8px 10px;
       background: #ffffff;
     }
-    .kpi-label {
-      font-size: 8.5px;
-      color: #64748b;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    .kpi-val {
-      font-size: 14.5px;
-      font-weight: 800;
-      margin-top: 3px;
-      font-variant-numeric: tabular-nums;
-      letter-spacing: -0.02em;
-    }
-    .kpi-sub {
+    .print-date {
       font-size: 9px;
       color: #64748b;
-      margin-top: 2px;
+      margin-top: 3px;
+    }
+    .summary-bar {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr 1fr 1fr 1fr;
+      gap: 8px;
+      align-items: center;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 7px 10px;
+      margin-bottom: 12px;
+      background: #ffffff;
+      font-size: 9.5px;
+    }
+    .summary-item-label {
+      color: #64748b;
+      font-size: 8.5px;
+    }
+    .summary-item-val {
+      font-weight: 700;
+      color: #0f172a;
+      margin-top: 1px;
+    }
+    .section-title {
+      font-size: 10.5px;
+      font-weight: 800;
+      color: #0f172a;
+      margin: 10px 0 5px 0;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 10px;
       margin-bottom: 10px;
-      border: 1px solid #e2e8f0;
+      border: 1px solid #cbd5e1;
     }
-    th, td {
+    .tbl-items { font-size: 9.2px; }
+    .tbl-items th, .tbl-items td {
       border-bottom: 1px solid #e2e8f0;
-      padding: 6px 7px;
+      border-right: 1px solid #f1f5f9;
+      padding: 5px 6px;
+      vertical-align: top;
+      text-align: left;
+    }
+    .tbl-items th {
+      background: #f1f5f9;
+      font-weight: 700;
+      color: #0f172a;
+      border-bottom: 1.5px solid #94a3b8;
+      white-space: nowrap;
+    }
+    .tbl-pivot { font-size: ${pivotFontPx}px; }
+    .tbl-pivot th, .tbl-pivot td {
+      border-bottom: 1px solid #e2e8f0;
+      border-right: 1px solid #e2e8f0;
+      padding: ${pivotPadPx};
       vertical-align: middle;
       text-align: left;
     }
-    th {
-      background: #f8fafc;
-      font-size: 9px;
+    .tbl-pivot th {
+      background: #f1f5f9;
       font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-      color: #475569;
-      white-space: nowrap;
-      border-bottom: 1.5px solid #cbd5e1;
-    }
-    tbody tr:nth-child(even) td { background: #fafbfc; }
-    tfoot td {
-      background: #f1f5f9 !important;
-      font-weight: 700;
-      border-top: 1.5px solid #94a3b8;
       color: #0f172a;
+      border-bottom: 1.5px solid #94a3b8;
     }
-    .status-pill {
-      display: inline-block;
-      padding: 1.5px 6px;
-      border-radius: 999px;
-      font-size: 8.5px;
-      font-weight: 700;
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
+    .row-total td {
+      background: #f8fafc;
+      border-top: 1.5px solid #94a3b8;
+    }
+    .row-net td {
+      background: #dcfce7 !important;
+      border-top: 1px solid #86efac;
     }
     .sig-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 28px;
-      margin-top: 24px;
+      gap: 14px;
+      margin-top: 18px;
       page-break-inside: avoid;
     }
     .sig-box {
+      border: 1px dashed #cbd5e1;
+      border-radius: 6px;
       text-align: center;
-      padding-top: 28px;
-      font-size: 10px;
-      color: #475569;
+      padding: 8px 10px 10px 10px;
+      font-size: 9.5px;
+      color: #334155;
     }
     .sig-line {
-      border-top: 1px solid #94a3b8;
-      width: 72%;
-      margin: 0 auto 4px auto;
-      padding-top: 5px;
-      color: #0f172a;
+      border-bottom: 1px solid #64748b;
+      height: 28px;
+      width: 82%;
+      margin: 0 auto 6px auto;
     }
   </style>
 </head>
 <body>
   <div class="header">
     <div>
-      <div class="brand-tag">That Laundry Shop • Finance &amp; Operations</div>
-      <h1 class="title">Petty Cash Summary &amp; Replenishment Report</h1>
-      <div class="subtitle">
-        <strong>Period:</strong> ${escapeHtml(periodLabel)} &nbsp;•&nbsp;
-        <strong>Transactions:</strong> ${filteredTransactions.length} ${filteredTransactions.length === 1 ? "record" : "records"}
-      </div>
+      <h1 class="company-name">บริษัท แดท ลอนดรี้ ช็อป จำกัด</h1>
+      <p class="report-sub">รายงานสรุปค่าใช้จ่ายเงินสดย่อย</p>
     </div>
-    <div class="meta-box">
-      <div><strong>Printed:</strong> ${escapeHtml(nowStr)}</div>
-      <div><strong>Prepared By:</strong> ${escapeHtml(currentUser?.name || currentUser?.email || "–")}</div>
+    <div class="period-right">
+      <div class="period-pill">ประจำงวด: ${escapeHtml(rep.thaiPeriodLabel)}</div>
+      <div class="print-date">วันที่พิมพ์: ${escapeHtml(rep.printedDateBE)}</div>
     </div>
   </div>
 
-  <div class="section-title">Detailed Transaction Ledger</div>
-  <table>
+  <div class="summary-bar">
+    <div>
+      <span class="summary-item-label">ผู้รับผิดชอบ:</span>
+      <div class="summary-item-val" style="${isSingle ? "font-size:13px;font-weight:800;" : ""}">${escapeHtml(rep.selectedHolderLabel)}</div>
+    </div>
+    <div>
+      <span class="summary-item-label">หมวดหมู่:</span>
+      <div class="summary-item-val">${escapeHtml(rep.selectedCategoryLabel)}</div>
+    </div>
+    <div>
+      <span class="summary-item-label">วงเงินที่ตั้งไว้:</span>
+      <div class="summary-item-val">฿${fmtMoney(rep.totalQuotaLimit)}</div>
+    </div>
+    <div>
+      <span class="summary-item-label">ยอดจ่ายรวมในงวดนี้:</span>
+      <div class="summary-item-val" style="color:#be123c;">฿${fmtMoney(rep.totalExpenseInPeriod)}</div>
+    </div>
+    <div>
+      <span class="summary-item-label">เงินสดคงเหลือ:</span>
+      <div class="summary-item-val" style="color:${rep.totalNetCashBalance < 0 ? "#be123c" : "#047857"};">฿${fmtMoney(rep.totalNetCashBalance)}</div>
+    </div>
+  </div>
+
+  <div class="section-title">• 1. รายการใบเสร็จและรายละเอียดค่าใช้จ่ายตามเงื่อนไขที่เลือก</div>
+  <table class="tbl-items">
     <thead>
       <tr>
-        <th style="text-align:center;width:28px;">#</th>
-        <th>Ref No.</th>
-        <th>Date &amp; Time</th>
-        <th>Custodian / Branch</th>
-        <th>Type</th>
-        <th>Category</th>
-        <th>Description</th>
-        <th>Vendor / Invoice</th>
-        <th style="text-align:center;">Method</th>
-        <th style="text-align:right;">Amount</th>
-        <th style="text-align:right;">Balance After</th>
-        <th style="text-align:center;">Status</th>
+        <th style="text-align:center;width:32px;">ลำดับ</th>
+        <th style="width:70px;">วันที่</th>
+        ${isSingle ? "" : `<th style="width:68px;">ผู้รับผิดชอบ</th>`}
+        <th style="width:105px;">หมวดหมู่</th>
+        <th>รายละเอียดรายการ</th>
+        <th style="width:100px;">ผู้รับเงิน / ร้านค้า</th>
+        <th style="width:74px;">เลขที่บิล</th>
+        <th class="num" style="width:80px;">จำนวนเงิน (บาท)</th>
       </tr>
     </thead>
     <tbody>
-      ${rowsHtml}
+      ${section1RowsHtml}
+      <tr class="row-total">
+        <td colspan="${isSingle ? 6 : 7}" style="text-align:right;font-weight:700;color:#0f172a;">รวมจ่ายค่าใช้จ่าย:</td>
+        <td class="num" style="font-weight:800;color:#0f172a;">฿${fmtMoney(rep.totalExpenseInPeriod)}</td>
+      </tr>
+      <tr>
+        <td colspan="${isSingle ? 4 : 5}" style="text-align:right;color:#64748b;">จำนวนเงินตัวอักษร:</td>
+        <td colspan="3" style="text-align:right;font-weight:700;font-style:italic;color:#0f172a;white-space:nowrap;">${escapeHtml(rep.thaiBahtTotalText)}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="section-title">${
+    isSingle
+      ? "• 2. ตารางสรุปยอดค่าใช้จ่ายตามหมวดหมู่"
+      : "• 2. ตารางสรุปยอดค่าใช้จ่าย (หมวดหมู่ค่าใช้จ่าย X ผู้รับผิดชอบ)"
+  }</div>
+  <table class="tbl-pivot">
+    <thead>
+      <tr>
+        <th>หมวดหมู่</th>
+        ${pivotHeadersHtml}
+        <th class="num" style="background:#e2e8f0;">${isSingle ? "รวม (บาท)" : "รวมทุกรายคน (บาท)"}</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${pivotRowsHtml}
+      <tr class="row-total">
+        <td style="font-weight:700;color:#0f172a;">รวมจ่ายค่าใช้จ่ายและรอเบิกจ่าย (บาท):</td>
+        ${pivotExpenseTotalsHtml}
+        <td class="num" style="font-weight:800;color:#0f172a;background:#e2e8f0;">฿${fmtMoney(rep.totalExpenseInPeriod)}</td>
+      </tr>
+      <tr class="row-net">
+        <td style="font-weight:700;color:#065f46;">เงินสดคงเหลือสุทธิ (บาท):</td>
+        ${pivotNetBalanceTotalsHtml}
+        <td class="num" style="font-weight:800;color:${rep.totalNetCashBalance < 0 ? "#be123c" : "#065f46"};">฿${fmtMoney(rep.totalNetCashBalance)}</td>
+      </tr>
     </tbody>
   </table>
 
   <div class="sig-grid">
     <div class="sig-box">
-      <div class="sig-line"><strong>Prepared By</strong></div>
-      <div>Date: ____ / ____ / ________</div>
+      <div style="font-weight:600;">ผู้จัดทำรายงาน</div>
+      <div class="sig-line"></div>
+      <div>วันที่ ____ / ____ / ________</div>
     </div>
     <div class="sig-box">
-      <div class="sig-line"><strong>Verified By (Accounting)</strong></div>
-      <div>Date: ____ / ____ / ________</div>
+      <div style="font-weight:600;">ผู้ตรวจสอบบัญชี</div>
+      <div class="sig-line"></div>
+      <div>วันที่ ____ / ____ / ________</div>
     </div>
     <div class="sig-box">
-      <div class="sig-line"><strong>Approved By</strong></div>
-      <div>Date: ____ / ____ / ________</div>
+      <div style="font-weight:600;">ผู้อนุมัติ</div>
+      <div class="sig-line"></div>
+      <div>วันที่ ____ / ____ / ________</div>
     </div>
   </div>
 
@@ -3463,161 +3695,298 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
         </div>
       )}
 
-      {/* ── TAB 3: SUMMARY & ANALYTICS REPORT (ตารางสรุปยอด & หมวดหมู่) ──────── */}
+      {/* ── TAB 3: SUMMARY & ANALYTICS REPORT (แบบฟอร์มรายงานสรุปค่าใช้จ่ายเงินสดย่อย) ──────── */}
       {canApproveOrTopUp && activeViewTab === "report" && (
         <div className="space-y-4">
-          {dashboardDetails.visibleHolderSummaries.length > 0 && (
-            <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-bold text-slate-900">
-                    Replenishment & Usage Summary (ตารางสรุปยอดเติมเงิน-เบิกจ่ายรายบุคคล)
-                  </h2>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Period: {periodLabel}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
+          <div className="bg-white p-5 sm:p-7 rounded-2xl border border-slate-200/90 shadow-xs space-y-5">
+            {/* Report Header */}
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-200 pb-4">
+              <div>
+                <h2 className="text-lg font-extrabold text-slate-900">
+                  บริษัท แดท ลอนดรี้ ช็อป จำกัด
+                </h2>
+                <p className="text-xs font-medium text-slate-500 mt-0.5">
+                  รายงานสรุปค่าใช้จ่ายเงินสดย่อย
+                </p>
+              </div>
+              <div className="flex flex-col sm:items-end gap-1.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="inline-block border border-slate-400 rounded-md px-2.5 py-1 text-xs font-bold text-slate-900 bg-white">
+                    ประจำงวด: {thaiAccountingReport.thaiPeriodLabel}
+                  </span>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     onClick={handleExportCsv}
-                    className="h-8 text-xs font-semibold border-slate-200 rounded-xl gap-1.5 cursor-pointer"
+                    className="h-7.5 text-xs font-semibold border-slate-200 rounded-lg gap-1 cursor-pointer"
                   >
                     <Download size={13} />
                     <span>Excel (.csv)</span>
                   </Button>
                   <Button
                     type="button"
-                    variant="outline"
                     size="sm"
                     onClick={handleExportPdf}
-                    className="h-8 text-xs font-semibold border-slate-200 rounded-xl gap-1.5 cursor-pointer"
+                    className="h-7.5 text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white rounded-lg gap-1 cursor-pointer"
                   >
                     <FileText size={13} />
                     <span>Print / PDF</span>
                   </Button>
                 </div>
+                <span className="text-[11px] text-slate-400">
+                  วันที่พิมพ์: {thaiAccountingReport.printedDateBE}
+                </span>
               </div>
+            </div>
 
-              <div className="overflow-x-auto border border-slate-200/80 rounded-xl">
+            {/* Filter & Summary Banner */}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 p-3.5 rounded-xl border border-slate-200 bg-slate-50/40 text-xs">
+              <div>
+                <span className="text-[11px] text-slate-500 block">ผู้รับผิดชอบ:</span>
+                <span
+                  className={`font-extrabold text-slate-900 ${
+                    thaiAccountingReport.isSingleCustodian ? "text-base" : "text-xs"
+                  }`}
+                >
+                  {thaiAccountingReport.selectedHolderLabel}
+                </span>
+              </div>
+              <div>
+                <span className="text-[11px] text-slate-500 block">หมวดหมู่:</span>
+                <span className="font-bold text-slate-900">
+                  {thaiAccountingReport.selectedCategoryLabel}
+                </span>
+              </div>
+              <div>
+                <span className="text-[11px] text-slate-500 block">วงเงินที่ตั้งไว้:</span>
+                <span className="font-mono font-extrabold text-slate-900">
+                  ฿{thaiAccountingReport.totalQuotaLimit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+              <div>
+                <span className="text-[11px] text-slate-500 block">ยอดจ่ายรวมในงวดนี้:</span>
+                <span className="font-mono font-extrabold text-rose-700">
+                  ฿{thaiAccountingReport.totalExpenseInPeriod.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+              <div>
+                <span className="text-[11px] text-slate-500 block">เงินสดคงเหลือ:</span>
+                <span
+                  className={`font-mono font-extrabold ${
+                    thaiAccountingReport.totalNetCashBalance < 0 ? "text-rose-700" : "text-emerald-700"
+                  }`}
+                >
+                  ฿{thaiAccountingReport.totalNetCashBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+            </div>
+
+            {/* Section 1: Detailed Expense Table */}
+            <div className="space-y-2">
+              <h3 className="text-xs font-extrabold text-slate-900">
+                • 1. รายการใบเสร็จและรายละเอียดค่าใช้จ่ายตามเงื่อนไขที่เลือก
+              </h3>
+              <div className="overflow-x-auto border border-slate-200 rounded-xl">
                 <table className="w-full text-xs text-left border-collapse">
                   <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-500">
-                      <th className="py-2.5 px-3">Custodian (ผู้ถือเงิน)</th>
-                      <th className="py-2.5 px-3">Branch</th>
-                      <th className="py-2.5 px-3 text-right">Quota Limit</th>
-                      <th className="py-2.5 px-3 text-right">Opening</th>
-                      <th className="py-2.5 px-3 text-right text-emerald-700">+ Inflow</th>
-                      <th className="py-2.5 px-3 text-right text-indigo-700">- Transfer Out</th>
-                      <th className="py-2.5 px-3 text-right text-rose-700">- Spent</th>
-                      <th className="py-2.5 px-3 text-right">Current Bal.</th>
-                      <th className="py-2.5 px-3 text-right text-amber-700">To Replenish</th>
-                      <th className="py-2.5 px-3 text-center">Action</th>
+                    <tr className="bg-slate-100 border-b border-slate-300 text-[11px] font-bold text-slate-800">
+                      <th className="py-2.5 px-2.5 text-center w-12">ลำดับ</th>
+                      <th className="py-2.5 px-2.5 whitespace-nowrap">วันที่</th>
+                      {!thaiAccountingReport.isSingleCustodian && (
+                        <th className="py-2.5 px-2.5 whitespace-nowrap">ผู้รับผิดชอบ</th>
+                      )}
+                      <th className="py-2.5 px-2.5">หมวดหมู่</th>
+                      <th className="py-2.5 px-2.5">รายละเอียดรายการ</th>
+                      <th className="py-2.5 px-2.5">ผู้รับเงิน / ร้านค้า</th>
+                      <th className="py-2.5 px-2.5 whitespace-nowrap">เลขที่บิล</th>
+                      <th className="py-2.5 px-2.5 text-right whitespace-nowrap">จำนวนเงิน (บาท)</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {dashboardDetails.visibleHolderSummaries.map((h) => {
-                      const branchName = getBranchDisplayName(h.branchId);
-                      const limit = getHolderLimit(h.holderId, h.isAccounting);
-                      const shortfall = Math.max(0, Math.round((limit - h.currentBalance) * 100) / 100);
-                      return (
-                        <tr key={h.holderId} className="hover:bg-slate-50/80">
-                          <td className="py-2.5 px-3 font-semibold text-slate-900">
-                            {h.holderName}
-                            {h.pendingCount > 0 && (
-                              <span className="ml-1.5 px-1.5 py-0.2 rounded bg-amber-50 text-amber-700 text-[10px] font-semibold">
-                                {h.pendingCount} pending
-                              </span>
-                            )}
+                  <tbody className="divide-y divide-slate-200">
+                    {thaiAccountingReport.expenseItems.length > 0 ? (
+                      thaiAccountingReport.expenseItems.map((t, idx) => (
+                        <tr key={t.id} className="hover:bg-slate-50/70">
+                          <td className="py-2 px-2.5 text-center text-slate-500">{idx + 1}</td>
+                          <td className="py-2 px-2.5 whitespace-nowrap font-mono text-slate-700">
+                            {format(new Date(t.transactionDate), "yyyy-MM-dd")}
                           </td>
-                          <td className="py-2.5 px-3 text-slate-500">{branchName}</td>
-                          <td className="py-2.5 px-3 text-right font-mono text-slate-600">
-                            ฿{limit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          {!thaiAccountingReport.isSingleCustodian && (
+                            <td className="py-2 px-2.5 font-medium text-slate-900 whitespace-nowrap">
+                              {(t.holderName || "").trim().split(/\s+/)[0] || t.holderName}
+                            </td>
+                          )}
+                          <td className="py-2 px-2.5 text-slate-800">
+                            {thaiAccountingReport.formatCategoryLabel(t)}
                           </td>
-                          <td className="py-2.5 px-3 text-right font-mono text-slate-500">
-                            ฿{h.openingBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          <td className="py-2 px-2.5 text-slate-700">{t.description || "–"}</td>
+                          <td className="py-2 px-2.5 text-slate-600">{t.vendorName || "–"}</td>
+                          <td className="py-2 px-2.5 font-mono text-slate-600 whitespace-nowrap">
+                            {t.invoiceNo || t.txNumber || "–"}
                           </td>
-                          <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-600">
-                            +฿{h.totalTopup.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono text-indigo-600">
-                            {h.transferOut > 0 ? `-฿${h.transferOut.toLocaleString(undefined, { minimumFractionDigits: 2 })}` : "-"}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono font-bold text-rose-600">
-                            -฿{h.totalExpense.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">
-                            ฿{h.currentBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono font-bold text-amber-700">
-                            ฿{shortfall.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                          </td>
-                          <td className="py-2.5 px-3 text-center">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleOpenCreateModal("TOPUP", {
-                                  id: h.holderId,
-                                  name: h.holderName,
-                                  branchId: h.branchId,
-                                })
-                              }
-                              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[11px] cursor-pointer"
-                            >
-                              + Top-up
-                            </button>
+                          <td className="py-2 px-2.5 text-right font-mono font-semibold text-slate-900 whitespace-nowrap">
+                            ฿{Number(t.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </td>
                         </tr>
-                      );
-                    })}
+                      ))
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={thaiAccountingReport.isSingleCustodian ? 7 : 8}
+                          className="py-6 text-center text-slate-400"
+                        >
+                          ไม่มีรายการค่าใช้จ่ายในงวดที่เลือก
+                        </td>
+                      </tr>
+                    )}
+                    <tr className="bg-slate-50 border-t border-slate-300 font-bold text-slate-900">
+                      <td
+                        colSpan={thaiAccountingReport.isSingleCustodian ? 6 : 7}
+                        className="py-2.5 px-2.5 text-right"
+                      >
+                        รวมจ่ายค่าใช้จ่าย:
+                      </td>
+                      <td className="py-2.5 px-2.5 text-right font-mono font-extrabold whitespace-nowrap">
+                        ฿{thaiAccountingReport.totalExpenseInPeriod.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                    <tr className="bg-white text-slate-600">
+                      <td
+                        colSpan={thaiAccountingReport.isSingleCustodian ? 4 : 5}
+                        className="py-2 px-2.5 text-right text-[11px]"
+                      >
+                        จำนวนเงินตัวอักษร:
+                      </td>
+                      <td
+                        colSpan={3}
+                        className="py-2 px-2.5 text-right font-bold italic text-slate-900 text-[11px] whitespace-nowrap"
+                      >
+                        {thaiAccountingReport.thaiBahtTotalText}
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
             </div>
-          )}
 
-          {/* Category Breakdown inside Report Tab */}
-          {dashboardDetails.categoryBreakdown.length > 0 && (
-            <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs space-y-3">
-              <h3 className="text-sm font-bold text-slate-900">
-                Expenses by Category (สรุปค่าใช้จ่ายตามหมวดหมู่)
+            {/* Section 2: Pivot Matrix (Category x Custodian) */}
+            <div className="space-y-2">
+              <h3 className="text-xs font-extrabold text-slate-900">
+                {thaiAccountingReport.isSingleCustodian
+                  ? "• 2. ตารางสรุปยอดค่าใช้จ่ายตามหมวดหมู่"
+                  : "• 2. ตารางสรุปยอดค่าใช้จ่าย (หมวดหมู่ค่าใช้จ่าย X ผู้รับผิดชอบ)"}
               </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                {dashboardDetails.categoryBreakdown.map((item) => {
-                  const pct =
-                    kpiStats.realExpenseTotal > 0
-                      ? Math.round((item.amount / kpiStats.realExpenseTotal) * 100)
-                      : 0;
-                  return (
-                    <div
-                      key={item.category}
-                      onClick={() => {
-                        setCategoryFilter(item.category);
-                        setActiveViewTab("ledger");
-                      }}
-                      className="p-3 rounded-xl border border-slate-200/80 hover:border-slate-300 bg-slate-50/50 cursor-pointer transition-all"
-                    >
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="font-semibold text-slate-800 truncate">{item.category}</span>
-                        <span className="font-mono font-bold text-rose-600 shrink-0">
-                          ฿{item.amount.toLocaleString()}
-                        </span>
-                      </div>
-                      <div className="w-full h-1.5 bg-slate-200/70 rounded-full overflow-hidden my-2">
-                        <div className="h-full bg-slate-800 rounded-full" style={{ width: `${Math.max(pct, 4)}%` }} />
-                      </div>
-                      <div className="flex items-center justify-between text-[11px] text-slate-400">
-                        <span>{item.count} items</span>
-                        <span>{pct}%</span>
-                      </div>
-                    </div>
-                  );
-                })}
+              <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                <table
+                  className={`w-full text-left border-collapse ${
+                    thaiAccountingReport.custodians.length >= 6 ? "text-[11px]" : "text-xs"
+                  }`}
+                >
+                  <thead>
+                    <tr className="bg-slate-100 border-b border-slate-300 font-bold text-slate-800">
+                      <th className="py-2.5 px-3">หมวดหมู่</th>
+                      {!thaiAccountingReport.isSingleCustodian &&
+                        thaiAccountingReport.custodians.map((c, idx) => (
+                          <th key={c.holderId} className="py-2.5 px-2.5 text-right whitespace-nowrap">
+                            {idx + 1}. {c.shortName} (บาท)
+                          </th>
+                        ))}
+                      <th className="py-2.5 px-3 text-right bg-slate-200/70 whitespace-nowrap">
+                        {thaiAccountingReport.isSingleCustodian ? "รวม (บาท)" : "รวมทุกรายคน (บาท)"}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {thaiAccountingReport.pivotRows.length > 0 ? (
+                      thaiAccountingReport.pivotRows.map((r) => (
+                        <tr key={r.category} className="hover:bg-slate-50/70">
+                          <td className="py-2 px-3 font-medium text-slate-900">{r.category}</td>
+                          {!thaiAccountingReport.isSingleCustodian &&
+                            thaiAccountingReport.custodians.map((c) => {
+                              const val = r.byHolder[c.holderId] || 0;
+                              return (
+                                <td
+                                  key={c.holderId}
+                                  className="py-2 px-2.5 text-right font-mono text-slate-700 whitespace-nowrap"
+                                >
+                                  {val > 0
+                                    ? `฿${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                    : "-"}
+                                </td>
+                              );
+                            })}
+                          <td className="py-2 px-3 text-right font-mono font-bold text-slate-900 bg-slate-50 whitespace-nowrap">
+                            ฿{r.rowTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={thaiAccountingReport.isSingleCustodian ? 2 : thaiAccountingReport.custodians.length + 2}
+                          className="py-5 text-center text-slate-400"
+                        >
+                          ไม่มีข้อมูลค่าใช้จ่าย
+                        </td>
+                      </tr>
+                    )}
+                    <tr className="bg-slate-50 border-t border-slate-300 font-bold text-slate-900">
+                      <td className="py-2.5 px-3">รวมจ่ายค่าใช้จ่ายและรอเบิกจ่าย (บาท):</td>
+                      {!thaiAccountingReport.isSingleCustodian &&
+                        thaiAccountingReport.custodians.map((c) => (
+                          <td
+                            key={c.holderId}
+                            className="py-2.5 px-2.5 text-right font-mono whitespace-nowrap"
+                          >
+                            ฿{c.periodExpense.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        ))}
+                      <td className="py-2.5 px-3 text-right font-mono font-extrabold bg-slate-200/70 whitespace-nowrap">
+                        ฿{thaiAccountingReport.totalExpenseInPeriod.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                    <tr className="bg-emerald-50/90 border-t border-emerald-200 font-bold">
+                      <td className="py-2.5 px-3 text-emerald-900">เงินสดคงเหลือสุทธิ (บาท):</td>
+                      {!thaiAccountingReport.isSingleCustodian &&
+                        thaiAccountingReport.custodians.map((c) => (
+                          <td
+                            key={c.holderId}
+                            className={`py-2.5 px-2.5 text-right font-mono whitespace-nowrap ${
+                              c.currentBalance < 0 ? "text-rose-700" : "text-emerald-800"
+                            }`}
+                          >
+                            ฿{c.currentBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        ))}
+                      <td
+                        className={`py-2.5 px-3 text-right font-mono font-extrabold bg-emerald-100/90 whitespace-nowrap ${
+                          thaiAccountingReport.totalNetCashBalance < 0
+                            ? "text-rose-700"
+                            : "text-emerald-900"
+                        }`}
+                      >
+                        ฿{thaiAccountingReport.totalNetCashBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
-          )}
+
+            {/* Signature Footer Preview */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+              {["ผู้จัดทำรายงาน", "ผู้ตรวจสอบบัญชี", "ผู้อนุมัติ"].map((roleTitle) => (
+                <div
+                  key={roleTitle}
+                  className="border border-dashed border-slate-300 rounded-xl p-3 text-center text-xs text-slate-700"
+                >
+                  <div className="font-semibold">{roleTitle}</div>
+                  <div className="border-b border-slate-400 h-7 w-4/5 mx-auto mb-1.5" />
+                  <div className="text-[11px] text-slate-500">วันที่ ____ / ____ / ________</div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 

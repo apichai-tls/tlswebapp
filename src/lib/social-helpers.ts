@@ -44,8 +44,19 @@ export function formatPhoneForWhatsApp(rawPhone: string, defaultCountryCode = '6
     return digits;
   }
 
-  // If 7-9 digits without leading 0, prepend default country code (10+ digits without leading 0 are already international E.164, e.g. 65xxxxxxxx)
+  // If 7-9 digits without leading 0, prepend default country code (10+ digits without leading 0 are already international E.164 when default is 66, e.g. 65xxxxxxxx)
   if (digits.length >= 7 && digits.length <= 9) {
+    return `${cleanCountry}${digits}`;
+  }
+
+  // When a non-Thai country code is explicitly selected (e.g. +1 US/CA, +44 UK, +91 IN, +86 CN) and user enters a 10-11 digit local number without leading 0 or country code
+  if (
+    cleanCountry !== '66' &&
+    digits.length >= 10 &&
+    digits.length <= 11 &&
+    !digits.startsWith(cleanCountry) &&
+    cleanCountry.length + digits.length <= 15
+  ) {
     return `${cleanCountry}${digits}`;
   }
 

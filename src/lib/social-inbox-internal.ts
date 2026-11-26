@@ -842,6 +842,91 @@ export async function queryDeltaSocialMessages(
   return rows.map(mapDbRowToMessage);
 }
 
+export interface SocialMessageSearchHit {
+  conversationId: string;
+  messageId: string;
+  snippet: string;
+  direction: string;
+  createdAt: string;
+  matchCount: number;
+}
+
+function buildSearchSnippet(text: string, query: string, maxLen = 110): string {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  if (normalized.length <= maxLen) return normalized;
+
+  const lower = normalized.toLowerCase();
+  const qLower = query.toLowerCase();
+  const idx = lower.indexOf(qLower);
+  if (idx === -1) return `${normalized.slice(0, maxLen - 1)}…`;
+
+  const half = Math.floor((maxLen - qLower.length) / 2);
+  let start = Math.max(0, idx - half);
+  let end = Math.min(normalized.length, start + maxLen);
+  if (end - start < maxLen) {
+    start = Math.max(0, end - maxLen);
+  }
+  const prefix = start > 0 ? '…' : '';
+  const suffix = end < normalized.length ? '…' : '';
+  return `${prefix}${normalized.slice(start, end)}${suffix}`;
+}
+
+export async function searchSocialMessagesInternal(opts: {
+  query: string;
+  channel?: string;
+  limit?: number;
+}): Promise<SocialMessageSearchHit[]> {
+  const trimmed = String(opts.query || '').trim();
+  if (trimmed.length < 2) return [];
+
+  await ensureSocialInboxSchemaAndMigrate();
+
+  const where: any = {
+    text: { contains: trimmed, mode: 'insensitive' as const },
+    channel:
+      opts.channel && opts.channel !== 'all' ? opts.channel : { not: 'email' },
+  };
+
+  const rows = await prisma.socialMessage.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    take: 300,
+    select: {
+      id: true,
+      conversationId: true,
+      text: true,
+      direction: true,
+      createdAt: true,
+    },
+  });
+
+  const maxConvs = opts.limit ?? 80;
+  const hitMap = new Map<string, SocialMessageSearchHit>();
+
+  for (const row of rows) {
+    const existing = hitMap.get(row.conversationId);
+    if (existing) {
+      existing.matchCount += 1;
+      continue;
+    }
+    if (hitMap.size >= maxConvs) continue;
+    hitMap.set(row.conversationId, {
+      conversationId: row.conversationId,
+      messageId: row.id,
+      snippet: buildSearchSnippet(row.text, trimmed),
+      direction: row.direction,
+      createdAt:
+        row.createdAt instanceof Date
+          ? row.createdAt.toISOString()
+          : String(row.createdAt),
+      matchCount: 1,
+    });
+  }
+
+  return Array.from(hitMap.values());
+}
+
 export async function findSocialConversationById(id: string): Promise<SocialConversation | null> {
   if (!id) return null;
   await ensureSocialInboxSchemaAndMigrate();

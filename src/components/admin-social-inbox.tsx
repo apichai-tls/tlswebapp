@@ -83,6 +83,7 @@ import {
   getSocialInboxFastAction,
   getSocialInboxDataAction,
   getConversationMessagesAction,
+  searchSocialMessagesAction,
   createWhatsAppChatAction,
   createMultiChannelChatAction,
   sendSocialMessageAction,
@@ -136,6 +137,23 @@ const QUICK_EMOJIS = [
   '🤝',
   '📞',
 ];
+
+function renderHighlightedSnippet(text: string, query: string): React.ReactNode {
+  const q = query.trim();
+  if (!text || !q) return text;
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
+  const qLower = q.toLowerCase();
+  return parts.map((part, idx) =>
+    part.toLowerCase() === qLower ? (
+      <mark key={idx} className="bg-amber-200/90 text-slate-950 rounded px-0.5 font-bold">
+        {part}
+      </mark>
+    ) : (
+      <React.Fragment key={idx}>{part}</React.Fragment>
+    )
+  );
+}
 
 interface AdminSocialInboxProps {
   isHidden?: boolean;
@@ -261,6 +279,20 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
   const [statusFilter, setStatusFilter] = useState<'all' | 'unread' | 'open' | 'resolved'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
+  const [messageSearchHits, setMessageSearchHits] = useState<
+    Map<
+      string,
+      {
+        messageId: string;
+        snippet: string;
+        direction: string;
+        createdAt: string;
+        matchCount: number;
+      }
+    >
+  >(new Map());
+  const [isSearchingMessages, setIsSearchingMessages] = useState(false);
+  const messageSearchReqIdRef = useRef(0);
   const [showRightPanel, setShowRightPanel] = useState(true);
   const [visibleConvCount, setVisibleConvCount] = useState(50);
   const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null);
@@ -271,6 +303,55 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
   useEffect(() => {
     setVisibleConvCount(50);
   }, [channelFilter, statusFilter, deferredSearchQuery]);
+
+  // Debounced full-chat message history search against PostgreSQL SocialMessage
+  useEffect(() => {
+    const q = deferredSearchQuery.trim();
+    if (q.length < 2) {
+      messageSearchReqIdRef.current += 1;
+      setMessageSearchHits(new Map());
+      setIsSearchingMessages(false);
+      return;
+    }
+
+    setIsSearchingMessages(true);
+    const reqId = ++messageSearchReqIdRef.current;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await searchSocialMessagesAction({
+          query: q,
+          channel: channelFilter,
+        });
+        if (reqId !== messageSearchReqIdRef.current) return;
+        const map = new Map<
+          string,
+          {
+            messageId: string;
+            snippet: string;
+            direction: string;
+            createdAt: string;
+            matchCount: number;
+          }
+        >();
+        if (res.success && Array.isArray(res.hits)) {
+          for (const hit of res.hits) {
+            map.set(hit.conversationId, hit);
+          }
+        }
+        setMessageSearchHits(map);
+      } catch {
+        if (reqId === messageSearchReqIdRef.current) {
+          setMessageSearchHits(new Map());
+        }
+      } finally {
+        if (reqId === messageSearchReqIdRef.current) {
+          setIsSearchingMessages(false);
+        }
+      }
+    }, 280);
+
+    return () => clearTimeout(timer);
+  }, [deferredSearchQuery, channelFilter]);
 
   // 0ms Instant Hydrate from localStorage (conversations + latest 80 messages)
   // so opening Omnichannel paints immediately with zero spinner AND instant recent chat history
@@ -1364,7 +1445,18 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         const matchExt = c.externalContactId?.toLowerCase().includes(q);
         const matchMsg = c.lastMessageText?.toLowerCase().includes(q);
         const matchMember = c.customerMemberId?.toLowerCase().includes(q);
-        if (!matchName && !matchCust && !matchPhone && !matchExt && !matchMsg && !matchMember) {
+        const matchNotes = c.notes?.toLowerCase().includes(q);
+        const matchHistory = messageSearchHits.has(c.id);
+        if (
+          !matchName &&
+          !matchCust &&
+          !matchPhone &&
+          !matchExt &&
+          !matchMsg &&
+          !matchMember &&
+          !matchNotes &&
+          !matchHistory
+        ) {
           return false;
         }
       }
@@ -1377,7 +1469,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       if (aUnread !== bUnread) return bUnread - aUnread;
       return new Date(b.lastMessageAt || 0).getTime() - new Date(a.lastMessageAt || 0).getTime();
     });
-  }, [conversations, channelFilter, statusFilter, deferredSearchQuery]);
+  }, [conversations, channelFilter, statusFilter, deferredSearchQuery, messageSearchHits]);
 
   // Open Official LINE OA Manager (chat.line.biz) in a Docked Companion Window & copy customer name for instant lookup
   const openLineOfficialChatCompanion = (contactName?: string) => {
@@ -1429,10 +1521,13 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
     const nowM = now.getMonth();
     const nowD = now.getDate();
 
+    const activeSearchQ = deferredSearchQuery.trim();
+
     return visibleConversations.map((conv) => {
       const isSelected = conv.id === selectedConvId;
       const chColors = getChannelColorClasses(conv.channel);
       const validPhone = getDisplayPhone(conv.contactPhone);
+      const searchHit = activeSearchQ.length >= 2 ? messageSearchHits.get(conv.id) : undefined;
 
       let timeLabel = '';
       if (
@@ -1521,17 +1616,34 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                 </span>
               </div>
 
-              {/* Message Preview Line */}
-              <p
-                className={`${fontScale.convPreview} truncate mt-0.5 ${
-                  conv.unreadCount > 0 ? 'font-bold text-slate-900' : 'text-slate-500'
-                }`}
-              >
-                {conv.lastMessageDirection === 'outbound' && (
-                  <span className="text-emerald-600 font-bold mr-1">✓✓ You:</span>
-                )}
-                {conv.lastMessageText}
-              </p>
+              {/* Message Preview Line (or matched chat-history snippet when searching) */}
+              {searchHit ? (
+                <div className="flex items-center gap-1 mt-0.5 min-w-0">
+                  <p
+                    className={`${fontScale.convPreview} truncate text-slate-700 flex-1 min-w-0`}
+                    title={searchHit.snippet}
+                  >
+                    <span className="mr-1">💬</span>
+                    {renderHighlightedSnippet(searchHit.snippet, activeSearchQ)}
+                  </p>
+                  {searchHit.matchCount > 1 && (
+                    <span className="shrink-0 text-[9px] font-bold px-1 py-0 rounded bg-amber-100 text-amber-800 border border-amber-200">
+                      {searchHit.matchCount} matches
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <p
+                  className={`${fontScale.convPreview} truncate mt-0.5 ${
+                    conv.unreadCount > 0 ? 'font-bold text-slate-900' : 'text-slate-500'
+                  }`}
+                >
+                  {conv.lastMessageDirection === 'outbound' && (
+                    <span className="text-emerald-600 font-bold mr-1">✓✓ You:</span>
+                  )}
+                  {conv.lastMessageText}
+                </p>
+              )}
 
               {/* Compact Bottom Row: Valid Phone + CRM Badge + Unread Count */}
               <div className="flex items-center gap-1.5 mt-1 flex-wrap">
@@ -1571,7 +1683,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         </div>
       );
     });
-  }, [visibleConversations, selectedConvId, fontScale, getDisplayPhone, handleSelectConversation, prefetchConversationMessages]);
+  }, [visibleConversations, selectedConvId, fontScale, getDisplayPhone, handleSelectConversation, prefetchConversationMessages, messageSearchHits, deferredSearchQuery]);
 
   // Pre-indexed O(1) CRM Customer lookup maps (eliminates 4x O(N) scans on every thread switch!)
   const customerIndex = useMemo(() => {
@@ -1611,11 +1723,15 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       const byPhone = customerIndex.byPhone.get(pk);
       if (byPhone) return byPhone;
     }
-    if (activeConversation.contactName) {
+    if (activeConversation.channel !== 'whatsapp' && activeConversation.contactName) {
       const normName = activeConversation.contactName.trim().toLowerCase();
       if (normName.length >= 2 && normName !== 'line user') {
         const byName = customerIndex.byName.get(normName);
-        if (byName) return byName;
+        if (byName) {
+          const custPk = normalizePhoneKey(byName.phone);
+          const hasPhoneConflict = pk.length >= 8 && custPk.length >= 8 && custPk !== pk;
+          if (!hasPhoneConflict) return byName;
+        }
       }
     }
     return null;
@@ -2557,6 +2673,9 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         setWaPhoneInput('');
         setWaContactName('');
         setWaSelectedCustomerId('');
+        setWaInitialMessage(
+          'Hello! 👋 Welcome to That Laundry Shop. How can we assist you with your laundry today?'
+        );
       } else {
         toast.error(res.error || 'Failed to create WhatsApp chat');
       }
@@ -3310,9 +3429,17 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
               <Input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search name, +66 phone, LINE..."
-                className="pl-8 pr-7 h-8.5 text-xs bg-white border-slate-200/90 rounded-xl shadow-2xs"
+                placeholder="Search name, phone, or chat message..."
+                className={`pl-8 ${isSearchingMessages && searchQuery ? 'pr-12' : 'pr-7'} h-8.5 text-xs bg-white border-slate-200/90 rounded-xl shadow-2xs`}
               />
+              {isSearchingMessages && (
+                <RefreshCw
+                  size={12}
+                  className={`animate-spin text-emerald-600 absolute top-1/2 -translate-y-1/2 ${
+                    searchQuery ? 'right-7' : 'right-2.5'
+                  }`}
+                />
+              )}
               {searchQuery && (
                 <button
                   onClick={() => setSearchQuery('')}
@@ -4891,7 +5018,17 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       {/* ================================================================ */}
       {/* MODAL 1: START NEW WHATSAPP CHAT VIA PLATFORM                    */}
       {/* ================================================================ */}
-      <Dialog open={isNewWhatsAppOpen} onOpenChange={setIsNewWhatsAppOpen}>
+      <Dialog
+        open={isNewWhatsAppOpen}
+        onOpenChange={(open) => {
+          setIsNewWhatsAppOpen(open);
+          if (!open) {
+            setWaInitialMessage(
+              'Hello! 👋 Welcome to That Laundry Shop. How can we assist you with your laundry today?'
+            );
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-lg rounded-2xl p-0 overflow-hidden border-0 shadow-2xl">
           <DialogHeader className="bg-gradient-to-r from-[#075E54] via-[#128C7E] to-[#25D366] text-white p-5">
             <div className="flex items-center gap-3">

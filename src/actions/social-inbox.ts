@@ -61,6 +61,8 @@ import {
   queryConversationMessages,
   queryRecentSocialMessages,
   queryDeltaSocialMessages,
+  searchSocialMessagesInternal,
+  type SocialMessageSearchHit,
   findSocialConversationById,
   findSocialConversationForContact,
   upsertSocialConversationRow,
@@ -438,6 +440,31 @@ export async function getConversationMessagesAction(conversationId: string): Pro
     return { success: true, messages: threadMsgs };
   } catch (err: any) {
     return { success: false, messages: [], error: err?.message || 'Failed to load thread messages' };
+  }
+}
+
+export async function searchSocialMessagesAction(input: {
+  query: string;
+  channel?: string;
+}): Promise<{
+  success: boolean;
+  hits: SocialMessageSearchHit[];
+  error?: string;
+}> {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const hits = await searchSocialMessagesInternal({
+      query: input?.query || '',
+      channel: input?.channel,
+      limit: 80,
+    });
+    return { success: true, hits };
+  } catch (err: any) {
+    return {
+      success: false,
+      hits: [],
+      error: err?.message || 'Failed to search messages',
+    };
   }
 }
 
