@@ -404,6 +404,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
   // Native App Composer State
   const [composerText, setComposerText] = useState('');
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [emailReplySubject, setEmailReplySubject] = useState('');
   const [expandedEmailSigIds, setExpandedEmailSigIds] = useState<Record<string, boolean>>({});
   const [stagedAttachments, setStagedAttachments] = useState<SocialMessageAttachment[]>([]);
@@ -417,6 +418,17 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
   const [openWaWebOnSend, setOpenWaWebOnSend] = useState(false);
   const [sendingMsg, setSendingMsg] = useState(false);
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
+
+  // Auto-resize composer textarea so users can always see multi-line or long messages
+  useEffect(() => {
+    const el = composerTextareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const minH = 76;
+    const maxH = 220;
+    const nextH = Math.min(Math.max(el.scrollHeight, minH), maxH);
+    el.style.height = `${nextH}px`;
+  }, [composerText, selectedConvId, chatFontSize]);
 
   // Modal 1: Create New WhatsApp Chat
   const [isNewWhatsAppOpen, setIsNewWhatsAppOpen] = useState(false);
@@ -1514,6 +1526,26 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
     [visibleConvCount, filteredConversations.length]
   );
 
+  // Pre-indexed O(1) CRM Customer lookup maps (eliminates 4x O(N) scans on every thread switch!)
+  const customerIndex = useMemo(() => {
+    const byId = new Map<string, any>();
+    const byLineId = new Map<string, any>();
+    const byPhone = new Map<string, any>();
+    const byName = new Map<string, any>();
+    for (const c of allCustomers) {
+      if (c.id) byId.set(c.id, c);
+      const lid = (c.lineId || '').trim();
+      if (lid && !byLineId.has(lid)) byLineId.set(lid, c);
+      const pk = normalizePhoneKey(c.phone);
+      if (pk.length >= 8 && !byPhone.has(pk)) byPhone.set(pk, c);
+      const nm = c.name?.trim().toLowerCase();
+      if (nm && nm.length >= 2 && !byName.has(nm)) byName.set(nm, c);
+      const nick = c.nickName?.trim().toLowerCase();
+      if (nick && nick.length >= 2 && !byName.has(nick)) byName.set(nick, c);
+    }
+    return { byId, byLineId, byPhone, byName };
+  }, [allCustomers]);
+
   // Memoized sidebar rows — completely isolated from composerText keystrokes for 0ms typing lag!
   const memoizedConversationRows = useMemo(() => {
     const now = new Date();
@@ -1528,6 +1560,24 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
       const chColors = getChannelColorClasses(conv.channel);
       const validPhone = getDisplayPhone(conv.contactPhone);
       const searchHit = activeSearchQ.length >= 2 ? messageSearchHits.get(conv.id) : undefined;
+
+      // Resolve linked CRM customer name when conversation title is just a raw phone number
+      const matchedCrm =
+        (conv.customerId ? customerIndex.byId.get(conv.customerId) : null) ||
+        (conv.channel === 'line' && conv.externalContactId
+          ? customerIndex.byLineId.get(conv.externalContactId.trim())
+          : null) ||
+        (() => {
+          const pk = normalizePhoneKey(conv.contactPhone || conv.externalContactId);
+          return pk.length >= 8 ? customerIndex.byPhone.get(pk) : null;
+        })();
+      const isRawPhoneName = /^[+\d][\d\s-]{5,}$/.test((conv.contactName || '').trim());
+      const resolvedDisplayName =
+        isRawPhoneName && matchedCrm?.name
+          ? matchedCrm.name
+          : conv.customerName && isRawPhoneName
+          ? conv.customerName
+          : conv.contactName;
 
       let timeLabel = '';
       if (
@@ -1551,12 +1601,12 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
           key={conv.id}
           onClick={() => handleSelectConversation(conv)}
           onMouseEnter={() => prefetchConversationMessages(conv.id)}
-          className={`px-3 py-2.5 cursor-pointer transition-colors hover:bg-slate-50/90 relative ${
+          className={`px-3 py-2.5 cursor-pointer transition-all relative ${
             isSelected
-              ? 'bg-emerald-50/70 border-l-[3px] border-l-emerald-600'
+              ? 'bg-emerald-50/85 border-l-[3px] border-l-emerald-600'
               : conv.unreadCount > 0
-              ? 'bg-sky-50/40'
-              : ''
+              ? 'bg-sky-50/45 hover:bg-sky-50/75'
+              : 'hover:bg-slate-50/90'
           }`}
         >
           <div className="flex items-start gap-2.5">
@@ -1565,14 +1615,14 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
               {conv.contactAvatar ? (
                 <img
                   src={conv.contactAvatar}
-                  alt={conv.contactName}
+                  alt={resolvedDisplayName}
                   loading="lazy"
                   decoding="async"
                   className="w-10 h-10 rounded-full object-cover border border-slate-200 shadow-2xs"
                 />
               ) : (
                 <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-700 to-slate-900 text-white font-black text-xs flex items-center justify-center shadow-2xs">
-                  {(conv.contactName || 'C').slice(0, 2).toUpperCase()}
+                  {(resolvedDisplayName || 'C').replace(/^[+\s]+/, '').slice(0, 2).toUpperCase()}
                 </div>
               )}
               <span
@@ -1595,7 +1645,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
             {/* Name, Preview & Compact Metadata */}
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-1.5">
-                <div className="flex items-center gap-1 min-w-0">
+                <div className="flex items-center gap-1.5 min-w-0">
                   <p
                     className={`${fontScale.convName} truncate ${
                       conv.unreadCount > 0
@@ -1603,7 +1653,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                         : 'font-bold text-slate-800'
                     }`}
                   >
-                    {conv.contactName}
+                    {resolvedDisplayName}
                   </p>
                   {conv.channel === 'line' && /^[CR][0-9a-f]{32}$/i.test(conv.externalContactId || '') && (
                     <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
@@ -1648,13 +1698,15 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
               {/* Compact Bottom Row: Valid Phone + CRM Badge + Unread Count */}
               <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                 {validPhone && (
-                  <span className="text-[10px] text-emerald-700 font-bold truncate max-w-[125px]">
+                  <span className="text-[10px] text-emerald-700 font-mono font-bold truncate max-w-[130px]">
                     {validPhone}
                   </span>
                 )}
-                {conv.customerId && (
+                {(conv.customerId || matchedCrm) && (
                   <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
-                    {conv.customerMemberId ? `#${conv.customerMemberId}` : 'CRM'}
+                    {conv.customerMemberId || matchedCrm?.memberId
+                      ? `#${conv.customerMemberId || matchedCrm?.memberId}`
+                      : 'CRM'}
                   </span>
                 )}
                 {conv.status === 'resolved' && (
@@ -1664,16 +1716,16 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                 )}
                 {conv.unreadCount === 0 && conv.lastReadByName && (
                   <span
-                    className="text-[9px] font-semibold px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 border border-slate-200/80 truncate max-w-[120px]"
+                    className="text-[9px] font-medium px-1.5 py-0.2 rounded bg-slate-100/80 text-slate-500 truncate max-w-[115px]"
                     title={`Opened/read by ${conv.lastReadByName}${
                       conv.lastReadAt ? ` at ${new Date(conv.lastReadAt).toLocaleString()}` : ''
                     }`}
                   >
-                    👁️ {conv.lastReadByName}
+                    👁️ {conv.lastReadByName.replace(/\s*\(WhatsApp.*\)$/i, '')}
                   </span>
                 )}
                 {conv.unreadCount > 0 && (
-                  <span className="ml-auto px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black">
+                  <span className="ml-auto px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black shadow-2xs">
                     {conv.unreadCount}
                   </span>
                 )}
@@ -1683,27 +1735,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         </div>
       );
     });
-  }, [visibleConversations, selectedConvId, fontScale, getDisplayPhone, handleSelectConversation, prefetchConversationMessages, messageSearchHits, deferredSearchQuery]);
-
-  // Pre-indexed O(1) CRM Customer lookup maps (eliminates 4x O(N) scans on every thread switch!)
-  const customerIndex = useMemo(() => {
-    const byId = new Map<string, any>();
-    const byLineId = new Map<string, any>();
-    const byPhone = new Map<string, any>();
-    const byName = new Map<string, any>();
-    for (const c of allCustomers) {
-      if (c.id) byId.set(c.id, c);
-      const lid = (c.lineId || '').trim();
-      if (lid && !byLineId.has(lid)) byLineId.set(lid, c);
-      const pk = normalizePhoneKey(c.phone);
-      if (pk.length >= 8 && !byPhone.has(pk)) byPhone.set(pk, c);
-      const nm = c.name?.trim().toLowerCase();
-      if (nm && nm.length >= 2 && !byName.has(nm)) byName.set(nm, c);
-      const nick = c.nickName?.trim().toLowerCase();
-      if (nick && nick.length >= 2 && !byName.has(nick)) byName.set(nick, c);
-    }
-    return { byId, byLineId, byPhone, byName };
-  }, [allCustomers]);
+  }, [visibleConversations, selectedConvId, fontScale, getDisplayPhone, handleSelectConversation, prefetchConversationMessages, messageSearchHits, deferredSearchQuery, customerIndex]);
 
   // Linked CRM Customer & Jobs for the Right Panel — O(1) instant lookup
   const linkedCustomer = useMemo(() => {
@@ -2266,11 +2298,27 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
         );
       }
 
+      const prevMsg = msgIdx > 0 ? activeMessages[msgIdx - 1] : null;
+      const isGroupedWithPrev =
+        !showDateDivider &&
+        Boolean(prevMsg) &&
+        prevMsg!.direction === msg.direction &&
+        (prevMsg!.senderName || '') === (msg.senderName || '') &&
+        Boolean(prevDateObj) &&
+        msgDateObj.getTime() - prevDateObj!.getTime() < 5 * 60 * 1000;
+
+      const timeStr = !isNaN(msgDateObj.getTime())
+        ? msgDateObj.toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          })
+        : '';
+
       return (
         <React.Fragment key={msg.id}>
           {showDateDivider && !isNaN(msgDateObj.getTime()) && (
-            <div className="flex items-center justify-center my-2">
-              <span className="px-3 py-0.5 rounded-full bg-slate-900/8 text-slate-600 text-[10px] font-bold tracking-wide shadow-2xs backdrop-blur-xs">
+            <div className="flex items-center justify-center my-2.5">
+              <span className="px-3 py-0.5 rounded-full bg-white/85 border border-slate-200/80 text-slate-600 text-[10px] font-bold tracking-wide shadow-2xs backdrop-blur-xs">
                 {msgDateObj.toLocaleDateString([], {
                   weekday: 'short',
                   month: 'short',
@@ -2283,24 +2331,170 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
           <div
             className={`group flex flex-col ${
               isOutbound ? 'items-end' : 'items-start'
-            }`}
+            } ${isGroupedWithPrev ? '-mt-1.5' : ''}`}
           >
-            {/* Sender & Timestamp Header */}
-            <div className="flex items-center gap-1.5 mb-1 px-1">
-              <span className={`${fontScale.msgMeta} font-bold text-slate-600`}>
-                {isOutbound
-                  ? msg.senderName || 'That Laundry Shop'
-                  : msg.senderName || activeConversation.contactName}
-              </span>
-              <span className={`${fontScale.msgMeta} text-slate-400`}>
-                {msgDateObj.toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </span>
+            {/* Sender Header (only shown on first bubble of a consecutive group) */}
+            {!isGroupedWithPrev && (
+              <div className="flex items-center gap-1.5 mb-1 px-1">
+                <span className={`${fontScale.msgMeta} font-bold text-slate-600`}>
+                  {isOutbound
+                    ? msg.senderName || 'That Laundry Shop'
+                    : linkedCustomer?.name &&
+                      /^[+\d][\d\s-]{5,}$/.test((msg.senderName || activeConversation.contactName || '').trim())
+                    ? linkedCustomer.name
+                    : msg.senderName || activeConversation.contactName}
+                </span>
+                <span className={`${fontScale.msgMeta} text-slate-400`}>
+                  {timeStr}
+                </span>
+              </div>
+            )}
 
-              {/* Hover Quick Actions: Reply & Copy */}
-              <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 ml-1">
+            <div className={`flex items-center gap-1.5 max-w-[86%] sm:max-w-[75%] ${isOutbound ? 'flex-row-reverse' : 'flex-row'}`}>
+              {/* Message Bubble — High-Contrast Official LINE OA / WhatsApp Styling with Inline Timestamp & Ticks */}
+              <div
+                className={`relative rounded-2xl px-3.5 py-2 text-xs leading-relaxed shadow-2xs whitespace-pre-wrap break-words ${
+                  isOutbound
+                    ? activeConversation.channel === 'whatsapp'
+                      ? 'bg-[#d9fdd3] text-slate-900 border border-emerald-300/70 rounded-tr-xs'
+                      : activeConversation.channel === 'line'
+                      ? 'bg-[#e5f9ed] text-slate-900 border border-[#a8e6c1] rounded-tr-xs'
+                      : 'bg-indigo-600 text-white rounded-tr-xs'
+                    : 'bg-white text-slate-900 border border-slate-200/90 rounded-tl-xs'
+                }`}
+              >
+                {/* Quoted Reply Block if present */}
+                {msg.replyTo && (
+                  <div
+                    className={`mb-2 px-2.5 py-1.5 rounded-lg border-l-4 text-[10px] ${
+                      isOutbound &&
+                      activeConversation.channel !== 'whatsapp' &&
+                      activeConversation.channel !== 'line'
+                        ? 'bg-black/15 border-white/70 text-white/90'
+                        : 'bg-white/70 border-emerald-500 text-slate-600'
+                    }`}
+                  >
+                    <p className="font-black">{msg.replyTo.senderName}</p>
+                    <p className="truncate opacity-90">{msg.replyTo.text}</p>
+                  </div>
+                )}
+
+                {msg.text && <div className={fontScale.msgText}>{msg.text}</div>}
+
+                {/* Clean Responsive Photo Grid for Image Attachments */}
+                {imageAttachments.length > 0 && (
+                  <div
+                    className={`${msg.text ? 'mt-2' : ''} ${
+                      imageAttachments.length >= 2
+                        ? 'grid grid-cols-2 gap-1.5 max-w-md'
+                        : 'inline-block'
+                    }`}
+                  >
+                    {imageAttachments.map((att, idx) => (
+                      <div
+                        key={idx}
+                        onClick={() => setLightboxImageUrl(att.url || null)}
+                        className="relative group/img cursor-pointer overflow-hidden rounded-xl border border-black/10 bg-slate-100 shadow-2xs"
+                      >
+                        <img
+                          src={att.url}
+                          alt={att.name || 'Attachment'}
+                          loading="lazy"
+                          decoding="async"
+                          className={
+                            imageAttachments.length >= 2
+                              ? 'w-full h-40 sm:h-44 object-cover transition-transform duration-200 group-hover/img:scale-[1.03]'
+                              : 'max-h-60 w-auto object-cover transition-transform duration-200 group-hover/img:scale-[1.02]'
+                          }
+                        />
+                        <span className="absolute bottom-1.5 right-1.5 bg-slate-900/75 backdrop-blur-xs text-white text-[9px] font-bold px-2 py-0.5 rounded-md opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center gap-1">
+                          <Eye size={10} /> View Full
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Inline Playable Video Attachments */}
+                {videoAttachments.length > 0 && (
+                  <div className={`${msg.text || imageAttachments.length > 0 ? 'mt-2' : ''} space-y-2`}>
+                    {videoAttachments.map((att, idx) => (
+                      <div
+                        key={idx}
+                        className="overflow-hidden rounded-xl border border-black/15 bg-black shadow-2xs max-w-sm"
+                      >
+                        <video
+                          src={att.url}
+                          poster={att.previewUrl}
+                          controls
+                          playsInline
+                          preload="metadata"
+                          className="max-h-64 w-full bg-black"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Other Non-Image File Attachments */}
+                {fileAttachments.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {fileAttachments.map((att, idx) => (
+                      <a
+                        key={idx}
+                        href={att.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 text-[11px] font-bold underline"
+                      >
+                        <Paperclip size={12} />
+                        <span>{att.name || 'Download Attachment'}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
+
+                {/* Inline Timestamp & Delivery Ticks Footer inside Bubble */}
+                <div
+                  className={`flex items-center justify-end gap-1 mt-1 select-none text-[10px] leading-none ${
+                    isOutbound &&
+                    activeConversation.channel !== 'whatsapp' &&
+                    activeConversation.channel !== 'line'
+                      ? 'text-white/75'
+                      : 'text-slate-500/90'
+                  }`}
+                >
+                  <span>{timeStr}</span>
+                  {isOutbound && msg.status !== 'failed' && (
+                    <span
+                      className="inline-flex items-center gap-0.5"
+                      title={
+                        msg.status === 'read'
+                          ? 'Read by customer'
+                          : msg.deliveryMethod === 'whatsapp_cloud_api'
+                          ? 'Delivered via Official WhatsApp Cloud API'
+                          : msg.deliveryMethod === 'line_api'
+                          ? 'Delivered via Official LINE OA API'
+                          : 'Delivered'
+                      }
+                    >
+                      <CheckCheck
+                        size={12}
+                        className={
+                          msg.status === 'read'
+                            ? 'text-[#0084FF]'
+                            : msg.status === 'delivered'
+                            ? 'text-emerald-600'
+                            : 'text-slate-400'
+                        }
+                      />
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Hover Quick Actions beside Bubble: Reply & Copy */}
+              <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 shrink-0">
                 <button
                   type="button"
                   onClick={() =>
@@ -2312,7 +2506,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                       text: msg.text,
                     })
                   }
-                  className="p-0.5 rounded hover:bg-slate-200/80 text-slate-500 hover:text-slate-800 cursor-pointer"
+                  className="p-1 rounded-lg bg-white/80 hover:bg-white border border-slate-200/80 text-slate-500 hover:text-slate-800 shadow-2xs cursor-pointer"
                   title="Reply to this message"
                 >
                   <Reply size={11} />
@@ -2323,7 +2517,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                     navigator.clipboard.writeText(msg.text || '');
                     toast.success('Copied message text');
                   }}
-                  className="p-0.5 rounded hover:bg-slate-200/80 text-slate-500 hover:text-slate-800 cursor-pointer"
+                  className="p-1 rounded-lg bg-white/80 hover:bg-white border border-slate-200/80 text-slate-500 hover:text-slate-800 shadow-2xs cursor-pointer"
                   title="Copy message text"
                 >
                   <Copy size={10} />
@@ -2331,157 +2525,16 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
               </div>
             </div>
 
-            {/* Message Bubble — High-Contrast Official LINE OA / WhatsApp Styling */}
-            <div
-              className={`max-w-[85%] sm:max-w-[74%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed shadow-xs whitespace-pre-wrap break-words ${
-                isOutbound
-                  ? activeConversation.channel === 'whatsapp'
-                    ? 'bg-[#d9fdd3] text-slate-900 border border-emerald-300/70 rounded-tr-xs'
-                    : activeConversation.channel === 'line'
-                    ? 'bg-[#e5f9ed] text-slate-900 border border-[#a8e6c1] rounded-tr-xs'
-                    : 'bg-indigo-600 text-white rounded-tr-xs'
-                  : 'bg-white text-slate-900 border border-slate-200/90 rounded-tl-xs'
-              }`}
-            >
-              {/* Quoted Reply Block if present */}
-              {msg.replyTo && (
-                <div
-                  className={`mb-2 px-2.5 py-1.5 rounded-lg border-l-4 text-[10px] ${
-                    isOutbound &&
-                    activeConversation.channel !== 'whatsapp' &&
-                    activeConversation.channel !== 'line'
-                      ? 'bg-black/15 border-white/70 text-white/90'
-                      : 'bg-white/70 border-emerald-500 text-slate-600'
-                  }`}
-                >
-                  <p className="font-black">{msg.replyTo.senderName}</p>
-                  <p className="truncate opacity-90">{msg.replyTo.text}</p>
-                </div>
-              )}
-
-              {msg.text && <div className={fontScale.msgText}>{msg.text}</div>}
-
-              {/* Clean Responsive Photo Grid for Image Attachments */}
-              {imageAttachments.length > 0 && (
-                <div
-                  className={`${msg.text ? 'mt-2.5' : ''} ${
-                    imageAttachments.length >= 2
-                      ? 'grid grid-cols-2 gap-1.5 max-w-md'
-                      : 'inline-block'
-                  }`}
-                >
-                  {imageAttachments.map((att, idx) => (
-                    <div
-                      key={idx}
-                      onClick={() => setLightboxImageUrl(att.url || null)}
-                      className="relative group/img cursor-pointer overflow-hidden rounded-xl border border-black/10 bg-slate-100 shadow-2xs"
-                    >
-                      <img
-                        src={att.url}
-                        alt={att.name || 'Attachment'}
-                        loading="lazy"
-                        decoding="async"
-                        className={
-                          imageAttachments.length >= 2
-                            ? 'w-full h-40 sm:h-44 object-cover transition-transform duration-200 group-hover/img:scale-[1.03]'
-                            : 'max-h-60 w-auto object-cover transition-transform duration-200 group-hover/img:scale-[1.02]'
-                        }
-                      />
-                      <span className="absolute bottom-1.5 right-1.5 bg-slate-900/75 backdrop-blur-xs text-white text-[9px] font-bold px-2 py-0.5 rounded-md opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center gap-1">
-                        <Eye size={10} /> View Full
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Inline Playable Video Attachments */}
-              {videoAttachments.length > 0 && (
-                <div className={`${msg.text || imageAttachments.length > 0 ? 'mt-2.5' : ''} space-y-2`}>
-                  {videoAttachments.map((att, idx) => (
-                    <div
-                      key={idx}
-                      className="overflow-hidden rounded-xl border border-black/15 bg-black shadow-2xs max-w-sm"
-                    >
-                      <video
-                        src={att.url}
-                        poster={att.previewUrl}
-                        controls
-                        playsInline
-                        preload="metadata"
-                        className="max-h-64 w-full bg-black"
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Other Non-Image File Attachments */}
-              {fileAttachments.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {fileAttachments.map((att, idx) => (
-                    <a
-                      key={idx}
-                      href={att.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 text-[11px] font-bold underline"
-                    >
-                      <Paperclip size={12} />
-                      <span>{att.name || 'Download Attachment'}</span>
-                    </a>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {isOutbound && (
-              <div className="flex items-center gap-1 mt-1 px-1 text-[9px] text-slate-500 font-semibold">
-                {msg.status === 'failed' ? (
-                  <span className="text-rose-600 font-bold">
-                    ⚠️ Failed{msg.externalError ? `: ${msg.externalError}` : ''}
-                  </span>
-                ) : (
-                  <>
-                    <CheckCheck
-                      size={11}
-                      className={
-                        msg.status === 'read'
-                          ? 'text-[#0084FF]'
-                          : msg.status === 'delivered'
-                          ? 'text-emerald-600'
-                          : 'text-slate-400'
-                      }
-                    />
-                    <span className={msg.status === 'read' ? 'text-[#0084FF] font-bold' : ''}>
-                      {msg.status === 'read'
-                        ? 'Read by Customer • '
-                        : msg.status === 'sent'
-                        ? 'Sent • '
-                        : ''}
-                      {msg.deliveryMethod === 'line_api'
-                        ? 'Delivered Live via LINE OA API'
-                        : msg.deliveryMethod === 'whatsapp_cloud_api'
-                        ? 'Official WhatsApp Cloud API'
-                        : msg.deliveryMethod === 'whatsapp_gateway_api'
-                        ? 'Delivered Live via WhatsApp Gateway'
-                        : msg.deliveryMethod === 'meta_graph_api'
-                        ? 'Delivered Live via Meta Graph API'
-                        : msg.deliveryMethod === 'telegram_bot_api'
-                        ? 'Delivered Live via Telegram Bot API'
-                        : msg.deliveryMethod === 'whatsapp_web_bridge'
-                        ? 'Sent • WhatsApp Bridge Active'
-                        : 'Delivered'}
-                    </span>
-                  </>
-                )}
+            {isOutbound && msg.status === 'failed' && (
+              <div className="flex items-center gap-1 mt-1 px-1 text-[10px] text-rose-600 font-bold">
+                ⚠️ Failed{msg.externalError ? `: ${msg.externalError}` : ''}
               </div>
             )}
           </div>
         </React.Fragment>
       );
     });
-  }, [activeMessages, activeConversation?.id, activeConversation?.channel, activeConversation?.contactName, fontScale, expandedEmailSigIds, config?.email?.emailAddress]);
+  }, [activeMessages, activeConversation?.id, activeConversation?.channel, activeConversation?.contactName, linkedCustomer?.name, fontScale, expandedEmailSigIds, config?.email?.emailAddress]);
 
   // Pre-indexed O(1) Jobs lookup maps (eliminates linear scan over all jobs on every thread switch!)
   const jobsIndex = useMemo(() => {
@@ -3667,7 +3720,10 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <h3 className={`${fontScale.headerTitle} font-black text-slate-900 truncate max-w-[180px] sm:max-w-[260px]`}>
-                        {activeConversation.contactName}
+                        {linkedCustomer?.name &&
+                        /^[+\d][\d\s-]{5,}$/.test((activeConversation.contactName || '').trim())
+                          ? linkedCustomer.name
+                          : activeConversation.contactName}
                       </h3>
                       <span
                         className={`text-[9px] font-black px-2 py-0.5 rounded-full shrink-0 ${
@@ -3682,9 +3738,9 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                             👥 LINE Group
                           </span>
                         )}
-                      {activeConversation.customerMemberId && (
+                      {(activeConversation.customerMemberId || linkedCustomer?.memberId) && (
                         <span className="font-mono text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200/70 px-1.5 py-0.2 rounded-md font-bold shrink-0">
-                          #{activeConversation.customerMemberId}
+                          #{activeConversation.customerMemberId || linkedCustomer?.memberId}
                         </span>
                       )}
                       {liveStatuses?.[activeConversation.channel] && (
@@ -4013,21 +4069,21 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Compact Quick Laundry Templates Strip (live chats only — keep email view spacious!) */}
+              {/* Compact Quick Laundry Templates Strip (no ugly horizontal scrollbar!) */}
               {showTemplatesBar && activeConversation.channel !== 'email' && (
-                <div className="px-3 py-1.5 bg-slate-50/95 border-t border-slate-200/80 flex items-center gap-2 shrink-0">
+                <div className="px-3.5 py-1.5 bg-slate-50/95 border-t border-slate-200/80 flex items-center gap-2 shrink-0">
                   <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 flex items-center gap-1 shrink-0">
                     <Sparkles size={11} className="text-amber-500" />
                     <span className="hidden sm:inline">Templates</span>
                   </span>
 
-                  <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 flex-1 custom-scrollbar">
+                  <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 flex-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                     {DEFAULT_QUICK_TEMPLATES.map((tpl) => (
                       <button
                         key={tpl.id}
                         type="button"
                         onClick={() => handleApplyTemplate(tpl)}
-                        className="px-2.5 py-1 rounded-lg bg-white hover:bg-emerald-50 border border-slate-200/90 hover:border-emerald-300 text-[10px] font-bold text-slate-700 shrink-0 transition-all cursor-pointer shadow-2xs whitespace-nowrap"
+                        className="px-2.5 py-1 rounded-full bg-white hover:bg-emerald-50 hover:text-emerald-800 border border-slate-200/90 hover:border-emerald-300 text-[10px] font-bold text-slate-700 shrink-0 transition-all cursor-pointer shadow-2xs whitespace-nowrap"
                       >
                         {tpl.title}
                       </button>
@@ -4055,7 +4111,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
               {/* Replying-To Quote Preview Bar */}
               {replyingTo && (
-                <div className="px-3 py-1.5 bg-emerald-50/90 border-t border-emerald-200 flex items-center justify-between gap-2 shrink-0">
+                <div className="px-3.5 py-1.5 bg-emerald-50/90 border-t border-emerald-200 flex items-center justify-between gap-2 shrink-0">
                   <div className="flex items-center gap-2 min-w-0">
                     <Reply size={13} className="text-emerald-600 shrink-0" />
                     <div className="text-xs min-w-0">
@@ -4079,7 +4135,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
               {/* Staged Uploaded Photos / Attachments Preview Bar */}
               {stagedAttachments.length > 0 && (
-                <div className="px-3 py-2 bg-indigo-50/70 border-t border-indigo-200 flex items-center gap-2 overflow-x-auto shrink-0">
+                <div className="px-3.5 py-2 bg-indigo-50/70 border-t border-indigo-200 flex items-center gap-2 overflow-x-auto shrink-0">
                   {stagedAttachments.map((att, idx) => (
                     <div
                       key={idx}
@@ -4122,7 +4178,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
               {/* Optional Image URL Input Strip */}
               {showAttachmentInput && (
-                <div className="px-3 py-1.5 bg-sky-50/70 border-t border-sky-200 flex items-center gap-2 shrink-0">
+                <div className="px-3.5 py-1.5 bg-sky-50/70 border-t border-sky-200 flex items-center gap-2 shrink-0">
                   <ImageIcon size={14} className="text-sky-600 shrink-0" />
                   <Input
                     value={attachmentUrl}
@@ -4146,7 +4202,7 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
 
               {/* Emoji Picker Popover Strip */}
               {showEmojiPicker && (
-                <div className="px-3 py-1.5 bg-white border-t border-slate-200 flex flex-wrap items-center gap-1 shrink-0">
+                <div className="px-3.5 py-1.5 bg-white border-t border-slate-200 flex flex-wrap items-center gap-1 shrink-0">
                   {QUICK_EMOJIS.map((em) => (
                     <button
                       key={em}
@@ -4160,10 +4216,10 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                 </div>
               )}
 
-              {/* Message Composer Footer */}
+              {/* Unified Full-Width Modern Message Composer Card */}
               <div className="p-2.5 bg-white border-t border-slate-200/90 space-y-1.5 shrink-0">
                 {activeConversation.channel === 'email' && (
-                  <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 rounded-xl bg-rose-50/70 border border-rose-200/80 text-xs">
+                  <div className="flex flex-wrap items-center gap-2 px-2.5 py-1.5 rounded-xl bg-rose-50/70 border border-rose-200/80 text-xs">
                     <span className="font-bold text-rose-800 shrink-0">
                       To: <span className="font-mono font-semibold text-slate-800">{activeConversation.externalContactId}</span>
                     </span>
@@ -4183,53 +4239,10 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                     </div>
                   </div>
                 )}
-                <div className="flex items-center gap-1.5">
-                  {/* Upload Photo/File from Computer */}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={uploadingFile}
-                    onClick={() => fileInputRef.current?.click()}
-                    className="h-9.5 w-9.5 p-0 rounded-xl border-slate-200 text-slate-600 hover:text-emerald-700 hover:border-emerald-300 shrink-0 cursor-pointer"
-                    title="Upload photo or slip from computer (or paste screenshot with Ctrl+V)"
-                  >
-                    {uploadingFile ? (
-                      <RefreshCw size={15} className="animate-spin text-emerald-600" />
-                    ) : (
-                      <Upload size={15} />
-                    )}
-                  </Button>
 
-                  {/* Emoji Picker Toggle */}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                    className={`h-9.5 w-9.5 p-0 rounded-xl border-slate-200 shrink-0 cursor-pointer ${
-                      showEmojiPicker
-                        ? 'bg-amber-50 border-amber-300 text-amber-600'
-                        : 'text-slate-500 hover:text-slate-800'
-                    }`}
-                    title="Insert Emoji"
-                  >
-                    <Smile size={15} />
-                  </Button>
-
-                  {/* Paste Image Link Toggle */}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setShowAttachmentInput(!showAttachmentInput)}
-                    className="h-9.5 w-9.5 p-0 rounded-xl border-slate-200 text-slate-500 hover:text-slate-800 shrink-0 cursor-pointer hidden sm:flex"
-                    title="Attach image via URL"
-                  >
-                    <ImageIcon size={15} />
-                  </Button>
-
+                <div className="rounded-2xl border border-slate-200/95 bg-slate-50/75 focus-within:bg-white focus-within:border-emerald-500/80 focus-within:ring-3 focus-within:ring-emerald-500/12 shadow-2xs transition-all overflow-hidden">
                   <textarea
+                    ref={composerTextareaRef}
                     value={composerText}
                     onChange={(e) => setComposerText(e.target.value)}
                     onPaste={handleComposerPaste}
@@ -4246,129 +4259,195 @@ export const AdminSocialInbox = React.memo(function AdminSocialInbox({
                         handleSendMessage();
                       }
                     }}
-                    rows={activeConversation.channel === 'email' ? 3 : 1}
+                    rows={3}
                     placeholder={
                       activeConversation.channel === 'email'
                         ? `พิมพ์อีเมลตอบกลับถึง ${activeConversation.externalContactId}... (Enter ขึ้นบรรทัดใหม่ • Ctrl+Enter เพื่อส่ง)`
                         : activeConversation.channel === 'line' &&
                           /^[CR][0-9a-f]{32}$/i.test(activeConversation.externalContactId || '')
-                        ? `ตอบเข้ากลุ่ม ${activeConversation.contactName} (LINE Group — ทุกคนในกลุ่มจะเห็น)...`
-                        : `Message ${activeConversation.contactName} via ${
+                        ? `ตอบเข้ากลุ่ม ${activeConversation.contactName} (LINE Group — ทุกคนในกลุ่มจะเห็น • Shift+Enter ขึ้นบรรทัดใหม่)...`
+                        : `Message ${
+                            linkedCustomer?.name &&
+                            /^[+\d][\d\s-]{5,}$/.test((activeConversation.contactName || '').trim())
+                              ? linkedCustomer.name
+                              : activeConversation.contactName
+                          } via ${
                             SOCIAL_CHANNEL_META[activeConversation.channel].shortLabel
-                          }... (Enter to send • Ctrl+V to paste photo)`
+                          }... (Enter to send • Shift+Enter for new line • Ctrl+V to paste photo)`
                     }
-                    className={`flex-1 ${
-                      activeConversation.channel === 'email' ? 'min-h-[76px] max-h-40' : 'min-h-[38px] max-h-24'
-                    } rounded-xl border border-slate-200 bg-slate-50/90 focus:bg-white px-3 py-2 ${fontScale.input} text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none`}
+                    className={`w-full min-h-[76px] max-h-[220px] ${
+                      composerText.length > 0 ? 'overflow-y-auto' : 'overflow-y-hidden'
+                    } bg-transparent px-3.5 pt-2.5 pb-1.5 ${fontScale.input} leading-relaxed text-slate-800 placeholder:text-slate-400 focus:outline-none resize-y block`}
                   />
 
-                  {activeConversation.channel === 'whatsapp' &&
-                    waQrState?.status !== 'connected' &&
-                    !(
-                      config?.whatsapp?.mode === 'cloud_api' &&
-                      Boolean(config?.whatsapp?.phoneNumberId)
-                    ) && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      onClick={() => handleSendMessage('companion_popup')}
-                      disabled={
-                        sendingMsg ||
-                        (!composerText.trim() &&
-                          stagedAttachments.length === 0 &&
-                          !attachmentUrl.trim())
-                      }
-                      className="h-9.5 px-3 bg-[#25D366] hover:bg-[#1ebe5d] text-slate-950 font-black text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer shadow-2xs"
-                      title="Send & Open in Docked WhatsApp Live Window"
-                    >
-                      <AppWindow size={13} />
-                      <span className="hidden sm:inline">Send & WA</span>
-                    </Button>
-                  )}
-
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => handleSendMessage()}
-                    disabled={
-                      sendingMsg ||
-                      (!composerText.trim() &&
-                        stagedAttachments.length === 0 &&
-                        !attachmentUrl.trim())
-                    }
-                    className="h-9.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white font-bold text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer shadow-2xs"
-                  >
-                    <Send size={13} />
-                    <span>Send</span>
-                  </Button>
-                </div>
-
-                {activeConversation.channel === 'whatsapp' && (
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500 px-1">
-                    {waQrState?.status === 'connected' ? (
-                      <span className="inline-flex items-center gap-1.5 text-emerald-700 font-semibold">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                        Dual-Sync Active ({waQrState.connectedPhone || 'Linked Device'}) — ซิงค์ตรงกัน 100% ทั้งเว็บนี้, WhatsApp Web และแอปมือถือ
-                      </span>
-                    ) : config?.whatsapp?.mode === 'cloud_api' &&
-                      Boolean(config?.whatsapp?.phoneNumberId) ? (
-                      <span className="inline-flex items-center gap-1.5 text-amber-700 font-semibold">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                        Official Cloud API Active — หากพนักงานมีการตอบจาก WhatsApp Web/มือถือข้างนอก กรุณากด{' '}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsSettingsOpen(true);
-                            handleStartWhatsAppQr(false);
-                          }}
-                          className="underline font-black text-amber-900 hover:text-emerald-700 cursor-pointer"
-                        >
-                          สแกน Link WA QR
-                        </button>{' '}
-                        เพื่อดึงข้อความที่ตอบจากข้างนอกเข้ามาในระบบอัตโนมัติ
-                      </span>
-                    ) : (
-                      <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          checked={openWaWebOnSend}
-                          onChange={(e) => setOpenWaWebOnSend(e.target.checked)}
-                          className="rounded border-slate-300"
-                        />
-                        <span>Auto-sync to Docked WhatsApp Companion on Enter</span>
-                      </label>
-                    )}
-                    <div className="flex items-center gap-2">
-                      <button
+                  {/* Integrated Bottom Action Toolbar inside Composer Card */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 bg-slate-100/75 border-t border-slate-200/80">
+                    {/* Left: Attachment / Emoji Tools + Compact Channel Sync Status */}
+                    <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                      <Button
                         type="button"
-                        onClick={() =>
-                          openWhatsAppBridgeWindow(
-                            activeConversation.externalContactId,
-                            composerText,
-                            'companion_popup'
-                          )
-                        }
-                        className="text-emerald-700 font-bold hover:underline cursor-pointer"
+                        size="sm"
+                        variant="outline"
+                        disabled={uploadingFile}
+                        onClick={() => fileInputRef.current?.click()}
+                        className="h-7.5 px-2.5 rounded-lg bg-white border-slate-200 text-slate-700 hover:text-emerald-700 hover:border-emerald-300 text-[11px] font-bold gap-1.5 shrink-0 cursor-pointer shadow-2xs"
+                        title="Upload photo, video, or slip from computer (or paste screenshot with Ctrl+V)"
                       >
-                        Companion Popup
-                      </button>
-                      <span>•</span>
-                      <button
+                        {uploadingFile ? (
+                          <RefreshCw size={13} className="animate-spin text-emerald-600" />
+                        ) : (
+                          <Upload size={13} />
+                        )}
+                        <span>Photo / File</span>
+                      </Button>
+
+                      <Button
                         type="button"
-                        onClick={() =>
-                          openWhatsAppBridgeWindow(
-                            activeConversation.externalContactId,
-                            composerText,
-                            'native_app'
-                          )
-                        }
-                        className="text-emerald-700 font-bold hover:underline cursor-pointer"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                        className={`h-7.5 w-7.5 p-0 rounded-lg border-slate-200 shrink-0 cursor-pointer shadow-2xs ${
+                          showEmojiPicker
+                            ? 'bg-amber-50 border-amber-300 text-amber-600'
+                            : 'bg-white text-slate-500 hover:text-slate-800'
+                        }`}
+                        title="Insert Emoji"
                       >
-                        Desktop/Mobile App
-                      </button>
+                        <Smile size={14} />
+                      </Button>
+
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setShowAttachmentInput(!showAttachmentInput)}
+                        className={`h-7.5 w-7.5 p-0 rounded-lg border-slate-200 shrink-0 cursor-pointer hidden sm:flex shadow-2xs ${
+                          showAttachmentInput
+                            ? 'bg-sky-50 border-sky-300 text-sky-600'
+                            : 'bg-white text-slate-500 hover:text-slate-800'
+                        }`}
+                        title="Attach image via URL"
+                      >
+                        <ImageIcon size={14} />
+                      </Button>
+
+                      {activeConversation.channel === 'whatsapp' && (
+                        <div className="hidden md:flex items-center gap-2 pl-1.5 ml-0.5 border-l border-slate-200/90 text-[10px] text-slate-500">
+                          {waQrState?.status === 'connected' ? (
+                            <span
+                              className="inline-flex items-center gap-1 text-emerald-700 font-bold"
+                              title="Dual-Sync Active: Web Hub, WhatsApp Web & Mobile App are 100% synced"
+                            >
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                              <span>Dual-Sync ({waQrState.connectedPhone || 'Linked'})</span>
+                            </span>
+                          ) : config?.whatsapp?.mode === 'cloud_api' &&
+                            Boolean(config?.whatsapp?.phoneNumberId) ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsSettingsOpen(true);
+                                handleStartWhatsAppQr(false);
+                              }}
+                              className="inline-flex items-center gap-1 text-amber-700 hover:text-emerald-700 font-bold cursor-pointer"
+                              title="Click to scan QR so external WhatsApp Web / Mobile replies also sync"
+                            >
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                              <span className="underline">Cloud API • Link WA QR</span>
+                            </button>
+                          ) : (
+                            <label className="inline-flex items-center gap-1 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                checked={openWaWebOnSend}
+                                onChange={(e) => setOpenWaWebOnSend(e.target.checked)}
+                                className="rounded border-slate-300"
+                              />
+                              <span>Auto-open WA Companion</span>
+                            </label>
+                          )}
+                          <span className="text-slate-300">•</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openWhatsAppBridgeWindow(
+                                activeConversation.externalContactId,
+                                composerText,
+                                'companion_popup'
+                              )
+                            }
+                            className="text-emerald-700 font-bold hover:underline cursor-pointer"
+                          >
+                            Companion Popup
+                          </button>
+                          <span className="text-slate-300">•</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openWhatsAppBridgeWindow(
+                                activeConversation.externalContactId,
+                                composerText,
+                                'native_app'
+                              )
+                            }
+                            className="text-emerald-700 font-bold hover:underline cursor-pointer"
+                          >
+                            Desktop/Mobile App
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Right: Keyboard Hint + Send Actions */}
+                    <div className="flex items-center gap-2 ml-auto shrink-0">
+                      <span className="hidden xl:inline text-[10px] font-medium text-slate-400">
+                        {activeConversation.channel === 'email'
+                          ? 'Ctrl+Enter to send'
+                          : 'Enter to send • Shift+Enter new line'}
+                      </span>
+
+                      {activeConversation.channel === 'whatsapp' &&
+                        waQrState?.status !== 'connected' &&
+                        !(
+                          config?.whatsapp?.mode === 'cloud_api' &&
+                          Boolean(config?.whatsapp?.phoneNumberId)
+                        ) && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => handleSendMessage('companion_popup')}
+                            disabled={
+                              sendingMsg ||
+                              (!composerText.trim() &&
+                                stagedAttachments.length === 0 &&
+                                !attachmentUrl.trim())
+                            }
+                            className="h-8 px-3 bg-[#25D366] hover:bg-[#1ebe5d] text-slate-950 font-black text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer shadow-2xs"
+                            title="Send & Open in Docked WhatsApp Live Window"
+                          >
+                            <AppWindow size={13} />
+                            <span className="hidden sm:inline">Send & WA</span>
+                          </Button>
+                        )}
+
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => handleSendMessage()}
+                        disabled={
+                          sendingMsg ||
+                          (!composerText.trim() &&
+                            stagedAttachments.length === 0 &&
+                            !attachmentUrl.trim())
+                        }
+                        className="h-8 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white font-bold text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer shadow-2xs"
+                      >
+                        <Send size={13} />
+                        <span>Send</span>
+                      </Button>
                     </div>
                   </div>
-                )}
+                </div>
               </div>
             </>
           )}

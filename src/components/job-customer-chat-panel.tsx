@@ -129,10 +129,19 @@ export function JobCustomerChatPanel({
   const [isSending, setIsSending] = useState(false);
   const [isStartingWa, setIsStartingWa] = useState(false);
   const [composerText, setComposerText] = useState('');
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<SocialMessageAttachment[]>([]);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
   const [chatFontScale, setChatFontScale] = useState<'md' | 'lg' | 'xl'>('lg');
+
+  useEffect(() => {
+    const el = composerTextareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const nextH = Math.min(Math.max(el.scrollHeight, 100), 240);
+    el.style.height = `${nextH}px`;
+  }, [composerText, activeConversationId]);
 
   useEffect(() => {
     try {
@@ -933,8 +942,8 @@ export function JobCustomerChatPanel({
             </div>
           )}
 
-          {/* Input Bar */}
-          <div className="flex items-center gap-1.5">
+          {/* Input Bar — Full-width multi-line composer with bottom action bar */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/90 focus-within:bg-white focus-within:border-emerald-400 focus-within:ring-2 focus-within:ring-emerald-500/20 transition-all overflow-hidden">
             <input
               ref={fileInputRef}
               type="file"
@@ -946,23 +955,10 @@ export function JobCustomerChatPanel({
                 if (f) void uploadChatImageFile(f);
               }}
             />
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              disabled={isUploadingPhoto || isSending}
-              onClick={() => fileInputRef.current?.click()}
-              className="h-9 w-9 rounded-xl border-slate-200 text-slate-600 hover:bg-slate-100 shrink-0 cursor-pointer"
-              title="Attach photo"
-            >
-              {isUploadingPhoto ? (
-                <Loader2 size={15} className="animate-spin text-indigo-600" />
-              ) : (
-                <Paperclip size={15} />
-              )}
-            </Button>
 
-            <Input
+            <textarea
+              ref={composerTextareaRef}
+              rows={4}
               value={composerText}
               onChange={(e) => setComposerText(e.target.value)}
               onPaste={(e) => {
@@ -985,28 +981,55 @@ export function JobCustomerChatPanel({
                   void handleSend();
                 }
               }}
-              placeholder={`Message via ${channelMeta.label}...`}
-              className="h-9 text-sm bg-slate-50 border-slate-200 rounded-xl px-3 flex-1 min-w-0"
+              placeholder={`Message via ${channelMeta.label}...\n(Shift+Enter for new line • Ctrl+V to paste photo)`}
+              className={`w-full min-h-[100px] max-h-[240px] ${
+                composerText.length > 0 ? 'overflow-y-auto' : 'overflow-y-hidden'
+              } text-sm leading-relaxed bg-transparent px-3 py-2.5 text-slate-800 placeholder:text-slate-400 focus:outline-none resize-y block`}
             />
 
-            <Button
-              type="button"
-              size="icon"
-              disabled={
-                isSending ||
-                isUploadingPhoto ||
-                (!composerText.trim() && pendingAttachments.length === 0)
-              }
-              onClick={() => void handleSend()}
-              className="h-9 w-9 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shrink-0 cursor-pointer disabled:opacity-40"
-              title="Send message"
-            >
-              {isSending ? (
-                <Loader2 size={15} className="animate-spin" />
-              ) : (
-                <Send size={15} />
-              )}
-            </Button>
+            <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-slate-100/70 border-t border-slate-200/80">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isUploadingPhoto || isSending}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="h-7.5 px-2.5 rounded-lg border-slate-200 bg-white text-slate-700 hover:bg-slate-50 text-xs font-bold gap-1.5 shrink-0 cursor-pointer"
+                  title="Attach photo"
+                >
+                  {isUploadingPhoto ? (
+                    <Loader2 size={13} className="animate-spin text-indigo-600" />
+                  ) : (
+                    <Paperclip size={13} />
+                  )}
+                  <span>Photo</span>
+                </Button>
+                <span className="text-[10px] text-slate-400 truncate hidden xl:inline">
+                  Enter to send • Shift+Enter new line
+                </span>
+              </div>
+
+              <Button
+                type="button"
+                size="sm"
+                disabled={
+                  isSending ||
+                  isUploadingPhoto ||
+                  (!composerText.trim() && pendingAttachments.length === 0)
+                }
+                onClick={() => void handleSend()}
+                className="h-7.5 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold gap-1.5 shrink-0 cursor-pointer disabled:opacity-40"
+                title="Send message"
+              >
+                {isSending ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Send size={13} />
+                )}
+                <span>Send</span>
+              </Button>
+            </div>
           </div>
         </div>
       )}

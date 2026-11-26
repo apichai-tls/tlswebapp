@@ -103,6 +103,7 @@ export interface SupplyOrderItem {
   nameTh?: string;
   category: SupplyItemCategory;
   quantity: number;
+  currentStockOnHand?: number; // Storefront stock balance reported by employee when ordering top-up
   receivedQuantity?: number; // actual verified quantity received on delivery
   unit: string;
   estimatedPrice?: number;
@@ -110,6 +111,46 @@ export interface SupplyOrderItem {
   notes?: string;
   receiveNote?: string;      // shortage / damage note on delivery
   imageUrl?: string;         // reference photo for custom item request
+}
+
+export interface MonthlySupplyItemSnapshot {
+  catalogItemId: string;
+  name: string;
+  nameTh?: string;
+  category: SupplyItemCategory;
+  unit: string;
+  unitPrice: number;
+  openingStockQty: number;
+  receivedQty: number;
+  closingStockQty: number; // Storefront physical stock balance reported to Head Office
+  consumedQty: number;
+  consumedCost: number;
+  topUpOrderedQty: number;
+  topUpOrderedCost: number;
+  minStock: number;
+}
+
+export interface MonthlyBranchSupplyRecord {
+  id: string; // e.g. "MSR-2026-11-BKK01"
+  monthKey: string; // "YYYY-MM" e.g. "2026-11"
+  branchId: string;
+  branchName: string;
+  submittedById?: string;
+  submittedByName: string;
+  submittedAt: string;
+  updatedAt: string;
+  notes?: string;
+  linkedOrderId?: string;
+  linkedOrderNumber?: string;
+  items: MonthlySupplyItemSnapshot[];
+  totalItemsTracked: number;
+  totalConsumedUnits: number;
+  totalConsumedCost: number;
+  chemicalConsumedCost: number; // chemical + spotting + dry_clean + cleaning
+  nonChemicalConsumedCost: number; // packaging + hangers + store_pos + other
+  totalTopUpOrderedUnits: number;
+  totalTopUpOrderedCost: number;
+  chemicalTopUpOrderedCost: number;
 }
 
 export interface SupplyOrder {
@@ -258,7 +299,7 @@ export const DEFAULT_SUPPLY_ROLE_PERMISSIONS: SupplyPermissionsMap = {
     canProcessOrder: false,
     canCreateItem: false,
     canMakeOrder: true,
-    canRequestOrder: false,
+    canRequestOrder: true,
   },
   accounting: {
     canProcessOrder: false,

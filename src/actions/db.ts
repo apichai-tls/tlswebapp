@@ -12020,6 +12020,119 @@ export async function createSupplyOrderAction(input: {
       create: { key: SUPPLY_ORDERS_SETTING_KEY, value: JSON.stringify(orders) },
     });
 
+    // If storefront employee reported currentStockOnHand on ordered items, sync branch stock, log usage movements, and snapshot monthly record
+    const itemsWithStockCount = (input.items || []).filter(
+      (it: any) => it.catalogItemId && it.currentStockOnHand !== undefined && it.currentStockOnHand !== null
+    );
+    if (itemsWithStockCount.length > 0 && targetBranchId) {
+      try {
+        const [stockSet, movSet, catSet] = await Promise.all([
+          prisma.setting.findUnique({ where: { key: "TLS_SUPPLY_BRANCH_STOCK_V1" } }),
+          prisma.setting.findUnique({ where: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1" } }),
+          prisma.setting.findUnique({ where: { key: "TLS_SUPPLY_CATALOG_V1" } }),
+        ]);
+        let stockList: any[] = [];
+        let movements: any[] = [];
+        let catalogItems: any[] = [];
+        try { if (stockSet?.value) stockList = JSON.parse(stockSet.value); } catch {}
+        try { if (movSet?.value) movements = JSON.parse(movSet.value); } catch {}
+        try { if (catSet?.value) catalogItems = JSON.parse(catSet.value); } catch {}
+        if (!catalogItems.length) {
+          const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
+          catalogItems = DEFAULT_SUPPLY_CATALOG;
+        }
+
+        const nowIso = nowBkk.toISOString();
+        let movementsChanged = false;
+
+        catalogItems.forEach((catItem: any, catIdx: number) => {
+          const orderedItem = itemsWithStockCount.find((it: any) => it.catalogItemId === catItem.id);
+          if (!orderedItem) return;
+          const reportedQty = Math.max(0, Number(orderedItem.currentStockOnHand) || 0);
+          const sIdx = stockList.findIndex(
+            (s: any) => s.branchId === targetBranchId && s.catalogItemId === catItem.id
+          );
+          const defaultInitialQty = catItem.popular ? (catIdx % 3 === 0 ? 1 : 5) : 3;
+          const prevQty = sIdx >= 0 ? Number(stockList[sIdx].quantity) || 0 : defaultInitialQty;
+          const minStock = sIdx >= 0 ? Number(stockList[sIdx].minStock ?? 2) : 2;
+          const delta = reportedQty - prevQty;
+
+          const entry = {
+            branchId: targetBranchId,
+            catalogItemId: catItem.id,
+            quantity: reportedQty,
+            minStock,
+            updatedAt: nowIso,
+            updatedBy: authUser.name || authUser.email || 'Staff',
+            lastNote: `Storefront stock count when ordering ${orderNumber} (On-hand: ${reportedQty}, Ordered: +${orderedItem.quantity})`,
+          };
+          if (sIdx >= 0) stockList[sIdx] = entry;
+          else stockList.push(entry);
+
+          if (delta !== 0) {
+            const unitPrice = Number(catItem.estimatedPrice || orderedItem.estimatedPrice) || 0;
+            movements.unshift({
+              id: `mov_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              branchId: targetBranchId,
+              branchName: targetBranchName,
+              catalogItemId: catItem.id,
+              itemName: catItem.name || orderedItem.name,
+              itemNameTh: catItem.nameTh || orderedItem.nameTh || catItem.name,
+              category: catItem.category || orderedItem.category || 'chemical',
+              unit: catItem.defaultUnit || orderedItem.unit || 'Unit',
+              unitPrice,
+              type: delta < 0 ? 'usage' : 'audit_adjust',
+              deltaQty: delta,
+              previousQty: prevQty,
+              newQty: reportedQty,
+              estimatedCostImpact: Math.abs(delta) * unitPrice,
+              note:
+                delta < 0
+                  ? `อัปเดตยอดคงเหลือหน้าร้านตอนสั่งเบิก ${orderNumber} (ใช้ไป ${Math.abs(delta)} หน่วย, เหลือ ${reportedQty})`
+                  : `ปรับยอดคงเหลือหน้าร้านตอนสั่งเบิก ${orderNumber} (+${delta} หน่วย, เหลือ ${reportedQty})`,
+              orderNumber,
+              userId: authUser.id,
+              userName: authUser.name || authUser.email || 'Staff',
+              createdAt: nowIso,
+            });
+            movementsChanged = true;
+          }
+        });
+
+        if (movements.length > 2000) movements = movements.slice(0, 2000);
+
+        await Promise.all([
+          prisma.setting.upsert({
+            where: { key: "TLS_SUPPLY_BRANCH_STOCK_V1" },
+            update: { value: JSON.stringify(stockList) },
+            create: { key: "TLS_SUPPLY_BRANCH_STOCK_V1", value: JSON.stringify(stockList) },
+          }),
+          movementsChanged
+            ? prisma.setting.upsert({
+                where: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1" },
+                update: { value: JSON.stringify(movements) },
+                create: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1", value: JSON.stringify(movements) },
+              })
+            : Promise.resolve(),
+        ]);
+
+        // Also update the monthly historical record snapshot for this branch & month
+        const monthKey = `${nowBkk.getFullYear()}-${String(nowBkk.getMonth() + 1).padStart(2, '0')}`;
+        await upsertMonthlyBranchSupplySnapshotInternal({
+          monthKey,
+          branchId: targetBranchId,
+          branchName: targetBranchName,
+          submittedById: authUser.id,
+          submittedByName: authUser.name || authUser.email || 'Staff',
+          linkedOrderId: id,
+          linkedOrderNumber: orderNumber,
+          notes: `Updated storefront stock balance & placed top-up order ${orderNumber}`,
+        });
+      } catch (e) {
+        console.error("[createSupplyOrderAction] Stock/Monthly snapshot sync error:", e);
+      }
+    }
+
     try {
       await prisma.activityLog.create({
         data: {
@@ -12283,6 +12396,21 @@ export async function updateSupplyOrderStatusAction(
       update: { value: JSON.stringify(orders) },
       create: { key: SUPPLY_ORDERS_SETTING_KEY, value: JSON.stringify(orders) },
     });
+
+    if (status === 'completed' && order.branchId) {
+      try {
+        const monthKey = `${nowBkk.getFullYear()}-${String(nowBkk.getMonth() + 1).padStart(2, '0')}`;
+        await upsertMonthlyBranchSupplySnapshotInternal({
+          monthKey,
+          branchId: order.branchId,
+          branchName: order.branchName || order.branchId,
+          submittedById: authUser.id,
+          submittedByName: authUser.name || authUser.email || 'Admin',
+          linkedOrderId: order.id,
+          linkedOrderNumber: order.orderNumber,
+        });
+      } catch {}
+    }
 
     try {
       await prisma.activityLog.create({
@@ -13154,7 +13282,21 @@ export async function updateBranchSupplyStockAction(input: {
         : Promise.resolve(),
     ]);
 
-    return { success: true, entry, stock: stockList, movement: newMovement, movements };
+    let monthlyRecords: any[] | undefined;
+    try {
+      const nowBkk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
+      const monthKey = `${nowBkk.getFullYear()}-${String(nowBkk.getMonth() + 1).padStart(2, '0')}`;
+      const snap = await upsertMonthlyBranchSupplySnapshotInternal({
+        monthKey,
+        branchId: targetBranchId,
+        branchName: input.branchName || targetBranchId,
+        submittedById: authUser.id,
+        submittedByName: authUser.name || authUser.email || 'Staff',
+      });
+      monthlyRecords = snap.records;
+    } catch {}
+
+    return { success: true, entry, stock: stockList, movement: newMovement, movements, monthlyRecords };
   } catch (err: any) {
     console.error("[updateBranchSupplyStockAction] Error:", err);
     return { success: false, error: err?.message || "Failed to update branch supply stock" };
@@ -13191,6 +13333,437 @@ export async function getBranchSupplyMovementsAction(branchId?: string) {
   } catch (err: any) {
     console.error("[getBranchSupplyMovementsAction] Error:", err);
     return { success: false, error: err?.message || "Failed to load supply movements", movements: [] };
+  }
+}
+
+// ============================================================================
+// MONTHLY STOREFRONT STOCK BALANCE & CONSUMPTION RECORDS ARCHIVE
+// ============================================================================
+const SUPPLY_MONTHLY_RECORDS_SETTING_KEY = "TLS_SUPPLY_MONTHLY_RECORDS_V1";
+
+const CHEMICAL_CATEGORIES_SET = new Set(['chemical', 'spotting', 'dry_clean', 'cleaning']);
+
+async function upsertMonthlyBranchSupplySnapshotInternal(params: {
+  monthKey: string; // "YYYY-MM"
+  branchId: string;
+  branchName: string;
+  submittedById?: string;
+  submittedByName: string;
+  notes?: string;
+  linkedOrderId?: string;
+  linkedOrderNumber?: string;
+}) {
+  const [recSet, stockSet, movSet, ordSet, catSet] = await Promise.all([
+    prisma.setting.findUnique({ where: { key: SUPPLY_MONTHLY_RECORDS_SETTING_KEY } }),
+    prisma.setting.findUnique({ where: { key: SUPPLY_BRANCH_STOCK_SETTING_KEY } }),
+    prisma.setting.findUnique({ where: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1" } }),
+    prisma.setting.findUnique({ where: { key: SUPPLY_ORDERS_SETTING_KEY } }),
+    prisma.setting.findUnique({ where: { key: SUPPLY_CATALOG_SETTING_KEY } }),
+  ]);
+
+  let records: any[] = [];
+  let stockList: any[] = [];
+  let movements: any[] = [];
+  let orders: any[] = [];
+  let catalogItems: any[] = [];
+
+  try { if (recSet?.value) records = JSON.parse(recSet.value); } catch {}
+  try { if (stockSet?.value) stockList = JSON.parse(stockSet.value); } catch {}
+  try { if (movSet?.value) movements = JSON.parse(movSet.value); } catch {}
+  try { if (ordSet?.value) orders = JSON.parse(ordSet.value); } catch {}
+  try { if (catSet?.value) catalogItems = JSON.parse(catSet.value); } catch {}
+
+  if (!catalogItems.length) {
+    const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
+    catalogItems = DEFAULT_SUPPLY_CATALOG;
+  }
+
+  const [yStr, mStr] = params.monthKey.split('-');
+  const yearNum = Number(yStr);
+  const monthNum = Number(mStr); // 1-12
+  const monthStartMs = new Date(yearNum, monthNum - 1, 1, 0, 0, 0, 0).getTime();
+  const monthEndMs = new Date(yearNum, monthNum, 0, 23, 59, 59, 999).getTime();
+
+  const branchMovements = movements.filter((m: any) => {
+    if (m.branchId !== params.branchId) return false;
+    const t = new Date(m.createdAt).getTime();
+    return t >= monthStartMs && t <= monthEndMs;
+  });
+
+  const branchOrders = orders.filter((o: any) => {
+    if (o.status === 'cancelled' || o.branchId !== params.branchId) return false;
+    const t = new Date(o.createdAt).getTime();
+    return t >= monthStartMs && t <= monthEndMs;
+  });
+
+  const availItems = catalogItems.filter((i: any) => i.available !== false);
+
+  const snapshotItems = availItems.map((catItem: any, idx: number) => {
+    const st = stockList.find(
+      (s: any) => s.branchId === params.branchId && s.catalogItemId === catItem.id
+    );
+    const defaultInitialQty = catItem.popular ? (idx % 3 === 0 ? 1 : 5) : 3;
+    const closingStockQty = st ? Number(st.quantity) : defaultInitialQty;
+    const minStock = st ? Number(st.minStock ?? 2) : 2;
+    const unitPrice = Number(catItem.estimatedPrice) || 0;
+
+    let receivedQty = 0;
+    let consumedQty = 0;
+    let consumedCost = 0;
+
+    branchMovements.forEach((m: any) => {
+      if (m.catalogItemId === catItem.id || m.itemName === catItem.name) {
+        if (m.deltaQty < 0) {
+          const absQ = Math.abs(Number(m.deltaQty) || 0);
+          consumedQty += absQ;
+          consumedCost += Number(m.estimatedCostImpact) || absQ * unitPrice;
+        } else if (m.deltaQty > 0) {
+          receivedQty += Number(m.deltaQty) || 0;
+        }
+      }
+    });
+
+    let topUpOrderedQty = 0;
+    let topUpOrderedCost = 0;
+    branchOrders.forEach((o: any) => {
+      (o.items || []).forEach((it: any) => {
+        if (it.catalogItemId === catItem.id || it.name === catItem.name) {
+          const q = Number(it.quantity) || 0;
+          const p = Number(it.actualUnitPrice ?? it.estimatedPrice ?? unitPrice) || 0;
+          topUpOrderedQty += q;
+          topUpOrderedCost += q * p;
+        }
+      });
+    });
+
+    // If no explicit negative movements were logged yet for an item that was ordered as a top-up,
+    // use topUpOrderedQty as estimated monthly replenishment consumption so reports stay informative
+    const effectiveConsumedQty = consumedQty > 0 ? consumedQty : topUpOrderedQty;
+    const effectiveConsumedCost = consumedCost > 0 ? consumedCost : topUpOrderedCost;
+    const openingStockQty = Math.max(0, closingStockQty + consumedQty - receivedQty);
+
+    return {
+      catalogItemId: catItem.id,
+      name: catItem.name,
+      nameTh: catItem.nameTh || catItem.name,
+      category: catItem.category || 'chemical',
+      unit: catItem.defaultUnit || 'Unit',
+      unitPrice,
+      openingStockQty,
+      receivedQty,
+      closingStockQty,
+      consumedQty: effectiveConsumedQty,
+      consumedCost: effectiveConsumedCost,
+      topUpOrderedQty,
+      topUpOrderedCost,
+      minStock,
+    };
+  });
+
+  let totalConsumedUnits = 0;
+  let totalConsumedCost = 0;
+  let chemicalConsumedCost = 0;
+  let nonChemicalConsumedCost = 0;
+  let totalTopUpOrderedUnits = 0;
+  let totalTopUpOrderedCost = 0;
+  let chemicalTopUpOrderedCost = 0;
+
+  snapshotItems.forEach((it: any) => {
+    totalConsumedUnits += it.consumedQty;
+    totalConsumedCost += it.consumedCost;
+    totalTopUpOrderedUnits += it.topUpOrderedQty;
+    totalTopUpOrderedCost += it.topUpOrderedCost;
+    if (CHEMICAL_CATEGORIES_SET.has(it.category)) {
+      chemicalConsumedCost += it.consumedCost;
+      chemicalTopUpOrderedCost += it.topUpOrderedCost;
+    } else {
+      nonChemicalConsumedCost += it.consumedCost;
+    }
+  });
+
+  const nowIso = new Date().toISOString();
+  const recordId = `MSR-${params.monthKey}-${params.branchId}`;
+  const existingIdx = records.findIndex(
+    (r: any) => r.monthKey === params.monthKey && r.branchId === params.branchId
+  );
+  const existing = existingIdx >= 0 ? records[existingIdx] : null;
+
+  const savedRecord = {
+    id: recordId,
+    monthKey: params.monthKey,
+    branchId: params.branchId,
+    branchName: params.branchName,
+    submittedById: params.submittedById || existing?.submittedById,
+    submittedByName: params.submittedByName || existing?.submittedByName || 'Storefront Staff',
+    submittedAt: existing?.submittedAt || nowIso,
+    updatedAt: nowIso,
+    notes: params.notes || existing?.notes || '',
+    linkedOrderId: params.linkedOrderId || existing?.linkedOrderId,
+    linkedOrderNumber: params.linkedOrderNumber || existing?.linkedOrderNumber,
+    items: snapshotItems,
+    totalItemsTracked: snapshotItems.length,
+    totalConsumedUnits,
+    totalConsumedCost,
+    chemicalConsumedCost,
+    nonChemicalConsumedCost,
+    totalTopUpOrderedUnits,
+    totalTopUpOrderedCost,
+    chemicalTopUpOrderedCost,
+  };
+
+  if (existingIdx >= 0) {
+    records[existingIdx] = savedRecord;
+  } else {
+    records.unshift(savedRecord);
+  }
+
+  // Sort newest month first
+  records.sort((a: any, b: any) => String(b.monthKey).localeCompare(String(a.monthKey)));
+
+  await prisma.setting.upsert({
+    where: { key: SUPPLY_MONTHLY_RECORDS_SETTING_KEY },
+    update: { value: JSON.stringify(records.slice(0, 600)) },
+    create: { key: SUPPLY_MONTHLY_RECORDS_SETTING_KEY, value: JSON.stringify(records.slice(0, 600)) },
+  });
+
+  return { record: savedRecord, records };
+}
+
+export async function getMonthlySupplyRecordsAction(branchId?: string) {
+  try {
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    const canViewAll = isAdmin || perms.canProcessOrder;
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: SUPPLY_MONTHLY_RECORDS_SETTING_KEY },
+    });
+
+    let records: any[] = [];
+    if (setting?.value) {
+      try {
+        records = JSON.parse(setting.value);
+      } catch {
+        records = [];
+      }
+    }
+
+    if (!canViewAll && authUser.branchId) {
+      records = records.filter((r: any) => r.branchId === authUser.branchId);
+    } else if (branchId && branchId !== 'all') {
+      records = records.filter((r: any) => r.branchId === branchId);
+    }
+
+    return { success: true, records };
+  } catch (err: any) {
+    console.error("[getMonthlySupplyRecordsAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to load monthly supply records", records: [] };
+  }
+}
+
+export async function saveMonthlyStorefrontStockAuditAction(input: {
+  monthKey: string; // "YYYY-MM"
+  branchId: string;
+  branchName: string;
+  notes?: string;
+  createTopUpOrder?: boolean;
+  priority?: 'normal' | 'urgent' | 'critical';
+  neededByDate?: string;
+  entries: {
+    catalogItemId: string;
+    closingStockQty: number;
+    minStock?: number;
+    topUpQty?: number;
+  }[];
+}) {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const isAdmin = authUser.role === 'admin' || authUser.role === 'superadmin';
+    const { perms } = await getResolvedSupplyPermsForUser(authUser);
+    const canViewAll = isAdmin || perms.canProcessOrder;
+
+    const targetBranchId = !canViewAll && authUser.branchId ? authUser.branchId : input.branchId;
+    if (!targetBranchId || targetBranchId === 'all') {
+      return { success: false, error: "Please select a specific storefront branch." };
+    }
+
+    let targetBranchName = input.branchName || targetBranchId;
+    if (!canViewAll && authUser.branchId) {
+      try {
+        const shop = await prisma.shopLocation.findUnique({
+          where: { id: targetBranchId },
+          select: { name: true },
+        });
+        if (shop?.name) targetBranchName = shop.name;
+      } catch {}
+    }
+
+    const [stockSet, movSet, catSet] = await Promise.all([
+      prisma.setting.findUnique({ where: { key: SUPPLY_BRANCH_STOCK_SETTING_KEY } }),
+      prisma.setting.findUnique({ where: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1" } }),
+      prisma.setting.findUnique({ where: { key: SUPPLY_CATALOG_SETTING_KEY } }),
+    ]);
+
+    let stockList: any[] = [];
+    let movements: any[] = [];
+    let catalogItems: any[] = [];
+    try { if (stockSet?.value) stockList = JSON.parse(stockSet.value); } catch {}
+    try { if (movSet?.value) movements = JSON.parse(movSet.value); } catch {}
+    try { if (catSet?.value) catalogItems = JSON.parse(catSet.value); } catch {}
+    if (!catalogItems.length) {
+      const { DEFAULT_SUPPLY_CATALOG } = await import('@/types/supply-order');
+      catalogItems = DEFAULT_SUPPLY_CATALOG;
+    }
+
+    const nowBkk = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
+    const nowIso = nowBkk.toISOString();
+    const monthKey = input.monthKey || `${nowBkk.getFullYear()}-${String(nowBkk.getMonth() + 1).padStart(2, '0')}`;
+
+    const entryMap = new Map((input.entries || []).map((e) => [e.catalogItemId, e]));
+    let movementsAdded = 0;
+
+    catalogItems.forEach((catItem: any, idx: number) => {
+      const incoming = entryMap.get(catItem.id);
+      if (!incoming) return;
+
+      const sIdx = stockList.findIndex(
+        (s: any) => s.branchId === targetBranchId && s.catalogItemId === catItem.id
+      );
+      const defaultInitialQty = catItem.popular ? (idx % 3 === 0 ? 1 : 5) : 3;
+      const prevQty = sIdx >= 0 ? Number(stockList[sIdx].quantity) || 0 : defaultInitialQty;
+      const nextQty = Math.max(0, Number(incoming.closingStockQty) || 0);
+      const minStock =
+        incoming.minStock !== undefined
+          ? Math.max(0, Number(incoming.minStock) || 0)
+          : sIdx >= 0
+          ? Number(stockList[sIdx].minStock ?? 2)
+          : 2;
+      const delta = nextQty - prevQty;
+
+      const updatedStockEntry = {
+        branchId: targetBranchId,
+        catalogItemId: catItem.id,
+        quantity: nextQty,
+        minStock,
+        updatedAt: nowIso,
+        updatedBy: authUser.name || authUser.email || 'Storefront Staff',
+        lastNote: `Monthly Stock Count (${monthKey}): ${nextQty} ${catItem.defaultUnit || 'Unit'}`,
+      };
+      if (sIdx >= 0) stockList[sIdx] = updatedStockEntry;
+      else stockList.push(updatedStockEntry);
+
+      if (delta !== 0) {
+        const unitPrice = Number(catItem.estimatedPrice) || 0;
+        movements.unshift({
+          id: `mov_${Date.now()}_${Math.random().toString(36).substring(2, 6)}_${idx}`,
+          branchId: targetBranchId,
+          branchName: targetBranchName,
+          catalogItemId: catItem.id,
+          itemName: catItem.name,
+          itemNameTh: catItem.nameTh || catItem.name,
+          category: catItem.category || 'chemical',
+          unit: catItem.defaultUnit || 'Unit',
+          unitPrice,
+          type: delta < 0 ? 'usage' : 'audit_adjust',
+          deltaQty: delta,
+          previousQty: prevQty,
+          newQty: nextQty,
+          estimatedCostImpact: Math.abs(delta) * unitPrice,
+          note:
+            delta < 0
+              ? `[Monthly Stock Update ${monthKey}] ใช้ไป ${Math.abs(delta)} ${catItem.defaultUnit || 'Unit'} (คงเหลือหน้าร้าน ${nextQty})`
+              : `[Monthly Stock Update ${monthKey}] ปรับยอดสต็อกหน้าร้าน +${delta} (คงเหลือ ${nextQty})`,
+          userId: authUser.id,
+          userName: authUser.name || authUser.email || 'Storefront Staff',
+          createdAt: nowIso,
+        });
+        movementsAdded++;
+      }
+    });
+
+    if (movements.length > 2000) movements = movements.slice(0, 2000);
+
+    await Promise.all([
+      prisma.setting.upsert({
+        where: { key: SUPPLY_BRANCH_STOCK_SETTING_KEY },
+        update: { value: JSON.stringify(stockList) },
+        create: { key: SUPPLY_BRANCH_STOCK_SETTING_KEY, value: JSON.stringify(stockList) },
+      }),
+      movementsAdded > 0
+        ? prisma.setting.upsert({
+            where: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1" },
+            update: { value: JSON.stringify(movements) },
+            create: { key: "TLS_SUPPLY_STOCK_MOVEMENTS_V1", value: JSON.stringify(movements) },
+          })
+        : Promise.resolve(),
+    ]);
+
+    // Optionally create a Top-Up Supply Order for items with topUpQty > 0
+    let createdOrder: any = null;
+    const topUpEntries = (input.entries || []).filter((e) => Number(e.topUpQty) > 0);
+    if (input.createTopUpOrder && topUpEntries.length > 0) {
+      const orderItems = topUpEntries
+        .map((e, i) => {
+          const catItem = catalogItems.find((c: any) => c.id === e.catalogItemId);
+          if (!catItem) return null;
+          return {
+            id: `topup_${Date.now()}_${i}`,
+            catalogItemId: catItem.id,
+            name: catItem.name,
+            nameTh: catItem.nameTh || catItem.name,
+            category: catItem.category || 'chemical',
+            quantity: Math.max(1, Number(e.topUpQty) || 1),
+            currentStockOnHand: Math.max(0, Number(e.closingStockQty) || 0),
+            unit: catItem.defaultUnit || 'Unit',
+            estimatedPrice: Number(catItem.estimatedPrice) || 0,
+            notes: `Current storefront stock: ${Math.max(0, Number(e.closingStockQty) || 0)} ${catItem.defaultUnit || 'Unit'}`,
+          };
+        })
+        .filter(Boolean) as any[];
+
+      if (orderItems.length > 0) {
+        const orderRes = await createSupplyOrderAction({
+          branchId: targetBranchId,
+          branchName: targetBranchName,
+          priority: input.priority || 'normal',
+          neededByDate: input.neededByDate || '',
+          items: orderItems,
+          notes:
+            input.notes ||
+            `[Monthly Stock Balance & Top-Up ${monthKey}] Storefront stock balance updated and top-up requested.`,
+        });
+        if (orderRes.success && orderRes.order) {
+          createdOrder = orderRes.order;
+        }
+      }
+    }
+
+    const { record, records } = await upsertMonthlyBranchSupplySnapshotInternal({
+      monthKey,
+      branchId: targetBranchId,
+      branchName: targetBranchName,
+      submittedById: authUser.id,
+      submittedByName: authUser.name || authUser.email || 'Storefront Staff',
+      notes: input.notes,
+      linkedOrderId: createdOrder?.id,
+      linkedOrderNumber: createdOrder?.orderNumber,
+    });
+
+    return {
+      success: true,
+      record,
+      records,
+      stock: stockList,
+      movements,
+      createdOrder,
+    };
+  } catch (err: any) {
+    console.error("[saveMonthlyStorefrontStockAuditAction] Error:", err);
+    return {
+      success: false,
+      error: err?.message || "Failed to save monthly storefront stock audit",
+    };
   }
 }
 

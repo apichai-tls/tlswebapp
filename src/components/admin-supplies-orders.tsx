@@ -78,6 +78,7 @@ import {
   BranchSupplyStockEntry,
   BranchSupplyMovement,
   SupplyVendor,
+  MonthlyBranchSupplyRecord,
   getSupplyItemPriceReviewStatus,
 } from '@/types/supply-order';
 import {
@@ -94,6 +95,8 @@ import {
   getBranchSupplyStockAction,
   updateBranchSupplyStockAction,
   getBranchSupplyMovementsAction,
+  getMonthlySupplyRecordsAction,
+  saveMonthlyStorefrontStockAuditAction,
   getSupplyVendorsAction,
   reviewSupplyItemPriceAction,
   triggerSupplyPriceReviewReminderAction,
@@ -150,9 +153,32 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
   const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'low' | 'out'>('all');
 
   // Report Filter States
-  const [reportPeriod, setReportPeriod] = useState<'this_month' | '30days' | '7days' | 'all'>('this_month');
+  const [reportPeriod, setReportPeriod] = useState<'this_month' | '30days' | '7days' | 'all' | 'specific_month'>('this_month');
+  const [selectedReportMonthKey, setSelectedReportMonthKey] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
   const [reportBranchFilter, setReportBranchFilter] = useState<string>('all');
   const [reportCategoryFilter, setReportCategoryFilter] = useState<string>('all');
+
+  // Monthly Storefront Stock Records Archive & Bulk Stock Sheet Modal State
+  const [monthlyRecords, setMonthlyRecords] = useState<MonthlyBranchSupplyRecord[]>([]);
+  const [viewingMonthlyRecord, setViewingMonthlyRecord] = useState<MonthlyBranchSupplyRecord | null>(null);
+  const [isMonthlyStockSheetOpen, setIsMonthlyStockSheetOpen] = useState(false);
+  const [stockSheetMonthKey, setStockSheetMonthKey] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [stockSheetCategory, setStockSheetCategory] = useState<string>('all');
+  const [stockSheetSearch, setStockSheetSearch] = useState<string>('');
+  const [stockSheetEntries, setStockSheetEntries] = useState<
+    Record<string, { closingStockQty: number; minStock: number; topUpQty: number }>
+  >({});
+  const [stockSheetCreateOrder, setStockSheetCreateOrder] = useState<boolean>(true);
+  const [stockSheetPriority, setStockSheetPriority] = useState<SupplyOrderPriority>('normal');
+  const [stockSheetNeededBy, setStockSheetNeededBy] = useState<string>('');
+  const [stockSheetNotes, setStockSheetNotes] = useState<string>('');
+  const [savingStockSheet, setSavingStockSheet] = useState<boolean>(false);
 
   // Stock Adjust Modal state
   const [adjustingStockItem, setAdjustingStockItem] = useState<{
@@ -328,10 +354,11 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
       const bId = !isAdmin && !canProcessOrder && currentUser?.branchId
         ? currentUser.branchId
         : (targetBranch || stockBranchId || 'ONLINE');
-      const [res, allRes, movRes] = await Promise.all([
+      const [res, allRes, movRes, monRes] = await Promise.all([
         getBranchSupplyStockAction(bId),
         getBranchSupplyStockAction('all'),
         getBranchSupplyMovementsAction('all'),
+        getMonthlySupplyRecordsAction('all'),
       ]);
       if (res.success && res.stock) {
         setBranchStock(res.stock);
@@ -341,6 +368,9 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
       }
       if (movRes.success && movRes.movements) {
         setStockMovements(movRes.movements);
+      }
+      if (monRes?.success && Array.isArray(monRes.records)) {
+        setMonthlyRecords(monRes.records);
       }
     } catch (e: any) {
       console.error('Error loading branch stock:', e);
@@ -548,17 +578,26 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
     return { total: availableItems.length, normal, low, out };
   }, [catalog, branchStock, effectiveStockBranchId]);
 
-  // --- BRANCH ORDER & USAGE REPORT ANALYTICS ---
+  // --- BRANCH ORDER & USAGE REPORT ANALYTICS (WITH MONTHLY CHEMICAL SPEND & HISTORICAL ARCHIVE) ---
   const reportAnalytics = useMemo(() => {
     const now = new Date();
-    const cutoffMs =
-      reportPeriod === '7days'
-        ? now.getTime() - 7 * 24 * 60 * 60 * 1000
-        : reportPeriod === '30days'
-        ? now.getTime() - 30 * 24 * 60 * 60 * 1000
-        : reportPeriod === 'this_month'
-        ? new Date(now.getFullYear(), now.getMonth(), 1).getTime()
-        : 0;
+    const CHEMICAL_CATS = new Set(['chemical', 'spotting', 'dry_clean', 'cleaning']);
+
+    let startMs = 0;
+    let endMs = Number.MAX_SAFE_INTEGER;
+    if (reportPeriod === '7days') {
+      startMs = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+    } else if (reportPeriod === '30days') {
+      startMs = now.getTime() - 30 * 24 * 60 * 60 * 1000;
+    } else if (reportPeriod === 'this_month') {
+      startMs = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0).getTime();
+    } else if (reportPeriod === 'specific_month' && selectedReportMonthKey) {
+      const [yStr, mStr] = selectedReportMonthKey.split('-');
+      const y = Number(yStr) || now.getFullYear();
+      const m = Number(mStr) || now.getMonth() + 1;
+      startMs = new Date(y, m - 1, 1, 0, 0, 0, 0).getTime();
+      endMs = new Date(y, m, 0, 23, 59, 59, 999).getTime();
+    }
 
     const effectiveReportBranch =
       !isAdmin && !canProcessOrder && currentUser?.branchId
@@ -570,7 +609,6 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
       ...shops.map((s) => ({ id: s.id, name: s.name })),
       { id: 'ONLINE', name: 'Online Central Dispatch' },
     ];
-    // Ensure any branch from orders or movements is included
     orders.forEach((o) => {
       if (o.branchId && !branchList.some((b) => b.id === o.branchId)) {
         branchList.push({ id: o.branchId, name: o.branchName || o.branchId });
@@ -587,7 +625,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
       if (o.status === 'cancelled') return false;
       if (effectiveReportBranch !== 'all' && o.branchId !== effectiveReportBranch) return false;
       const t = new Date(o.createdAt).getTime();
-      return t >= cutoffMs;
+      return t >= startMs && t <= endMs;
     });
 
     // Filter Movements in Period
@@ -595,7 +633,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
       if (effectiveReportBranch !== 'all' && m.branchId !== effectiveReportBranch) return false;
       if (reportCategoryFilter !== 'all' && m.category !== reportCategoryFilter) return false;
       const t = new Date(m.createdAt).getTime();
-      return t >= cutoffMs;
+      return t >= startMs && t <= endMs;
     });
 
     // 1. Branch-by-Branch Comparison Rows
@@ -605,14 +643,18 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
       let orderedCost = 0;
       let receivedQty = 0;
       let receivedCost = 0;
+      let orderedChemicalCost = 0;
 
       bOrders.forEach((o) => {
         (o.items || []).forEach((it) => {
           if (reportCategoryFilter !== 'all' && it.category !== reportCategoryFilter) return;
           const q = Number(it.quantity) || 0;
-          const p = Number(it.estimatedPrice) || 0;
+          const p = Number(it.actualUnitPrice ?? it.estimatedPrice) || 0;
           orderedQty += q;
           orderedCost += q * p;
+          if (CHEMICAL_CATS.has(it.category || 'chemical')) {
+            orderedChemicalCost += q * p;
+          }
           if (o.status === 'completed') {
             const rq = it.receivedQuantity !== undefined ? Number(it.receivedQuantity) : q;
             const rp = it.actualUnitPrice !== undefined ? Number(it.actualUnitPrice) : p;
@@ -625,13 +667,18 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
       const bMovements = periodMovements.filter((m) => m.branchId === b.id);
       let usedQty = 0;
       let usedCost = 0;
+      let usedChemicalCost = 0;
       let manualAddedQty = 0;
 
       bMovements.forEach((m) => {
         if (m.deltaQty < 0) {
           const absQ = Math.abs(m.deltaQty);
+          const costImpact = m.estimatedCostImpact || absQ * (m.unitPrice || 0);
           usedQty += absQ;
-          usedCost += m.estimatedCostImpact || absQ * (m.unitPrice || 0);
+          usedCost += costImpact;
+          if (CHEMICAL_CATS.has(m.category || 'chemical')) {
+            usedChemicalCost += costImpact;
+          }
         } else if (m.type === 'manual_add' && m.deltaQty > 0) {
           manualAddedQty += m.deltaQty;
         }
@@ -665,10 +712,11 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
         const jbId = j.branchId || 'ONLINE';
         if (jbId !== b.id) return false;
         const jt = new Date(j.createdAt || j.scheduledAt || Date.now()).getTime();
-        return jt >= cutoffMs;
+        return jt >= startMs && jt <= endMs;
       });
       const laundryJobsCount = branchJobs.length;
       const effectiveSupplySpend = usedCost > 0 ? usedCost : orderedCost;
+      const effectiveChemicalSpend = usedChemicalCost > 0 ? usedChemicalCost : orderedChemicalCost;
       const costPerLaundryJob =
         laundryJobsCount > 0 ? Math.round((effectiveSupplySpend / laundryJobsCount) * 10) / 10 : 0;
 
@@ -682,6 +730,8 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
         receivedCost,
         usedQty,
         usedCost,
+        effectiveSupplySpend,
+        effectiveChemicalSpend,
         currentStockQty,
         currentStockValue,
         lowStockCount,
@@ -706,11 +756,11 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
           (o.items || []).forEach((it) => {
             if (it.catalogItemId === item.id || it.name === item.name) {
               const q = Number(it.quantity) || 0;
-              const p = Number(it.estimatedPrice ?? item.estimatedPrice) || 0;
+              const p = Number(it.actualUnitPrice ?? it.estimatedPrice ?? item.estimatedPrice) || 0;
               orderedQty += q;
               orderedCost += q * p;
               if (o.status === 'completed') {
-                receivedQty += q;
+                receivedQty += it.receivedQuantity !== undefined ? Number(it.receivedQuantity) : q;
               }
             }
           });
@@ -741,6 +791,209 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
       .filter((r) => r.orderedQty > 0 || r.usedQty > 0 || r.item.popular)
       .sort((a, b) => b.usedCost + b.orderedCost - (a.usedCost + a.orderedCost));
 
+    // 3. Month-by-Month Historical Consumption & Chemical Spending Trend (for all branch-filtered history)
+    const monthKeySet = new Set<string>();
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      monthKeySet.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+    }
+    orders.forEach((o) => {
+      if (o.status === 'cancelled') return;
+      if (effectiveReportBranch !== 'all' && o.branchId !== effectiveReportBranch) return;
+      const d = new Date(o.createdAt);
+      if (!isNaN(d.getTime())) {
+        monthKeySet.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+      }
+    });
+    stockMovements.forEach((m) => {
+      if (effectiveReportBranch !== 'all' && m.branchId !== effectiveReportBranch) return;
+      const d = new Date(m.createdAt);
+      if (!isNaN(d.getTime())) {
+        monthKeySet.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+      }
+    });
+    monthlyRecords.forEach((r) => {
+      if (effectiveReportBranch !== 'all' && r.branchId !== effectiveReportBranch) return;
+      if (r.monthKey) monthKeySet.add(r.monthKey);
+    });
+
+    const sortedMonthKeys = Array.from(monthKeySet).sort((a, b) => b.localeCompare(a));
+
+    const monthlyTrendRows = sortedMonthKeys.map((mKey) => {
+      const [yStr, mStr] = mKey.split('-');
+      const y = Number(yStr);
+      const m = Number(mStr);
+      const mStart = new Date(y, m - 1, 1, 0, 0, 0, 0).getTime();
+      const mEnd = new Date(y, m, 0, 23, 59, 59, 999).getTime();
+      const monthLabel = new Date(y, m - 1, 1).toLocaleDateString('en-US', {
+        month: 'short',
+        year: 'numeric',
+      });
+
+      const mOrders = orders.filter((o) => {
+        if (o.status === 'cancelled') return false;
+        if (effectiveReportBranch !== 'all' && o.branchId !== effectiveReportBranch) return false;
+        const t = new Date(o.createdAt).getTime();
+        return t >= mStart && t <= mEnd;
+      });
+
+      const mMovs = stockMovements.filter((mov) => {
+        if (effectiveReportBranch !== 'all' && mov.branchId !== effectiveReportBranch) return false;
+        const t = new Date(mov.createdAt).getTime();
+        return t >= mStart && t <= mEnd;
+      });
+
+      let orderedChemCost = 0;
+      let orderedNonChemCost = 0;
+      let orderedChemUnits = 0;
+      let orderedNonChemUnits = 0;
+
+      mOrders.forEach((o) => {
+        (o.items || []).forEach((it) => {
+          const q = Number(it.receivedQuantity ?? it.quantity) || 0;
+          const p = Number(it.actualUnitPrice ?? it.estimatedPrice) || 0;
+          const cost = q * p;
+          if (CHEMICAL_CATS.has(it.category || 'chemical')) {
+            orderedChemCost += cost;
+            orderedChemUnits += q;
+          } else {
+            orderedNonChemCost += cost;
+            orderedNonChemUnits += q;
+          }
+        });
+      });
+
+      let usedChemCost = 0;
+      let usedNonChemCost = 0;
+      let usedChemUnits = 0;
+      let usedNonChemUnits = 0;
+
+      mMovs.forEach((mov) => {
+        if (mov.deltaQty < 0) {
+          const absQ = Math.abs(mov.deltaQty);
+          const cost = mov.estimatedCostImpact || absQ * (mov.unitPrice || 0);
+          if (CHEMICAL_CATS.has(mov.category || 'chemical')) {
+            usedChemCost += cost;
+            usedChemUnits += absQ;
+          } else {
+            usedNonChemCost += cost;
+            usedNonChemUnits += absQ;
+          }
+        }
+      });
+
+      // Use actual stock usage when recorded, falling back to top-up ordered spend for that month
+      const chemicalSpend = usedChemCost > 0 ? usedChemCost : orderedChemCost;
+      const nonChemicalSpend = usedNonChemCost > 0 ? usedNonChemCost : orderedNonChemCost;
+      const totalSpend = chemicalSpend + nonChemicalSpend;
+      const chemicalUnits = usedChemUnits > 0 ? usedChemUnits : orderedChemUnits;
+      const nonChemicalUnits = usedNonChemUnits > 0 ? usedNonChemUnits : orderedNonChemUnits;
+
+      const mJobs = (jobs || []).filter((j: any) => {
+        if (j.status === 'cancelled') return false;
+        if (effectiveReportBranch !== 'all' && (j.branchId || 'ONLINE') !== effectiveReportBranch) {
+          return false;
+        }
+        const jt = new Date(j.createdAt || j.scheduledAt || 0).getTime();
+        return jt >= mStart && jt <= mEnd;
+      });
+
+      const storedSnapshots = monthlyRecords.filter(
+        (r) =>
+          r.monthKey === mKey &&
+          (effectiveReportBranch === 'all' || r.branchId === effectiveReportBranch)
+      );
+
+      return {
+        monthKey: mKey,
+        monthLabel,
+        ordersCount: mOrders.length,
+        chemicalSpend,
+        nonChemicalSpend,
+        totalSpend,
+        chemicalUnits,
+        nonChemicalUnits,
+        orderedChemCost,
+        orderedNonChemCost,
+        usedChemCost,
+        usedNonChemCost,
+        laundryJobsCount: mJobs.length,
+        chemicalCostPerJob:
+          mJobs.length > 0 ? Math.round((chemicalSpend / mJobs.length) * 10) / 10 : 0,
+        storedSnapshotsCount: storedSnapshots.length,
+        hasActivity: totalSpend > 0 || mOrders.length > 0 || storedSnapshots.length > 0,
+      };
+    });
+
+    const activeMonths = monthlyTrendRows.filter((m) => m.totalSpend > 0 || m.ordersCount > 0);
+    const activeMonthsCount = Math.max(1, activeMonths.length);
+    const sumMonthlyChem = activeMonths.reduce((s, m) => s + m.chemicalSpend, 0);
+    const sumMonthlyNonChem = activeMonths.reduce((s, m) => s + m.nonChemicalSpend, 0);
+    const sumMonthlyTotal = sumMonthlyChem + sumMonthlyNonChem;
+
+    const avgMonthlyChemicalSpend = Math.round(sumMonthlyChem / activeMonthsCount);
+    const avgMonthlyNonChemicalSpend = Math.round(sumMonthlyNonChem / activeMonthsCount);
+    const avgMonthlyTotalSpend = Math.round(sumMonthlyTotal / activeMonthsCount);
+    const chemicalSharePct =
+      sumMonthlyTotal > 0 ? Math.round((sumMonthlyChem / sumMonthlyTotal) * 1000) / 10 : 0;
+
+    // 4. Category-by-Category Consumption & Monthly Average Spend Breakdown
+    const categoryBreakdownRows = (Object.keys(SUPPLY_CATEGORY_LABELS) as SupplyItemCategory[]).map(
+      (catKey) => {
+        const cfg = SUPPLY_CATEGORY_LABELS[catKey];
+        const isChemicalGroup = CHEMICAL_CATS.has(catKey);
+        let orderedQty = 0;
+        let orderedCost = 0;
+        let usedQty = 0;
+        let usedCost = 0;
+
+        periodOrders.forEach((o) => {
+          (o.items || []).forEach((it) => {
+            if ((it.category || 'chemical') === catKey) {
+              const q = Number(it.receivedQuantity ?? it.quantity) || 0;
+              const p = Number(it.actualUnitPrice ?? it.estimatedPrice) || 0;
+              orderedQty += q;
+              orderedCost += q * p;
+            }
+          });
+        });
+
+        periodMovements.forEach((mov) => {
+          if ((mov.category || 'chemical') === catKey && mov.deltaQty < 0) {
+            const absQ = Math.abs(mov.deltaQty);
+            usedQty += absQ;
+            usedCost += mov.estimatedCostImpact || absQ * (mov.unitPrice || 0);
+          }
+        });
+
+        const effectiveSpend = usedCost > 0 ? usedCost : orderedCost;
+        const effectiveUnits = usedQty > 0 ? usedQty : orderedQty;
+
+        return {
+          category: catKey,
+          labelEn: cfg.en,
+          labelTh: cfg.th,
+          icon: cfg.icon,
+          isChemicalGroup,
+          orderedQty,
+          orderedCost,
+          usedQty,
+          usedCost,
+          effectiveSpend,
+          effectiveUnits,
+          avgMonthlySpend: Math.round(effectiveSpend / activeMonthsCount),
+        };
+      }
+    );
+
+    const totalCategorySpend = categoryBreakdownRows.reduce((s, r) => s + r.effectiveSpend, 0);
+    const periodChemicalSpend = categoryBreakdownRows
+      .filter((r) => r.isChemicalGroup)
+      .reduce((s, r) => s + r.effectiveSpend, 0);
+    const periodNonChemicalSpend = categoryBreakdownRows
+      .filter((r) => !r.isChemicalGroup)
+      .reduce((s, r) => s + r.effectiveSpend, 0);
+
     const totals = branchRows.reduce(
       (acc, r) => ({
         ordersCount: acc.ordersCount + r.ordersCount,
@@ -766,20 +1019,42 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
       }
     );
 
+    const filteredMonthlyRecords = monthlyRecords.filter((r) => {
+      if (effectiveReportBranch !== 'all' && r.branchId !== effectiveReportBranch) return false;
+      if (reportPeriod === 'specific_month' && selectedReportMonthKey) {
+        return r.monthKey === selectedReportMonthKey;
+      }
+      return true;
+    });
+
     return {
       branchRows,
       itemRows,
       periodMovements,
       totals,
+      monthlyTrendRows,
+      sortedMonthKeys,
+      activeMonthsCount,
+      avgMonthlyChemicalSpend,
+      avgMonthlyNonChemicalSpend,
+      avgMonthlyTotalSpend,
+      chemicalSharePct,
+      categoryBreakdownRows,
+      totalCategorySpend,
+      periodChemicalSpend,
+      periodNonChemicalSpend,
+      filteredMonthlyRecords,
     };
   }, [
     orders,
     stockMovements,
     allBranchesStock,
+    monthlyRecords,
     catalog,
     shops,
     jobs,
     reportPeriod,
+    selectedReportMonthKey,
     reportBranchFilter,
     reportCategoryFilter,
     isAdmin,
@@ -949,6 +1224,7 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
         nameTh: r.catalogItem.nameTh,
         category: r.catalogItem.category,
         quantity: suggestedQty,
+        currentStockOnHand: r.quantity,
         unit: r.catalogItem.defaultUnit,
         estimatedPrice: r.catalogItem.estimatedPrice,
       };
@@ -960,6 +1236,110 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
     setIsAddingCustom(false);
     setIsCreateOpen(true);
     toast.success(`เพิ่มรายการใกล้หมดจำนวน ${itemsToOrder.length} รายการเข้าตะกร้าสั่งซื้อแล้ว`);
+  };
+
+  // --- MONTHLY STOREFRONT STOCK COUNT & TOP-UP SHEET HANDLERS ---
+  const handleOpenMonthlyStockSheet = () => {
+    const availItems = catalog.filter((i) => i.available !== false);
+    const initialMap: Record<
+      string,
+      { closingStockQty: number; minStock: number; topUpQty: number }
+    > = {};
+    availItems.forEach((item, idx) => {
+      const found = branchStock.find(
+        (s) => s.branchId === effectiveStockBranchId && s.catalogItemId === item.id
+      );
+      const defaultInitialQty = item.popular ? (idx % 3 === 0 ? 1 : 5) : 3;
+      const qty = found ? Number(found.quantity) : defaultInitialQty;
+      const min = found ? Number(found.minStock ?? 2) : 2;
+      const suggestedTopUp = qty <= min ? Math.max(1, min - qty + 2) : 0;
+      initialMap[item.id] = {
+        closingStockQty: qty,
+        minStock: min,
+        topUpQty: suggestedTopUp,
+      };
+    });
+    setStockSheetEntries(initialMap);
+    const d = new Date();
+    setStockSheetMonthKey(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+    setStockSheetCategory('all');
+    setStockSheetSearch('');
+    setStockSheetCreateOrder(true);
+    setStockSheetNotes('');
+    setIsMonthlyStockSheetOpen(true);
+  };
+
+  const handleAutoFillSuggestedTopUp = () => {
+    setStockSheetEntries((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((itemId) => {
+        const row = next[itemId];
+        if (row.closingStockQty <= row.minStock) {
+          next[itemId] = {
+            ...row,
+            topUpQty: Math.max(1, row.minStock - row.closingStockQty + 2),
+          };
+        }
+      });
+      return next;
+    });
+    toast.success('คำนวณจำนวนสั่งเติม (Top-Up Qty) สำหรับรายการที่สต็อกต่ำกว่าเกณฑ์ให้อัตโนมัติแล้ว');
+  };
+
+  const handleSaveMonthlyStockSheet = async () => {
+    const branchObj = shops.find((s) => s.id === effectiveStockBranchId);
+    const branchName = branchObj
+      ? branchObj.name
+      : effectiveStockBranchId === 'ONLINE'
+      ? 'Online Central'
+      : effectiveStockBranchId;
+
+    const entriesArray = Object.entries(stockSheetEntries).map(([catalogItemId, val]) => ({
+      catalogItemId,
+      closingStockQty: Math.max(0, Number(val.closingStockQty) || 0),
+      minStock: Math.max(0, Number(val.minStock) || 0),
+      topUpQty: Math.max(0, Number(val.topUpQty) || 0),
+    }));
+
+    try {
+      setSavingStockSheet(true);
+      const res = await saveMonthlyStorefrontStockAuditAction({
+        monthKey: stockSheetMonthKey,
+        branchId: effectiveStockBranchId,
+        branchName,
+        notes: stockSheetNotes.trim() || undefined,
+        createTopUpOrder: stockSheetCreateOrder,
+        priority: stockSheetPriority,
+        neededByDate: stockSheetNeededBy || undefined,
+        entries: entriesArray,
+      });
+
+      if (res.success) {
+        if (res.stock) {
+          setBranchStock(res.stock);
+          setAllBranchesStock(res.stock);
+        }
+        if (res.movements) setStockMovements(res.movements);
+        if (res.records) setMonthlyRecords(res.records);
+        loadOrders(true);
+        setIsMonthlyStockSheetOpen(false);
+        if (res.createdOrder) {
+          toast.success(
+            `อัปเดตยอดสต็อกหน้าร้านประจำเดือน ${stockSheetMonthKey} และส่งใบสั่งเติม #${res.createdOrder.orderNumber} ให้สำนักงานใหญ่เรียบร้อยแล้ว!`
+          );
+        } else {
+          toast.success(
+            `บันทึกยอดสต็อกหน้าร้านประจำเดือน ${stockSheetMonthKey} ส่งให้สำนักงานใหญ่เรียบร้อยแล้ว!`
+          );
+        }
+      } else {
+        toast.error(res.error || 'Failed to save monthly storefront stock balance');
+      }
+    } catch (e: any) {
+      toast.error('Error: ' + e.message);
+    } finally {
+      setSavingStockSheet(false);
+    }
   };
 
   // --- 6-MONTH PRICE REVIEW HANDLERS ---
@@ -1142,7 +1522,24 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
   };
 
   // --- ORDER CART HANDLERS ---
+  const getCurrentBranchStockForCatalogItem = (catalogItemId: string): number => {
+    const activeBId =
+      !isAdmin && !canProcessOrder && currentUser?.branchId
+        ? currentUser.branchId
+        : orderBranchId || effectiveStockBranchId;
+    const found = allBranchesStock.find(
+      (s) => s.branchId === activeBId && s.catalogItemId === catalogItemId
+    ) || branchStock.find(
+      (s) => s.branchId === activeBId && s.catalogItemId === catalogItemId
+    );
+    if (found) return Number(found.quantity) || 0;
+    const catIdx = catalog.findIndex((c) => c.id === catalogItemId);
+    const catItem = catIdx >= 0 ? catalog[catIdx] : null;
+    return catItem?.popular ? (catIdx % 3 === 0 ? 1 : 5) : 3;
+  };
+
   const handleAddCatalogItem = (catalogItem: CatalogSupplyItem) => {
+    const currentOnHand = getCurrentBranchStockForCatalogItem(catalogItem.id);
     setSelectedItems((prev) => {
       const existing = prev.find((it) => it.catalogItemId === catalogItem.id);
       if (existing) {
@@ -1159,11 +1556,19 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
           nameTh: catalogItem.nameTh,
           category: catalogItem.category,
           quantity: 1,
+          currentStockOnHand: currentOnHand,
           unit: catalogItem.defaultUnit,
           estimatedPrice: catalogItem.estimatedPrice,
         },
       ];
     });
+  };
+
+  const handleUpdateItemCurrentStockOnHand = (itemId: string, nextOnHand: number) => {
+    const cleanVal = Math.max(0, Number.isFinite(nextOnHand) ? nextOnHand : 0);
+    setSelectedItems((prev) =>
+      prev.map((it) => (it.id === itemId ? { ...it, currentStockOnHand: cleanVal } : it))
+    );
   };
 
   const handleUpdateItemQty = (itemId: string, delta: number) => {
@@ -1705,13 +2110,16 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
       });
 
       if (res.success && res.order) {
-        toast.success(`Supply order ${res.order.orderNumber} submitted to Admin!`);
+        toast.success(
+          `Supply order ${res.order.orderNumber} submitted & storefront stock balance updated!`
+        );
         setIsCreateOpen(false);
         setSelectedItems([]);
         setOrderNotes('');
         setNeededByDate('');
         setOrderPriority('normal');
         loadOrders(true);
+        loadBranchStock(effectiveBranchId);
       } else {
         toast.error(res.error || 'Failed to submit supply order');
       }
@@ -1906,6 +2314,15 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
                   <span className="hidden sm:inline ml-1.5">Refresh</span>
                 </Button>
 
+                <Button
+                  size="sm"
+                  onClick={handleOpenMonthlyStockSheet}
+                  className="h-10 px-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-emerald-600/30 gap-2 cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98]"
+                >
+                  <ClipboardCheck size={16} />
+                  <span>Update Storefront Stock & Top-Up (อัปเดตสต็อกหน้าร้าน & สั่งเติม)</span>
+                </Button>
+
                 {canMakeOrder && (
                   <Button
                     size="sm"
@@ -1940,6 +2357,15 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
                 >
                   <RefreshCw size={15} className={loadingStock ? 'animate-spin' : ''} />
                   <span className="hidden sm:inline ml-1.5">Refresh Stock</span>
+                </Button>
+
+                <Button
+                  size="sm"
+                  onClick={handleOpenMonthlyStockSheet}
+                  className="h-10 px-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-emerald-600/30 gap-2 cursor-pointer"
+                >
+                  <ClipboardCheck size={15} />
+                  <span>Monthly Storefront Stock Count & Top-Up (นับสต็อกหน้าร้านประจำเดือน)</span>
                 </Button>
 
                 {canOpenOrderModal && (
@@ -2550,6 +2976,14 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
                                   </span>
                                   <span className="truncate max-w-[200px]">{it.name}</span>
                                   <span className="text-[10px] text-slate-400">({it.unit})</span>
+                                  {it.currentStockOnHand !== undefined && (
+                                    <span
+                                      className="text-[10px] font-extrabold px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-800 border border-emerald-200"
+                                      title="Storefront stock balance reported at the time of ordering"
+                                    >
+                                      Stock left: {it.currentStockOnHand}
+                                    </span>
+                                  )}
                                   {!it.catalogItemId && (
                                     <span className="text-[9px] font-black uppercase px-1 py-0.2 rounded bg-amber-100 text-amber-800">
                                       Custom
@@ -3122,6 +3556,35 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
                   {p.label}
                 </button>
               ))}
+
+              {/* Specific Month Picker (YYYY-MM) */}
+              <div className="flex items-center gap-1.5 pl-1 border-l border-slate-200">
+                <span className="text-[11px] font-bold text-slate-500">Select Month:</span>
+                <select
+                  value={reportPeriod === 'specific_month' ? selectedReportMonthKey : ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val) {
+                      setSelectedReportMonthKey(val);
+                      setReportPeriod('specific_month');
+                    } else {
+                      setReportPeriod('this_month');
+                    }
+                  }}
+                  className={`h-8 rounded-xl border px-2.5 text-xs font-bold cursor-pointer ${
+                    reportPeriod === 'specific_month'
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-slate-50 text-slate-700 border-slate-200'
+                  }`}
+                >
+                  <option value="">-- Pick Month (เลือกเดือน) --</option>
+                  {reportAnalytics.sortedMonthKeys.map((mk) => (
+                    <option key={mk} value={mk} className="bg-white text-slate-900">
+                      📅 {mk}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -3256,6 +3719,412 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
                 Stock Value (มูลค่าคงเหลือ): ~฿{reportAnalytics.totals.currentStockValue.toLocaleString()}
               </p>
             </div>
+          </div>
+
+          {/* ================================================================= */}
+          {/* MONTHLY AVERAGE CHEMICAL SPENDING vs OTHER SUPPLIES DASHBOARD     */}
+          {/* ================================================================= */}
+          <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-sky-950 text-white rounded-2xl p-5 shadow-lg space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="p-1.5 rounded-lg bg-sky-500/20 text-sky-300 border border-sky-400/30">
+                    <Droplets size={16} />
+                  </span>
+                  <h3 className="text-sm sm:text-base font-black text-white">
+                    Monthly Chemical & Supply Consumption Intelligence (วิเคราะห์ค่าใช้จ่ายน้ำยาซักรีดและอุปกรณ์เฉลี่ยต่อเดือน)
+                  </h3>
+                </div>
+                <p className="text-xs text-sky-200/80 mt-0.5">
+                  Understand average monthly spending on laundry chemicals (detergents, softeners, stain removers, dry clean solvents) vs packaging & store supplies across {reportAnalytics.activeMonthsCount} active month(s).
+                </p>
+              </div>
+              <Button
+                size="sm"
+                onClick={handleOpenMonthlyStockSheet}
+                className="h-9 px-3.5 bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer shadow-md"
+              >
+                <ClipboardCheck size={14} />
+                <span>Update Storefront Stock & Save Monthly Record</span>
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* Card 1: Avg Monthly Chemical Spend */}
+              <div className="rounded-xl bg-white/10 backdrop-blur-xs border border-sky-400/30 p-3.5 space-y-1">
+                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-sky-300">
+                  <span>Avg. Monthly Chemical Spend</span>
+                  <span>💧 Chemicals Only</span>
+                </div>
+                <div className="text-2xl font-black text-white">
+                  ฿{reportAnalytics.avgMonthlyChemicalSpend.toLocaleString()}
+                  <span className="text-xs font-semibold text-sky-200 ml-1">/ month</span>
+                </div>
+                <div className="text-[11px] text-sky-200/90 flex items-center justify-between pt-0.5">
+                  <span>ค่าเฉลี่ยเฉพาะน้ำยาซักรีดต่อเดือน</span>
+                  <span className="px-1.5 py-0.2 rounded bg-sky-500/30 text-sky-200 font-black text-[10px]">
+                    {reportAnalytics.chemicalSharePct}% of total
+                  </span>
+                </div>
+              </div>
+
+              {/* Card 2: Selected Period Chemical Spend */}
+              <div className="rounded-xl bg-white/10 backdrop-blur-xs border border-white/15 p-3.5 space-y-1">
+                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-emerald-300">
+                  <span>Chemical Spend (Selected Period)</span>
+                  <span>✨ Active Filter</span>
+                </div>
+                <div className="text-2xl font-black text-emerald-300">
+                  ฿{reportAnalytics.periodChemicalSpend.toLocaleString()}
+                </div>
+                <div className="text-[11px] text-slate-300">
+                  ยอดใช้น้ำยาซัก/ปรับผ้านุ่ม/ขจัดคราบในช่วงเวลาที่เลือก
+                </div>
+              </div>
+
+              {/* Card 3: Avg Monthly Packaging & Store Supplies */}
+              <div className="rounded-xl bg-white/10 backdrop-blur-xs border border-white/15 p-3.5 space-y-1">
+                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-amber-300">
+                  <span>Avg. Monthly Packaging & Store</span>
+                  <span>🛍️ Bags / Hangers</span>
+                </div>
+                <div className="text-2xl font-black text-amber-300">
+                  ฿{reportAnalytics.avgMonthlyNonChemicalSpend.toLocaleString()}
+                  <span className="text-xs font-semibold text-amber-200 ml-1">/ month</span>
+                </div>
+                <div className="text-[11px] text-slate-300">
+                  ค่าเฉลี่ยถุง ไม้แขวน แท็ก และอุปกรณ์หน้าร้านต่อเดือน
+                </div>
+              </div>
+
+              {/* Card 4: Avg Monthly Total Supply Spend */}
+              <div className="rounded-xl bg-white/10 backdrop-blur-xs border border-indigo-400/30 p-3.5 space-y-1">
+                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-indigo-200">
+                  <span>Total Avg. Monthly Spend</span>
+                  <span>📊 {reportAnalytics.activeMonthsCount} Month(s) Avg</span>
+                </div>
+                <div className="text-2xl font-black text-white">
+                  ฿{reportAnalytics.avgMonthlyTotalSpend.toLocaleString()}
+                  <span className="text-xs font-semibold text-indigo-200 ml-1">/ month</span>
+                </div>
+                <div className="text-[11px] text-indigo-200/90">
+                  ค่าใช้จ่ายวัสดุสิ้นเปลืองเฉลี่ยรวมทุกหมวดต่อเดือน
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ================================================================= */}
+          {/* 0A. MONTH-BY-MONTH CONSUMPTION & CHEMICAL SPENDING TREND TABLE    */}
+          {/* ================================================================= */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+              <div className="p-4 border-b border-slate-100 bg-slate-50/60 flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                    <Calendar size={16} className="text-sky-600" />
+                    <span>
+                      Monthly Consumption & Chemical Spending History (สรุปยอดใช้น้ำยาและอุปกรณ์รายเดือน)
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Click any month row to filter the entire report to that month (คลิกเลือกเดือนเพื่อดูรายละเอียดเฉพาะเดือนนั้น)
+                  </p>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-left">
+                      <th className="py-2.5 px-4 font-extrabold uppercase text-[10px]">Month (เดือน)</th>
+                      <th className="py-2.5 px-3 font-extrabold uppercase text-[10px] text-center">Top-Up Orders</th>
+                      <th className="py-2.5 px-3 font-extrabold uppercase text-[10px] text-right">
+                        💧 Chemical Spend (ค่าน้ำยา)
+                      </th>
+                      <th className="py-2.5 px-3 font-extrabold uppercase text-[10px] text-right">
+                        🛍️ Packaging & Other
+                      </th>
+                      <th className="py-2.5 px-3 font-extrabold uppercase text-[10px] text-right">
+                        Total Spend (รวม)
+                      </th>
+                      <th className="py-2.5 px-4 font-extrabold uppercase text-[10px] text-right">
+                        Chem / Job
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {reportAnalytics.monthlyTrendRows.map((mRow) => {
+                      const isSelectedMonth =
+                        reportPeriod === 'specific_month' && selectedReportMonthKey === mRow.monthKey;
+                      return (
+                        <tr
+                          key={mRow.monthKey}
+                          onClick={() => {
+                            setSelectedReportMonthKey(mRow.monthKey);
+                            setReportPeriod('specific_month');
+                          }}
+                          className={`cursor-pointer transition-colors ${
+                            isSelectedMonth
+                              ? 'bg-indigo-50/90 font-bold'
+                              : 'hover:bg-slate-50/80'
+                          }`}
+                        >
+                          <td className="py-2.5 px-4 font-black text-slate-900 flex items-center gap-2">
+                            <span className="font-mono text-xs">{mRow.monthKey}</span>
+                            <span className="text-[11px] font-semibold text-slate-500">
+                              ({mRow.monthLabel})
+                            </span>
+                            {mRow.storedSnapshotsCount > 0 && (
+                              <span
+                                className="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 text-[9px] font-black"
+                                title="Stored storefront stock snapshot available"
+                              >
+                                ✓ Stored
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-bold text-slate-700">
+                            {mRow.ordersCount}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-black text-sky-700">
+                            ฿{mRow.chemicalSpend.toLocaleString()}
+                            <span className="block text-[10px] font-normal text-slate-400">
+                              {mRow.chemicalUnits} units
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-bold text-slate-700">
+                            ฿{mRow.nonChemicalSpend.toLocaleString()}
+                            <span className="block text-[10px] font-normal text-slate-400">
+                              {mRow.nonChemicalUnits} units
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-black text-slate-900">
+                            ฿{mRow.totalSpend.toLocaleString()}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-bold text-emerald-700">
+                            {mRow.laundryJobsCount > 0
+                              ? `~฿${mRow.chemicalCostPerJob}/job`
+                              : '-'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-slate-900 text-white font-black text-xs">
+                      <td className="py-2.5 px-4">
+                        Monthly Average (ค่าเฉลี่ยต่อเดือน)
+                      </td>
+                      <td className="py-2.5 px-3 text-center text-slate-300">
+                        {reportAnalytics.activeMonthsCount} mo.
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-sky-300">
+                        ฿{reportAnalytics.avgMonthlyChemicalSpend.toLocaleString()}/mo
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-amber-300">
+                        ฿{reportAnalytics.avgMonthlyNonChemicalSpend.toLocaleString()}/mo
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-emerald-300">
+                        ฿{reportAnalytics.avgMonthlyTotalSpend.toLocaleString()}/mo
+                      </td>
+                      <td className="py-2.5 px-4 text-right text-slate-300">
+                        {reportAnalytics.chemicalSharePct}% Chem
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+
+            {/* 0B. Category-by-Category Monthly Average Breakdown */}
+            <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col">
+              <div className="p-4 border-b border-slate-100 bg-slate-50/60">
+                <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                  <Droplets size={16} className="text-indigo-600" />
+                  <span>
+                    Category Spending & Monthly Average (แยกตามหมวดหมู่น้ำยา vs อุปกรณ์)
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Breakdown of chemical categories vs packaging & store supplies
+                </p>
+              </div>
+
+              <div className="divide-y divide-slate-100 flex-1 overflow-y-auto">
+                {reportAnalytics.categoryBreakdownRows.map((catRow) => {
+                  const pct =
+                    reportAnalytics.totalCategorySpend > 0
+                      ? Math.round((catRow.effectiveSpend / reportAnalytics.totalCategorySpend) * 1000) / 10
+                      : 0;
+                  return (
+                    <div
+                      key={catRow.category}
+                      onClick={() =>
+                        setReportCategoryFilter(
+                          reportCategoryFilter === catRow.category ? 'all' : catRow.category
+                        )
+                      }
+                      className={`px-4 py-2.5 flex items-center justify-between gap-3 text-xs cursor-pointer transition-colors ${
+                        reportCategoryFilter === catRow.category
+                          ? 'bg-indigo-50/80'
+                          : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span>{catRow.icon}</span>
+                          <span className="font-black text-slate-900 truncate">
+                            {catRow.labelEn}
+                          </span>
+                          <span
+                            className={`text-[9px] font-black px-1.5 py-0.2 rounded uppercase ${
+                              catRow.isChemicalGroup
+                                ? 'bg-sky-100 text-sky-800 border border-sky-200'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            {catRow.isChemicalGroup ? 'Chemical' : 'Store Supply'}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          {catRow.labelTh} • {catRow.effectiveUnits.toLocaleString()} units ({pct}%)
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <div className="font-black text-slate-900">
+                          ฿{catRow.effectiveSpend.toLocaleString()}
+                        </div>
+                        <div className="text-[10px] font-bold text-indigo-700">
+                          Avg ~฿{catRow.avgMonthlySpend.toLocaleString()}/mo
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* ================================================================= */}
+          {/* STORED MONTHLY STOREFRONT STOCK & CONSUMPTION RECORDS ARCHIVE     */}
+          {/* ================================================================= */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+            <div className="p-4 border-b border-slate-100 bg-emerald-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                  <ClipboardCheck size={16} className="text-emerald-600" />
+                  <span>
+                    Stored Monthly Storefront Stock & Top-Up Records Archive (คลังบันทึกยอดสต็อกหน้าร้านและสั่งเติมรายเดือนย้อนหลัง)
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Permanent monthly records submitted by storefront employees when updating stock balances and ordering top-up supplies ({reportAnalytics.filteredMonthlyRecords.length} stored record(s))
+                </p>
+              </div>
+              <Button
+                size="sm"
+                onClick={handleOpenMonthlyStockSheet}
+                className="h-8 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl gap-1.5 shrink-0 cursor-pointer"
+              >
+                <ClipboardCheck size={13} />
+                <span>+ Submit / Update Monthly Stock Record</span>
+              </Button>
+            </div>
+
+            {reportAnalytics.filteredMonthlyRecords.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-500 space-y-2.5">
+                <ClipboardCheck size={28} className="mx-auto text-emerald-500/70" />
+                <div className="font-bold text-slate-700">
+                  No monthly storefront stock records stored for this filter yet (ยังไม่มีบันทึกปิดงวดสต็อกรายเดือนในตัวกรองนี้)
+                </div>
+                <p className="text-[11px] text-slate-400 max-w-lg mx-auto">
+                  Whenever storefront employees update their current stock balance in <strong>Make Supply Order</strong> or submit a <strong>Monthly Storefront Stock Count</strong>, the monthly snapshot is automatically archived here for future reference.
+                </p>
+                <Button
+                  size="sm"
+                  onClick={handleOpenMonthlyStockSheet}
+                  className="h-8 px-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl gap-1.5 cursor-pointer"
+                >
+                  <ClipboardCheck size={13} />
+                  <span>Create This Month&apos;s Storefront Stock Record Now</span>
+                </Button>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-left">
+                      <th className="py-2.5 px-4 font-extrabold uppercase text-[10px]">Month</th>
+                      <th className="py-2.5 px-3 font-extrabold uppercase text-[10px]">Storefront Branch</th>
+                      <th className="py-2.5 px-3 font-extrabold uppercase text-[10px]">Updated By</th>
+                      <th className="py-2.5 px-3 font-extrabold uppercase text-[10px] text-right">
+                        💧 Chemical Spend
+                      </th>
+                      <th className="py-2.5 px-3 font-extrabold uppercase text-[10px] text-right">
+                        Total Consumed
+                      </th>
+                      <th className="py-2.5 px-3 font-extrabold uppercase text-[10px] text-right">
+                        Top-Up Ordered
+                      </th>
+                      <th className="py-2.5 px-4 font-extrabold uppercase text-[10px] text-right">
+                        Action
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {reportAnalytics.filteredMonthlyRecords.map((rec) => (
+                      <tr key={rec.id} className="hover:bg-slate-50/80">
+                        <td className="py-3 px-4 font-mono font-black text-slate-900">
+                          {rec.monthKey}
+                        </td>
+                        <td className="py-3 px-3 font-bold text-slate-800">
+                          {rec.branchName}
+                        </td>
+                        <td className="py-3 px-3 text-slate-600">
+                          <span className="font-bold text-slate-800">{rec.submittedByName}</span>
+                          <span className="block text-[10px] text-slate-400">
+                            {new Date(rec.updatedAt).toLocaleString('en-GB', {
+                              day: 'numeric',
+                              month: 'short',
+                              year: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-right font-black text-sky-700">
+                          ฿{(rec.chemicalConsumedCost || rec.chemicalTopUpOrderedCost || 0).toLocaleString()}
+                        </td>
+                        <td className="py-3 px-3 text-right font-bold text-rose-700">
+                          {rec.totalConsumedUnits} units (฿{(rec.totalConsumedCost || 0).toLocaleString()})
+                        </td>
+                        <td className="py-3 px-3 text-right font-bold text-indigo-700">
+                          +{rec.totalTopUpOrderedUnits} units (฿{(rec.totalTopUpOrderedCost || 0).toLocaleString()})
+                          {rec.linkedOrderNumber && (
+                            <span className="block text-[10px] font-mono text-slate-400">
+                              #{rec.linkedOrderNumber}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setViewingMonthlyRecord(rec)}
+                            className="h-7 px-2.5 text-[11px] font-bold rounded-lg gap-1 cursor-pointer"
+                          >
+                            <Eye size={12} />
+                            <span>View Record</span>
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           {/* 1. Branch-by-Branch Comparison Table */}
@@ -4192,8 +5061,11 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
                           )}
                         </div>
                         <p className="text-[10px] text-slate-400 mt-0.5">{item.nameTh}</p>
-                        <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500">
+                        <div className="flex items-center justify-between gap-2 mt-1 text-[11px] text-slate-500">
                           <span className="font-semibold">{item.defaultUnit}</span>
+                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            On-hand: {getCurrentBranchStockForCatalogItem(item.id)}
+                          </span>
                           {item.estimatedPrice > 0 && (
                             <span className="font-bold text-sky-700">~฿{item.estimatedPrice}</span>
                           )}
@@ -4265,67 +5137,109 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
                   No items selected yet. Click '+ Add' on the catalog items above.
                 </div>
               ) : (
-                <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar p-1">
-                  {selectedItems.map((item) => (
-                    <div
-                      key={item.id}
-                      className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-3 text-xs"
-                    >
-                      <div className="min-w-0 flex-1 flex items-center gap-2.5">
-                        {item.imageUrl && (
-                          <button
-                            type="button"
-                            onClick={() => setPreviewImageUrl(item.imageUrl || null)}
-                            className="shrink-0 w-9 h-9 rounded-lg overflow-hidden border border-slate-300 cursor-pointer"
-                          >
-                            <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover" />
-                          </button>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <div className="font-extrabold text-slate-800 truncate">{item.name}</div>
-                          <div className="text-[11px] text-slate-400 flex items-center gap-2 flex-wrap">
-                            <span>Unit: {item.unit}</span>
-                            {item.estimatedPrice ? (
-                              <span className="text-sky-700 font-bold">~฿{item.estimatedPrice * item.quantity}</span>
-                            ) : null}
-                            {item.notes ? (
-                              <span className="text-indigo-600 truncate">• {item.notes}</span>
-                            ) : null}
+                <div className="space-y-2">
+                  <div className="px-3 py-2 rounded-xl bg-emerald-50/80 border border-emerald-200 text-[11px] text-emerald-900 flex items-center justify-between gap-2">
+                    <span>
+                      📌 <strong>Storefront Stock Update Required:</strong> Please enter/verify your <strong>Current Storefront Stock (คงเหลือหน้าร้านตอนนี้)</strong> for each item before submitting your top-up order to Head Office.
+                    </span>
+                  </div>
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto custom-scrollbar p-1">
+                    {selectedItems.map((item) => (
+                      <div
+                        key={item.id}
+                        className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs"
+                      >
+                        <div className="min-w-0 flex-1 flex items-center gap-2.5">
+                          {item.imageUrl && (
+                            <button
+                              type="button"
+                              onClick={() => setPreviewImageUrl(item.imageUrl || null)}
+                              className="shrink-0 w-9 h-9 rounded-lg overflow-hidden border border-slate-300 cursor-pointer"
+                            >
+                              <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover" />
+                            </button>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="font-extrabold text-slate-800 truncate">{item.name}</div>
+                            <div className="text-[11px] text-slate-400 flex items-center gap-2 flex-wrap">
+                              <span>Unit: {item.unit}</span>
+                              {item.estimatedPrice ? (
+                                <span className="text-sky-700 font-bold">~฿{item.estimatedPrice * item.quantity}</span>
+                              ) : null}
+                              {item.notes ? (
+                                <span className="text-indigo-600 truncate">• {item.notes}</span>
+                              ) : null}
+                            </div>
                           </div>
                         </div>
-                      </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="flex items-center border border-slate-200 rounded-lg bg-white overflow-hidden">
+                        <div className="flex items-center gap-3 shrink-0 justify-end">
+                          {/* 1. Storefront Current Stock Balance Input */}
+                          {item.catalogItemId && (
+                            <div className="flex flex-col items-end">
+                              <span className="text-[9.5px] font-black uppercase text-emerald-700">
+                                1. Current Stock (คงเหลือหน้าร้าน)
+                              </span>
+                              <div className="flex items-center gap-1 mt-0.5">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={
+                                    item.currentStockOnHand !== undefined
+                                      ? item.currentStockOnHand
+                                      : getCurrentBranchStockForCatalogItem(item.catalogItemId)
+                                  }
+                                  onChange={(e) =>
+                                    handleUpdateItemCurrentStockOnHand(
+                                      item.id,
+                                      Math.max(0, parseInt(e.target.value) || 0)
+                                    )
+                                  }
+                                  className="w-16 h-7 rounded-lg border border-emerald-300 bg-white px-2 text-center font-black text-emerald-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                                  title="Enter current stock balance available at your storefront"
+                                />
+                                <span className="text-[10px] text-slate-400">{item.unit}</span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* 2. Top-Up Order Quantity */}
+                          <div className="flex flex-col items-end">
+                            <span className="text-[9.5px] font-black uppercase text-sky-700">
+                              2. Top-Up Order (สั่งเติม)
+                            </span>
+                            <div className="flex items-center border border-slate-200 rounded-lg bg-white overflow-hidden mt-0.5">
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateItemQty(item.id, -1)}
+                                className="w-7 h-7 flex items-center justify-center text-slate-600 hover:bg-slate-100 font-bold cursor-pointer"
+                              >
+                                -
+                              </button>
+                              <span className="w-8 text-center font-black text-slate-900">
+                                {item.quantity}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateItemQty(item.id, 1)}
+                                className="w-7 h-7 flex items-center justify-center text-slate-600 hover:bg-slate-100 font-bold cursor-pointer"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+
                           <button
                             type="button"
-                            onClick={() => handleUpdateItemQty(item.id, -1)}
-                            className="w-7 h-7 flex items-center justify-center text-slate-600 hover:bg-slate-100 font-bold"
+                            onClick={() => handleRemoveItem(item.id)}
+                            className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 mt-3 cursor-pointer"
                           >
-                            -
-                          </button>
-                          <span className="w-8 text-center font-black text-slate-900">
-                            {item.quantity}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleUpdateItemQty(item.id, 1)}
-                            className="w-7 h-7 flex items-center justify-center text-slate-600 hover:bg-slate-100 font-bold"
-                          >
-                            +
+                            <Trash2 size={13} />
                           </button>
                         </div>
-
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveItem(item.id)}
-                          className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50"
-                        >
-                          <Trash2 size={13} />
-                        </button>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -5917,6 +6831,407 @@ export function AdminSuppliesOrders({ currentUser, shops = [], jobs = [] }: Admi
                 </Button>
               </div>
             </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ======================================================== */}
+      {/* 12. DIALOG: MONTHLY STOREFRONT STOCK COUNT & TOP-UP SHEET */}
+      {/* ======================================================== */}
+      <Dialog open={isMonthlyStockSheetOpen} onOpenChange={setIsMonthlyStockSheetOpen}>
+        <DialogContent className="max-w-4xl p-0 overflow-hidden bg-white rounded-2xl border border-slate-200 shadow-2xl">
+          <DialogHeader className="p-5 bg-gradient-to-r from-emerald-900 via-teal-900 to-slate-900 text-white">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2.5">
+                <span className="p-2 rounded-xl bg-white/15 text-emerald-300">
+                  <ClipboardCheck size={20} />
+                </span>
+                <div>
+                  <DialogTitle className="text-base sm:text-lg font-black text-white">
+                    Monthly Storefront Stock Balance Update & Top-Up Order Sheet
+                  </DialogTitle>
+                  <p className="text-xs text-emerald-100/85 mt-0.5">
+                    อัปเดตยอดสต็อกคงเหลือหน้าร้านส่งสำนักงานใหญ่ • บันทึกข้อมูลรายเดือนย้อนหลัง • สั่งเติมรายการที่ใกล้หมดในคลิกเดียว
+                  </p>
+                </div>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleAutoFillSuggestedTopUp}
+                className="h-8 px-3 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs rounded-xl gap-1.5 cursor-pointer"
+              >
+                <Sparkles size={13} />
+                <span>Auto-Fill Top-Up for Low Stock</span>
+              </Button>
+            </div>
+          </DialogHeader>
+
+          <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto custom-scrollbar text-xs">
+            {/* Top Config Row: Month, Branch, Search & Category Filter */}
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200/90">
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-600 block">
+                  Reporting Month (งวดเดือนที่บันทึก) *
+                </label>
+                <Input
+                  type="month"
+                  value={stockSheetMonthKey}
+                  onChange={(e) => setStockSheetMonthKey(e.target.value)}
+                  className="h-9 text-xs bg-white font-mono font-bold rounded-xl"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-600 block">
+                  Storefront Branch (สาขาหน้าร้าน) *
+                </label>
+                {isAdmin || canProcessOrder ? (
+                  <select
+                    value={stockBranchId}
+                    onChange={(e) => setStockBranchId(e.target.value)}
+                    className="w-full h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-bold text-slate-800"
+                  >
+                    <option value="ONLINE">Online Central Dispatch</option>
+                    {shops.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="h-9 rounded-xl border border-slate-200 bg-slate-100 px-3 flex items-center gap-1.5 font-bold text-slate-800">
+                    <Store size={13} className="text-emerald-600 shrink-0" />
+                    <span className="truncate">
+                      {shops.find((s) => s.id === effectiveStockBranchId)?.name || 'My Storefront'}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-600 block">
+                  Category Filter (หมวดหมู่)
+                </label>
+                <select
+                  value={stockSheetCategory}
+                  onChange={(e) => setStockSheetCategory(e.target.value)}
+                  className="w-full h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-bold text-slate-800"
+                >
+                  <option value="all">All Categories (ทุกหมวด)</option>
+                  {Object.entries(SUPPLY_CATEGORY_LABELS).map(([k, cfg]) => (
+                    <option key={k} value={k}>
+                      {cfg.icon} {cfg.en}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-600 block">
+                  Search Item (ค้นหาสินค้า)
+                </label>
+                <Input
+                  value={stockSheetSearch}
+                  onChange={(e) => setStockSheetSearch(e.target.value)}
+                  placeholder="Search detergent, bag, hanger..."
+                  className="h-9 text-xs bg-white rounded-xl"
+                />
+              </div>
+            </div>
+
+            {/* Storefront Stock Count Table */}
+            <div className="rounded-xl border border-slate-200 overflow-hidden">
+              <div className="max-h-80 overflow-y-auto custom-scrollbar">
+                <table className="w-full text-xs border-collapse">
+                  <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-200 text-slate-600">
+                    <tr>
+                      <th className="py-2.5 px-3 text-left font-extrabold uppercase text-[10px]">
+                        Supply / Chemical Item
+                      </th>
+                      <th className="py-2.5 px-2 text-center font-extrabold uppercase text-[10px]">
+                        Prev Recorded
+                      </th>
+                      <th className="py-2.5 px-2 text-center font-extrabold uppercase text-[10px] bg-emerald-50 text-emerald-900">
+                        1. Current Storefront Stock (คงเหลือหน้าร้าน)
+                      </th>
+                      <th className="py-2.5 px-2 text-center font-extrabold uppercase text-[10px]">
+                        Est. Used
+                      </th>
+                      <th className="py-2.5 px-3 text-center font-extrabold uppercase text-[10px] bg-sky-50 text-sky-900">
+                        2. Top-Up Order Qty (สั่งเติม)
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {catalog
+                      .filter((i) => i.available !== false)
+                      .filter((i) => stockSheetCategory === 'all' || i.category === stockSheetCategory)
+                      .filter((i) => {
+                        const q = stockSheetSearch.trim().toLowerCase();
+                        if (!q) return true;
+                        return (
+                          i.name.toLowerCase().includes(q) ||
+                          (i.nameTh || '').toLowerCase().includes(q)
+                        );
+                      })
+                      .map((item, idx) => {
+                        const found = branchStock.find(
+                          (s) => s.branchId === effectiveStockBranchId && s.catalogItemId === item.id
+                        );
+                        const defaultInitialQty = item.popular ? (idx % 3 === 0 ? 1 : 5) : 3;
+                        const prevQty = found ? Number(found.quantity) : defaultInitialQty;
+                        const minStock = found ? Number(found.minStock ?? 2) : 2;
+                        const entry = stockSheetEntries[item.id] || {
+                          closingStockQty: prevQty,
+                          minStock,
+                          topUpQty: 0,
+                        };
+                        const usedDiff = Math.max(0, prevQty - entry.closingStockQty);
+                        const catCfg =
+                          SUPPLY_CATEGORY_LABELS[item.category] || SUPPLY_CATEGORY_LABELS.other;
+
+                        return (
+                          <tr key={item.id} className="hover:bg-slate-50/80">
+                            <td className="py-2 px-3">
+                              <div className="font-black text-slate-900 flex items-center gap-1.5">
+                                <span>{catCfg.icon}</span>
+                                <span>{item.name}</span>
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                {item.nameTh} • ฿{item.estimatedPrice}/{item.defaultUnit} (Min: {minStock})
+                              </div>
+                            </td>
+                            <td className="py-2 px-2 text-center font-bold text-slate-500">
+                              {prevQty} {item.defaultUnit}
+                            </td>
+                            <td className="py-2 px-2 text-center bg-emerald-50/40">
+                              <input
+                                type="number"
+                                min="0"
+                                value={entry.closingStockQty}
+                                onChange={(e) => {
+                                  const nextVal = Math.max(0, parseInt(e.target.value) || 0);
+                                  setStockSheetEntries((prev) => ({
+                                    ...prev,
+                                    [item.id]: {
+                                      ...entry,
+                                      closingStockQty: nextVal,
+                                    },
+                                  }));
+                                }}
+                                className="w-20 h-8 rounded-lg border border-emerald-300 bg-white px-2 text-center font-black text-emerald-950 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                              />
+                            </td>
+                            <td className="py-2 px-2 text-center">
+                              {usedDiff > 0 ? (
+                                <span className="font-black text-rose-600">
+                                  -{usedDiff} (~฿{(usedDiff * (item.estimatedPrice || 0)).toLocaleString()})
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">-</span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 text-center bg-sky-50/40">
+                              <input
+                                type="number"
+                                min="0"
+                                value={entry.topUpQty}
+                                onChange={(e) => {
+                                  const nextTopUp = Math.max(0, parseInt(e.target.value) || 0);
+                                  setStockSheetEntries((prev) => ({
+                                    ...prev,
+                                    [item.id]: {
+                                      ...entry,
+                                      topUpQty: nextTopUp,
+                                    },
+                                  }));
+                                }}
+                                className="w-20 h-8 rounded-lg border border-sky-300 bg-white px-2 text-center font-black text-sky-900 focus:outline-none focus:ring-2 focus:ring-sky-500/30"
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Bottom Options: Auto-create Top-Up Order & Remarks */}
+            <div className="p-3.5 rounded-xl bg-sky-50/70 border border-sky-200 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="inline-flex items-center gap-2 font-extrabold text-slate-900 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={stockSheetCreateOrder}
+                    onChange={(e) => setStockSheetCreateOrder(e.target.checked)}
+                    className="rounded border-slate-300"
+                  />
+                  <span>
+                    Automatically submit a Top-Up Supply Order to Head Office for items with Top-Up Qty &gt; 0 (สร้างใบสั่งเติมส่งสำนักงานใหญ่อัตโนมัติ)
+                  </span>
+                </label>
+                <span className="text-xs font-black text-sky-800">
+                  Top-Up Items:{' '}
+                  {Object.values(stockSheetEntries).filter((x) => Number(x.topUpQty) > 0).length} items
+                </span>
+              </div>
+
+              <Input
+                value={stockSheetNotes}
+                onChange={(e) => setStockSheetNotes(e.target.value)}
+                placeholder="Optional monthly storefront stock remarks for Head Office (หมายเหตุการนับสต็อกประจำเดือน)..."
+                className="h-8.5 text-xs bg-white rounded-xl"
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setIsMonthlyStockSheetOpen(false)}
+              className="h-9 text-xs font-bold rounded-xl"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSaveMonthlyStockSheet}
+              disabled={savingStockSheet}
+              className="h-9 px-5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs rounded-xl gap-2 cursor-pointer shadow-md"
+            >
+              <ClipboardCheck size={14} />
+              <span>
+                {savingStockSheet
+                  ? 'Saving Monthly Record...'
+                  : 'Save Storefront Stock Balance & Monthly Record (บันทึกยอดสต็อกรายเดือน)'}
+              </span>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ======================================================== */}
+      {/* 13. DIALOG: VIEW STORED MONTHLY RECORD ARCHIVE           */}
+      {/* ======================================================== */}
+      <Dialog
+        open={Boolean(viewingMonthlyRecord)}
+        onOpenChange={(open) => !open && setViewingMonthlyRecord(null)}
+      >
+        <DialogContent className="max-w-3xl p-0 overflow-hidden bg-white rounded-2xl border border-slate-200 shadow-2xl">
+          {viewingMonthlyRecord && (
+            <>
+              <DialogHeader className="p-5 bg-slate-900 text-white">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <DialogTitle className="text-base font-black text-white">
+                      Monthly Storefront Stock & Consumption Record — {viewingMonthlyRecord.monthKey}
+                    </DialogTitle>
+                    <p className="text-xs text-slate-300 mt-0.5">
+                      Branch: {viewingMonthlyRecord.branchName} • Updated by{' '}
+                      {viewingMonthlyRecord.submittedByName} on{' '}
+                      {new Date(viewingMonthlyRecord.updatedAt).toLocaleString('en-GB')}
+                    </p>
+                  </div>
+                </div>
+              </DialogHeader>
+
+              <div className="p-5 space-y-4 max-h-[72vh] overflow-y-auto custom-scrollbar text-xs">
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="p-3 rounded-xl bg-sky-50 border border-sky-200">
+                    <div className="text-[10px] font-black uppercase text-sky-700">
+                      💧 Chemical Spend ({viewingMonthlyRecord.monthKey})
+                    </div>
+                    <div className="text-lg font-black text-sky-900 mt-0.5">
+                      ฿
+                      {(
+                        viewingMonthlyRecord.chemicalConsumedCost ||
+                        viewingMonthlyRecord.chemicalTopUpOrderedCost ||
+                        0
+                      ).toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200">
+                    <div className="text-[10px] font-black uppercase text-rose-700">
+                      Total Consumed Cost
+                    </div>
+                    <div className="text-lg font-black text-rose-900 mt-0.5">
+                      ฿{(viewingMonthlyRecord.totalConsumedCost || 0).toLocaleString()} (
+                      {viewingMonthlyRecord.totalConsumedUnits} units)
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200">
+                    <div className="text-[10px] font-black uppercase text-indigo-700">
+                      Top-Up Ordered
+                    </div>
+                    <div className="text-lg font-black text-indigo-900 mt-0.5">
+                      ฿{(viewingMonthlyRecord.totalTopUpOrderedCost || 0).toLocaleString()} (+
+                      {viewingMonthlyRecord.totalTopUpOrderedUnits} units)
+                    </div>
+                  </div>
+                </div>
+
+                {viewingMonthlyRecord.notes && (
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-700">
+                    <strong>Notes:</strong> {viewingMonthlyRecord.notes}
+                  </div>
+                )}
+
+                <div className="rounded-xl border border-slate-200 overflow-hidden">
+                  <table className="w-full text-xs border-collapse">
+                    <thead className="bg-slate-100 border-b border-slate-200 text-slate-600">
+                      <tr>
+                        <th className="py-2 px-3 text-left font-extrabold uppercase text-[10px]">
+                          Item
+                        </th>
+                        <th className="py-2 px-2 text-right font-extrabold uppercase text-[10px]">
+                          Storefront Closing Stock
+                        </th>
+                        <th className="py-2 px-2 text-right font-extrabold uppercase text-[10px]">
+                          Consumed
+                        </th>
+                        <th className="py-2 px-3 text-right font-extrabold uppercase text-[10px]">
+                          Top-Up Ordered
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {(viewingMonthlyRecord.items || []).map((it) => (
+                        <tr key={it.catalogItemId} className="hover:bg-slate-50">
+                          <td className="py-2 px-3">
+                            <div className="font-bold text-slate-900">{it.name}</div>
+                            <div className="text-[10px] text-slate-500">
+                              {it.nameTh} • ฿{it.unitPrice}/{it.unit}
+                            </div>
+                          </td>
+                          <td className="py-2 px-2 text-right font-black text-emerald-700">
+                            {it.closingStockQty} {it.unit}
+                          </td>
+                          <td className="py-2 px-2 text-right font-bold text-rose-700">
+                            {it.consumedQty} (฿{(it.consumedCost || 0).toLocaleString()})
+                          </td>
+                          <td className="py-2 px-3 text-right font-bold text-indigo-700">
+                            +{it.topUpOrderedQty} (฿{(it.topUpOrderedCost || 0).toLocaleString()})
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <DialogFooter className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
+                <Button
+                  size="sm"
+                  onClick={() => setViewingMonthlyRecord(null)}
+                  className="h-8 px-4 text-xs font-bold rounded-xl"
+                >
+                  Close
+                </Button>
+              </DialogFooter>
+            </>
           )}
         </DialogContent>
       </Dialog>
