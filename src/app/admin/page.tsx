@@ -3502,15 +3502,23 @@ function AdminPageContent() {
       setPromoError(null);
     }
 
+    const foundCustomer = findMatchingCustomer(customers, {
+      customerId: job.customerId,
+      customerName: job.customerName,
+      customerPhone: job.customerPhone,
+    });
+    const fallbackVatType = ((foundCustomer?.vatType && foundCustomer.vatType !== "default"
+      ? foundCustomer.vatType
+      : systemSettings?.vatType) as "none" | "inclusive" | "exclusive") || "none";
+    const fallbackVatRate = parseFloat(systemSettings?.vatRate || "7") || 7;
+
     const vatMatch = job.remark?.match(/VAT:\s*(\w+)\s*\((\d+(?:\.\d+)?)\%\)/i);
     if (vatMatch) {
       setDialogVatType(vatMatch[1].toLowerCase() as any);
       setDialogVatRate(parseFloat(vatMatch[2]));
     } else {
-      const defaultVatType = (systemSettings?.vatType as any) || "none";
-      const defaultVatRate = parseFloat(systemSettings?.vatRate || "7") || 7;
-      setDialogVatType(defaultVatType);
-      setDialogVatRate(defaultVatRate);
+      setDialogVatType(fallbackVatType);
+      setDialogVatRate(fallbackVatRate);
     }
     
     setShowJobLogs(false);
@@ -3635,8 +3643,8 @@ function AdminPageContent() {
     const initialSpeed = speedMatch ? `express_${speedMatch[1]}` : "standard";
     const initialDiscountOn = Boolean(hasDiscountOn || (job.discountPercent && job.discountPercent > 0) || hasValidPromo || hasRawPromo);
     const initialDiscountPercent = initialDiscountOn ? (job.discountPercent || 0) : 0;
-    const initialVatType = vatMatch ? (vatMatch[1].toLowerCase() as any) : ((systemSettings?.vatType as any) || "none");
-    const initialVatRate = vatMatch ? parseFloat(vatMatch[2]) : (parseFloat(systemSettings?.vatRate || "7") || 7);
+    const initialVatType = vatMatch ? (vatMatch[1].toLowerCase() as any) : fallbackVatType;
+    const initialVatRate = vatMatch ? parseFloat(vatMatch[2]) : fallbackVatRate;
 
     // Initial cart hash: compute from loaded cart items and initial state so that
     // subsequent modifications are accurately detected without false positive revision bumps.
@@ -3664,11 +3672,6 @@ function AdminPageContent() {
           ? rawLaundry.split(",")
           : []
     );
-    const foundCustomer = findMatchingCustomer(customers, {
-      customerId: job.customerId,
-      customerName: job.customerName,
-      customerPhone: job.customerPhone,
-    });
     setSelectedProfileCustomer(foundCustomer || null);
 
     let loadedJobChannel: "line" | "whatsapp" | null = null;

@@ -11481,7 +11481,7 @@ async function buildRecurringJobPayload(params: {
   const delivYmd = `${delivUtc.getUTCFullYear()}-${String(delivUtc.getUTCMonth() + 1).padStart(2, '0')}-${String(delivUtc.getUTCDate()).padStart(2, '0')}`;
   const deliverySlot = parseBangkokSlotBounds(delivYmd, schedule.deliveryTimeSlot, 17);
 
-  const [customer, latestCustomerJob, shopRows] = await Promise.all([
+  const [customer, latestCustomerJob, shopRows, vatSettingRows] = await Promise.all([
     schedule.customerId
       ? prisma.customer.findUnique({
           where: { id: schedule.customerId },
@@ -11511,6 +11511,7 @@ async function buildRecurringJobPayload(params: {
         })
       : Promise.resolve(null),
     prisma.shopLocation.findMany({ select: { id: true } }),
+    prisma.setting.findMany({ where: { key: { in: ['vatType', 'vatRate'] } } }),
   ]);
 
   const validShopIds = new Set(shopRows.map((s) => s.id));
@@ -11560,12 +11561,22 @@ async function buildRecurringJobPayload(params: {
   const dropoffLat = customer?.defaultLat ?? primaryAddr?.latitude ?? latestCustomerJob?.dropoffLat ?? pickupLat;
   const dropoffLng = customer?.defaultLng ?? primaryAddr?.longitude ?? latestCustomerJob?.dropoffLng ?? pickupLng;
 
+  const sysVatType = vatSettingRows.find((s) => s.key === 'vatType')?.value || 'none';
+  const sysVatRate = parseFloat(vatSettingRows.find((s) => s.key === 'vatRate')?.value || '7') || 7;
+  const custVatType = (customer as any)?.vatType;
+  const resolvedVatType =
+    custVatType && custVatType !== 'default' ? String(custVatType).toLowerCase() : String(sysVatType).toLowerCase();
+  const vatSuffix =
+    resolvedVatType && resolvedVatType !== 'none'
+      ? ` | VAT: ${resolvedVatType} (${sysVatRate}%)`
+      : '';
+
   const specialNotes = schedule.specialInstructions ? ` [Notes: ${schedule.specialInstructions}]` : '';
   const remarkPrefix =
     source === 'recurring_manual_trigger'
       ? `[Manual Trigger: Recurring Order] ${schedule.frequencyType === 'weekly' ? 'Weekly' : 'Multi-day'}`
       : `[Auto-Recurring Order] ${schedule.frequencyType === 'weekly' ? 'Weekly pickup' : 'Multi-day pickup'}`;
-  const jobRemark = `${remarkPrefix}${specialNotes}`;
+  const jobRemark = `${remarkPrefix}${specialNotes}${vatSuffix}`;
 
   const defaultServiceItems =
     Array.isArray(schedule.defaultItems) && schedule.defaultItems.length > 0
