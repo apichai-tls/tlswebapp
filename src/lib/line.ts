@@ -1,4 +1,8 @@
 import crypto from "crypto";
+import {
+  isLiveMessagingDisabled,
+  getLiveMessagingDisabledReason,
+} from "@/lib/messaging-env-guard";
 
 const LINE_API_BASE = "https://api.line.me/v2/bot";
 const LINE_OAUTH_URL = "https://api.line.me/v2/oauth/accessToken";
@@ -60,6 +64,9 @@ export async function issueLineChannelAccessTokenFromCredentials(
   channelId: string,
   channelSecret: string
 ): Promise<string> {
+  if (isLiveMessagingDisabled()) {
+    throw new Error(getLiveMessagingDisabledReason("LINE"));
+  }
   if (cachedOAuthToken && Date.now() < cachedOAuthToken.expiresAt - 60_000) {
     return cachedOAuthToken.token;
   }
@@ -99,6 +106,9 @@ export async function fetchLineFollowerIdsPage(
   startCursor?: string,
   limit = 300
 ): Promise<{ userIds: string[]; next?: string }> {
+  if (isLiveMessagingDisabled()) {
+    throw new Error(getLiveMessagingDisabledReason("LINE"));
+  }
   const token = channelAccessToken.trim();
   const params = new URLSearchParams({ limit: String(limit) });
   if (startCursor) params.set("start", startCursor);
@@ -166,6 +176,9 @@ export function verifyLineWebhookSignature(
 }
 
 export async function getLineBotInfo(channelAccessToken: string): Promise<LineBotInfo> {
+  if (isLiveMessagingDisabled()) {
+    throw new Error(getLiveMessagingDisabledReason("LINE"));
+  }
   const token = channelAccessToken.trim();
   if (!token) {
     throw new Error("LINE Channel Access Token is required.");
@@ -188,6 +201,7 @@ export async function getLineUserProfile(
   channelAccessToken: string,
   userId: string
 ): Promise<LineUserProfile | null> {
+  if (isLiveMessagingDisabled()) return null;
   const token = channelAccessToken.trim();
   if (!token || !userId) return null;
   try {
@@ -209,6 +223,7 @@ export async function getLineGroupSummary(
   channelAccessToken: string,
   groupId: string
 ): Promise<LineGroupSummary | null> {
+  if (isLiveMessagingDisabled()) return null;
   const token = channelAccessToken.trim();
   if (!token || !isValidLineGroupId(groupId)) return null;
   try {
@@ -231,6 +246,7 @@ export async function getLineGroupMemberProfile(
   groupId: string,
   userId: string
 ): Promise<LineUserProfile | null> {
+  if (isLiveMessagingDisabled()) return null;
   const token = channelAccessToken.trim();
   if (!token || !isValidLineGroupId(groupId) || !isValidLineUserId(userId)) return null;
   try {
@@ -256,6 +272,7 @@ export async function getLineRoomMemberProfile(
   roomId: string,
   userId: string
 ): Promise<LineUserProfile | null> {
+  if (isLiveMessagingDisabled()) return null;
   const token = channelAccessToken.trim();
   if (!token || !isValidLineRoomId(roomId) || !isValidLineUserId(userId)) return null;
   try {
@@ -281,6 +298,9 @@ export async function sendLinePushMessage(
   to: string,
   messages: LineMessageObject[]
 ): Promise<{ ok: boolean; error?: string }> {
+  if (isLiveMessagingDisabled()) {
+    return { ok: false, error: getLiveMessagingDisabledReason("LINE") };
+  }
   const token = channelAccessToken.trim();
   const recipient = to.trim();
   if (!token) {
@@ -325,6 +345,9 @@ export async function sendLineReplyMessage(
   replyToken: string,
   messages: LineMessageObject[]
 ): Promise<{ ok: boolean; error?: string }> {
+  if (isLiveMessagingDisabled()) {
+    return { ok: false, error: getLiveMessagingDisabledReason("LINE") };
+  }
   const token = channelAccessToken.trim();
   if (!token || !replyToken) {
     return { ok: false, error: "Missing token or replyToken" };

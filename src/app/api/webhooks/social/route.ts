@@ -101,7 +101,7 @@ function extractWhatsAppCloudMessageContent(
         senderPhone: customerExtId,
         fallbackMimeType:
           mediaObj.mime_type || (msgType === 'video' ? 'video/mp4' : 'audio/ogg'),
-        attachmentType: 'file',
+        attachmentType: msgType === 'video' ? 'video' : 'file',
         attachmentName: mediaLabel,
       };
     }
@@ -146,8 +146,16 @@ function extractWhatsAppCloudMessageContent(
     textBody = `⚠️ [ข้อความพิเศษจาก WhatsApp (เช่น แก้ไข/ลบข้อความ, Poll หรือ View-Once)${
       errDetail ? ` — ${errDetail}` : ''
     }]`;
+  } else if (msgType === 'edit') {
+    textBody = '✏️ [ลูกค้าแก้ไขข้อความใน WhatsApp]';
+  } else if (msgType === 'revoke') {
+    textBody = '🗑️ [ลูกค้ายกเลิกข้อความใน WhatsApp]';
+  } else if (msgType === 'system') {
+    textBody = 'ℹ️ [ข้อความระบบจาก WhatsApp]';
+  } else if (msgType === 'order') {
+    textBody = '🛒 [WhatsApp Order]';
   } else {
-    textBody = `📷 [WhatsApp ${msgType} message]`;
+    textBody = `💬 [WhatsApp ${msgType} message]`;
   }
 
   return { textBody, attachments, pendingMediaJob };

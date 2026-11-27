@@ -684,6 +684,47 @@ export async function resolvePublicHttpsMediaUrl(url: string): Promise<string | 
   const trimmed = (url || '').trim();
   if (!trimmed) return null;
 
+  if (trimmed.startsWith('data:')) {
+    const match = trimmed.match(/^data:([^;]+);base64,([\s\S]+)$/);
+    if (match) {
+      try {
+        const mime = match[1].trim().toLowerCase();
+        const buf = Buffer.from(match[2].trim(), 'base64');
+        const extMap: Record<string, string> = {
+          'image/png': 'png',
+          'image/webp': 'webp',
+          'image/gif': 'gif',
+          'image/jpeg': 'jpg',
+          'image/jpg': 'jpg',
+          'video/mp4': 'mp4',
+          'application/pdf': 'pdf',
+        };
+        const ext =
+          extMap[mime] ||
+          mime
+            .split('/')[1]
+            ?.replace(/[^a-z0-9]/g, '')
+            .slice(0, 5) ||
+          'bin';
+        const gcsUrl = await uploadBufferToGcs(buf, {
+          entityType: 'system',
+          entityId: 'social_media',
+          subType: 'relay',
+          contentType: mime,
+          extension: ext,
+        }).catch(() => null);
+        const prefix = `https://storage.googleapis.com/${bucketName}/`;
+        if (gcsUrl && gcsUrl.startsWith(prefix)) {
+          const gcsKey = decodeURIComponent(gcsUrl.slice(prefix.length).split(/[?#]/)[0]);
+          const signed = await generateDownloadUrl(gcsKey, 60 * 24 * 7).catch(() => null);
+          if (signed && signed.startsWith('https://')) return signed;
+          return gcsUrl;
+        }
+      } catch {}
+    }
+    return null;
+  }
+
   if (trimmed.startsWith('/uploads/')) {
     try {
       const relWithoutLeadingSlash = trimmed.replace(/^\/+/, '');
@@ -711,7 +752,9 @@ export async function resolvePublicHttpsMediaUrl(url: string): Promise<string | 
             extension: ext,
           }).catch(() => null);
           if (gcsUrl && gcsUrl.startsWith(`https://storage.googleapis.com/${bucketName}/`)) {
-            const gcsKey = gcsUrl.slice(`https://storage.googleapis.com/${bucketName}/`.length);
+            const gcsKey = decodeURIComponent(
+              gcsUrl.slice(`https://storage.googleapis.com/${bucketName}/`.length).split(/[?#]/)[0]
+            );
             const signed = await generateDownloadUrl(gcsKey, 60 * 24 * 7).catch(() => null);
             if (signed && signed.startsWith('https://')) return signed;
             return gcsUrl;
@@ -725,7 +768,9 @@ export async function resolvePublicHttpsMediaUrl(url: string): Promise<string | 
     try {
       const prefix = `https://storage.googleapis.com/${bucketName}/`;
       if (trimmed.startsWith(prefix)) {
-        const gcsKey = trimmed.slice(prefix.length);
+        // Strip cache-busting query strings (?v=...) and fragments before signing GCS object key
+        const rawPath = trimmed.slice(prefix.length).split(/[?#]/)[0];
+        const gcsKey = decodeURIComponent(rawPath);
         const signed = await generateDownloadUrl(gcsKey, 60 * 24 * 7);
         if (signed && signed.startsWith('https://')) {
           return signed;
@@ -1047,8 +1092,57 @@ export interface PendingSocialMediaJobInput {
   senderPhone?: string;
   fallbackMimeType?: string;
   originalFilename?: string;
-  attachmentType: 'image' | 'file';
+  attachmentType: 'image' | 'video' | 'file';
   attachmentName: string;
+}
+
+export function detectWhatsAppSource(
+  id?: string | null,
+  externalMessageId?: string | null
+): 'cloud' | 'baileys' | 'other' {
+  const cleanId = (id || '').trim();
+  const cleanExt = (externalMessageId || '').trim();
+  if (
+    cleanId.startsWith('msg_wa_cloud_') ||
+    cleanId.startsWith('msg_wa_echo_wamid.') ||
+    cleanExt.startsWith('wamid.')
+  ) {
+    return 'cloud';
+  }
+  if (cleanId.startsWith('msg_wa_in_') || cleanId.startsWith('msg_wa_echo_')) {
+    return 'baileys';
+  }
+  return 'other';
+}
+
+export function extractWhatsAppStanzaId(
+  id?: string | null,
+  externalMessageId?: string | null
+): string | null {
+  const cleanId = (id || '').trim();
+  const cleanExt = (externalMessageId || '').trim();
+  const strippedPrefix = cleanId.replace(/^msg_wa_(?:cloud|echo|in)_/, '');
+  const wamidCandidate = cleanExt.startsWith('wamid.')
+    ? cleanExt
+    : strippedPrefix.startsWith('wamid.')
+    ? strippedPrefix
+    : '';
+  if (wamidCandidate) {
+    try {
+      const b64 = wamidCandidate.slice('wamid.'.length);
+      const decoded = Buffer.from(b64, 'base64').toString('latin1');
+      // Protobuf payload encodes phone digits first, then the alphanumeric WhatsApp stanza ID token
+      const tokens = decoded.match(/[A-Za-z0-9_-]{12,40}/g) || [];
+      const stanzaToken =
+        [...tokens].reverse().find((t) => /[A-Za-z]/.test(t)) || tokens[tokens.length - 1];
+      if (stanzaToken) return stanzaToken.toUpperCase();
+    } catch {}
+    return null;
+  }
+  if (cleanId.startsWith('msg_wa_in_') || cleanId.startsWith('msg_wa_echo_')) {
+    return strippedPrefix.toUpperCase() || null;
+  }
+  return null;
 }
 
 /**
@@ -1120,9 +1214,9 @@ export async function insertSocialMessageAndTouchConversation(opts: {
     }
 
     // Dual-Sync Cross-Source Deduplication for WhatsApp (Cloud API + Baileys QR Bridge):
-    // When both Meta Cloud API Webhook (`wamid.HBg...`) and Linked WhatsApp QR Bridge (`3EB0...` / `A5...`)
-    // deliver the exact same inbound or outbound message within ±15 seconds, deduplicate by
-    // (conversationId + direction + normalized text + timestamp window) so they NEVER collide or create duplicate bubbles!
+    // When both Meta Cloud API Webhook (`wamid.HBg...`) and Linked WhatsApp QR Bridge (`msg_wa_in_...` / `msg_wa_echo_...`)
+    // deliver the exact same inbound or outbound message within ±15 seconds, deduplicate by WhatsApp stanza ID
+    // (or cross-source text/attachment match) so separate consecutive photos are NEVER swallowed!
     if (!existingMsg && existingConv && msgData.channel === 'whatsapp' && msgData.text) {
       const windowStart = new Date(msgData.createdAt.getTime() - 15_000);
       const windowEnd = new Date(msgData.createdAt.getTime() + 15_000);
@@ -1145,7 +1239,31 @@ export async function insertSocialMessageAndTouchConversation(opts: {
       const normalizeWaText = (t: string | null | undefined) =>
         (t || '').replace(/\r\n/g, '\n').trim();
       const normText = normalizeWaText(msgData.text);
+      const newSource = detectWhatsAppSource(msgData.id, msgData.externalMessageId);
+      const newStanzaId = extractWhatsAppStanzaId(msgData.id, msgData.externalMessageId);
+
       const matchedDup = candidates.find((c) => {
+        const candSource = detectWhatsAppSource(c.id, c.externalMessageId);
+        const candStanzaId = extractWhatsAppStanzaId(c.id, c.externalMessageId);
+
+        // Never merge two separate messages arriving from the same transport source
+        if (newSource !== 'other' && candSource !== 'other' && newSource === candSource) {
+          return false;
+        }
+        // When both carry WhatsApp stanza IDs, merge only if stanza IDs match identically
+        if (newStanzaId && candStanzaId) {
+          return newStanzaId === candStanzaId;
+        }
+
+        const hasDistinctAttachments = Boolean(
+          c.attachmentsJson &&
+            msgData.attachmentsJson &&
+            c.attachmentsJson !== msgData.attachmentsJson
+        );
+        if (isPhotoPlaceholder && hasDistinctAttachments) {
+          return false;
+        }
+
         if (normalizeWaText(c.text) === normText) return true;
         if (
           isPhotoPlaceholder &&
@@ -1427,9 +1545,11 @@ export async function processPendingSocialMediaJobs(): Promise<{ processed: numb
           throw new Error('Media download or GCS upload returned empty URL');
         }
 
-        const resolvedType: 'image' | 'file' =
+        const resolvedType: 'image' | 'video' | 'file' =
           job.attachmentType === 'image' || downloaded.mimeType.startsWith('image/')
             ? 'image'
+            : job.attachmentType === 'video' || downloaded.mimeType.startsWith('video/')
+            ? 'video'
             : 'file';
         const resolvedName =
           job.attachmentName.includes('.') || resolvedType === 'image'
@@ -1694,9 +1814,15 @@ export async function withSocialStoreLock<T>(fn: () => Promise<T>): Promise<T> {
 
 export async function syncExternalReadStatesInternal(
   channel: SocialChannel,
-  readExternalIds: string[]
+  readExternalIds: string[],
+  opts?: { readConversationIds?: string[]; readByName?: string }
 ): Promise<{ clearedCount: number }> {
-  if (!readExternalIds || readExternalIds.length === 0) return { clearedCount: 0 };
+  const extraConvIds = new Set(
+    (opts?.readConversationIds || []).map((id) => String(id || '').trim()).filter(Boolean)
+  );
+  if ((!readExternalIds || readExternalIds.length === 0) && extraConvIds.size === 0) {
+    return { clearedCount: 0 };
+  }
   try {
     await ensureSocialInboxSchemaAndMigrate();
     const unreadRows = await prisma.socialConversation.findMany({
@@ -1706,21 +1832,22 @@ export async function syncExternalReadStatesInternal(
     if (unreadRows.length === 0) return { clearedCount: 0 };
 
     const normalizedIds = new Set(
-      readExternalIds.map((id) => String(id || '').trim()).filter(Boolean)
+      (readExternalIds || []).map((id) => String(id || '').trim()).filter(Boolean)
     );
     const normalizedTails = new Set(
-      readExternalIds.map((id) => phoneDigitsTail(id)).filter((t) => t.length >= 7)
+      (readExternalIds || []).map((id) => phoneDigitsTail(id)).filter((t) => t.length >= 7)
     );
 
     const matchedIds: string[] = [];
     const nowMs = Date.now();
     for (const r of unreadRows) {
+      const convIdMatch = extraConvIds.has(r.id);
       const extMatch = r.externalContactId && normalizedIds.has(r.externalContactId.trim());
       const tailMatch =
         channel === 'whatsapp' &&
         (normalizedTails.has(phoneDigitsTail(r.externalContactId)) ||
           normalizedTails.has(phoneDigitsTail(r.contactPhone)));
-      if (extMatch || tailMatch) {
+      if (convIdMatch || extMatch || tailMatch) {
         recordSocialReadWatermark(r.id, channel, r.externalContactId, nowMs);
         matchedIds.push(r.id);
       }
@@ -1729,9 +1856,15 @@ export async function syncExternalReadStatesInternal(
     if (matchedIds.length === 0) return { clearedCount: 0 };
 
     const now = new Date(nowMs);
+    const readByName = opts?.readByName;
     await prisma.socialConversation.updateMany({
       where: { id: { in: matchedIds } },
-      data: { unreadCount: 0, lastReadAt: now, updatedAt: now },
+      data: {
+        unreadCount: 0,
+        lastReadAt: now,
+        ...(readByName ? { lastReadByName: readByName } : {}),
+        updatedAt: now,
+      },
     });
     const version = await bumpSocialStoreVersion();
 
@@ -1744,6 +1877,8 @@ export async function syncExternalReadStatesInternal(
         socialPayload: {
           kind: 'read',
           readConversationIds: matchedIds.slice(0, 50),
+          ...(readByName ? { readByName } : {}),
+          readAt: now.toISOString(),
           channel,
           version,
         },

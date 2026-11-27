@@ -1254,6 +1254,10 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
 
   // Open Edit Modal
   const handleOpenEditModal = (tx: PettyCashTx) => {
+    if (tx.type === "EXPENSE" && tx.status === "APPROVED") {
+      toast.error("ใบเบิกที่อนุมัติ (APPROVED) แล้วไม่สามารถแก้ไขรายละเอียดได้");
+      return;
+    }
     setEditingTx(tx);
     setTxMode(
       tx.type === "TOPUP"
@@ -4844,14 +4848,16 @@ export function AdminPettyCash({ currentUser, selectedBranchId = "ALL" }: AdminP
                               </div>
                             )}
 
-                            <button
-                              type="button"
-                              onClick={() => handleOpenEditModal(tx)}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
-                              title="Edit transaction"
-                            >
-                              <Edit2 size={13} />
-                            </button>
+                            {!(tx.type === "EXPENSE" && tx.status === "APPROVED") && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditModal(tx)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
+                                title="Edit transaction"
+                              >
+                                <Edit2 size={13} />
+                              </button>
+                            )}
 
                             {canApproveOrTopUp && tx.status === "APPROVED" && (
                               <div className="inline-flex items-center gap-1">

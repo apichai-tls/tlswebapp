@@ -10424,6 +10424,7 @@ export async function updatePettyCashTransactionAction(
     receiptUrls?: string[];
     slipUrls?: string[];
     transactionDate?: string | Date;
+    resubmit?: boolean;
   }
 ): Promise<{ success: boolean; error?: string }> {
   try {
@@ -10433,6 +10434,33 @@ export async function updatePettyCashTransactionAction(
     const existingRows: any[] = await prisma.$queryRaw`SELECT * FROM "PettyCashTransaction" WHERE "id" = ${id} LIMIT 1`;
     const existing = existingRows[0];
     if (!existing) return { success: false, error: "\u0E44\u0E21\u0E48\u0E1E\u0E1A\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E19\u0E35\u0E49\u0E43\u0E19\u0E23\u0E30\u0E1A\u0E1A" };
+
+    const role = (authUser.role || "").toLowerCase();
+    const isAdminOrAccounting =
+      role === "admin" ||
+      role === "superadmin" ||
+      role === "accounting" ||
+      (authUser.permissions || []).includes("approve-petty-cash");
+    if (existing.status === "APPROVED") {
+      if (!isAdminOrAccounting) {
+        return { success: false, error: "ใบเบิกที่อนุมัติ (APPROVED) แล้วไม่สามารถแก้ไขได้" };
+      }
+      const hasDetailEdit =
+        data.amount !== undefined ||
+        data.holderId !== undefined ||
+        data.holderName !== undefined ||
+        data.branchId !== undefined ||
+        data.category !== undefined ||
+        data.description !== undefined ||
+        data.vendorName !== undefined ||
+        data.invoiceNo !== undefined ||
+        data.vehiclePlate !== undefined ||
+        data.paymentMethod !== undefined ||
+        data.transactionDate !== undefined;
+      if (existing.type === "EXPENSE" && hasDetailEdit) {
+        return { success: false, error: "ใบเบิกที่อนุมัติ (APPROVED) แล้วไม่สามารถแก้ไขรายละเอียดได้" };
+      }
+    }
 
     const amt = data.amount !== undefined ? Math.round((Number(data.amount) || 0) * 100) / 100 : Number(existing.amount);
     if (isNaN(amt) || amt <= 0) {
@@ -10451,6 +10479,12 @@ export async function updatePettyCashTransactionAction(
     const nextReceipts = data.receiptUrls !== undefined ? JSON.stringify(data.receiptUrls) : existing.receiptUrls;
     const nextSlips = data.slipUrls !== undefined ? JSON.stringify(data.slipUrls) : existing.slipUrls;
     const nextTxDate = data.transactionDate ? new Date(data.transactionDate) : new Date(existing.transactionDate);
+    const shouldResubmit = Boolean(data.resubmit && existing.status === "REJECTED");
+    const nextStatus = shouldResubmit ? "PENDING" : existing.status;
+    const nextRejectReason = shouldResubmit ? null : existing.rejectReason;
+    const nextApprovedById = shouldResubmit ? null : existing.approvedById;
+    const nextApprovedByName = shouldResubmit ? null : existing.approvedByName;
+    const nextApprovedAt = shouldResubmit ? null : existing.approvedAt;
     const now = new Date();
 
     await prisma.$executeRaw`
@@ -10469,9 +10503,27 @@ export async function updatePettyCashTransactionAction(
         "receiptUrls" = ${nextReceipts},
         "slipUrls" = ${nextSlips},
         "transactionDate" = ${nextTxDate},
+        "status" = ${nextStatus},
+        "rejectReason" = ${nextRejectReason},
+        "approvedById" = ${nextApprovedById},
+        "approvedByName" = ${nextApprovedByName},
+        "approvedAt" = ${nextApprovedAt},
         "updatedAt" = ${now}
       WHERE "id" = ${id}
     `;
+
+    if (shouldResubmit) {
+      await prisma.activityLog.create({
+        data: {
+          userId: authUser.id,
+          userName: authUser.name || authUser.email || "Staff",
+          action: "PETTY_CASH_RESUBMIT",
+          entityType: "petty_cash",
+          entityId: id,
+          details: `[${existing.txNumber || id}] Resubmitted rejected expense ฿${amt.toLocaleString()} (${nextHolderName}) - ${nextCategory}: ${nextDesc}`,
+        },
+      }).catch(() => {});
+    }
 
     await recalculateHolderPettyCashBalances(existing.holderId);
     if (nextHolderId !== existing.holderId) {

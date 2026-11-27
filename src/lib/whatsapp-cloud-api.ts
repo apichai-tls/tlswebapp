@@ -1,4 +1,8 @@
-import { uploadBufferToGcs, generateDownloadUrl, bucketName } from '@/lib/gcs';
+import { uploadBufferToGcs } from '@/lib/gcs';
+import {
+  isLiveMessagingDisabled,
+  getLiveMessagingDisabledReason,
+} from '@/lib/messaging-env-guard';
 import type { SocialChannelConfig, SocialMessageAttachment } from '@/types/social-inbox';
 
 const META_GRAPH_VERSION = 'v21.0';
@@ -85,6 +89,12 @@ export async function verifyWhatsAppCloudConnection(opts: {
   phoneNumberId: string;
   accessToken: string;
 }): Promise<WhatsAppCloudVerificationResult> {
+  if (isLiveMessagingDisabled()) {
+    return {
+      connected: false,
+      error: getLiveMessagingDisabledReason('WhatsApp'),
+    };
+  }
   const phoneId = (opts.phoneNumberId || '').trim();
   const token = (opts.accessToken || '').trim();
 
@@ -236,7 +246,7 @@ export async function downloadWhatsAppCloudMediaToGcs(opts: {
     const ext = extensionFromMimeType(mimeType, opts.originalFilename);
     const safePhone = (opts.senderPhone || 'unknown').replace(/[^0-9a-zA-Z_-]/g, '');
 
-    // Step 3: Upload to Google Cloud Storage and return a signed/public HTTPS URL
+    // Step 3: Upload to Google Cloud Storage and return the permanent GCS HTTPS URL
     const gcsUrl = await uploadBufferToGcs(buffer, {
       entityType: 'system',
       entityId: `wa_${safePhone}`,
@@ -247,15 +257,6 @@ export async function downloadWhatsAppCloudMediaToGcs(opts: {
     });
 
     if (!gcsUrl) return null;
-
-    const prefix = `https://storage.googleapis.com/${bucketName}/`;
-    if (gcsUrl.startsWith(prefix)) {
-      const gcsKey = gcsUrl.slice(prefix.length);
-      const signed = await generateDownloadUrl(gcsKey, 60 * 24 * 7).catch(() => null);
-      if (signed && signed.startsWith('https://')) {
-        return { url: signed, mimeType, extension: ext };
-      }
-    }
 
     return { url: gcsUrl, mimeType, extension: ext };
   } catch (err) {
@@ -272,6 +273,9 @@ export async function markWhatsAppCloudMessageAsRead(opts: {
   accessToken: string;
   externalMessageId: string;
 }): Promise<boolean> {
+  if (isLiveMessagingDisabled()) {
+    return false;
+  }
   const phoneId = (opts.phoneNumberId || '').trim();
   const token = (opts.accessToken || '').trim();
   const msgId = (opts.externalMessageId || '').trim();
@@ -321,6 +325,12 @@ export async function sendWhatsAppCloudApiMessage(opts: {
   usedTemplateFallback?: boolean;
   error?: string;
 }> {
+  if (isLiveMessagingDisabled()) {
+    return {
+      delivered: false,
+      error: getLiveMessagingDisabledReason('WhatsApp'),
+    };
+  }
   const phoneId = (opts.phoneNumberId || '').trim();
   const token = (opts.accessToken || '').trim();
   const to = (opts.toPhoneE164 || '').replace(/\D/g, '');
@@ -563,7 +573,7 @@ export async function sendWhatsAppCloudApiMessage(opts: {
     return {
       delivered,
       externalMessageId: firstExternalMessageId,
-      error: delivered ? undefined : lastError,
+      error: lastError,
     };
   } catch (err: any) {
     return {

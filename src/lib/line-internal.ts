@@ -1,4 +1,8 @@
 import { prisma } from "@/lib/prisma";
+import {
+  isLiveMessagingDisabled,
+  getLiveMessagingDisabledReason,
+} from "@/lib/messaging-env-guard";
 import { invalidateDbCache, primeCustomerCache } from "@/lib/db-cache";
 import { publishOrderEvent } from "@/lib/realtime-bus";
 import { formatJobDisplayId, isValidPhoneNumber } from "@/lib/utils";
@@ -179,6 +183,7 @@ export function invalidateLineContactsCache(): void {
 }
 
 function ensureBackgroundLineFollowerSyncLoop(): void {
+  if (isLiveMessagingDisabled()) return;
   if (isBackgroundFollowerSyncRunning) return;
   isBackgroundFollowerSyncRunning = true;
   (async () => {
@@ -213,6 +218,15 @@ export async function syncLineOaFollowersInternal(
   contacts: LineContactRecord[];
   error?: string;
 }> {
+  if (isLiveMessagingDisabled()) {
+    return {
+      success: false,
+      syncedCount: 0,
+      linkedCustomerCount: 0,
+      contacts: [],
+      error: getLiveMessagingDisabledReason("LINE"),
+    };
+  }
   try {
     const settings = await getStoredLineOaSettings("that_laundry_shop");
     if (!settings.channelAccessToken) {

@@ -1875,6 +1875,7 @@ export async function sendSocialMessageAction(input: {
             if (pushRes.ok) {
               status = 'delivered';
             } else {
+              status = 'failed';
               externalError = pushRes.error;
             }
           }
@@ -1925,6 +1926,9 @@ export async function sendSocialMessageAction(input: {
         if (cloudSend.delivered) {
           status = 'delivered';
           externalMessageId = cloudSend.externalMessageId;
+          if (cloudSend.error) {
+            externalError = cloudSend.error;
+          }
         } else {
           externalError = cloudSend.error;
         }
@@ -2002,17 +2006,17 @@ export async function sendSocialMessageAction(input: {
             status = 'delivered';
           } else {
             deliveryMethod = 'whatsapp_web_bridge';
-            status = 'delivered';
+            status = externalError ? 'failed' : 'delivered';
           }
         } catch {
           deliveryMethod = 'whatsapp_web_bridge';
-          status = 'delivered';
+          status = externalError ? 'failed' : 'delivered';
         }
       }
       // Mode C: Live WhatsApp Web / Native App Bridge (only if QR is NOT linked and not already delivered)
       else if (status !== 'delivered' && !hasQrLinked) {
         deliveryMethod = 'whatsapp_web_bridge';
-        status = 'delivered';
+        status = externalError ? 'failed' : 'delivered';
       }
     }
     // 3. Facebook Messenger & Instagram Direct Live Delivery via Meta Graph API

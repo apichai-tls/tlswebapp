@@ -5,6 +5,10 @@ import QRCode from 'qrcode';
 import pino from 'pino';
 import { prisma } from '@/lib/prisma';
 import { uploadBufferToGcs } from '@/lib/gcs';
+import {
+  isLiveMessagingDisabled,
+  getLiveMessagingDisabledReason,
+} from '@/lib/messaging-env-guard';
 import { formatDisplayPhone, formatPhoneForWhatsApp } from '@/lib/social-helpers';
 import { SocialMessageAttachment } from '@/types/social-inbox';
 
@@ -322,6 +326,16 @@ function unwrapWhatsAppMessageContent(rawMsg: any): any {
 }
 
 export function getWhatsAppQrStatus(): WhatsAppQrState {
+  if (isLiveMessagingDisabled()) {
+    return {
+      status: 'disconnected',
+      qrDataUrl: null,
+      connectedPhone: null,
+      connectedName: null,
+      lastError: getLiveMessagingDisabledReason('WhatsApp'),
+      updatedAt: new Date().toISOString(),
+    };
+  }
   const s = getSingleton();
   // Auto-resume saved session on server boot if creds exist on disk or in DB
   if (!s.autoStartChecked) {
@@ -392,6 +406,16 @@ async function readSavedCredsMetadata(): Promise<{
 }
 
 export async function getWhatsAppQrStatusAsync(allowAutoStart = false): Promise<WhatsAppQrState> {
+  if (isLiveMessagingDisabled()) {
+    return {
+      status: 'disconnected',
+      qrDataUrl: null,
+      connectedPhone: null,
+      connectedName: null,
+      lastError: getLiveMessagingDisabledReason('WhatsApp'),
+      updatedAt: new Date().toISOString(),
+    };
+  }
   const s = getSingleton();
   if (s.state.status === 'connected' && s.sock) {
     return { ...s.state };
@@ -429,6 +453,16 @@ export async function startWhatsAppQrConnection(
   resetAuth = false,
   forceRefreshFromDb = false
 ): Promise<WhatsAppQrState> {
+  if (isLiveMessagingDisabled()) {
+    return {
+      status: 'disconnected',
+      qrDataUrl: null,
+      connectedPhone: null,
+      connectedName: null,
+      lastError: getLiveMessagingDisabledReason('WhatsApp'),
+      updatedAt: new Date().toISOString(),
+    };
+  }
   const s = getSingleton();
 
   if (resetAuth) {
@@ -726,7 +760,14 @@ export async function startWhatsAppQrConnection(
         const attachments: SocialMessageAttachment[] = [];
         const imageUrls: string[] = [];
 
-        if (inner?.imageMessage && typeof downloadMediaMessage === 'function') {
+        if (
+          typeof downloadMediaMessage === 'function' &&
+          (inner?.imageMessage ||
+            inner?.documentMessage ||
+            inner?.stickerMessage ||
+            inner?.audioMessage ||
+            inner?.videoMessage)
+        ) {
           try {
             const buffer = await downloadMediaMessage(
               m,
@@ -736,42 +777,93 @@ export async function startWhatsAppQrConnection(
             );
             if (buffer) {
               const rawBuffer = Buffer.from(buffer);
-              const mime = inner.imageMessage.mimetype || 'image/jpeg';
+              let mime = 'application/octet-stream';
+              let ext = 'bin';
+              let attType: SocialMessageAttachment['type'] = 'file';
+              let attName = 'WhatsApp Attachment';
+
+              if (inner?.imageMessage) {
+                mime = inner.imageMessage.mimetype || 'image/jpeg';
+                ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+                attType = 'image';
+                attName = 'WhatsApp Photo';
+              } else if (inner?.stickerMessage) {
+                mime = inner.stickerMessage.mimetype || 'image/webp';
+                ext = 'webp';
+                attType = 'image';
+                attName = 'WhatsApp Sticker';
+              } else if (inner?.documentMessage) {
+                mime = inner.documentMessage.mimetype || 'application/octet-stream';
+                attName =
+                  inner.documentMessage.fileName ||
+                  inner.documentMessage.title ||
+                  'WhatsApp Document';
+                const nameExt = attName.includes('.')
+                  ? attName
+                      .split('.')
+                      .pop()
+                      ?.toLowerCase()
+                      .replace(/[^a-z0-9]/g, '')
+                  : '';
+                ext =
+                  (nameExt && nameExt.length <= 5 ? nameExt : '') ||
+                  (mime === 'application/pdf'
+                    ? 'pdf'
+                    : mime.includes('png')
+                    ? 'png'
+                    : mime.includes('jpeg') || mime.includes('jpg')
+                    ? 'jpg'
+                    : mime.includes('webp')
+                    ? 'webp'
+                    : 'bin');
+                attType = mime.startsWith('image/') ? 'image' : 'file';
+              } else if (inner?.audioMessage) {
+                mime = inner.audioMessage.mimetype || 'audio/ogg';
+                ext = mime.includes('mpeg') ? 'mp3' : mime.includes('mp4') ? 'm4a' : 'ogg';
+                attType = 'file';
+                attName = 'WhatsApp Voice Note';
+              } else if (inner?.videoMessage) {
+                mime = inner.videoMessage.mimetype || 'video/mp4';
+                ext = 'mp4';
+                attType = 'video';
+                attName = 'WhatsApp Video';
+              }
+
               const safeId = (msgId || `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '');
-              const filename = `wa-${safeId}.jpg`;
+              const filename = `wa-${safeId}.${ext}`;
 
               // 1. Primary: Upload directly to Google Cloud Storage for permanent retention
-              let imageUrl: string | null = await uploadBufferToGcs(rawBuffer, {
+              let mediaUrl: string | null = await uploadBufferToGcs(rawBuffer, {
                 entityType: 'system',
                 entityId: `wa_${phoneDigits}`,
                 subType: 'chat',
                 contentType: mime,
-                extension: 'jpg',
+                extension: ext,
                 customFileName: filename,
               });
 
-              // 2. Fallback: Local storage or inline base64 if GCS is unavailable
-              if (!imageUrl) {
+              // 2. Fallback: Local storage or inline base64 (for images) if GCS is unavailable
+              if (!mediaUrl && attType === 'image') {
                 try {
                   const uploadDir = path.resolve(process.cwd(), 'storage', 'uploads', 'system', 'chat');
                   await fs.promises.mkdir(uploadDir, { recursive: true });
                   await fs.promises.writeFile(path.join(uploadDir, filename), rawBuffer);
-                  imageUrl = `/uploads/system/chat/${filename}`;
+                  mediaUrl = `/uploads/system/chat/${filename}`;
                 } catch {
-                  imageUrl = `data:${mime};base64,${rawBuffer.toString('base64')}`;
+                  mediaUrl = `data:${mime};base64,${rawBuffer.toString('base64')}`;
                 }
               }
-              if (imageUrl) {
-                imageUrls.push(imageUrl);
+              if (mediaUrl) {
+                if (attType === 'image') imageUrls.push(mediaUrl);
                 attachments.push({
-                  type: 'image',
-                  url: imageUrl,
-                  name: 'WhatsApp Photo',
+                  type: attType,
+                  url: mediaUrl,
+                  name: attName,
                 });
               }
             }
           } catch (imgErr) {
-            console.warn('[WhatsApp QR Bridge] Failed to download image:', imgErr);
+            console.warn('[WhatsApp QR Bridge] Failed to download media:', imgErr);
           }
         }
 
@@ -845,12 +937,12 @@ export async function startWhatsAppQrConnection(
               continue;
             }
             rememberLidMapping(jid, ch?.pnJid || ch?.lidJid);
+            // Note: In Baileys, unreadCount === -1 means explicitly "Marked as Unread", so only treat === 0 as cleared!
             const cleared =
               ch?.unreadCount === 0 ||
-              ch?.markedAsUnread === false ||
-              (typeof ch?.unreadCount === 'number' && ch.unreadCount <= 0);
+              ch?.markedAsUnread === false;
             if (cleared) {
-              const digits = extractPhoneDigitsFromJid(jid, ch?.pnJid || ch?.lidJid);
+              const digits = await resolvePhoneDigitsAsync(sock, jid, ch?.pnJid || ch?.lidJid);
               if (digits && digits.length >= 6) {
                 readPhones.push(digits);
               }
@@ -858,7 +950,7 @@ export async function startWhatsAppQrConnection(
           }
           if (readPhones.length > 0) {
             const { syncExternalReadStatesInternal } = await import('@/lib/social-inbox-internal');
-            await syncExternalReadStatesInternal('whatsapp', readPhones);
+            await syncExternalReadStatesInternal('whatsapp', readPhones, { readByName: 'WhatsApp' });
           }
         } catch (err) {
           console.warn('[WhatsApp QR Bridge] read-state sync error:', err);
@@ -871,6 +963,61 @@ export async function startWhatsAppQrConnection(
 
       sock.ev.on('chats.upsert', async (chats: any[]) => {
         await syncClearedWhatsAppChats(chats);
+      });
+
+      // Also listen to `messages.update` for `read-self` receipts (when WhatsApp Web / Phone reads an inbound message,
+      // Baileys emits status >= 4 (READ/PLAYED) with key.fromMe === false even before App State Sync `chats.update` arrives).
+      sock.ev.on('messages.update', async (updates: any[]) => {
+        try {
+          if (!Array.isArray(updates) || updates.length === 0) return;
+          const readPhones = new Set<string>();
+          const readMsgIds = new Set<string>();
+          for (const item of updates) {
+            const key = item?.key;
+            const status = item?.update?.status;
+            if (!key || key.fromMe) continue;
+            if (typeof status !== 'number' || status < 4) continue;
+            const jid = String(key.remoteJid || '');
+            if (!jid || jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) {
+              continue;
+            }
+            if (key.id) {
+              readMsgIds.add(String(key.id));
+            }
+            const digits = await resolvePhoneDigitsAsync(
+              sock,
+              jid,
+              key.remoteJidAlt,
+              [key.participantAlt, key.participant]
+            );
+            if (digits && digits.length >= 6) {
+              readPhones.add(digits);
+            }
+          }
+          // Fallback: if any message came in under an unresolved @lid, match its conversation directly via messageId
+          let readConversationIds: string[] = [];
+          if (readMsgIds.size > 0) {
+            try {
+              const idCandidates = Array.from(readMsgIds).map((id) => `msg_wa_in_${id}`);
+              const matchedMsgs = await prisma.socialMessage.findMany({
+                where: { id: { in: idCandidates } },
+                select: { conversationId: true },
+              });
+              readConversationIds = Array.from(
+                new Set(matchedMsgs.map((m) => m.conversationId).filter(Boolean))
+              );
+            } catch {}
+          }
+          if (readPhones.size > 0 || readConversationIds.length > 0) {
+            const { syncExternalReadStatesInternal } = await import('@/lib/social-inbox-internal');
+            await syncExternalReadStatesInternal('whatsapp', Array.from(readPhones), {
+              readConversationIds,
+              readByName: 'WhatsApp',
+            });
+          }
+        } catch (err) {
+          console.warn('[WhatsApp QR Bridge] messages.update read-self sync error:', err);
+        }
       });
 
       sock.ev.on('messaging-history.set', async (payload: any) => {
@@ -955,6 +1102,16 @@ export async function startWhatsAppQrConnection(
 }
 
 export async function disconnectWhatsAppQrSession(clearFiles = true): Promise<WhatsAppQrState> {
+  if (isLiveMessagingDisabled()) {
+    return {
+      status: 'disconnected',
+      qrDataUrl: null,
+      connectedPhone: null,
+      connectedName: null,
+      lastError: getLiveMessagingDisabledReason('WhatsApp'),
+      updatedAt: new Date().toISOString(),
+    };
+  }
   const s = getSingleton();
   if (s.sock) {
     try {
@@ -1013,6 +1170,9 @@ export async function sendDirectWhatsAppQrMessage(params: {
   text?: string;
   attachments?: SocialMessageAttachment[];
 }): Promise<{ ok: boolean; error?: string }> {
+  if (isLiveMessagingDisabled()) {
+    return { ok: false, error: getLiveMessagingDisabledReason('WhatsApp') };
+  }
   const s = getSingleton();
   const ready = await ensureWhatsAppQrReadyForSend(12000);
   if (!ready || !s.sock) {
@@ -1050,6 +1210,7 @@ export async function sendDirectWhatsAppQrMessage(params: {
 
     if (imageAtts.length > 0 || videoAtts.length > 0) {
       let captionSent = false;
+      let sentMediaCount = 0;
       for (let i = 0; i < imageAtts.length; i++) {
         const att = imageAtts[i];
         const imgBuffer = await loadAttachmentBuffer((att.url || '').trim());
@@ -1060,6 +1221,7 @@ export async function sendDirectWhatsAppQrMessage(params: {
             image: imgBuffer,
             ...(caption ? { caption } : {}),
           });
+          sentMediaCount++;
           if (sent?.key?.id) {
             s.sentMessageIds.add(String(sent.key.id));
           }
@@ -1076,6 +1238,7 @@ export async function sendDirectWhatsAppQrMessage(params: {
             mimetype: 'video/mp4',
             ...(caption ? { caption } : {}),
           });
+          sentMediaCount++;
           if (sent?.key?.id) {
             s.sentMessageIds.add(String(sent.key.id));
           }
@@ -1084,6 +1247,12 @@ export async function sendDirectWhatsAppQrMessage(params: {
       if (!captionSent && text) {
         const sent = await s.sock.sendMessage(jid, { text });
         if (sent?.key?.id) s.sentMessageIds.add(String(sent.key.id));
+      }
+      if (sentMediaCount === 0) {
+        return {
+          ok: false,
+          error: 'Failed to load or send image/video attachment via WhatsApp QR',
+        };
       }
       return { ok: true };
     }
@@ -1108,6 +1277,7 @@ export async function sendDirectWhatsAppQrMessage(params: {
  * send the read receipt back to the linked WhatsApp device so both stay in sync.
  */
 export async function markWhatsAppChatReadOnDevice(phoneOrExtId?: string | null): Promise<void> {
+  if (isLiveMessagingDisabled()) return;
   try {
     const s = getSingleton();
     if (!s.sock || s.state.status !== 'connected' || !phoneOrExtId) return;

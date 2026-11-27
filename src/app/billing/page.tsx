@@ -50,10 +50,12 @@ import {
   Clock,
   ShoppingBag,
   MessageSquare,
+  Wallet,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { NotificationBell } from "@/components/notification-bell";
+import { MobilePettyCash } from "@/components/mobile-petty-cash";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -791,6 +793,13 @@ export default function BillingPage() {
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
   const [visibleLimit, setVisibleLimit] = useState<number>(48);
   const [isSyncingManual, setIsSyncingManual] = useState(false);
+  const [activeAppTab, setActiveAppTab] = useState<"billing" | "petty-cash">("billing");
+  const [pettyCashRejectedCount, setPettyCashRejectedCount] = useState(0);
+  const activeAppTabRef = useRef<"billing" | "petty-cash">("billing");
+
+  useEffect(() => {
+    activeAppTabRef.current = activeAppTab;
+  }, [activeAppTab]);
 
   // Track jobs that were uploaded in this session, to keep them visible until finished
   const [sessionUploadedJobIds, setSessionUploadedJobIds] = useState<Set<string>>(new Set());
@@ -855,6 +864,8 @@ export default function BillingPage() {
 
   const [isMounted, setIsMounted] = useState(false);
   const [isNative, setIsNative] = useState(false);
+  const [isApkPreview, setIsApkPreview] = useState(false);
+  const [isSmallViewport, setIsSmallViewport] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -878,6 +889,7 @@ export default function BillingPage() {
 
   useEffect(() => {
     const handleTouchStart = (e: TouchEvent) => {
+      if (activeAppTabRef.current !== "billing") return;
       const isAtTop = window.scrollY <= 5;
       if (isAtTop && !isRefreshingRef.current) {
         touchStartY.current = e.touches[0].clientY;
@@ -953,9 +965,25 @@ export default function BillingPage() {
 
   useEffect(() => {
     setIsMounted(true);
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("tab") === "petty-cash") {
+        setActiveAppTab("petty-cash");
+      }
+      if (params.get("apk") === "1" || params.get("mobile") === "1") {
+        setIsApkPreview(true);
+      }
+    } catch {}
+    const mq = window.matchMedia("(max-width: 767px)");
+    const updateViewport = () => setIsSmallViewport(mq.matches);
+    updateViewport();
+    mq.addEventListener("change", updateViewport);
     import("@capacitor/core").then(({ Capacitor }) => {
       setIsNative(Capacitor.isNativePlatform());
     });
+    return () => {
+      mq.removeEventListener("change", updateViewport);
+    };
   }, []);
 
   const branchMap = useMemo(() => {
@@ -1280,9 +1308,17 @@ export default function BillingPage() {
               <Menu size={20} />
             </button>
             <Logo compact className="h-8" />
-            <div className="flex items-center gap-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200/60 rounded-lg px-2.5 py-1">
-              <Camera size={14} />
-              <span className="text-xs font-black tracking-wide">BILL APK</span>
+            <div
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 border ${
+                activeAppTab === "petty-cash"
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200/70"
+                  : "bg-indigo-50 text-indigo-700 border-indigo-200/60"
+              }`}
+            >
+              {activeAppTab === "petty-cash" ? <Wallet size={14} /> : <Camera size={14} />}
+              <span className="text-xs font-black tracking-wide">
+                {activeAppTab === "petty-cash" ? "PETTY CASH" : "BILL APK"}
+              </span>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -1327,56 +1363,102 @@ export default function BillingPage() {
 
       {/* ============ Mobile Content ============ */}
       <main className="max-w-lg mx-auto px-3.5 py-3.5 pb-24 space-y-3.5">
-        <div className="bg-white rounded-2xl border border-slate-200/90 p-3.5 shadow-xs">
-          {renderFilterAndControls(true)}
-        </div>
-
-        <div className="flex items-center justify-between px-1">
-          <p className="text-xs font-bold text-slate-500">
-            Showing <span className="text-indigo-600 font-black">{billingJobs.length}</span> orders waiting for bill photo
-          </p>
-        </div>
-
-        {/* Job Cards */}
-        <div className="space-y-3">
-          {billingJobs.length === 0 ? (
-            <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-slate-200">
-              <Receipt size={48} className="mx-auto text-slate-300 mb-3" />
-              <p className="text-sm font-bold text-slate-700">
-                {search ? "No matching orders found" : "No bills waiting for upload"}
-              </p>
-              <p className="text-xs text-slate-400 mt-1">All bills in this filter have been uploaded.</p>
+        {activeAppTab === "petty-cash" ? (
+          <MobilePettyCash
+            currentUser={user}
+            onRejectedCountChange={setPettyCashRejectedCount}
+          />
+        ) : (
+          <>
+            <div className="bg-white rounded-2xl border border-slate-200/90 p-3.5 shadow-xs">
+              {renderFilterAndControls(true)}
             </div>
-          ) : (
-            <>
-              {visibleJobs.map((job) => (
-                <BillingJobCard
-                  key={job.id}
-                  job={job}
-                  branchName={job.branchId ? branchMap[job.branchId] : undefined}
-                  onUpload={() => {
-                    setSessionUploadedJobIds((prev) => {
-                      const next = new Set(prev);
-                      next.add(job.id);
-                      return next;
-                    });
-                  }}
-                  onFinish={() => handleFinish(job.id)}
-                />
-              ))}
-              {billingJobs.length > visibleLimit && (
-                <button
-                  type="button"
-                  onClick={() => setVisibleLimit((prev) => prev + 48)}
-                  className="w-full py-3 rounded-xl bg-white border border-indigo-200 text-indigo-700 font-extrabold text-xs shadow-xs hover:bg-indigo-50 transition-colors cursor-pointer"
-                >
-                  Show More Orders ({billingJobs.length - visibleLimit} remaining)
-                </button>
+
+            <div className="flex items-center justify-between px-1">
+              <p className="text-xs font-bold text-slate-500">
+                Showing <span className="text-indigo-600 font-black">{billingJobs.length}</span> orders waiting for bill photo
+              </p>
+            </div>
+
+            {/* Job Cards */}
+            <div className="space-y-3">
+              {billingJobs.length === 0 ? (
+                <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-slate-200">
+                  <Receipt size={48} className="mx-auto text-slate-300 mb-3" />
+                  <p className="text-sm font-bold text-slate-700">
+                    {search ? "No matching orders found" : "No bills waiting for upload"}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">All bills in this filter have been uploaded.</p>
+                </div>
+              ) : (
+                <>
+                  {visibleJobs.map((job) => (
+                    <BillingJobCard
+                      key={job.id}
+                      job={job}
+                      branchName={job.branchId ? branchMap[job.branchId] : undefined}
+                      onUpload={() => {
+                        setSessionUploadedJobIds((prev) => {
+                          const next = new Set(prev);
+                          next.add(job.id);
+                          return next;
+                        });
+                      }}
+                      onFinish={() => handleFinish(job.id)}
+                    />
+                  ))}
+                  {billingJobs.length > visibleLimit && (
+                    <button
+                      type="button"
+                      onClick={() => setVisibleLimit((prev) => prev + 48)}
+                      className="w-full py-3 rounded-xl bg-white border border-indigo-200 text-indigo-700 font-extrabold text-xs shadow-xs hover:bg-indigo-50 transition-colors cursor-pointer"
+                    >
+                      Show More Orders ({billingJobs.length - visibleLimit} remaining)
+                    </button>
+                  )}
+                </>
               )}
-            </>
-          )}
-        </div>
+            </div>
+          </>
+        )}
       </main>
+
+      {/* ============ Bottom Tab Bar (Mobile APK) ============ */}
+      <nav className="fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur border-t border-slate-200 shadow-lg">
+        <div className="max-w-lg mx-auto grid grid-cols-2 px-3 py-1.5 gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveAppTab("billing")}
+            className={`flex flex-col items-center justify-center py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer active:scale-95 ${
+              activeAppTab === "billing"
+                ? "bg-indigo-50 text-indigo-700"
+                : "text-slate-500 hover:bg-slate-50"
+            }`}
+          >
+            <Camera size={18} />
+            <span className="mt-0.5 text-[11px]">ถ่ายบิล (Bills)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveAppTab("petty-cash")}
+            className={`relative flex flex-col items-center justify-center py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer active:scale-95 ${
+              activeAppTab === "petty-cash"
+                ? "bg-emerald-50 text-emerald-700"
+                : "text-slate-500 hover:bg-slate-50"
+            }`}
+          >
+            <div className="relative">
+              <Wallet size={18} />
+              {pettyCashRejectedCount > 0 && (
+                <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-rose-600 text-white text-[9px] font-black flex items-center justify-center">
+                  {pettyCashRejectedCount}
+                </span>
+              )}
+            </div>
+            <span className="mt-0.5 text-[11px]">เงินสดย่อย (Petty Cash)</span>
+          </button>
+        </div>
+      </nav>
     </div>
   );
 
@@ -1643,6 +1725,37 @@ export default function BillingPage() {
           </div>
 
           <div className="flex items-center gap-2.5">
+            <div className="inline-flex items-center rounded-xl bg-slate-100 p-1 border border-slate-200">
+              <button
+                type="button"
+                onClick={() => setActiveAppTab("billing")}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  activeAppTab === "billing"
+                    ? "bg-white text-indigo-700 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Camera size={14} />
+                <span>ถ่ายบิล</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveAppTab("petty-cash")}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  activeAppTab === "petty-cash"
+                    ? "bg-white text-emerald-700 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Wallet size={14} />
+                <span>เงินสดย่อย</span>
+                {pettyCashRejectedCount > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px] font-black">
+                    {pettyCashRejectedCount}
+                  </span>
+                )}
+              </button>
+            </div>
             <Link
               href="/item-check"
               className="gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-xs cursor-pointer rounded-xl px-3 py-2 flex items-center text-xs transition-all active:scale-[0.98]"
@@ -1670,6 +1783,15 @@ export default function BillingPage() {
 
         {/* Content Area */}
         <div className="flex-1 p-4 sm:p-6 lg:p-8 max-w-[1480px] w-full mx-auto space-y-5">
+          {activeAppTab === "petty-cash" ? (
+            <div className="max-w-2xl mx-auto pb-10">
+              <MobilePettyCash
+                currentUser={user}
+                onRejectedCountChange={setPettyCashRejectedCount}
+              />
+            </div>
+          ) : (
+            <>
           {/* Top KPI Summary Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
             <div
@@ -1821,6 +1943,8 @@ export default function BillingPage() {
               </>
             )}
           </div>
+            </>
+          )}
         </div>
       </main>
     </div>
@@ -1828,7 +1952,7 @@ export default function BillingPage() {
 
   return (
     <ProtectedRoute allowedRole="non-rider">
-      {isNative ? mobileLayout : desktopLayout}
+      {isNative || isApkPreview || isSmallViewport ? mobileLayout : desktopLayout}
 
       {/* Mobile Drawer Menu for Mobile Web & Native */}
       <AnimatePresence>
